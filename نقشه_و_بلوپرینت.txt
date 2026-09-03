@@ -1,0 +1,4054 @@
+سند جامع معماری و نقشه راه توسعه
+
+سیستم مدیریت سوپرمارکت، انبارداری هوشمند، قیمت‌گذاری و صندوق فروشگاهی
+
+Master Blueprint — Supermarket ERP / Smart Inventory / POS
+
+
+---
+
+1. چشم‌انداز و هدف اصلی پروژه
+
+هدف پروژه، طراحی و پیاده‌سازی یک نرم‌افزار واقعی، مستقل، قابل نصب روی Windows و قابل استفاده در محیط واقعی سوپرمارکت است که تمام چرخه عملیاتی فروشگاه را پوشش دهد:
+
+مدیریت کالا
+
+ثبت هوشمند کالا با بارکد
+
+مدیریت ورود کالا
+
+مدیریت Batch
+
+مدیریت موجودی
+
+مدیریت تاریخ تولید و انقضا
+
+مدیریت قیمت‌های قدیم و جدید
+
+صندوق فروشگاهی POS
+
+انتخاب Batch و قیمت هنگام فروش
+
+محاسبه بهای تمام‌شده و سود واقعی
+
+انبارگردانی و تطبیق موجودی
+
+گزارش‌گیری
+
+پیامک
+
+پرینتر حرارتی
+
+کشوی پول
+
+Barcode Scanner
+
+کار در حالت Offline
+
+اتصال به سرویس‌های خارجی
+
+Dashboard مدیریتی
+
+Logging و Audit
+
+Windows Installer
+
+مستندات و Repository حرفه‌ای GitHub
+
+
+اصل بنیادی پروژه:
+
+> سیستم نباید چیزی را که از نظر فیزیکی نمی‌تواند تشخیص دهد، به‌عنوان واقعیت قطعی ثبت کند.
+
+
+
+بنابراین معماری باید بین:
+
+موجودی واقعی/سیستمی، Batch، قیمت، تاریخ انقضا و فروش
+
+تفکیک دقیق داشته باشد.
+
+
+---
+
+2. اصول بنیادی معماری
+
+کل سیستم باید بر اساس اصول زیر طراحی شود.
+
+اصل 1 — Product ≠ Batch
+
+یک کالا فقط یک Product است، اما می‌تواند چند Batch داشته باشد.
+
+مثلاً:
+
+شیر X
+│
+├── Batch 001
+│   خرید: 50,000
+│   فروش: 60,000
+│   موجودی: 10
+│
+├── Batch 002
+│   خرید: 55,000
+│   فروش: 65,000
+│   موجودی: 20
+│
+└── Batch 003
+    خرید: 60,000
+    فروش: 70,000
+    موجودی: 30
+
+
+---
+
+اصل 2 — قیمت خرید تاریخی نباید Overwrite شود
+
+اگر امروز کالا با قیمت 50,000 خریداری شده و هفته آینده همان کالا با 60,000 خریداری شود:
+
+Batch 1 → Buy = 50,000
+Batch 2 → Buy = 60,000
+
+قیمت خرید Batch اول هرگز نباید تغییر کند.
+
+
+---
+
+اصل 3 — قیمت فروش نیز باید تاریخچه داشته باشد
+
+قیمت فروش فعلی نباید باعث تغییر فاکتورهای قبلی شود.
+
+قیمت هر فروش باید در InvoiceItem ذخیره شود.
+
+
+---
+
+اصل 4 — FIFO واقعیت فیزیکی نیست
+
+سیستم نمی‌تواند بفهمد مشتری دقیقاً کدام واحد فیزیکی را از قفسه برداشته است.
+
+بنابراین:
+
+FIFO = Default Allocation Policy
+
+و نه:
+
+FIFO = Physical Reality
+
+اگر چند Batch فعال وجود داشته باشد، صندوق‌دار باید بتواند Batch واقعی را انتخاب کند.
+
+
+---
+
+اصل 5 — Batch Stock و Product Stock متفاوت هستند
+
+سیستم باید دو سطح موجودی داشته باشد:
+
+Product Total Stock
+        +
+Batch Stock
+
+موجودی کل کالا از مجموع Batchها محاسبه می‌شود.
+
+اما موجودی Batch ممکن است به دلیل جابه‌جایی فیزیکی کالا با واقعیت قفسه اختلاف داشته باشد.
+
+راه‌حل:
+
+Stocktaking / Inventory Audit
+
+
+---
+
+اصل 6 — تاریخ انقضا مستقل از FIFO است
+
+حتی اگر فروش بر اساس Batch انتخاب‌شده انجام شود، سیستم همچنان باید:
+
+تاریخ انقضا
+
+کالاهای منقضی
+
+کالاهای نزدیک انقضا
+
+Batchهای پرریسک
+
+
+را کنترل کند.
+
+
+---
+
+3. معماری کلی سیستم
+
+سیستم باید Modular و قابل توسعه باشد.
+
+Supermarket System
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+              ▼            ▼            ▼
+             POS       INVENTORY     MANAGEMENT
+              │            │            │
+              ▼            ▼            ▼
+          Barcode       Products     Dashboard
+          Scanner       Batches      Reports
+          Printer       Stock        Settings
+          Cash Drawer   Expiry       Users
+                       Pricing       Audit
+              │            │            │
+              └────────────┼────────────┘
+                           ▼
+                     CORE BUSINESS
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          Database      Job Queue     External APIs
+                                         │
+                         ┌───────────────┼───────────────┐
+                         ▼               ▼               ▼
+                      Barcode         Pricing           SMS
+                      Sources         Sources
+
+
+---
+
+4. معماری Layered
+
+معماری داخلی:
+
+Frontend / POS
+      ↓
+Backend API
+      ↓
+Application Services
+      ↓
+Domain / Business Logic
+      ↓
+Repositories
+      ↓
+Database
+      ↓
+External Services / Hardware
+
+هر Layer باید مسئولیت مشخص داشته باشد.
+
+منطق Business نباید مستقیماً داخل UI نوشته شود.
+
+
+---
+
+5. ماژول‌های اصلی
+
+سیستم حداقل شامل این ماژول‌ها باشد:
+
+Core
+├── Authentication
+├── Users
+├── Roles
+├── Audit
+│
+├── Products
+├── Categories
+├── Brands
+├── Units
+│
+├── Batches
+├── Inventory
+├── Stock Movements
+├── Stocktaking
+├── Expiry Management
+│
+├── Pricing
+├── Price History
+├── Cost Management
+│
+├── POS
+├── Cart
+├── Invoices
+├── Payments
+├── Returns
+│
+├── Barcode Resolver
+├── Image Resolver
+├── Product Data Resolver
+├── Price Resolver
+│
+├── SMS
+├── Printer
+├── Cash Drawer
+│
+├── Reporting
+├── Dashboard
+│
+├── Offline Engine
+├── Background Jobs
+├── Notifications
+└── Settings
+
+
+---
+
+6. انتخاب Technology Stack
+
+Technology Stack نباید براساس سلیقه انتخاب شود.
+
+انتخاب باید براساس:
+
+پایداری
+
+Performance
+
+Offline capability
+
+Windows deployment
+
+Database support
+
+Hardware integration
+
+Barcode support
+
+ESC/POS
+
+Background jobs
+
+API
+
+Security
+
+Maintainability
+
+Developer ecosystem
+
+
+انجام شود.
+
+Python، Node.js، PHP یا Stackهای دیگر قابل بررسی هستند.
+
+انتخاب نهایی باید قبل از شروع توسعه مستند شود.
+
+
+---
+
+7. Web Panel
+
+سیستم باید دارای Web Panel کامل باشد.
+
+صفحات اصلی:
+
+Dashboard
+POS
+Products
+Inventory
+Batches
+Purchases
+Pricing
+Expiry
+Stocktaking
+Invoices
+Returns
+Customers
+Reports
+SMS
+Hardware
+Users
+Settings
+Audit Logs
+
+
+---
+
+8. Dashboard
+
+Dashboard باید وضعیت فروشگاه را در یک نگاه نمایش دهد.
+
+فروش
+
+فروش امروز
+
+فروش دیروز
+
+فروش ماه
+
+تعداد فاکتور
+
+میانگین مبلغ فاکتور
+
+
+سود
+
+سود امروز
+
+سود ماه
+
+سود بر اساس کالا
+
+سود بر اساس Batch
+
+
+موجودی
+
+ارزش موجودی
+
+تعداد کالاها
+
+کالاهای کم‌موجودی
+
+کالاهای بدون موجودی
+
+
+انقضا
+
+منقضی
+
+امروز
+
+کمتر از 3 روز
+
+کمتر از 7 روز
+
+کمتر از 30 روز
+
+
+قیمت
+
+کالاهای دارای قیمت قدیم
+
+کالاهای دارای چند قیمت فعال
+
+کالاهای بدون قیمت
+
+قیمت‌های نیازمند بروزرسانی
+
+
+
+---
+
+9. POS — صندوق فروشگاهی
+
+POS باید با اولویت سرعت، سادگی و Keyboard-First طراحی شود.
+
+هدف:
+
+> صندوق‌دار بتواند تقریباً تمام عملیات روزمره را بدون Mouse انجام دهد.
+
+
+
+
+---
+
+10. Barcode Listener
+
+سیستم باید ورودی Barcode Scanner را تشخیص دهد.
+
+منطق:
+
+Keyboard Input
+      ↓
+Analyze timing
+      ↓
+Very fast sequence?
+      ↓
+Yes → Scanner Input
+No  → Normal Keyboard
+
+Threshold باید قابل تنظیم باشد.
+
+نباید مقدار ثابتی مثل 30ms به‌عنوان حقیقت معماری تعریف شود.
+
+
+---
+
+11. فرآیند اسکن کالا
+
+Barcode Scanned
+       ↓
+Search Product
+       ↓
+Product Found?
+   ┌───┴───┐
+  No      Yes
+  │         │
+Error      Search Active Batches
+            ↓
+       Available Stock?
+            ↓
+       Check Active Prices
+
+
+---
+
+12. رفتار اسکن کالا با یک Batch
+
+اگر فقط یک Batch قابل فروش وجود داشته باشد:
+
+Scan
+ ↓
+Product
+ ↓
+One Active Batch
+ ↓
+Add to Cart
+
+نیازی به نمایش انتخاب Batch نیست.
+
+
+---
+
+13. رفتار اسکن کالا با چند Batch
+
+اگر چند Batch موجود باشد:
+
+Scan Product
+       ↓
+Multiple Active Batches
+       ↓
+Show Batch / Price Selector
+
+مثلاً:
+
+شیر X
+
+[ قیمت قدیم ]
+Batch 001
+خرید: 50,000
+مصرف‌کننده: 60,000
+فروش: 60,000
+موجودی: 8
+
+[ قیمت جدید ]
+Batch 002
+خرید: 55,000
+مصرف‌کننده: 65,000
+فروش: 65,000
+موجودی: 20
+
+صندوق‌دار انتخاب می‌کند مشتری کدام کالا را برداشته است.
+
+
+---
+
+14. Old Price Detection
+
+سیستم باید به‌صورت خودکار تشخیص دهد:
+
+Product
+   ↓
+More than one active Batch?
+   ↓
+More than one active Price?
+   ↓
+YES
+   ↓
+Show Price/Batch Selection
+
+در UI می‌توان گزینه:
+
+«دارای قیمت قدیم»
+
+را نیز ارائه کرد.
+
+اما این گزینه نباید تنها راه تشخیص باشد.
+
+سیستم باید خودش وضعیت را تشخیص دهد.
+
+
+---
+
+15. انتخاب Batch در POS
+
+وقتی صندوق‌دار Batch را انتخاب می‌کند:
+
+Product ID
+Batch ID
+Quantity
+Buy Price
+Consumer Price
+Sell Price
+
+به Cart متصل می‌شوند.
+
+مثلاً:
+
+Product: شیر X
+Batch: B001
+Qty: 2
+Buy: 50,000
+Sell: 60,000
+
+
+---
+
+16. اسکن چندباره یک کالا
+
+اگر کالا با همان Batch اسکن شود:
+
+Scan → Qty 1
+Scan → Qty 2
+Scan → Qty 3
+
+یک ردیف Cart باقی می‌ماند.
+
+اگر Batch متفاوت انتخاب شود:
+
+Product X / Batch 001 / Qty 2
+Product X / Batch 002 / Qty 1
+
+می‌تواند دو ردیف جداگانه داشته باشد.
+
+این موضوع برای قیمت‌های متفاوت حیاتی است.
+
+
+---
+
+17. Cart Model
+
+Cart باید حداقل داشته باشد:
+
+product_id
+batch_id
+quantity
+unit_sell_price
+unit_buy_price
+discount
+tax
+subtotal
+profit
+
+
+---
+
+18. Checkout
+
+فرآیند:
+
+Cart
+ ↓
+Validate Stock
+ ↓
+Validate Selected Batches
+ ↓
+Calculate Totals
+ ↓
+Payment
+ ↓
+Database Transaction
+ ↓
+Create Invoice
+ ↓
+Create InvoiceItems
+ ↓
+Deduct Selected Batches
+ ↓
+Create StockMovements
+ ↓
+Calculate Profit
+ ↓
+Commit
+ ↓
+Print Receipt
+ ↓
+Queue SMS
+
+
+---
+
+19. Transaction Integrity
+
+ثبت فروش باید Transactional باشد.
+
+در Database Transaction:
+
+Invoice
++
+InvoiceItems
++
+Batch Deduction
++
+StockMovement
++
+Payment
++
+Profit Snapshot
+
+باید با هم Commit شوند.
+
+اگر یکی از عملیات اصلی شکست خورد:
+
+ROLLBACK
+
+
+---
+
+20. پرینتر نباید Transaction فروش را خراب کند
+
+چاپ فاکتور یک عملیات سخت‌افزاری است.
+
+اگر:
+
+Database Commit = SUCCESS
+Printer = FAILED
+
+فروش نباید Rollback شود.
+
+بلکه:
+
+Invoice = PAID
+Print Status = FAILED
+
+و امکان:
+
+Print Again
+
+وجود داشته باشد.
+
+
+---
+
+21. Void Cart
+
+Void قبل از Checkout:
+
+Clear Cart
+No Invoice
+No Stock Movement
+No Stock Deduction
+
+و POS برای مشتری بعدی آماده شود.
+
+
+---
+
+22. Product Entity
+
+Product نماینده خود کالا است.
+
+مثلاً:
+
+شیر X 1 لیتری
+
+اطلاعات Product شامل:
+
+Barcode
+
+نام
+
+برند
+
+مدل
+
+دسته‌بندی
+
+واحد
+
+تصویر
+
+توضیحات
+
+حداقل موجودی
+
+وضعیت فعال
+
+
+است.
+
+اما اطلاعاتی مانند:
+
+قیمت خرید یک ورود خاص
+
+نباید در Product ذخیره شود.
+
+
+---
+
+23. Batch Entity
+
+هر ورود کالا می‌تواند یک Batch ایجاد کند.
+
+مثلاً:
+
+Batch 001
+Received: 2026-09-01
+Qty: 20
+Buy: 50,000
+Sell: 60,000
+Expiry: 2026-09-10
+
+و:
+
+Batch 002
+Received: 2026-09-05
+Qty: 30
+Buy: 55,000
+Sell: 65,000
+Expiry: 2026-09-20
+
+
+---
+
+24. ProductBatches Schema
+
+پیشنهاد:
+
+ProductBatches
+
+id
+product_id
+batch_number
+quantity_received
+current_qty
+
+buy_price
+consumer_price
+sell_price
+
+production_date
+expiry_date
+
+received_at
+
+status
+
+created_at
+updated_at
+
+Status:
+
+ACTIVE
+SOLD_OUT
+EXPIRED
+BLOCKED
+
+
+---
+
+25. قیمت‌های Batch
+
+هر Batch باید قیمت‌های خودش را داشته باشد.
+
+حداقل:
+
+buy_price
+consumer_price
+sell_price
+
+تفاوت آنها باید مشخص باشد.
+
+Buy Price
+
+قیمت خرید فروشگاه.
+
+Consumer Price
+
+قیمت مصرف‌کننده درج‌شده/مجاز در سناریوی مربوطه.
+
+Sell Price
+
+قیمت نهایی فروش فروشگاه.
+
+
+---
+
+26. Price History
+
+برای جلوگیری از ازبین‌رفتن تاریخچه، سیستم باید Price History داشته باشد.
+
+PriceVersion
+
+id
+product_id
+price_type
+price
+effective_from
+effective_to
+source
+created_by
+created_at
+
+Price Type:
+
+SELL
+CONSUMER
+SUGGESTED
+MARKET
+
+
+---
+
+27. تفاوت Batch و Price Version
+
+این دو نباید یکی فرض شوند.
+
+Batch
+
+نشان‌دهنده موجودی فیزیکی و بهای ورود است.
+
+Price Version
+
+نشان‌دهنده تغییر قیمت در طول زمان است.
+
+مثلاً:
+
+Batch A
+Buy = 100
+Stock = 10
+
+Price Version 1
+Sell = 120
+
+Price Version 2
+Sell = 130
+
+ممکن است قیمت فروش تغییر کند بدون اینکه Batch جدید وارد شود.
+
+
+---
+
+28. قانون عدم تغییر تاریخچه
+
+هرگز نباید:
+
+UPDATE old purchase price
+
+به‌صورت تخریبی انجام شود.
+
+بلکه:
+
+New Batch
+یا
+New Price Version
+
+ایجاد شود.
+
+
+---
+
+29. InvoiceItem Snapshot
+
+این بخش بسیار مهم است.
+
+هنگام فروش باید قیمت همان لحظه Snapshot شود.
+
+InvoiceItem
+
+product_id
+batch_id
+qty
+
+unit_buy_price
+unit_consumer_price
+unit_sell_price
+
+discount
+tax
+subtotal
+profit
+
+اگر بعداً قیمت کالا تغییر کرد، فاکتور قدیمی نباید تغییر کند.
+
+
+---
+
+30. مدیریت موجودی
+
+سیستم باید:
+
+Product Stock
+Batch Stock
+
+را مدیریت کند.
+
+موجودی Product:
+
+SUM(Batch.current_qty)
+
+است.
+
+
+---
+
+31. محدودیت شناخت موجودی فیزیکی
+
+سیستم باید این واقعیت را صریحاً در معماری لحاظ کند:
+
+> نرم‌افزار نمی‌تواند تشخیص دهد مشتری دقیقاً کدام واحد فیزیکی را از قفسه برداشته است، مگر اینکه کاربر هنگام فروش Batch را مشخص کند.
+
+
+
+بنابراین Batch Stock یک موجودی سیستمی قابل تطبیق است.
+
+
+---
+
+32. انتخاب فیزیکی Batch
+
+اگر فروشنده می‌داند کالای برداشته‌شده مربوط به قیمت قدیم است:
+
+POS
+ ↓
+Select Old Batch
+ ↓
+Sale
+ ↓
+Deduct Old Batch
+
+این روش دقیق‌تر از تحمیل FIFO است.
+
+
+---
+
+33. FIFO Engine
+
+FIFO باید به‌عنوان پیشنهاد سیستم برای انتخاب Batch وجود داشته باشد.
+
+مثلاً:
+
+Available Batches
+       ↓
+Sort
+       ↓
+Expiry ASC
+       ↓
+Production Date ASC
+       ↓
+Received Date ASC
+
+اما کاربر می‌تواند Batch دیگری را انتخاب کند.
+
+
+---
+
+34. FEFO
+
+برای کالاهای دارای تاریخ انقضا، بهتر است علاوه بر FIFO، مفهوم FEFO — First Expired, First Out نیز در موتور پیشنهاد وجود داشته باشد.
+
+یعنی:
+
+Nearest Expiry
+       ↓
+Higher Priority
+
+این برای کالاهای فاسدشدنی از FIFO مناسب‌تر است.
+
+بنابراین Policy Engine باید قابل تنظیم باشد:
+
+FIFO
+FEFO
+Manual
+Hybrid
+
+
+---
+
+35. Hybrid Allocation
+
+پیشنهاد اصلی معماری:
+
+POS Scan
+   ↓
+Multiple Batches?
+   ↓
+Yes
+   ↓
+System suggests preferred Batch
+   ↓
+Cashier confirms / changes
+
+مثلاً:
+
+پیشنهاد سیستم:
+Batch B001 — قیمت قدیم
+
+[انتخاب]
+[مشاهده سایر Batchها]
+
+
+---
+
+36. فروش از چند Batch
+
+اگر مشتری چند عدد بخواهد و بخشی از کالا از Batch اول و بخشی از Batch دوم باشد:
+
+Product X
+
+Batch 001 → Qty 3
+Batch 002 → Qty 2
+
+InvoiceItemها می‌توانند جداگانه ثبت شوند.
+
+در نتیجه:
+
+Profit Batch 001
++
+Profit Batch 002
+=
+Total Profit
+
+
+---
+
+37. Stock Movement
+
+هر تغییر موجودی باید Movement ایجاد کند.
+
+StockMovements
+
+id
+product_id
+batch_id
+movement_type
+quantity
+reference_type
+reference_id
+unit_cost
+created_at
+created_by
+
+Movement:
+
+PURCHASE_IN
+SALE_OUT
+RETURN_IN
+RETURN_OUT
+WASTE
+ADJUSTMENT
+TRANSFER_IN
+TRANSFER_OUT
+STOCKTAKE
+
+
+---
+
+38. قانون مهم موجودی
+
+نباید فقط:
+
+current_qty -= X
+
+انجام شود.
+
+بلکه:
+
+Update Batch
++
+Create StockMovement
++
+Audit Information
+
+باید همزمان انجام شود.
+
+
+---
+
+39. Stocktaking / انبارگردانی
+
+این ماژول یکی از بخش‌های اصلی سیستم است.
+
+هدف:
+
+> تطبیق موجودی فیزیکی فروشگاه با موجودی ثبت‌شده در سیستم.
+
+
+
+
+---
+
+40. چرا Stocktaking ضروری است؟
+
+مثلاً سیستم می‌گوید:
+
+Batch A = 10
+Batch B = 20
+Total = 30
+
+اما در واقعیت:
+
+Batch A = 8
+Batch B = 22
+
+ممکن است مشتری، کارمند یا جابه‌جایی فیزیکی باعث این اختلاف شده باشد.
+
+Total شاید درست باشد، اما تخصیص Batchها اشتباه شده است.
+
+
+---
+
+41. فرآیند Stocktaking
+
+Create Stocktake
+       ↓
+Select Area / Category / Products
+       ↓
+Scan Barcode
+       ↓
+Show System Qty
+       ↓
+Enter Physical Qty
+       ↓
+Compare
+       ↓
+Difference
+       ↓
+Confirm
+       ↓
+Adjustment
+       ↓
+StockMovement = STOCKTAKE
+
+
+---
+
+42. اولویت انبارگردانی
+
+سیستم باید بتواند Stocktaking را بر اساس ریسک پیشنهاد کند.
+
+اولویت بالا:
+
+Expired
+Expiring <= 3 days
+Expiring <= 7 days
+High Value
+Low Stock
+Price Changed
+Batch Conflict
+
+
+---
+
+43. زمان‌بندی انبارگردانی
+
+کاربر باید بتواند تعریف کند:
+
+Monthly
+Bi-Monthly
+Quarterly
+Custom
+Manual
+
+مثلاً:
+
+هر ماه
+روز 1
+ساعت 08:00
+
+سیستم باید قبل از موعد Reminder ایجاد کند.
+
+مثلاً:
+
+7 Days Before
+3 Days Before
+1 Day Before
+
+
+---
+
+44. Expiry Engine
+
+تمام Batchهای دارای تاریخ انقضا باید به‌صورت دوره‌ای بررسی شوند.
+
+وضعیت:
+
+EXPIRED
+EXPIRING_TODAY
+EXPIRING_3_DAYS
+EXPIRING_7_DAYS
+EXPIRING_30_DAYS
+NORMAL
+
+تعداد روزها باید قابل تنظیم باشد.
+
+
+---
+
+45. Expiry Dashboard
+
+مثلاً:
+
+🔴 منقضی
+🟠 امروز
+🟠 کمتر از 3 روز
+🟡 کمتر از 7 روز
+🟡 کمتر از 30 روز
+🟢 عادی
+
+برای هر مورد:
+
+Product
+
+Batch
+
+Qty
+
+Expiry
+
+Value
+
+Suggested Action
+
+
+نمایش داده شود.
+
+
+---
+
+46. سیاست کالاهای منقضی
+
+پس از انقضا سیستم نباید به‌صورت کورکورانه کالا را بفروشد.
+
+Policy:
+
+Expired Batch
+      ↓
+BLOCK SALE
+
+مگر اینکه Administrator در Settings سیاست دیگری تعریف کرده باشد.
+
+
+---
+
+47. Low Stock Engine
+
+برای Product:
+
+min_stock_alert
+
+تعریف شود.
+
+وقتی:
+
+Total Product Stock <= Minimum
+
+هشدار ایجاد شود.
+
+
+---
+
+48. Product Resolver
+
+ثبت کالا باید تا حد ممکن خودکار باشد.
+
+فرآیند:
+
+Barcode
+ ↓
+Local Database
+ ↓
+Cache
+ ↓
+External Resolver
+ ↓
+Multiple Sources
+ ↓
+Normalize
+ ↓
+Validate
+ ↓
+Confidence Score
+ ↓
+Auto Fill
+ ↓
+Human Review
+ ↓
+Confirm
+ ↓
+Save
+
+
+---
+
+49. Multi-Source Product Resolver
+
+نباید سیستم به یک سایت وابسته باشد.
+
+مثلاً:
+
+Source A
+ ↓
+Source B
+ ↓
+Source C
+ ↓
+Source D
+ ↓
+Manual
+
+Priority قابل تنظیم باشد.
+
+
+---
+
+50. اطلاعات Product Resolver
+
+در صورت وجود:
+
+Product Name
+Brand
+Model
+SKU
+Barcode
+Category
+Subcategory
+Description
+Unit
+Ingredients
+Weight
+Volume
+Country
+Manufacturer
+
+دریافت شود.
+
+
+---
+
+51. Data Provenance
+
+هر داده خارجی باید تا حد امکان دارای:
+
+value
+source
+timestamp
+confidence
+
+باشد.
+
+مثلاً:
+
+Product Name
+Source = Source A
+Confidence = HIGH
+Updated = ...
+
+
+---
+
+52. Human Confirmation
+
+هیچ داده خارجی نباید بدون Validation وارد دیتابیس اصلی شود.
+
+External Data
+ ↓
+Validation
+ ↓
+Auto Fill
+ ↓
+User Review
+ ↓
+Confirm
+ ↓
+Database
+
+
+---
+
+53. Image Resolver
+
+سیستم باید برای تصویر نیز Multi-Source باشد.
+
+Barcode
+ ↓
+Primary Image Source
+ ↓
+Validate
+ ↓
+Cache
+
+اگر تصویر نبود:
+
+Secondary Source
+ ↓
+Candidate Images
+ ↓
+Validation
+ ↓
+Best Match
+
+
+---
+
+54. Image Validation
+
+بررسی:
+
+HTTP status
+
+File integrity
+
+Format
+
+Dimensions
+
+Quality
+
+Product relevance
+
+
+و در صورت امکان:
+
+Duplicate detection
+
+Broken image detection
+
+
+
+---
+
+55. Pricing Resolver
+
+سیستم می‌تواند قیمت بازار را از منابع مختلف دریافت کند.
+
+مثلاً:
+
+Source A = 100
+Source B = 105
+Source C = 102
+
+محاسبات:
+
+Min
+Max
+Median
+Average
+Market Range
+
+
+---
+
+56. Suggested Sell Price
+
+سیستم می‌تواند:
+
+Buy Cost
++
+Target Margin
++
+Market Data
+=
+Suggested Sell Price
+
+ارائه دهد.
+
+اما:
+
+> قیمت پیشنهادی سیستم هرگز نباید بدون تأیید کاربر قیمت قطعی فروش تلقی شود.
+
+
+
+
+---
+
+57. Price Freshness
+
+هر قیمت باید:
+
+price
+source
+updated_at
+
+داشته باشد.
+
+سیستم باید وضعیت:
+
+FRESH
+AGING
+STALE
+
+را محاسبه کند.
+
+
+---
+
+58. قیمت قدیم و جدید
+
+سیستم باید بتواند تشخیص دهد:
+
+Product X
+
+Batch 001
+Buy 100
+Sell 120
+Qty 5
+
+Batch 002
+Buy 115
+Sell 135
+Qty 10
+
+در POS:
+
+Old Price → 120
+New Price → 135
+
+هر دو تا زمانی که موجودی دارند قابل انتخاب‌اند.
+
+
+---
+
+59. پایان Batch
+
+وقتی:
+
+current_qty = 0
+
+شود:
+
+status = SOLD_OUT
+
+و Batch نباید در انتخاب عادی POS نمایش داده شود.
+
+
+---
+
+60. Return / برگشت کالا
+
+سیستم باید برگشت کالا را نیز Batch-aware طراحی کند.
+
+در صورت امکان، برگشت باید به همان:
+
+Invoice
+InvoiceItem
+Batch
+
+متصل باشد.
+
+مثلاً:
+
+Original Sale
+Batch B001
+Qty 2
+
+Return
+Qty 1
+↓
+Return to B001
+
+Policy برگشت باید قابل تنظیم باشد.
+
+
+---
+
+61. محاسبه سود واقعی
+
+سود باید بر اساس قیمت خرید واقعی Batch محاسبه شود.
+
+Profit =
+Actual Sell Price
+-
+Actual Batch Cost
+
+ضربدر مقدار فروش.
+
+مثلاً:
+
+Batch A
+Buy = 80,000
+Sell = 100,000
+Qty = 2
+
+Profit = 40,000
+
+
+---
+
+62. سود چند Batch
+
+اگر فروش:
+
+Batch A → Qty 2 → Profit 40,000
+Batch B → Qty 3 → Profit 30,000
+
+باشد:
+
+Total Profit = 70,000
+
+
+---
+
+63. Invoice Schema
+
+Invoices
+
+id
+invoice_number
+customer_id
+
+subtotal
+discount
+tax
+total_amount
+
+payment_method
+payment_status
+status
+
+created_at
+updated_at
+
+Status:
+
+PENDING
+PAID
+VOID
+REFUNDED
+PARTIALLY_REFUNDED
+
+
+---
+
+64. InvoiceItem Schema
+
+InvoiceItems
+
+id
+invoice_id
+product_id
+batch_id
+
+qty
+
+unit_buy_price
+unit_consumer_price
+unit_sell_price
+
+discount
+tax
+
+subtotal
+profit
+
+created_at
+
+
+---
+
+65. Payment
+
+Payment باید Entity مستقل داشته باشد.
+
+امکان:
+
+CASH
+CARD
+MIXED
+OTHER
+
+وجود داشته باشد.
+
+برای پرداخت ترکیبی:
+
+Cash = 500,000
+Card = 1,000,000
+
+
+---
+
+66. Customer
+
+ثبت مشتری باید Optional باشد.
+
+برای فروش عادی:
+
+Walk-in Customer
+
+کافی است.
+
+اما در صورت نیاز:
+
+نام
+
+موبایل
+
+سوابق خرید
+
+فاکتورها
+
+
+قابل ثبت باشد.
+
+
+---
+
+67. SMS Integration
+
+سیستم باید قابلیت اتصال به سرویس‌هایی مانند ملی‌پیامک داشته باشد.
+
+Credentials نباید Hard-Code شوند.
+
+
+---
+
+68. SMS Queue
+
+بعد از فروش:
+
+Invoice Paid
+ ↓
+Create SMS Job
+ ↓
+Queue
+ ↓
+Provider
+ ↓
+Result
+
+SMS نباید عملیات صندوق را متوقف کند.
+
+
+---
+
+69. SMS Status
+
+PENDING
+SENT
+FAILED
+RETRYING
+
+با:
+
+Retry Count
+
+Error Message
+
+Provider Response
+
+Sent At
+
+
+
+---
+
+70. گزارش روزانه
+
+Background Job روزانه اجرا شود.
+
+گزارش:
+
+Sales
+Profit
+Invoices
+Low Stock
+Expired
+Expiring Soon
+Returns
+
+و در صورت فعال بودن:
+
+Send SMS to Owner
+
+
+---
+
+71. Hardware Layer
+
+Hardware نباید مستقیماً با Business Logic قاطی شود.
+
+معماری:
+
+Business Logic
+      ↓
+Hardware Abstraction Layer
+      ↓
+Printer Driver
+Barcode Driver
+Cash Drawer Driver
+
+
+---
+
+72. Thermal Printer
+
+پشتیبانی از ESC/POS در نظر گرفته شود.
+
+امکانات:
+
+چاپ فاکتور
+
+چاپ مجدد
+
+Header
+
+Footer
+
+Cut
+
+QR
+
+Barcode
+
+Paper Width
+
+
+
+---
+
+73. Cash Drawer
+
+در صورت پشتیبانی:
+
+Payment Completed
+ ↓
+Printer / ESC-POS
+ ↓
+Cash Drawer Pulse
+ ↓
+Open
+
+
+---
+
+74. Hardware Health Check
+
+سیستم باید وضعیت Hardware را نشان دهد:
+
+Printer Connected
+Printer Disconnected
+Scanner Active
+Cash Drawer Available
+
+و تست دستی داشته باشد:
+
+Test Print
+Test Drawer
+Scanner Test
+
+
+---
+
+75. Offline Mode
+
+POS نباید وابسته کامل به اینترنت باشد.
+
+Internet ON
+ ↓
+Full System
+
+Internet OFF
+ ↓
+Local Database
+ ↓
+Continue POS
+
+
+---
+
+76. Offline-First
+
+اطلاعات موردنیاز POS باید Local باشد:
+
+Product
+
+Barcode
+
+Batch
+
+Stock
+
+Price
+
+Customers
+
+POS Settings
+
+
+
+---
+
+77. عملیات وابسته به اینترنت
+
+این موارد می‌توانند Deferred شوند:
+
+External Product Lookup
+Image Lookup
+Market Price
+SMS
+Remote Backup
+Updates
+
+
+---
+
+78. Sync Engine
+
+در صورت وجود Server مرکزی یا سرویس Cloud:
+
+Local Changes
+ ↓
+Sync Queue
+ ↓
+Server
+ ↓
+Acknowledgement
+
+Conflict Resolution باید از قبل طراحی شود.
+
+
+---
+
+79. Cache
+
+داده‌های خارجی Cache شوند.
+
+مثلاً:
+
+Barcode
+ ↓
+Local Cache HIT
+
+و در صورت Fresh بودن، درخواست خارجی انجام نشود.
+
+
+---
+
+80. Database Architecture
+
+Database باید ACID و مناسب تراکنش‌های فروش باشد.
+
+حداقل Entityها:
+
+Users
+Roles
+Permissions
+
+Products
+Categories
+Brands
+Units
+
+ProductBatches
+
+PriceVersions
+PriceHistory
+
+StockMovements
+Stocktakes
+StocktakeItems
+
+Invoices
+InvoiceItems
+Payments
+Returns
+
+ExternalSources
+ProductResolverResults
+ImageAssets
+MarketPrices
+
+SMSMessages
+HardwareDevices
+
+AuditLogs
+SystemSettings
+
+
+---
+
+81. Audit Log
+
+عملیات حساس باید ثبت شود.
+
+مثلاً:
+
+PRODUCT_CREATED
+PRODUCT_UPDATED
+
+BATCH_CREATED
+BATCH_UPDATED
+
+PRICE_CHANGED
+
+STOCK_ADJUSTED
+STOCKTAKE_COMPLETED
+
+SALE_CREATED
+SALE_VOIDED
+SALE_REFUNDED
+
+USER_LOGIN
+USER_LOGOUT
+
+SETTINGS_CHANGED
+
+Audit باید شامل:
+
+who
+what
+when
+before
+after
+reference
+
+باشد.
+
+
+---
+
+82. Security
+
+اطلاعات حساس:
+
+API Keys
+SMS Credentials
+Database Credentials
+Tokens
+
+نباید در Source Code باشند.
+
+استفاده از:
+
+Environment Variables
+Encrypted Settings
+Secure Credential Storage
+
+انجام شود.
+
+
+---
+
+83. User / Role Management
+
+حداقل:
+
+Administrator
+Manager
+Cashier
+Inventory Operator
+Viewer
+
+Permissionها باید granular باشند.
+
+مثلاً Cashier نباید بتواند:
+
+Change Buy Price
+Delete Stock
+Modify Historical Invoice
+
+کند مگر Permission داشته باشد.
+
+
+---
+
+84. قیمت و دسترسی
+
+تغییرات حساس مانند:
+
+تغییر قیمت
+
+Adjustment
+
+حذف Batch
+
+Refund
+
+Void فاکتور پرداخت‌شده
+
+
+باید Permission داشته باشند.
+
+
+---
+
+85. Notifications
+
+Notification Center برای:
+
+Low Stock
+Expiry
+Expired
+Price Conflict
+Stock Difference
+External API Failure
+Printer Failure
+SMS Failure
+
+وجود داشته باشد.
+
+
+---
+
+86. Background Jobs
+
+Jobهای اصلی:
+
+Expiry Scan
+Low Stock Scan
+Price Refresh
+Product Resolver
+Image Resolver
+SMS
+Daily Report
+Stocktake Reminder
+Backup
+Cleanup
+
+
+---
+
+87. Backup
+
+سیستم باید Backup داشته باشد.
+
+حداقل:
+
+Manual Backup
+Scheduled Backup
+Restore
+Backup Verification
+
+Backup نباید فقط Copy ساده فایل Database باشد؛ روش صحیح Backup براساس Database Engine انتخاب شود.
+
+
+---
+
+88. Reports
+
+گزارش‌های اصلی:
+
+فروش
+
+فروش روزانه
+
+فروش ماهانه
+
+فروش بر اساس کالا
+
+فروش بر اساس دسته‌بندی
+
+
+سود
+
+سود واقعی
+
+سود Batch
+
+Margin
+
+سود کالا
+
+
+انبار
+
+موجودی
+
+ارزش موجودی
+
+گردش کالا
+
+Stock Movement
+
+
+Batch
+
+Batchهای فعال
+
+Batchهای تمام‌شده
+
+Batchهای منقضی
+
+
+قیمت
+
+تاریخچه قیمت
+
+قیمت قدیم
+
+قیمت جدید
+
+تغییرات قیمت
+
+
+Stocktaking
+
+موجودی سیستم
+
+موجودی فیزیکی
+
+اختلاف
+
+Adjustment
+
+
+
+---
+
+89. ارزش موجودی
+
+ارزش موجودی نباید صرفاً با آخرین قیمت خرید محاسبه شود.
+
+سیستم باید بتواند:
+
+Σ(Batch Current Qty × Batch Cost)
+
+را محاسبه کند.
+
+در صورت نیاز روش‌های ارزش‌گذاری دیگر نیز در آینده قابل اضافه‌شدن باشند.
+
+
+---
+
+90. مدیریت ورود کالا
+
+فرآیند:
+
+Scan Barcode
+ ↓
+Find/Create Product
+ ↓
+Enter Received Qty
+ ↓
+Enter Buy Price
+ ↓
+Consumer Price
+ ↓
+Sell Price
+ ↓
+Production Date
+ ↓
+Expiry Date
+ ↓
+Create Batch
+ ↓
+StockMovement = PURCHASE_IN
+
+
+---
+
+91. ورود مجدد همان کالا
+
+اگر همان Product دوباره وارد شود:
+
+Existing Product
+       ↓
+New Purchase
+       ↓
+New Batch
+
+نه اینکه Batch قبلی Overwrite شود.
+
+
+---
+
+92. Batch Number
+
+سیستم باید بتواند Batch Number را:
+
+از کاربر دریافت کند
+
+از فاکتور خرید بخواند
+
+یا در صورت نبود، شناسه داخلی تولید کند.
+
+
+مثلاً:
+
+B-20260904-000123
+
+
+---
+
+93. کنترل قیمت هنگام ورود
+
+هنگام ورود Batch جدید:
+
+Existing Buy Price
+vs
+New Buy Price
+
+سیستم می‌تواند تغییر را تشخیص دهد.
+
+مثلاً:
+
+⚠ Buy Price Increased
+50,000 → 60,000
++20%
+
+
+---
+
+94. کنترل قیمت فروش
+
+اگر Batch جدید قیمت متفاوتی داشته باشد:
+
+Old Batch → 120,000
+New Batch → 140,000
+
+POS هر دو را تا زمان صفر شدن موجودی Batch قدیم بشناسد.
+
+
+---
+
+95. قانون انتخاب قیمت در POS
+
+اولویت:
+
+1. Physical Batch selected by cashier
+2. System recommendation
+3. Configured allocation policy
+
+سیستم نباید بدون دلیل Batch دیگری را جایگزین انتخاب صندوق‌دار کند.
+
+
+---
+
+96. اگر Batch انتخاب‌شده موجودی کافی نداشت
+
+مثلاً:
+
+Batch A = 2
+Customer wants = 5
+
+سیستم باید بگوید:
+
+Only 2 available
+
+و گزینه:
+
+Add 2 from Batch A
++
+3 from Batch B
+
+را ارائه کند.
+
+
+---
+
+97. قیمت قدیم — منطق نهایی
+
+این مدل نهایی سیستم است:
+
+SCAN
+ ↓
+PRODUCT
+ ↓
+ACTIVE BATCHES
+ ↓
+┌─────────────────────────────┐
+│ One Batch                   │
+│ → Direct Add                │
+└─────────────────────────────┘
+
+OR
+
+┌─────────────────────────────┐
+│ Multiple Batches            │
+│ → Show Batch/Price Selector │
+│ → Recommend Best Batch      │
+│ → Cashier Selects           │
+└─────────────────────────────┘
+
+
+---
+
+98. Expiry + Price باید همزمان قابل مشاهده باشند
+
+در Batch Selector بهتر است نمایش داده شود:
+
+Batch
+Price
+Buy Cost
+Stock
+Expiry
+Days Remaining
+
+مثلاً:
+
+B001
+60,000
+Stock: 8
+Expiry: 2026-09-08
+3 Days Left
+
+B002
+65,000
+Stock: 20
+Expiry: 2026-09-20
+15 Days Left
+
+این UI تصمیم‌گیری صندوق‌دار را بسیار بهتر می‌کند.
+
+
+---
+
+99. موتور Recommendation
+
+سیستم می‌تواند Batch مناسب را پیشنهاد دهد.
+
+مثلاً:
+
+FEFO Priority
++
+Old Price Priority
++
+Expiry Risk
+
+اما تصمیم نهایی در صورت نیاز با کاربر است.
+
+
+---
+
+100. قوانین مهم Data Integrity
+
+هیچ‌گاه:
+
+Historical Invoice
+Historical Buy Price
+Historical Sell Price
+Historical Batch
+Historical Stock Movement
+
+نباید به‌صورت تخریبی تغییر کند.
+
+اصلاحات باید از طریق:
+
+Adjustment
+Correction
+Return
+New Price Version
+New Batch
+
+انجام شوند.
+
+
+---
+
+101. API Architecture
+
+Backend باید APIهای مشخص داشته باشد.
+
+مثلاً:
+
+/products
+/products/:id
+/products/barcode/:barcode
+
+/batches
+/batches/:id
+
+/inventory
+/inventory/movements
+
+/stocktakes
+
+/prices
+/prices/history
+
+/pos/cart
+/pos/checkout
+
+/invoices
+/invoices/:id
+/invoices/:id/print
+
+/returns
+
+/barcode/resolve
+/images/resolve
+/prices/market
+
+/sms
+
+/reports
+
+
+---
+
+102. Error Handling
+
+خطاها باید قابل فهم باشند.
+
+مثلاً:
+
+PRODUCT_NOT_FOUND
+BATCH_NOT_FOUND
+INSUFFICIENT_STOCK
+BATCH_EXPIRED
+PRICE_NOT_AVAILABLE
+PRINTER_OFFLINE
+SMS_PROVIDER_ERROR
+EXTERNAL_API_TIMEOUT
+DATABASE_ERROR
+
+
+---
+
+103. Logging
+
+حداقل:
+
+LOGIN
+PRODUCT_CREATED
+PRODUCT_UPDATED
+
+BATCH_CREATED
+BATCH_UPDATED
+
+STOCK_IN
+STOCK_OUT
+STOCK_ADJUSTMENT
+
+SALE
+VOID
+REFUND
+
+PRICE_UPDATE
+
+BARCODE_LOOKUP
+API_ERROR
+
+SMS_SENT
+SMS_FAILED
+
+PRINT_SUCCESS
+PRINT_FAILED
+
+STOCKTAKE
+
+
+---
+
+104. Testing Strategy
+
+سیستم باید چند سطح تست داشته باشد:
+
+Unit Tests
+Integration Tests
+Database Tests
+API Tests
+POS Tests
+Hardware Tests
+End-to-End Tests
+Installer Tests
+
+
+---
+
+105. تست‌های حیاتی POS
+
+حداقل:
+
+Scan Product
+Scan Multiple Times
+Unknown Barcode
+Zero Stock
+Multiple Batches
+Old Price
+New Price
+Select Batch
+Split Sale Between Batches
+Checkout
+Void
+Return
+Print
+Printer Failure
+
+
+---
+
+106. تست‌های حیاتی Inventory
+
+Create Product
+Create Batch
+Multiple Batches
+Different Buy Prices
+Different Sell Prices
+Expiry
+Expired Batch
+Stock Adjustment
+Stocktaking
+Stock Difference
+Return
+Waste
+
+
+---
+
+107. تست قیمت
+
+سناریوی حیاتی:
+
+Batch A
+Buy = 100
+Sell = 120
+Qty = 10
+
+Batch B
+Buy = 110
+Sell = 140
+Qty = 10
+
+فروش:
+
+2 × Batch A
+3 × Batch B
+
+باید:
+
+Profit A
++
+Profit B
+
+دقیق باشد.
+
+
+---
+
+108. تست تاریخی قیمت
+
+بعد از تغییر قیمت:
+
+Old Invoice
+
+نباید تغییر کند.
+
+
+---
+
+109. تست Stocktaking
+
+مثلاً:
+
+System = 30
+Physical = 28
+Difference = -2
+
+بعد از Confirm:
+
+Adjustment = -2
+StockMovement = STOCKTAKE
+Audit Log = Created
+
+
+---
+
+110. تست Offline
+
+این سناریو الزامی است:
+
+Internet ON
+ ↓
+Load Products
+
+Internet OFF
+ ↓
+Scan
+ ↓
+Sell
+ ↓
+Print
+
+باید انجام شود.
+
+
+---
+
+111. تست External Services
+
+باید سناریوهای:
+
+API Success
+API Timeout
+API Down
+Invalid Response
+Incomplete Data
+Rate Limit
+Invalid Image
+Invalid Price
+
+تست شوند.
+
+
+---
+
+112. تست Hardware
+
+Scanner Connected
+Scanner Disconnected
+
+Printer Connected
+Printer Disconnected
+
+Drawer Available
+Drawer Failure
+
+
+---
+
+113. Windows Application
+
+نسخه نهایی باید روی Windows نصب شود.
+
+هدف:
+
+Setup.exe
+ ↓
+Install
+ ↓
+Application Ready
+
+کاربر نباید مجبور باشد:
+
+Python
+Node.js
+Runtime
+Dependencies
+CLI
+
+را دستی نصب کند.
+
+
+---
+
+114. Local Application Architecture
+
+پس از نصب:
+
+Windows
+ ↓
+Application Service
+ ↓
+Local Backend
+ ↓
+Local Database
+ ↓
+Web UI
+
+و:
+
+Start Application
+ ↓
+Backend Starts
+ ↓
+Web Panel Opens
+
+
+---
+
+115. Installer
+
+Installer باید:
+
+Runtime را مدیریت کند
+
+Dependencyها را نصب کند
+
+Database را Initialize کند
+
+Service را ایجاد کند
+
+Shortcut ایجاد کند
+
+Uninstaller داشته باشد
+
+Update Strategy داشته باشد
+
+
+
+---
+
+116. Update System
+
+نسخه‌ها باید Versioned باشند.
+
+مثلاً:
+
+v1.0.0
+v1.1.0
+v1.1.1
+
+Update نباید باعث از بین رفتن Database شود.
+
+قبل از Migration:
+
+Backup
+ ↓
+Migration
+ ↓
+Validation
+
+
+---
+
+117. GitHub Repository
+
+ساختار:
+
+supermarket-system/
+│
+├── backend/
+├── frontend/
+│
+├── database/
+│   ├── migrations/
+│   ├── seeds/
+│   └── schema/
+│
+├── modules/
+│   ├── core/
+│   ├── pos/
+│   ├── products/
+│   ├── inventory/
+│   ├── batches/
+│   ├── pricing/
+│   ├── barcode/
+│   ├── images/
+│   ├── sms/
+│   ├── hardware/
+│   ├── reports/
+│   └── stocktaking/
+│
+├── tests/
+├── installer/
+├── scripts/
+├── docs/
+│
+├── .env.example
+├── README.md
+├── LICENSE
+└── CHANGELOG.md
+
+
+---
+
+118. Open-Source References
+
+پروژه‌های Open Source معرفی‌شده صرفاً Reference هستند.
+
+Grocy
+
+برای:
+
+Product
+
+Stock
+
+Batch
+
+Expiry
+
+Inventory concepts
+
+
+Laravel-FIFO
+
+برای:
+
+FIFO
+
+Cost Allocation
+
+Batch Consumption
+
+
+Posnic POS
+
+برای:
+
+POS UX
+
+Scanner
+
+Checkout
+
+Hardware
+
+
+ShelfGuardian
+
+برای:
+
+Expiry UI
+
+Scanning
+
+Inventory workflows
+
+
+
+---
+
+119. قانون استفاده از Open Source
+
+قبل از استفاده:
+
+License
+Architecture
+Security
+Code Quality
+Dependencies
+Maintenance
+Compatibility
+
+بررسی شود.
+
+سپس تصمیم:
+
+REUSE
+ADAPT
+REFERENCE
+REWRITE
+REJECT
+
+گرفته شود.
+
+
+---
+
+120. License Compliance
+
+برای هر Repository استفاده‌شده:
+
+Project
+Version
+License
+Used Component
+Modification
+Attribution
+
+مستند شود.
+
+
+---
+
+121. Documentation
+
+Repository باید شامل:
+
+README
+Installation Guide
+Windows Guide
+Developer Guide
+Database Documentation
+API Documentation
+Hardware Setup
+Barcode Resolver
+Pricing
+SMS
+Printer
+Stocktaking
+Backup / Restore
+Troubleshooting
+Architecture
+
+باشد.
+
+
+---
+
+122. Developer Workflow
+
+هر Feature:
+
+Requirement
+ ↓
+Design
+ ↓
+Implementation
+ ↓
+Unit Test
+ ↓
+Integration Test
+ ↓
+Manual Validation
+ ↓
+Documentation
+ ↓
+Code Review
+ ↓
+Merge
+
+
+---
+
+123. Feature Branch
+
+مثلاً:
+
+feature/pos
+feature/batch-management
+feature/stocktaking
+feature/pricing
+feature/barcode-resolver
+feature/sms
+feature/hardware
+feature/offline
+
+
+---
+
+124. Migration Safety
+
+هر تغییر Database باید Migration داشته باشد.
+
+هیچ تغییر مستقیم و بدون Migration مجاز نیست.
+
+
+---
+
+125. Seed / Demo Data
+
+سیستم باید قابلیت Seed داده آزمایشی داشته باشد.
+
+مثلاً:
+
+Products
+Categories
+Batches
+Prices
+Invoices
+Users
+
+اما Demo Data نباید وارد Production شود.
+
+
+---
+
+126. Performance
+
+POS باید برای عملیات سریع طراحی شود.
+
+خصوصاً:
+
+Barcode Lookup
+Cart Update
+Stock Validation
+Checkout
+
+نباید Queryهای غیرضروری خارجی داشته باشند.
+
+
+---
+
+127. Local Barcode Lookup
+
+اول:
+
+Local DB
+
+و فقط در صورت نبود اطلاعات:
+
+External Resolver
+
+اجرا شود.
+
+این اصل هم سرعت POS را بالا می‌برد و هم وابستگی به اینترنت را کم می‌کند.
+
+
+---
+
+128. Data Cache Policy
+
+هر داده خارجی:
+
+Fetched
+ ↓
+Validated
+ ↓
+Stored
+ ↓
+Timestamped
+ ↓
+Reusable
+
+باشد.
+
+
+---
+
+129. External Source Failure
+
+اگر API خارجی قطع بود:
+
+Use Cached Data
+
+و اگر Cache نبود:
+
+Manual Entry
+
+سیستم نباید POS را به خاطر API خارجی متوقف کند.
+
+
+---
+
+130. Pricing Safety
+
+قیمت دریافت‌شده از اینترنت:
+
+External Market Price
+
+است؛ نه الزاماً:
+
+Store Selling Price
+
+بنابراین سیستم فقط:
+
+Suggest
+
+می‌کند.
+
+
+---
+
+131. Data Confidence
+
+Resolver می‌تواند Confidence Score تولید کند:
+
+HIGH
+MEDIUM
+LOW
+
+و داده‌های Low Confidence نیازمند بررسی بیشتر باشند.
+
+
+---
+
+132. Auditability
+
+هر تصمیم مهم باید قابل ردیابی باشد.
+
+مثلاً:
+
+Why was this price selected?
+Which Batch was sold?
+Who selected it?
+What was the buy price?
+What was the sell price?
+When?
+
+پاسخ باید در Database قابل استخراج باشد.
+
+
+---
+
+133. سناریوی کامل فروش واقعی
+
+فرض:
+
+Product:
+نوشابه X
+
+Batch A
+Qty = 5
+Buy = 20,000
+Sell = 25,000
+
+Batch B
+Qty = 20
+Buy = 23,000
+Sell = 29,000
+
+مشتری یک محصول با قیمت قدیم برداشته است.
+
+صندوق:
+
+Scan
+ ↓
+Two Batches
+ ↓
+Show:
+Old Price = 25,000
+New Price = 29,000
+ ↓
+Cashier selects Old Price
+ ↓
+Batch A selected
+ ↓
+Qty = 1
+ ↓
+InvoiceItem.batch_id = A
+ ↓
+Batch A = 4
+ ↓
+Profit = 5,000
+
+این همان چیزی است که سیستم باید دقیقاً انجام دهد.
+
+
+---
+
+134. سناریوی تمام‌شدن قیمت قدیم
+
+Batch A = 1
+
+فروش:
+
+1 × Batch A
+
+بعد:
+
+Batch A = 0
+Status = SOLD_OUT
+
+در اسکن بعدی:
+
+Old Price
+
+دیگر نمایش داده نمی‌شود.
+
+سیستم فقط Batchهای دارای:
+
+current_qty > 0
+
+را نشان می‌دهد.
+
+
+---
+
+135. سناریوی قیمت قدیم با تاریخ انقضای نزدیک
+
+اگر:
+
+Old Price
+Expiry = 2 days
+
+باشد، سیستم می‌تواند:
+
+⚠ Expiring Soon
+
+نمایش دهد.
+
+این موضوع کمک می‌کند کالاهای نزدیک انقضا زودتر شناسایی شوند.
+
+
+---
+
+136. سناریوی Stocktaking
+
+سیستم:
+
+Batch A = 10
+Batch B = 20
+
+فیزیکی:
+
+Batch A = 8
+Batch B = 22
+
+کاربر:
+
+Physical Count
+
+را وارد می‌کند.
+
+سیستم:
+
+A = -2
+B = +2
+
+ثبت می‌کند و Adjustment/Audit ایجاد می‌شود.
+
+
+---
+
+137. سیاست‌های قابل تنظیم
+
+سیستم باید Hard-Code نباشد.
+
+Settings:
+
+Allow Negative Stock
+Batch Selection Mode
+FIFO / FEFO
+Expiry Warning
+Stocktake Frequency
+Price Refresh
+Minimum Stock
+SMS
+Printer
+Tax
+Currency
+
+
+---
+
+138. حالت‌های Batch Selection
+
+پیشنهاد:
+
+AUTO
+MANUAL
+HYBRID
+
+AUTO
+
+سیستم Batch را انتخاب می‌کند.
+
+MANUAL
+
+کاربر انتخاب می‌کند.
+
+HYBRID
+
+سیستم پیشنهاد می‌دهد و کاربر تأیید/تغییر می‌دهد.
+
+حالت HYBRID پیشنهاد اصلی پروژه است.
+
+
+---
+
+139. اصل Negative Stock
+
+پیشنهاد پیش‌فرض:
+
+AllowNegativeStock = FALSE
+
+اگر فعال شود، باید:
+
+Permission
+
+Warning
+
+Audit
+
+گزارش Negative Stock
+
+
+وجود داشته باشد.
+
+
+---
+
+140. Reporting Profit
+
+گزارش سود باید براساس:
+
+Actual Batch Cost
+
+باشد.
+
+نه:
+
+Latest Product Cost
+
+و نه:
+
+Average Guess
+
+مگر اینکه سیستم در آینده روش ارزش‌گذاری جداگانه‌ای اضافه کند.
+
+
+---
+
+141. گزارش قیمت قدیم
+
+مدیر بتواند گزارش بگیرد:
+
+Products With Old Price
+
+شامل:
+
+Product
+Batch
+Old Sell Price
+Current Sell Price
+Remaining Qty
+Buy Price
+Expiry
+Stock Value
+
+
+---
+
+142. گزارش Batchهای در حال اتمام
+
+Batch
+Product
+Remaining Qty
+Price
+Expiry
+Days Remaining
+
+
+---
+
+143. گزارش اختلاف انبار
+
+Product
+Batch
+System Qty
+Physical Qty
+Difference
+Reason
+User
+Date
+
+
+---
+
+144. Data Lifecycle
+
+اطلاعات نباید حذف فیزیکی شوند مگر با سیاست مشخص.
+
+به‌جای Delete:
+
+Soft Delete
+Archive
+Inactive
+
+استفاده شود.
+
+اطلاعات مالی و Audit نباید به‌سادگی حذف شوند.
+
+
+---
+
+145. Scalability
+
+اگر فروشگاه در آینده چند شعبه داشته باشد، معماری باید قابلیت توسعه داشته باشد.
+
+مثلاً:
+
+Company
+ ↓
+Branches
+ ↓
+Warehouses
+ ↓
+POS Terminals
+
+حتی اگر Multi-Branch در نسخه اول فعال نشود، طراحی Database نباید آن را غیرممکن کند.
+
+
+---
+
+146. Multi-Warehouse Future
+
+ساختار Batch و Stock Movement بهتر است از ابتدا قابلیت:
+
+warehouse_id
+location_id
+
+را در نظر بگیرد.
+
+این قابلیت می‌تواند در نسخه اول Optional باشد.
+
+
+---
+
+147. Location Management
+
+برای فروشگاه بزرگ:
+
+Warehouse
+ ├── Shelf A
+ ├── Shelf B
+ ├── Refrigerator
+ └── Storage
+
+قابل تعریف باشد.
+
+
+---
+
+148. Security Backup
+
+Backup باید:
+
+رمزگذاری در صورت نیاز
+
+تاریخ‌گذاری
+
+Rotation
+
+تست Restore
+
+
+داشته باشد.
+
+
+---
+
+149. معیارهای کیفیت
+
+Feature زمانی Complete است که:
+
+Implemented
++
+Tested
++
+Documented
++
+Validated
+
+باشد.
+
+وجود کد به‌تنهایی به معنی تکمیل Feature نیست.
+
+
+---
+
+150. معیار پذیرش نسخه نهایی
+
+نسخه نهایی باید حداقل این موارد را داشته باشد:
+
+[✓] Windows Installer
+[✓] No manual runtime installation
+[✓] Web Panel
+[✓] POS
+[✓] Barcode Scanner
+[✓] Fast Checkout
+
+[✓] Product Management
+[✓] Barcode Resolver
+[✓] Image Resolver
+[✓] Price Resolver
+
+[✓] Product Batches
+[✓] Multiple Buy Prices
+[✓] Multiple Sell Prices
+[✓] Old/New Price Detection
+[✓] Batch Selection
+
+[✓] FIFO Recommendation
+[✓] FEFO Recommendation
+[✓] Manual Batch Selection
+[✓] Hybrid Allocation
+
+[✓] Batch-aware Sales
+[✓] Batch-aware Profit
+[✓] Invoice Price Snapshot
+
+[✓] Expiry Management
+[✓] Expiry Alerts
+
+[✓] Stocktaking
+[✓] Physical/System Reconciliation
+
+[✓] Stock Movements
+[✓] Returns
+[✓] Waste
+[✓] Adjustments
+
+[✓] Thermal Printer
+[✓] Cash Drawer
+[✓] SMS
+
+[✓] Offline POS
+[✓] Cache
+[✓] Background Jobs
+
+[✓] Dashboard
+[✓] Reports
+[✓] Audit Logs
+[✓] Permissions
+[✓] Backup
+
+[✓] Automated Tests
+[✓] Documentation
+[✓] GitHub Repository
+
+
+---
+
+151. نقشه راه اجرای پروژه
+
+ترتیب توسعه باید این باشد:
+
+STEP 1
+Requirement Analysis
+        ↓
+STEP 2
+Architecture Design
+        ↓
+STEP 3
+Technology Selection
+        ↓
+STEP 4
+Database Design
+        ↓
+STEP 5
+Core / Authentication
+        ↓
+STEP 6
+Product Management
+        ↓
+STEP 7
+Batch Management
+        ↓
+STEP 8
+Inventory + Stock Movements
+        ↓
+STEP 9
+Pricing + Price History
+        ↓
+STEP 10
+Stocktaking
+        ↓
+STEP 11
+Expiry Engine
+        ↓
+STEP 12
+POS
+        ↓
+STEP 13
+Batch Selection / Old Price
+        ↓
+STEP 14
+Checkout + Invoice
+        ↓
+STEP 15
+Profit Engine
+        ↓
+STEP 16
+Barcode Resolver
+        ↓
+STEP 17
+Image Resolver
+        ↓
+STEP 18
+Market Price Resolver
+        ↓
+STEP 19
+Printer
+        ↓
+STEP 20
+Cash Drawer
+        ↓
+STEP 21
+SMS
+        ↓
+STEP 22
+Offline Engine
+        ↓
+STEP 23
+Reports
+        ↓
+STEP 24
+Dashboard
+        ↓
+STEP 25
+Security / Audit
+        ↓
+STEP 26
+Automated Tests
+        ↓
+STEP 27
+Windows Build
+        ↓
+STEP 28
+Installer
+        ↓
+STEP 29
+Real Hardware Testing
+        ↓
+STEP 30
+Production Validation
+        ↓
+STEP 31
+GitHub Release
+
+
+---
+
+152. قانون توسعه توسط AI Agent / Developer
+
+Agent قبل از هر کدنویسی باید:
+
+Analyze
+ ↓
+Understand
+ ↓
+Design
+ ↓
+Implement
+ ↓
+Test
+ ↓
+Validate
+
+کند.
+
+Agent نباید:
+
+Feature را Mock کند و تکمیل‌شده اعلام کند.
+
+API جعلی بسازد و آن را واقعی معرفی کند.
+
+Hardware را بدون تست واقعی تأییدشده اعلام کند.
+
+Resolver را بدون بررسی منابع واقعی تکمیل‌شده اعلام کند.
+
+قابلیت Offline را فقط با UI شبیه‌سازی کند.
+
+از FIFO به‌عنوان واقعیت فیزیکی استفاده کند.
+
+قیمت‌های تاریخی را Overwrite کند.
+
+
+
+---
+
+153. قانون بسیار مهم درباره Open Source
+
+Agent باید برای هر پروژه Open Source ابتدا بررسی کند:
+
+Is it maintained?
+Is license compatible?
+Is architecture suitable?
+Is code secure?
+Can it actually solve our problem?
+
+سپس تصمیم بگیرد:
+
+Reuse
+Adapt
+Reference
+Rewrite
+Reject
+
+
+---
+
+154. قانون بسیار مهم درباره اطلاعات خارجی
+
+هیچ داده خارجی نباید بدون:
+
+Source
+Timestamp
+Validation
+Confidence
+
+وارد سیستم اصلی شود.
+
+
+---
+
+155. قانون بسیار مهم درباره موجودی
+
+سیستم باید همیشه بین این دو تفاوت بگذارد:
+
+System Inventory
+
+و:
+
+Physical Inventory
+
+و ابزار اصلی تطبیق این دو:
+
+Stocktaking
+
+است.
+
+
+---
+
+156. قانون بسیار مهم درباره قیمت
+
+قیمت خرید جدید نباید قیمت خرید قدیم را نابود کند.
+
+Old Batch
+        ≠
+New Batch
+
+و:
+
+Old Price
+        ≠
+New Price
+
+باید قابل ردیابی باشند.
+
+
+---
+
+157. قانون بسیار مهم درباره فروش
+
+هر فروش باید پاسخ دهد:
+
+What Product?
+What Batch?
+How Many?
+At What Buy Cost?
+At What Sell Price?
+Who sold it?
+When?
+Which Invoice?
+
+
+---
+
+158. قانون بسیار مهم درباره سود
+
+سود باید بر اساس Batch واقعی انتخاب‌شده در فروش محاسبه شود.
+
+نه بر اساس:
+
+Latest Cost
+Average Cost
+Guess
+
+
+---
+
+159. معماری نهایی چرخه کالا
+
+کل چرخه:
+
+BARCODE
+   ↓
+PRODUCT RESOLUTION
+   ↓
+PRODUCT
+   ↓
+PURCHASE / RECEIVING
+   ↓
+NEW BATCH
+   ↓
+BUY PRICE
+CONSUMER PRICE
+SELL PRICE
+EXPIRY
+QTY
+   ↓
+INVENTORY
+   ↓
+POS SCAN
+   ↓
+ACTIVE BATCHES
+   ↓
+SYSTEM RECOMMENDATION
+   ↓
+CASHIER BATCH SELECTION
+   ↓
+INVOICE ITEM
+   ↓
+BATCH DEDUCTION
+   ↓
+STOCK MOVEMENT
+   ↓
+PROFIT
+   ↓
+INVOICE
+   ↓
+PRINT
+   ↓
+SMS
+   ↓
+REPORTING
+   ↓
+STOCKTAKING
+   ↓
+PHYSICAL RECONCILIATION
+
+
+---
+
+160. معماری نهایی قیمت
+
+PURCHASE
+   ↓
+BUY PRICE
+   ↓
+BATCH
+
+MARKET SOURCES
+   ↓
+MARKET PRICE
+   ↓
+PRICE ANALYSIS
+   ↓
+SUGGESTED PRICE
+   ↓
+USER CONFIRMATION
+   ↓
+PRICE VERSION
+   ↓
+ACTIVE SELL PRICE
+   ↓
+POS
+   ↓
+INVOICE SNAPSHOT
+
+
+---
+
+161. معماری نهایی موجودی
+
+PURCHASE
+ ↓
+BATCH
+ ↓
+CURRENT QTY
+ ↓
+SALE / RETURN / WASTE / ADJUSTMENT
+ ↓
+STOCK MOVEMENT
+ ↓
+SYSTEM STOCK
+ ↓
+STOCKTAKING
+ ↓
+PHYSICAL STOCK
+ ↓
+RECONCILIATION
+
+
+---
+
+162. معماری نهایی POS
+
+SCAN
+ ↓
+PRODUCT
+ ↓
+ACTIVE BATCHES
+ ↓
+ONE?
+ ├── YES → DIRECT ADD
+ │
+ └── NO
+       ↓
+  SHOW BATCH/PRICE
+       ↓
+  SYSTEM RECOMMENDATION
+       ↓
+  CASHIER SELECT
+       ↓
+  ADD TO CART
+       ↓
+  CHECKOUT
+       ↓
+  TRANSACTION
+       ↓
+  DEDUCT EXACT BATCH
+       ↓
+  PROFIT
+       ↓
+  INVOICE
+
+
+---
+
+163. اصل نهایی پروژه
+
+این سیستم نباید صرفاً یک:
+
+فاکتورزن + جدول موجودی
+
+باشد.
+
+بلکه باید یک Inventory-Aware POS باشد که بتواند ارتباط بین:
+
+Product
+Batch
+Purchase Cost
+Consumer Price
+Sell Price
+Expiry
+Physical Stock
+System Stock
+Invoice
+Profit
+Stock Movement
+Stocktaking
+
+را حفظ کند.
+
+
+---
+
+164. خروجی نهایی مورد انتظار
+
+در پایان، محصول باید یک نرم‌افزار واقعی باشد که فروشگاه بتواند با آن:
+
+کالا را اسکن کند → کالا را شناسایی کند → اطلاعاتش را تکمیل کند → ورود کالا را ثبت کند → Batch ایجاد کند → قیمت خرید و فروش را نگه دارد → قیمت‌های قدیم و جدید را مدیریت کند → در صندوق Batch واقعی را انتخاب کند → فروش را ثبت کند → موجودی همان Batch را کاهش دهد → سود واقعی را محاسبه کند → تاریخ انقضا را کنترل کند → انبارگردانی انجام دهد → اختلاف موجودی را اصلاح کند → فاکتور چاپ کند → پیامک ارسال کند → گزارش بگیرد → و حتی در نبود اینترنت به فروش ادامه دهد.
+
+هدف نهایی:
+
+> یک سیستم واقعی، قابل نصب، قابل استفاده در فروشگاه، قابل توسعه و قابل نگهداری؛ نه Prototype، Mockup یا Demo.
