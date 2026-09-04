@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Product, ProductBatch, StockMovement, Stocktake, StocktakeItem, User
@@ -20,12 +20,10 @@ class InventoryError(Exception):
 
 
 def product_total_stock(db: Session, product_id: int) -> int:
-    from ..models import ProductBatch
     return int(
         db.execute(
-            select(__import__("sqlalchemy").func.coalesce(
-                __import__("sqlalchemy").func.sum(ProductBatch.current_qty), 0)
-            ).where(ProductBatch.product_id == product_id)
+            select(func.coalesce(func.sum(ProductBatch.current_qty), 0))
+            .where(ProductBatch.product_id == product_id)
         ).scalar_one()
     )
 

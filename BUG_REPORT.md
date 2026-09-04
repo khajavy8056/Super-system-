@@ -126,11 +126,9 @@
 - **Fix:** nav مبتنی بر مجوز (endpoint `/auth/me` باید permissions برگرداند) + POS اختصاصی.
 
 ### BUG-022 — کیفیت کد/عملکرد پراکنده (Backend)
-- **Severity:** Low · **Status:** OPEN
-- **Status:** PARTIAL-FIXED (فاز ۰: price_freshness tz ✓ · باقی موارد در پاکسازی فاز ۲)
-- **توضیح:** `product_total_stock` با `__import__("sqlalchemy")`؛ `if total > 0 or True` کد مرده؛ `total = len(all-rows)` به‌جای COUNT؛ unused import (`notify` در pos.py)؛ تاریخ‌های naive/aware مخلوط → `price_freshness` با `now` آگاه TypeError می‌دهد (اثبات‌شده)؛ `count_item` خطای اعتبارسنجی را 404 می‌دهد؛ پارامتر `group` گزارش فروش ignore می‌شود.
-- **Fix:** پاکسازی + lint (ruff) در CI.
-
+- **Severity:** Low · **Status:** FIXED (فاز ۵ — price_freshness tz + حذف `__import__` + حذف کد مرده `or True` + COUNT واقعی برای صفحه‌بندی + پارامتر group گزارش فروش پیاده شد + حذف importهای بلااستفاده + گزارش `batch_status` تجمعی؛ تست‌های جدید سبز)
+- **Root Cause:** رشد سریع v0.1 بدون lint/CI.
+- **Regression:** test_phase5 (pagination/گزارش‌ها) — باقی موارد توسط code-review فاز ۵ پوشش داده شد.
 ### BUG-023 — مستندات بیش از واقعیت (Docs)
 - **Severity:** Medium · **Status:** OPEN
 - **توضیح:** CHANGELOG: «۲۹ جدول» (واقعیت ۲۸)؛ README ادعاهای §۴ گزارش Audit؛ API.md کدهای خطای ناموجود. برای محصول تجاری، مستندات گمراه‌کننده خطرناک‌تر از نبود قابلیت است.
@@ -142,8 +140,8 @@
 - **Fix:** Restore با تست واقعی + retention policy.
 
 ### BUG-025 — قابلیت‌های غایب (ثبت رسمی به‌عنوان MISSING)
-- **Severity:** High · **Status:** OPEN (طراحی)
-- **توضیح:** Kiosk/Lock Mode (§7)، موبایل/اندروید/PWA (§21-24)، دوربین barcode موبایل، Sync/Offline queue (§25-27)، Image Resolver با Validation (§13)، اعتبارسنجی checksum بارکد (GTIN-13/EAN-8)، GS1/Provider ایرانی، گزارش مغایرت ریالی/تاریخچه خرید/گزارش صندوق‌دار، تنظیمات UI برای SMS/Printer/Kiosk shortcut، CI/CD.
+- **Severity:** High · **Status:** PARTIAL (فاز ۳/۴/۵)
+- **توضیح/پیشرفت:** Kiosk/Lock ✅(فاز۳) · PWA موبایل+دوربین+صف آفلاین+تعارض ✅(فاز۴ — تست روی دستگاه واقعی UNTESTED) · Image Validation ✅(فاز۱، امضای فایل؛ رزولوشن پیکسلی UNTESTED) · checksum بارکد ✅(فاز۱) · گزارش صندوق‌دار/تاریخچه خرید/ارزش انبار/مغایرت ریالی ✅(فاز۵) · باقی موارد: GS1/Provider ایرانی (نیازمند کلید)، CI/CD، Wizard رمز اولین‌بار → فاز ۶.
 - **Fix:** طبق DEVELOPMENT_PLAN.md.
 
 ---

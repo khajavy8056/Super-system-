@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -60,11 +60,11 @@ def list_products(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("products.view")),
 ):
-    stmt = select(Product).where(Product.deleted_at.is_(None)).order_by(Product.name.asc())
+    stmt = select(Product).where(Product.deleted_at.is_(None))
     if q:
         stmt = stmt.where(Product.name.ilike(f"%{q}%") | Product.barcode.ilike(f"%{q}%"))
-    total = len(db.execute(stmt).scalars().all())
-    rows = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
+    total = int(db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one())
+    rows = db.execute(stmt.order_by(Product.name.asc()).limit(limit).offset(offset)).scalars().all()
     return {"total": total, "items": [_out(p) for p in rows]}
 
 

@@ -36,20 +36,23 @@ class CountIn(BaseModel):
 
 @router.get("/stock")
 def stock_summary(db: Session = Depends(get_db), _: User = Depends(require_permission("inventory.view"))):
-    products = db.execute(select(Product).where(Product.deleted_at.is_(None))).scalars().all()
-    batches = db.execute(select(ProductBatch)).scalars().all()
+    products = db.execute(select(Product).where(Product.deleted_at.is_(None)).order_by(Product.name)).scalars().all()
+    batches = db.execute(select(ProductBatch).order_by(ProductBatch.received_at)).scalars().all()
+    by_product: dict[int, list] = {}
+    for b in batches:
+        by_product.setdefault(b.product_id, []).append(b)
     out = []
     for p in products:
-        total = sum(b.current_qty for b in batches if b.product_id == p.id)
-        if total > 0 or True:
-            out.append({
-                "product_id": p.id, "name": p.name, "barcode": p.barcode,
-                "total_stock": total, "min_stock_alert": p.min_stock_alert,
-                "batches": [{"batch_id": b.id, "batch_number": b.batch_number,
-                             "current_qty": b.current_qty, "status": b.status,
-                             "expiry_date": str(b.expiry_date) if b.expiry_date else None}
-                            for b in batches if b.product_id == p.id],
-            })
+        rows = by_product.get(p.id, [])
+        total = sum(b.current_qty for b in rows)
+        out.append({
+            "product_id": p.id, "name": p.name, "barcode": p.barcode,
+            "total_stock": total, "min_stock_alert": p.min_stock_alert,
+            "batches": [{"batch_id": b.id, "batch_number": b.batch_number,
+                         "current_qty": b.current_qty, "status": b.status,
+                         "expiry_date": str(b.expiry_date) if b.expiry_date else None}
+                        for b in rows],
+        })
     return out
 
 

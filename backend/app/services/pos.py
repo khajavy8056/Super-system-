@@ -17,7 +17,7 @@ Phase-0 fixes (2026-09-04 audit): BUG-001 (discount double count), BUG-002
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -27,7 +27,6 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Counter,
-    Customer,
     Invoice,
     InvoiceItem,
     Payment,

@@ -714,33 +714,145 @@ RENDER.invoices = async () => {
     el("tbody", {}, ...rows));
 };
 
-/* ---------- reports ---------- */
+/* ---------- reports (§49) ---------- */
+const REPORT_TABS = [
+  ["daily", "فروش روزانه", "reports.view"],
+  ["cashiers", "صندوق‌دارها", "reports.view"],
+  ["profit", "سود به تفکیک Batch", "reports.view"],
+  ["inventory", "ارزش موجودی", "reports.view"],
+  ["purchase", "تاریخچه بهای خرید", "pricing.view_cost"],
+  ["expiry", "انقضا", "reports.view"],
+  ["adjustments", "اصلاحات و ضایعات", "reports.view"],
+  ["movements", "گردش کالا", "reports.view"],
+];
+
 RENDER.reports = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="grid grid-2">
-    <div class="card"><h3>سود به تفکیک Batch</h3><table id="r-profit"></table></div>
-    <div class="card"><h3>وضعیت Batch ها</h3><div id="r-batches"></div></div>
-    <div class="card"><h3>آخرین گردش‌های موجودی</h3><table id="r-movements"></table></div>
-  </div>`;
-  const profit = await api("/reports/profit");
-  const pRows = profit.map((p) => el("tr", {},
-    el("td", { text: p.batch_id || "—" }), el("td", { text: p.product_id }),
-    el("td", { text: p.qty }), el("td", { text: money(p.revenue) }), el("td", { text: money(p.profit) })));
-  const pt = $("#r-profit");
-  pt.append(el("thead", {}, el("tr", {}, el("th", { text: "Batch" }), el("th", { text: "کالا" }),
-    el("th", { text: "تعداد" }), el("th", { text: "درآمد" }), el("th", { text: "سود" }))), el("tbody", {}, ...pRows));
+  const today = new Date().toISOString().slice(0, 10);
+  v.innerHTML = `
+    <div class="card" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="date" id="rep-start" value="${today}" style="max-width:170px" />
+      <span class="muted">تا</span>
+      <input type="date" id="rep-end" value="${today}" style="max-width:170px" />
+      <button id="rep-refresh" class="btn btn-primary" style="max-width:120px">بروزرسانی</button>
+    </div>
+    <div id="rep-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <div id="rep-out"></div>`;
+  $("#rep-refresh").addEventListener("click", () => runReport(state.repTab || "daily"));
+  const tabs = $("#rep-tabs");
+  REPORT_TABS.forEach(([key, label, perm]) => {
+    if (!can(perm)) return;
+    tabs.append(el("button", { class: "btn btn-sm" + ((state.repTab || "daily") === key ? " btn-primary" : ""),
+      text: label, style: "max-width:220px", onclick: () => { state.repTab = key; RENDER.reports(); } }));
+  });
+  await runReport(state.repTab || "daily");
+};
 
-  const b = await api("/reports/batches");
-  $("#r-batches").innerHTML = `
-    <p>فعال: ${b.active.length} | تمام‌شده: ${b.sold_out.length} | منقضی: ${b.expired.length}</p>`;
-
-  const moves = await api("/reports/movements?limit=30");
-  const mRows = moves.map((m) => el("tr", {},
-    el("td", { text: m.movement_type }), el("td", { text: m.quantity }),
-    el("td", { text: m.batch_id || "—" }), el("td", { text: m.created_at.slice(0, 16).replace("T", " ") })));
-  const mt = $("#r-movements");
-  mt.append(el("thead", {}, el("tr", {}, el("th", { text: "نوع" }), el("th", { text: "تعداد" }),
-    el("th", { text: "Batch" }), el("th", { text: "زمان" }))), el("tbody", {}, ...mRows));
+async function runReport(tab) {
+  state.repTab = tab;
+  const out = $("#rep-out");
+  out.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
+  const start = $("#rep-start") ? $("#rep-start").value : null;
+  const end = $("#rep-end") ? $("#rep-end").value : null;
+  try {
+    if (tab === "daily") {
+      const d = await api(`/reports/sales?start=${start}&end=${end}&group=daily`);
+      const rows = (d.groups || []).map((g) => el("tr", {},
+        el("td", { text: g.date }), el("td", { text: g.invoice_count }),
+        el("td", { text: money(g.total) })));
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" },
+        el("h3", { text: `فروش روزانه (مجموع: ${money(d.total_sales)} در ${d.invoice_count} فاکتور)` }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "تاریخ" }), el("th", { text: "فاکتور" }), el("th", { text: "فروش" }))),
+          el("tbody", {}, ...rows))));
+    } else if (tab === "cashiers") {
+      const rows = await api(`/reports/cashiers?start=${start}&end=${end}`);
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" }, el("h3", { text: "گزارش صندوق‌دارها" }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "کاربر" }), el("th", { text: "فاکتور" }), el("th", { text: "فروش" }),
+          el("th", { text: "تخفیف" }), el("th", { text: "سود" }))),
+          el("tbody", {}, ...rows.map((r) => el("tr", {},
+            el("td", { text: r.username }), el("td", { text: r.invoice_count }),
+            el("td", { text: money(r.total_sales) }), el("td", { text: money(r.total_discount) }),
+            el("td", { class: "ok", text: money(r.profit) })))))));
+    } else if (tab === "profit") {
+      const rows = await api(`/reports/profit?start=${start}&end=${end}`);
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" }, el("h3", { text: "سود به تفکیک Batch" }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "Batch" }), el("th", { text: "کالا" }), el("th", { text: "تعداد" }),
+          el("th", { text: "درآمد" }), el("th", { text: "سود" }))),
+          el("tbody", {}, ...rows.map((r) => el("tr", {},
+            el("td", { text: r.batch_id || "—" }), el("td", { text: r.product_id }),
+            el("td", { text: r.qty }), el("td", { text: money(r.revenue) }),
+            el("td", { class: "ok", text: money(r.profit) })))))));
+    } else if (tab === "inventory") {
+      const rows = await api("/reports/inventory");
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" },
+        el("h3", { text: `ارزش موجودی به بهای تمام‌شده (مجموع: ${money(rows.reduce((a, r) => a + r.value_at_cost, 0))})` }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "کالا" }), el("th", { text: "بارکد" }), el("th", { text: "تعداد" }),
+          el("th", { text: "Batchها" }), el("th", { text: "ارزش بهای تمام‌شده" }))),
+          el("tbody", {}, ...rows.slice(0, 100).map((r) => el("tr", {},
+            el("td", { text: r.name }), el("td", { text: r.barcode }), el("td", { text: r.total_qty }),
+            el("td", { text: r.batches }), el("td", { text: money(r.value_at_cost) })))))));
+    } else if (tab === "purchase") {
+      const rows = await api("/reports/purchase-cost?limit=100");
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" }, el("h3", { text: "تاریخچه بهای خرید (نوسان قیمت بازار)" }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "کالا" }), el("th", { text: "Batch" }), el("th", { text: "خرید" }),
+          el("th", { text: "فروش" }), el("th", { text: "ورود" }), el("th", { text: "تاریخ" }))),
+          el("tbody", {}, ...rows.map((r) => el("tr", {},
+            el("td", { text: r.product_name }), el("td", { text: r.batch_number }),
+            el("td", { text: money(r.buy_price) }), el("td", { text: money(r.sell_price) }),
+            el("td", { text: r.qty_received }),
+            el("td", { text: r.received_at.slice(0, 10) })))))));
+    } else if (tab === "expiry") {
+      const buckets = await api("/reports/expiry");
+      const labels = { EXPIRED: ["منقضی", "badge-red"], EXPIRING_TODAY: ["امروز", "badge-red"],
+        EXPIRING_3_DAYS: ["≤ ۳ روز", "badge-amber"], EXPIRING_7_DAYS: ["≤ ۷ روز", "badge-amber"],
+        EXPIRING_30_DAYS: ["≤ ۳۰ روز", "badge-blue"], NORMAL: ["عادی", "badge-green"] };
+      out.innerHTML = "";
+      const cards = Object.entries(buckets).map(([k, items]) => {
+        const [label, cls] = labels[k] || [k, "badge-gray"];
+        return el("div", { class: "card" },
+          el("h3", {}, el("span", { class: "badge " + cls, text: label }), ` ${items.length} مورد`),
+          el("table", {}, el("tbody", {}, ...items.slice(0, 30).map((i) => el("tr", {},
+            el("td", { text: i.product_name }), el("td", { text: i.qty + " عدد" }),
+            el("td", { text: "انقضا: " + i.expiry }), el("td", { text: money(i.value) }))))));
+      });
+      out.append(...cards);
+    } else if (tab === "adjustments") {
+      const rows = await api("/reports/adjustments?limit=100");
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" }, el("h3", { text: "اصلاحات / ضایعات / انبارگردانی" }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "نوع" }), el("th", { text: "کالا" }), el("th", { text: "تعداد" }),
+          el("th", { text: "توسط" }), el("th", { text: "علت" }), el("th", { text: "زمان" }))),
+          el("tbody", {}, ...rows.map((r) => el("tr", {},
+            el("td", {}, el("span", { class: "badge badge-blue", text: r.movement_type })),
+            el("td", { text: r.product_name }), el("td", { text: r.quantity }),
+            el("td", { text: r.by }), el("td", { text: r.note || "—" }),
+            el("td", { text: r.created_at.slice(0, 16).replace("T", " ") })))))));
+    } else if (tab === "movements") {
+      const rows = await api("/reports/movements?limit=100");
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" }, el("h3", { text: "گردش‌های اخیر موجودی" }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: "نوع" }), el("th", { text: "تعداد" }), el("th", { text: "Batch" }),
+          el("th", { text: "زمان" }))),
+          el("tbody", {}, ...rows.map((m) => el("tr", {},
+            el("td", { text: m.movement_type }), el("td", { text: m.quantity }),
+            el("td", { text: m.batch_id || "—" }),
+            el("td", { text: m.created_at.slice(0, 16).replace("T", " ") })))))));
+    }
+  } catch (e) {
+    out.innerHTML = `<div class="card"><p class="error">خطا: ${esc(e.message)}</p></div>`;
+  }
 };
 
 /* ---------- hardware ---------- */
