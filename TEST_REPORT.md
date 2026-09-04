@@ -109,6 +109,46 @@ $ python -m pytest tests/ -q
 
 ---
 
+## ۷. فاز ۱ — Barcode Resolver واقعی (2026-09-04)
+
+### معماری پیاده‌شده
+- `services/barcode.py`: اعتبارسنجی checksum (GTIN-13/EAN-8/UPC-A/GTIN-14) — بارکد خراب قبل از هر lookup خارجی رد می‌شود.
+- `services/providers/`: معماری Provider (BaseProvider + Registry) — هسته به هیچ vendor خاصی وابسته نیست (§11). Providerها: `openfoodfacts` (رایگان/بدون کلید) و `custom_http` (قالب URL + نگاشت فیلد JSON قابل‌پیکربندی — برای GS1-سازگار/ایرانی/داخلی).
+- `services/resolvers.py`: خط‌لوله کامل §9: validate → local → cache → چند منبع خارجی → نرمال‌سازی → merge + تشخیص تعارض → confidence (HIGH توافق ۲+ منبع / MEDIUM تک‌منبع / LOW تعارض) → ذخیره PENDING → مرور انسانی → apply.
+- CRUD منابع (`/barcode/sources`) + جریان review/apply + Image Resolver با Validation واقعی دانلود/امضا/حجم + Price Resolver چندمنبعی.
+
+### ۱۳ سناریوی الزامی §10 (همه با httpx.MockTransport — قطعی و آفلاین)
+
+| # | سناریو | نتیجه |
+|---|---|---|
+| 1 | بارکد موجود در Local DB | PASS — origin=local بدون تماس خارجی |
+| 2 | فقط Source A دارد | PASS — MEDIUM |
+| 3 | فقط Source B دارد | PASS |
+| 4 | هر دو منبع دارند (توافق) | PASS — confidence=HIGH، بدون تعارض |
+| 5 | اطلاعات متناقض | PASS — conflict=True، confidence=LOW، الزام مرور انسانی |
+| 6 | بدون تصویر | PASS — valid_count=0، best=None |
+| 7 | تصویر خراب (404 / غیرتصویر با حجم سالم) | PASS — HTTP_404 / NOT_AN_IMAGE؛ تصویر سالم JPEG: PASS |
+| 8 | بارکد ناشناخته | PASS — origin=none + NOT_FOUND per-source؛ checksum نامعتبر: origin=invalid |
+| 9 | Timeout خارجی | PASS — error.kind=TIMEOUT، بدون fake success |
+| 10 | API قطع | PASS — UNREACHABLE |
+| 11 | پاسخ نامعتبر (HTML) | PASS — INVALID_RESPONSE |
+| 12 | Rate Limit | PASS — RATE_LIMITED |
+| 13 | کالای تکراری | PASS — local برنده می‌شود؛ apply روی بارکد تکراری 409 |
+
++ تست‌های تکمیلی: CRUD منابع (کد Provider ناشناس → 400)، ذخیره‌سازی نتایج در سطح endpoint، جریان کامل review→apply→cache-hit، قیمت بازار دو منبعی (aggregate).
+
+### تست زنده (Live) — اعلام صادقانه
+از این محیط، خروجی HTTPS به `world.openfoodfacts.org` (و هر host عمومی دیگر) **امکان‌پذیر نبود** (TLS EOF / certificate intercept). بنابراین:
+- Provider OpenFoodFacts: IMPLEMENTED + MOCK-TESTED — **تست زنده انجام‌نشده** (نیازمند محیط با اینترنت باز؛ سناریوی تست در `BARCODE_RESOLVER.md` فاز مستندسازی مستند می‌شود).
+- ادعایی مبنی بر «کار می‌کند با منبع واقعی» ثبت نشده است.
+
+```
+$ python -m pytest tests/ -q
+52 passed  (بدون هیچ xfail باقی‌مانده از فاز Audit)
+```
+
+---
+
 ## ۶. تست‌های ناممکن در این محیط (اعلام صادقانه)
 
 | مورد | وضعیت |

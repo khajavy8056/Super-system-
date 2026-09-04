@@ -45,23 +45,23 @@
 - **Fix:** کاهش اتمیک شرطی + بررسی `rowcount`؛ در PostgreSQL ردیف‌لاک؛ تست همزمانی واقعی.
 
 ### BUG-006 — نتایج Resolver خارجی هرگز ذخیره نمی‌شوند (Barcode Resolver)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۱ — POST /barcode/resolve با commit؛ GET فقط‌خواندنی؛ تست endpoint-level PASS)
 - **توضیح:** `resolve_barcode` نتایج خارجی را `db.add + flush` می‌کند اما اندپوینت `GET /api/barcode/resolve/{barcode}` هرگز `commit` نمی‌کند و `get_db` با close، تراکنش را rollback می‌کند → «کش محلی» همیشه خالی است؛ GET با عارضه‌ی جانبی هم ضدالگو است.
 - **اثبات:** پس از فراخوانی سرویس با منبع خارجی فعال و بستن session بدون commit → `rows persisted: 0`.
 - **Fix:** جداسازی خواندن/نوشتن؛ اندپوینت POST برای lookup با commit؛ یا commit صریح.
 
 ### BUG-007 — داده خارجی بدون Human-Review وارد جریان می‌شود (Resolver / قاعده §52)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۱ — need_manual=True همیشه برای داده خارجی + اندپوینت review + apply با Audit)
 - **توضیح:** پاسخ external با `need_manual=False` برمی‌گردد؛ هیچ اندپوینت Approve/Reject برای `ProductResolverResult` وجود ندارد؛ فیلد `status` همیشه PENDING می‌ماند (و به‌واسطه BUG-006 اصلاً ذخیره هم نمی‌شود).
 - **Fix:** جریان کامل §9: candidates → review UI → approve → ساخت Product.
 
 ### BUG-008 — منابع خارجی (Providers) از API/UI قابل پیکربندی نیستند (Resolver)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۱ — معماری Provider/Registry + CRUD کامل منابع از API؛ Providerهای ثبت‌شده: openfoodfacts، custom_http)
 - **توضیح:** هیچ CRUDی برای `ExternalSource` وجود ندارد (نه router، نه UI). تنها راه، دستکاری مستقیم دیتابیس است → کل زیرسیستم Multi-Source عملاً غیرقابل بهره‌برداری. Provider Interface هم不存在 نیست (منطق URL-template داخل `_fetch` هاردکد است).
 - **Fix:** معماری Provider قابل‌افزودن (§11) + CRUD + اولویت/فعال‌سازی.
 
 ### BUG-009 — خطای سرویس خارجی بی‌صدا بلعیده می‌شود (Resolver)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** FIXED (فاز ۱ — ProviderError با kind طبقه‌بندی‌شده: TIMEOUT/UNREACHABLE/NOT_FOUND/INVALID_RESPONSE/RATE_LIMITED/AUTH_ERROR/HTTP_x)
 - **توضیح:** `_fetch` همه exceptionها را `return None` می‌کند → Timeout/404/InvalidResponse/RateLimit غیرقابل تفکیک از «یافت نشد». اثبات: منبع روی پورت بسته → `origin=none` بدون هیچ گزارش خطا.
 - **Fix:** نتیجه per-source با status code/خطا + timeout مجزا (§40).
 

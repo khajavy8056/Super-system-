@@ -27,6 +27,8 @@ class ExternalSource(TimestampMixin, Base):
     priority: Mapped[int] = mapped_column(Integer, default=100)
     base_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_key: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted in prod
+    # JSON config for the provider implementation (e.g. field mapping for custom_http)
+    connection: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True)
 
 
@@ -36,6 +38,8 @@ class ProductResolverResult(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     barcode: Mapped[str] = mapped_column(String(64), index=True)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("external_sources.id"), nullable=True)
+    # Denormalized provider code so results survive source deletion/reconfiguration.
+    source_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     field: Mapped[str] = mapped_column(String(32))
     value: Mapped[str] = mapped_column(Text)
     confidence: Mapped[str] = mapped_column(String(16), default="MEDIUM")

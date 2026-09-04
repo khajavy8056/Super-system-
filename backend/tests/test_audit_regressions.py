@@ -318,8 +318,7 @@ def test_reg_006_price_freshness_timezone_aware():
     assert price_freshness(datetime.utcnow(), now=datetime.now(timezone.utc)) in {"FRESH", "AGING", "STALE"}
 
 
-# --- BUG-006 (Phase 1): external resolver results persistence -----------------
-@pytest.mark.xfail(strict=True, reason="BUG-006: external resolver results are never persisted (Phase 1)")
+# --- BUG-006 (FIXED phase 1): external resolver results persistence ----------
 def test_reg_004_resolver_results_persist(client, auth_headers, monkeypatch):
     db = SessionLocal()
     db.add(ExternalSource(code=f"reg{time.time_ns()}", name="reg",
@@ -328,19 +327,25 @@ def test_reg_004_resolver_results_persist(client, auth_headers, monkeypatch):
     db.commit()
     db.close()
 
-    class _Resp:
-        def raise_for_status(self): pass
-        def json(self): return {"name": "Resolved Product", "brand": "RegBrand"}
+    import httpx
+    import app.services.providers.base as pbase
 
-    import app.services.resolvers as resolvers
-    monkeypatch.setattr(resolvers.httpx, "get", lambda *a, **k: _Resp())
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"name": "Resolved Product", "brand": "RegBrand"})
 
-    r = client.get("/api/barcode/resolve/7310500000000", headers=auth_headers)
+    real_client = httpx.Client
+    monkeypatch.setattr(pbase.httpx, "Client",
+                        lambda *a, **k: real_client(transport=httpx.MockTransport(handler)))
+
+    # POST is the side-effectful lookup; GET stays read-only (design fix)
+    r = client.post("/api/barcode/resolve/5901234123457", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["origin"] == "external"
+    assert r.json()["need_manual"] is True  # external data ALWAYS needs human review (BUG-007)
 
     db = SessionLocal()
     rows = db.execute(select(ProductResolverResult).where(
-        ProductResolverResult.barcode == "7310500000000")).scalars().all()
+        ProductResolverResult.barcode == "5901234123457")).scalars().all()
     db.close()
+    monkeypatch.undo()
     assert len(rows) >= 1, "external candidates must be persisted for human review"
