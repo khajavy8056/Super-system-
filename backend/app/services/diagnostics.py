@@ -84,13 +84,25 @@ def check_database(db: Session) -> dict:
 
 
 def check_api(db: Session) -> dict:
+    """Verify the API surface is actually mounted.
+
+    Routers are included lazily by recent FastAPI versions, so counting
+    ``app.routes`` alone under-reports. The OpenAPI schema is the authoritative
+    view of what a client can call, so we assert against that.
+    """
     from ..main import app
 
-    routes = [r.path for r in app.routes if getattr(r, "path", "").startswith("/api")]
-    if not routes:
+    paths = [p for p in app.openapi().get("paths", {}) if p.startswith("/api")]
+    if not paths:
         return {"status": "FAIL", "detail": "No /api routes registered"}
-    return {"status": "PASS", "detail": f"{len(routes)} API routes mounted",
-            "evidence": {"route_count": len(routes)}}
+    expected = {"/api/pos/checkout", "/api/products", "/api/inventory/stocktakes",
+                "/api/marketing/coupons", "/api/diagnostics/run"}
+    missing = sorted(expected - set(paths))
+    if missing:
+        return {"status": "WARN", "detail": f"{len(paths)} routes mounted, missing: {missing}",
+                "evidence": {"route_count": len(paths), "missing": missing}}
+    return {"status": "PASS", "detail": f"{len(paths)} API endpoints mounted and reachable",
+            "evidence": {"route_count": len(paths)}}
 
 
 def check_storage(db: Session) -> dict:

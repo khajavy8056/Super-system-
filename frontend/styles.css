@@ -159,3 +159,40 @@ body.kiosk .view { padding: 10px; height: 100vh; }
   .pos-main { grid-template-columns: 1fr; }
   .pos-actions { grid-template-columns: 1fr; }
 }
+
+/* ---------- Phase-7: search suggestions, diagnostics, marketing ---------- */
+.pos-suggest {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  margin-top: 6px; max-height: 300px; overflow-y: auto;
+}
+.pos-suggest .sug {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: right;
+  padding: 10px 12px; background: transparent; border: 0; border-bottom: 1px solid var(--border);
+  color: var(--text); cursor: pointer; font-size: 13px;
+}
+.pos-suggest .sug:last-child { border-bottom: 0; }
+.pos-suggest .sug:hover, .pos-suggest .sug:focus { background: var(--card); outline: none; }
+.sug-name { font-weight: 600; }
+.sug-meta { font-size: 11px; color: var(--muted); }
+.sug-meta em { color: var(--amber); font-style: normal; }
+.sug-empty { padding: 12px; text-align: center; }
+.unit-tag { font-size: 10px; color: var(--muted); margin-inline-start: 4px; }
+
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.card-head h3 { margin: 0; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.toolbar input, .toolbar select { margin: 0; }
+.table-wrap { overflow-x: auto; }
+.empty { text-align: center; padding: 18px; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0 10px 0 0; }
+
+/* diagnostics */
+.diag-summary { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+.diag-row { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg2); }
+.diag-head { display: flex; align-items: center; gap: 10px; }
+.diag-detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.diag-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.diag-steps .step { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--card); border: 1px solid var(--border); }
+.diag-steps .step.ok { color: var(--green); }
+.diag-steps .step.bad { color: var(--red); }
+code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }

@@ -180,11 +180,11 @@
       420,
       860
     ],
-    "settle_ms": 1500,
+    "settle_ms": 1200,
     "shots": [
       {
         "name": "18-mobile-login",
-        "wait_ms": 500
+        "wait_ms": 600
       }
     ]
   },
@@ -195,38 +195,137 @@
       420,
       860
     ],
-    "settle_ms": 1000,
+    "settle_ms": 1200,
     "steps": [
       {
-        "js": "(async()=>{if(document.querySelector('.session-item'))return 'already';document.querySelector('#l-user').value='stocker';document.querySelector('#l-pass').value='stocker123';document.querySelector('#l-go').click();for(let i=0;i<60;i++){if(document.querySelector('.session-item'))return 'sessions';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+        "js": "(async()=>{if(document.querySelector('.tabbar'))return 'already';document.querySelector('#l-user').value='admin';document.querySelector('#l-pass').value='admin123';document.querySelector('#l-go').click();for(let i=0;i<80;i++){if(document.querySelector('.tabbar'))return 'home';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
       },
       {
-        "wait_ms": 800
+        "wait_ms": 900
       }
     ],
     "shots": [
       {
-        "name": "19-mobile-sessions",
-        "wait_ms": 600
+        "name": "19-mobile-home",
+        "wait_ms": 900,
+        "pdf": true
       },
       {
-        "name": "20-mobile-count",
+        "name": "20-mobile-pos-search",
         "steps": [
           {
-            "js": "(async()=>{openSession(1);for(let i=0;i<60;i++){if(document.querySelector('#real-qty'))return 'item';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+            "js": "(async()=>{goTab('pos');await new Promise(r=>setTimeout(r,500));const i=document.querySelector('#m-search');i.value='شیر';i.dispatchEvent(new Event('input',{bubbles:true}));for(let k=0;k<60;k++){if(document.querySelector('.result-row'))return 'hits';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "21-mobile-pos-qty",
+        "steps": [
+          {
+            "js": "(async()=>{document.querySelector('.result-row').click();for(let k=0;k<50;k++){if(document.querySelector('#m-sheet'))return 'sheet';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
           }
         ],
         "wait_ms": 600,
         "pdf": true
       },
       {
-        "name": "21-mobile-counted",
+        "name": "22-mobile-pos-cart",
         "steps": [
           {
-            "js": "(async()=>{document.querySelector('#real-qty').value='12';await new Promise(r=>setTimeout(r,300));window.saveAndNext();for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,150));}return 'next';})()"
+            "js": "(async()=>{const s=document.querySelector('#m-sheet');if(s){const b=s.querySelector('.batch-pick')||s.querySelector('.btn-green');b.click();}for(let k=0;k<50;k++){if(document.querySelector('#m-sheet .big-input')){document.querySelector('#m-sheet .btn-green').click();}if(document.querySelector('.cart-line'))return 'cart';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
           }
         ],
-        "wait_ms": 1200
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "23-mobile-pos-pay",
+        "steps": [
+          {
+            "js": "(async()=>{mCheckout();for(let k=0;k<40;k++){if(document.querySelector('#m-phone'))return 'pay';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600,
+        "pdf": true
+      },
+      {
+        "name": "24-mobile-inventory",
+        "steps": [
+          {
+            "js": "(async()=>{closeSheet();goTab('inventory');for(let k=0;k<60;k++){if(document.querySelector('.stock-row'))return 'stock';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "25-mobile-stock-in",
+        "steps": [
+          {
+            "js": "(async()=>{showStockIn();for(let k=0;k<40;k++){if(document.querySelector('#si-barcode'))return 'form';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600
+      },
+      {
+        "name": "26-mobile-sessions",
+        "steps": [
+          {
+            "js": "(async()=>{goTab('stocktake');for(let k=0;k<60;k++){if(document.querySelector('.session-item'))return 'sessions';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "27-mobile-count",
+        "steps": [
+          {
+            "js": "(async()=>{const s=document.querySelector('.session-item');if(s)s.click();for(let k=0;k<60;k++){if(document.querySelector('#real-qty'))return 'item';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "28-mobile-counted",
+        "steps": [
+          {
+            "js": "(async()=>{const q=document.querySelector('#real-qty');if(q){q.value='12';await new Promise(r=>setTimeout(r,300));window.saveAndNext();}await new Promise(r=>setTimeout(r,2500));return 'next';})()"
+          }
+        ],
+        "wait_ms": 900
+      },
+      {
+        "name": "29-mobile-more",
+        "steps": [
+          {
+            "js": "(async()=>{goTab('more');for(let k=0;k<40;k++){if(document.querySelector('.menu-item'))return 'more';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600,
+        "pdf": true
+      },
+      {
+        "name": "30-mobile-reports",
+        "steps": [
+          {
+            "js": "(async()=>{showReportsM();for(let k=0;k<60;k++){if(document.querySelector('#rp .kpi'))return 'rp';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "31-mobile-sync",
+        "steps": [
+          {
+            "js": "(async()=>{showSync();for(let k=0;k<40;k++){if(document.body.innerHTML.includes('همگام'))return 'sync';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600
       }
     ]
   }
