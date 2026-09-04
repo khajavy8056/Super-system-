@@ -1,4 +1,4 @@
-:root {
+:root, [data-theme="dark"] {
   --bg: #0f1420;
   --bg2: #171e2e;
   --card: #1c2437;
@@ -11,7 +11,28 @@
   --red: #ef4444;
   --amber: #f59e0b;
   --orange: #f97316;
+  --shadow: 0 8px 24px rgba(0,0,0,.35);
 }
+
+/* Light theme (§23). Same variable contract, so no component needs to know
+   which theme is active — switching is a single attribute on <html>. */
+[data-theme="light"] {
+  --bg: #f4f6fb;
+  --bg2: #ffffff;
+  --card: #ffffff;
+  --border: #d8deea;
+  --text: #161d2b;
+  --muted: #5d6982;
+  --primary: #2563eb;
+  --primary-h: #1d4ed8;
+  --green: #15803d;
+  --red: #dc2626;
+  --amber: #b45309;
+  --orange: #c2410c;
+  --shadow: 0 6px 18px rgba(16,26,48,.10);
+}
+html { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -196,3 +217,60 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0 10
 .diag-steps .step.ok { color: var(--green); }
 .diag-steps .step.bad { color: var(--red); }
 code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+/* ===========================================================================
+ * Status bar (§21) — always-visible system state at the bottom of the shell.
+ * ========================================================================= */
+.main { display: flex; flex-direction: column; min-height: 0; }
+.view { flex: 1; min-height: 0; }
+.statusbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-top: 1px solid var(--border);
+  background: var(--bg2); color: var(--muted);
+  font-size: 12px; font-variant-numeric: tabular-nums; flex: 0 0 auto;
+}
+.sb-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sb-grow { flex: 1; }
+.sb-sep { width: 1px; height: 14px; background: var(--border); }
+.sb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.sb-dot.on { background: var(--green); }
+.sb-clock { font-weight: 700; color: var(--text); }
+.sb-item.warn { color: var(--amber); }
+.sb-item.bad { color: var(--red); }
+.sb-item.ok { color: var(--green); }
+.sb-theme {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; width: 26px; height: 22px; cursor: pointer; font-size: 13px;
+}
+.sb-theme:hover { color: var(--text); border-color: var(--primary); }
+
+/* ledger + profile helpers */
+.ledger-amount.debit { color: var(--red); font-weight: 700; }
+.ledger-amount.credit { color: var(--green); font-weight: 700; }
+.balance-hero {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--card); margin-bottom: 12px;
+}
+.balance-hero b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.balance-hero.debt b { color: var(--red); }
+.balance-hero.clear b { color: var(--green); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.form-grid .full { grid-column: 1 / -1; }
+@media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } }
+.update-step {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
+  background: var(--card);
+}
+.update-step .st { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+.st.PASS { background: rgba(34,197,94,.15); color: var(--green); }
+.st.FAIL { background: rgba(239,68,68,.15); color: var(--red); }
+.st.SKIPPED { background: rgba(138,148,173,.15); color: var(--muted); }
+
+/* SVG icons in the sidebar (replaces emoji: font-independent, themable) */
+.ic { display: inline-block; flex: 0 0 auto; vertical-align: -0.2em; }
+.nav-item { display: flex; align-items: center; gap: 10px; text-align: start; }
+.nav-item .ic { color: var(--muted); }
+.nav-item.active .ic, .nav-item:hover .ic { color: inherit; }
+.brand { display: flex; align-items: center; gap: 8px; }

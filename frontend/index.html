@@ -27,7 +27,13 @@
   <!-- App -->
   <div id="app-view" class="app hidden">
     <aside class="sidebar">
-      <div class="brand">🛒 <span>سوپرمارکت</span></div>
+      <div class="brand">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/>
+          <path d="M3 4h2.5l2.6 11h10L21 7H6"/>
+        </svg>
+        <span>سوپرمارکت</span></div>
       <nav id="nav"></nav>
       <div class="sidebar-footer">
         <div id="whoami" class="muted"></div>
@@ -40,6 +46,19 @@
         <div id="topbar-actions"></div>
       </header>
       <section id="view" class="view"></section>
+      <!-- Status bar (§21): network, date/time, and live system state -->
+      <footer id="statusbar" class="statusbar">
+        <span class="sb-item"><i id="sb-net-dot" class="sb-dot"></i><span id="sb-net">—</span></span>
+        <span class="sb-sep"></span>
+        <span class="sb-item" id="sb-date">—</span>
+        <span class="sb-item sb-clock" id="sb-clock">—:—</span>
+        <span class="sb-grow"></span>
+        <span class="sb-item" id="sb-store"></span>
+        <span class="sb-item" id="sb-user"></span>
+        <span class="sb-item" id="sb-db" title="وضعیت پایگاه‌داده">DB</span>
+        <span class="sb-item" id="sb-printer" title="وضعیت چاپگر">🖨</span>
+        <button class="sb-theme" id="sb-theme" title="تغییر پوسته">◐</button>
+      </footer>
     </main>
   </div>
 

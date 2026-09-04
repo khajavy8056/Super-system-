@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from ..database import get_db
 from ..models import Notification, User
 from ..security import get_current_user, require_permission
 from ..services import expiry as expiry_svc
+from ..services.audit import write_audit
 from ..services.audit import write_audit
 
 router = APIRouter(tags=["system"])
@@ -164,3 +166,51 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     db.commit()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
             "safety_backup": str(safety)}
+
+
+# ---------------------------------------------------------------------------
+# Update system (§27–29)
+#
+# Mounted under /api (unlike the bare /health route above), so every client
+# reaches it through the same authenticated API surface.
+# ---------------------------------------------------------------------------
+update_router = APIRouter(prefix="/system", tags=["update"])
+
+
+class UpdateAuthIn(BaseModel):
+    password: str
+    download: bool = True
+
+
+@update_router.get("/update/check")
+def check_update(_: User = Depends(require_permission("settings.manage"))):
+    """Report whether a newer release exists. Read-only and side-effect free."""
+    from ..services.updater import check_for_update
+
+    return check_for_update()
+
+
+@update_router.post("/update/prepare")
+def prepare_update_endpoint(body: UpdateAuthIn, db: Session = Depends(get_db),
+                            user: User = Depends(require_permission("settings.manage"))):
+    """Owner-authenticated update: re-auth → backup → download → verify.
+
+    §28 requires password confirmation even for an already-signed-in admin,
+    because an open session is not proof of who is at the keyboard.
+    §29 makes the backup a blocking step — no backup, no update.
+    """
+    from ..security import verify_password
+    from ..services.updater import prepare_update
+
+    if not verify_password(body.password, user.password_hash):
+        write_audit(db, action="UPDATE_AUTH_FAILED", user_id=user.id,
+                    entity_type="System")
+        db.commit()
+        raise HTTPException(status_code=403, detail={
+            "code": "BAD_PASSWORD", "message": "رمز عبور نادرست است"})
+
+    result = prepare_update(db, download=body.download)
+    write_audit(db, action="UPDATE_PREPARE", user_id=user.id,
+                entity_type="System", after={"status": result["status"]})
+    db.commit()
+    return result

@@ -170,6 +170,92 @@
           }
         ],
         "wait_ms": 800
+      },
+      {
+        "name": "32-admin-customers",
+        "steps": [
+          {
+            "js": "(async()=>{go('customers');for(let i=0;i<60;i++){if(document.querySelector('#cu-table tbody tr'))return 'ok';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "33-admin-customer-ledger",
+        "steps": [
+          {
+            "js": "(async()=>{go('customers');await new Promise(r=>setTimeout(r,1800));const rows=[...document.querySelectorAll('#cu-table tbody tr')];const row=rows.find(r=>/54,000|\\d,\\d{3}/.test(r.children[2].textContent))||rows[4];const b=[...row.querySelectorAll('button')].find(x=>x.textContent.includes('حساب دفتری'));b.click();})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "34-admin-settings-store",
+        "steps": [
+          {
+            "js": "closeModal();go('settings')"
+          },
+          {
+            "wait_ms": 3500
+          },
+          {
+            "js": "closeModal();window.scrollTo(0,0)"
+          },
+          {
+            "wait_ms": 600
+          }
+        ],
+        "wait_ms": 1500,
+        "pdf": true,
+        "full_height": false
+      },
+      {
+        "name": "35-admin-settings-update-about",
+        "steps": [
+          {
+            "js": "(()=>{const t=[...document.querySelectorAll('h3,h4')].find(x=>/درباره|به‌?روزرسانی/.test(x.textContent));if(t)t.scrollIntoView({block:'start'});})()"
+          },
+          {
+            "wait_ms": 1200
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true,
+        "full_height": false
+      },
+      {
+        "name": "36-admin-light-theme",
+        "steps": [
+          {
+            "js": "(async()=>{await applyTheme('light');window.scrollTo(0,0);go('dashboard');await new Promise(r=>setTimeout(r,1500));return 'ok';})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 1200,
+        "pdf": true
+      },
+      {
+        "name": "37-admin-pos-account-tender",
+        "steps": [
+          {
+            "js": "(async()=>{await applyTheme('dark');go('pos');await new Promise(r=>setTimeout(r,1200));const r=await api('/pos/search?q='+encodeURIComponent('شیر'));const it=r.items[0],b=it.batches[0];posState.cart.push({product_id:it.product_id,product_name:it.name,batch_id:b.batch_id,batch_number:b.batch_number,quantity:2,unit_id:it.unit_id,available:b.current_qty,unit_sell_price:b.sell_price,unit_buy_price:b.buy_price,discount:0});posState.customer={id:1,name:'حسن نوری',balance:54000};renderPosCart();await new Promise(r=>setTimeout(r,400));posCheckoutModal();await new Promise(r=>setTimeout(r,400));const sel=document.querySelector('#pay-method');sel.value='ACCOUNT';sel.dispatchEvent(new Event('change',{bubbles:true}));})()"
+          },
+          {
+            "wait_ms": 5000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
       }
     ]
   },

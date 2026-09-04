@@ -52,6 +52,21 @@ async function api(path, opts = {}) {
   return body;
 }
 
+/* Timestamps arrive as naive UTC ISO strings. Append the Z so the browser does
+ * not silently read them as local time, then render in the Jalali calendar.
+ * A missing/NULL timestamp must show "—", never epoch-ish 1348/10/11. */
+function faDateTime(iso, withTime = true) {
+  if (!iso) return "—";
+  const s = String(iso);
+  const d = new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z");
+  if (isNaN(d)) return "—";
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+  if (withTime) { opts.hour = "2-digit"; opts.minute = "2-digit"; }
+  try {
+    return new Intl.DateTimeFormat("fa-IR-u-ca-persian", opts).format(d);
+  } catch (e) { return d.toLocaleString("fa-IR"); }
+}
+
 function openModal(html) {
   const m = $("#modal");
   m.innerHTML = `<div class="modal">${html}</div>`;
@@ -98,6 +113,8 @@ $("#login-form").addEventListener("submit", async (e) => {
     await loadRuntimeConfig();
     showApp();
     buildNav();
+    await applyTheme();
+    startStatusBar();
     if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -116,21 +133,49 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /* ---------- navigation (permission-aware) ---------- */
+/* ---------------------------------------------------------------------------
+ * Inline SVG icon set (shared vocabulary with the mobile app). Emoji were
+ * replaced because they render as empty boxes on Windows POS machines without
+ * an emoji font, and look consumer-grade on a commercial till.
+ * ------------------------------------------------------------------------ */
+const ICONS = {
+  dashboard: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>',
+  pos: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/>',
+  box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+  inbox: '<path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M4 13 6.5 5h11L20 13v6H4z"/>',
+  warehouse: '<path d="M3 21V9l9-5 9 5v12"/><path d="M8 21v-7h8v7"/>',
+  invoice: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+  user: '<circle cx="12" cy="8" r="3.6"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/>',
+  gift: '<rect x="3" y="9" width="18" height="12" rx="1.5"/><path d="M3 13h18M12 9v12"/><path d="M12 9C10 9 8 8 8 6.5S9.5 4 12 9zM12 9c2 0 4-1 4-2.5S14.5 4 12 9z"/>',
+  chart: '<path d="M4 20V4"/><path d="M4 20h16"/><path d="M8 16v-5M12 16V7M16 16v-8"/>',
+  printer: '<path d="M7 8V3h10v5"/><rect x="3" y="8" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M2 20c0-3.3 3-5.6 7-5.6s7 2.3 7 5.6"/><path d="M17 8.5a3 3 0 1 0 0-1M18 20c0-2.6-1-4.3-2.5-5.2"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
+  stethoscope: '<path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M6 3H4M14 3h2"/><path d="M10 13v2a5 5 0 0 0 10 0v-1"/><circle cx="20" cy="12" r="2"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.6 11h10L21 7H6"/>',
+};
+
+const icon = (name, size = 18) =>
+  `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
+     stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+
 const NAV = [
-  ["dashboard", "📊 داشبورد", "reports.view"],
-  ["pos", "🧾 صندوق (POS)", "pos.sell"],
-  ["products", "📦 کالاها", "products.view"],
-  ["batches", "📥 ورود کالا", "batches.manage"],
-  ["inventory", "🏬 انبار و انبارگردانی", "inventory.view"],
-  ["invoices", "🧮 فاکتورها", "reports.view"],
-  ["customers", "👤 مشتریان", "pos.sell"],
-  ["marketing", "🎁 جشنواره و کوپن", "reports.view"],
-  ["reports", "📈 گزارش‌ها", "reports.view"],
-  ["hardware", "🖨️ سخت‌افزار", "settings.manage"],
-  ["users", "👥 کاربران", "users.manage"],
-  ["settings", "⚙️ تنظیمات", "settings.manage"],
-  ["diagnostics", "🩺 تست اتصالات", "settings.manage"],
-  ["audit", "🕵️ لاگ‌ها", "audit.view"],
+  ["dashboard", "داشبورد", "reports.view", "dashboard"],
+  ["pos", "صندوق (POS)", "pos.sell", "pos"],
+  ["products", "کالاها", "products.view", "box"],
+  ["batches", "ورود کالا", "batches.manage", "inbox"],
+  ["inventory", "انبار و انبارگردانی", "inventory.view", "warehouse"],
+  ["invoices", "فاکتورها", "reports.view", "invoice"],
+  ["customers", "مشتریان", "pos.sell", "user"],
+  ["marketing", "جشنواره و کوپن", "reports.view", "gift"],
+  ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["hardware", "سخت‌افزار", "settings.manage", "printer"],
+  ["users", "کاربران", "users.manage", "users"],
+  ["settings", "تنظیمات", "settings.manage", "gear"],
+  ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
+  ["audit", "لاگ‌ها", "audit.view", "shield"],
 ];
 
 function can(perm) {
@@ -141,10 +186,12 @@ function can(perm) {
 function buildNav() {
   const nav = $("#nav");
   nav.innerHTML = "";
-  NAV.forEach(([key, label, perm]) => {
+  NAV.forEach(([key, label, perm, ico]) => {
     if (!can(perm)) return;
-    nav.append(el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
-      onclick: () => go(key), text: label }));
+    const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
+      onclick: () => go(key) });
+    btn.innerHTML = `${icon(ico, 18)}<span>${esc(label)}</span>`;
+    nav.append(btn);
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
 }
@@ -300,10 +347,37 @@ window.posQty = (idx, delta, direct) => {
 window.posRemove = (idx) => { posState.cart.splice(idx, 1); renderPosCart(); };
 window.posClearCustomer = () => { posState.customer = null; renderPosCart(); };
 
+/* The receipt clock must show STORE-local time (the configured timezone), not
+ * the workstation's. A till whose Windows clock/timezone is wrong would
+ * otherwise print a misleading time on every receipt. We anchor to the
+ * server's time once and tick locally from that offset. */
+let _posClockOffsetMs = null;
+
+async function syncPosClock() {
+  try {
+    const t = await api("/settings/time");
+    // offset between store-local wall clock and this machine's clock
+    _posClockOffsetMs = new Date(t.local.slice(0, 19) + "Z") - new Date(
+      new Date().toISOString().slice(0, 19) + "Z");
+    state.serverTime = t;
+  } catch (e) { _posClockOffsetMs = null; }
+}
+
 function posClock() {
   const el = $("#pos-clock");
   if (!el) return;
-  el.textContent = new Date().toLocaleTimeString("fa-IR");
+  const tick = () => {
+    const node = $("#pos-clock");
+    if (!node) { clearInterval(window._posClockTimer); return; }
+    const base = new Date(Date.now() + (_posClockOffsetMs || 0));
+    const hhmm = base.toISOString().slice(11, 19);
+    node.textContent = _posClockOffsetMs === null
+      ? new Date().toLocaleTimeString("fa-IR")
+      : hhmm.replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  };
+  syncPosClock().then(tick);
+  clearInterval(window._posClockTimer);
+  window._posClockTimer = setInterval(tick, 1000);
 }
 
 RENDER.pos = async () => {
@@ -613,7 +687,16 @@ function posCheckoutModal() {
     ${coupon ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
     <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
     <label>روش پرداخت</label>
-    <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option></select>
+    <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option>${
+      posState.customer ? `<option value="ACCOUNT">افزودن به حساب دفتری (نسیه)</option>` : ""}</select>
+    ${posState.customer
+      ? `<p class="muted">مشتری: ${esc(posState.customer.name)}${
+          posState.customer.balance ? ` — مانده فعلی ${money(posState.customer.balance)}` : ""}</p>`
+      : `<p class="muted">مشتری آزاد — برای فروش نسیه ابتدا مشتری را انتخاب کنید (F4).</p>`}
+    <div id="pay-account" class="hidden" style="margin-top:8px">
+      <p class="muted">این مبلغ به‌عنوان <strong>بدهی</strong> در حساب دفتری مشتری ثبت می‌شود
+        و وجهی دریافت نمی‌گردد.</p>
+    </div>
     <div id="pay-cash-area" style="margin-top:8px">
       <label>دریافتی نقدی</label><input id="pay-cash" type="number" value="${total}" />
       <div id="pay-change" class="muted"></div>
@@ -631,6 +714,7 @@ function posCheckoutModal() {
     const m = e.target.value;
     $("#pay-cash-area").classList.toggle("hidden", m !== "CASH");
     $("#pay-split").classList.toggle("hidden", m !== "MIXED");
+    $("#pay-account").classList.toggle("hidden", m !== "ACCOUNT");
   });
   $("#pay-cash").addEventListener("input", updChange); updChange();
   $("#btn-pay").addEventListener("click", () => doCheckout(total));
@@ -645,6 +729,11 @@ async function doCheckout(total) {
     const cash = Number($("#pay-cash2").value || 0), card = Number($("#pay-card").value || 0);
     payments = [{ method: "CASH", amount: cash }, { method: "CARD", amount: card }];
   } else payments = [{ method, amount: total }];
+
+  if (method === "ACCOUNT" && !posState.customer) {
+    toast("فروش نسیه فقط برای مشتری ثبت‌شده ممکن است", "err");
+    return;
+  }
   try {
     const inv = await api("/pos/checkout", {
       method: "POST",
@@ -658,7 +747,9 @@ async function doCheckout(total) {
     posState.cart = []; posState.customer = null;
     posState.coupon = null; posState.couponInfo = null;
     closeModal(); renderPosCart();
-    toast(`فروش ثبت شد: ${inv.invoice_number}`);
+    toast(inv.payment_status === "ON_ACCOUNT"
+      ? `ثبت شد (نسیه): ${inv.invoice_number}`
+      : `فروش ثبت شد: ${inv.invoice_number}`);
     if (inv.issued_coupon) {
       openModal(`<h3>🎁 کوپن خرید بعدی</h3>
         <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
@@ -1128,7 +1219,40 @@ RENDER.users = async () => {
 /* ---------- settings ---------- */
 RENDER.settings = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="card"><h3>تنظیمات سیستم</h3><table id="s-table"></table></div>`;
+  v.innerHTML = `
+    <div class="card" id="store-card"><h3>پروفایل فروشگاه</h3>
+      <p class="muted">این اطلاعات روی فاکتور چاپی، نوار وضعیت و صفحهٔ ورود نمایش داده می‌شود.</p>
+      <div class="form-grid" id="store-form"></div>
+      <button class="btn btn-primary" id="store-save" style="margin-top:12px">ذخیره پروفایل</button>
+    </div>
+
+    <div class="grid grid-2" style="margin-top:14px">
+      <div class="card"><h3>ظاهر و پوسته</h3>
+        <div id="theme-box" class="muted">…</div>
+      </div>
+      <div class="card"><h3>تاریخ و ساعت</h3>
+        <div id="time-box" class="muted">…</div>
+        <button class="btn btn-sm" id="time-verify" style="margin-top:10px">بررسی با سرور زمان (NTP)</button>
+        <div id="time-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>به‌روزرسانی سامانه</h3>
+      <div id="upd-box" class="muted">در حال بررسی…</div>
+      <div id="upd-steps" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>درباره سامانه</h3>
+      <div id="about-box" class="muted">…</div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>تنظیمات سیستم (پیشرفته)</h3><table id="s-table"></table></div>`;
+
+  await renderStoreProfile();
+  await renderThemeBox();
+  await renderTimeBox();
+  await renderAbout();
+  await renderUpdateBox();
   const rows = await api("/settings");
   const t = $("#s-table");
   const trs = rows.map((s) => el("tr", {},
@@ -1153,6 +1277,154 @@ RENDER.settings = async () => {
   t.append(el("thead", {}, el("tr", {}, el("th", { text: "کلید" }), el("th", { text: "مقدار" }),
     el("th", { text: "توضیح" }), el("th", {}))), el("tbody", {}, ...trs));
 };
+
+
+
+/* ---------- Settings sub-panels (§22, §23, §25, §27–29, §59) ---------- */
+const STORE_FIELDS = [
+  ["name", "نام فروشگاه"], ["legal_name", "نام حقوقی"],
+  ["phone", "تلفن"], ["mobile", "همراه"],
+  ["address", "آدرس", true], ["city", "شهر"],
+  ["postal_code", "کد پستی"], ["tax_id", "شناسه مالیاتی"],
+  ["receipt_note", "یادداشت پای فاکتور", true],
+];
+
+async function renderStoreProfile() {
+  let p = {};
+  try { p = await api("/settings/store-profile"); } catch (e) { /* empty form */ }
+  $("#store-form").innerHTML = STORE_FIELDS.map(([key, label, full]) =>
+    `<div class="${full ? "full" : ""}"><label>${label}</label>
+       <input id="sp-${key}" value="${esc(p[key] || "")}" /></div>`).join("");
+  $("#store-save").addEventListener("click", async () => {
+    const body = {};
+    STORE_FIELDS.forEach(([key]) => { body[key] = $("#sp-" + key).value.trim(); });
+    try {
+      state.store = await api("/settings/store-profile",
+        { method: "PUT", body: JSON.stringify(body) });
+      const sb = $("#sb-store"); if (sb) sb.textContent = state.store.name || "";
+      const brand = document.querySelector(".brand span");
+      if (brand && state.store.name) brand.textContent = state.store.name;
+      toast("پروفایل فروشگاه ذخیره شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+async function renderThemeBox() {
+  const t = await api("/settings/theme").catch(() => null);
+  if (!t) return;
+  const box = $("#theme-box");
+  box.innerHTML = `
+    <label>حالت نمایش</label>
+    <select id="th-mode">
+      <option value="auto" ${t.theme === "auto" ? "selected" : ""}>خودکار (بر اساس ساعت)</option>
+      <option value="light" ${t.theme === "light" ? "selected" : ""}>روشن</option>
+      <option value="dark" ${t.theme === "dark" ? "selected" : ""}>تیره</option>
+    </select>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>شروع پوستهٔ روشن</label><input id="th-light" value="${esc(t.light_at)}" /></div>
+      <div><label>شروع پوستهٔ تیره</label><input id="th-dark" value="${esc(t.dark_at)}" /></div>
+    </div>
+    <p class="muted" style="margin-top:8px">اکنون: پوستهٔ
+      <strong>${t.resolved === "dark" ? "تیره" : "روشن"}</strong> اعمال شده است.</p>
+    <button class="btn btn-primary btn-sm" id="th-save">ذخیره</button>`;
+  $("#th-save").addEventListener("click", async () => {
+    try {
+      await api("/settings/theme", { method: "PUT", body: JSON.stringify({
+        theme: $("#th-mode").value,
+        light_at: $("#th-light").value.trim(),
+        dark_at: $("#th-dark").value.trim() })});
+      await applyTheme();
+      toast("پوسته ذخیره شد");
+      renderThemeBox();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+async function renderTimeBox() {
+  const t = await api("/settings/time").catch(() => null);
+  if (!t) return;
+  $("#time-box").innerHTML = `
+    <div><strong>${esc(t.weekday)} ${esc(t.jalali)}</strong></div>
+    <div class="muted">میلادی: ${esc(t.gregorian)} · منطقهٔ زمانی: ${esc(t.timezone)}</div>
+    <div class="muted">UTC ذخیره‌شده: ${esc(t.utc)}</div>`;
+  $("#time-verify").addEventListener("click", async () => {
+    $("#time-result").innerHTML = `<span class="muted">در حال تماس با سرور زمان…</span>`;
+    try {
+      const r = await api("/settings/time/verify", { method: "POST" });
+      const cls = r.status === "PASS" ? "green" : r.status === "WARNING" ? "amber" : "blue";
+      $("#time-result").innerHTML =
+        `<span class="badge badge-${cls}">${esc(r.status)}</span> ${esc(r.message)}`;
+    } catch (e) { $("#time-result").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  });
+}
+
+async function renderAbout() {
+  const a = await api("/settings/about").catch(() => null);
+  if (!a) return;
+  $("#about-box").innerHTML = `
+    <div style="font-size:15px;color:var(--text)"><strong>${esc(a.app_name)}</strong></div>
+    <div class="muted">${esc(a.app_name_en)} — نسخهٔ ${esc(a.version)}</div>
+    <p style="margin:10px 0">${esc(a.description)}</p>
+    <div class="muted">طراحی و توسعه توسط <strong>${esc(a.developer)}</strong></div>`;
+}
+
+async function renderUpdateBox() {
+  const box = $("#upd-box");
+  try {
+    const r = await api("/system/update/check");
+    if (r.status === "UNAVAILABLE") {
+      box.innerHTML = `<span class="badge badge-blue">بدون دسترسی</span>
+        ${esc(r.message)} <span class="muted">(نسخهٔ فعلی ${esc(r.current_version)})</span>`;
+      return;
+    }
+    if (!r.update_available) {
+      box.innerHTML = `<span class="badge badge-green">به‌روز</span>
+        نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.`;
+      return;
+    }
+    box.innerHTML = `<span class="badge badge-amber">نسخهٔ جدید</span>
+      نسخهٔ <strong>${esc(r.latest.version)}</strong> منتشر شده است
+      <span class="muted">(فعلی: ${esc(r.current_version)})</span>
+      <p class="muted" style="margin:8px 0">${esc((r.latest.notes || "").slice(0, 400))}</p>
+      ${r.installable ? `<button class="btn btn-primary" id="upd-go">دریافت و آماده‌سازی نصب</button>`
+        : `<span class="muted">فایل نصب ویندوز برای این نسخه منتشر نشده است.</span>`}
+      <p class="muted" style="margin-top:8px">پیش از هر به‌روزرسانی، به‌صورت خودکار از
+        پایگاه‌داده پشتیبان گرفته می‌شود؛ در صورت شکست پشتیبان‌گیری، عملیات متوقف می‌شود.</p>`;
+    const go = $("#upd-go");
+    if (go) go.addEventListener("click", startUpdate);
+  } catch (e) {
+    box.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+function startUpdate() {
+  openModal(`<h3>تأیید به‌روزرسانی</h3>
+    <p class="muted">به دلیل حساسیت عملیات، رمز عبور خود را دوباره وارد کنید (§28).</p>
+    <label>رمز عبور</label><input id="upd-pass" type="password" autocomplete="current-password" />
+    <button class="btn btn-primary btn-block" id="upd-run" style="margin-top:12px">
+      پشتیبان‌گیری و دریافت به‌روزرسانی</button>`);
+  $("#upd-run").addEventListener("click", async () => {
+    const pass = $("#upd-pass").value;
+    $("#upd-run").disabled = true;
+    $("#upd-run").textContent = "در حال اجرا…";
+    try {
+      const r = await api("/system/update/prepare", { method: "POST",
+        body: JSON.stringify({ password: pass, download: true }) });
+      closeModal();
+      $("#upd-steps").innerHTML = r.steps.map((st) => `
+        <div class="update-step"><span class="st ${esc(st.status)}">${esc(st.status)}</span>
+          <span>${esc(st.name)}</span>
+          <span class="muted" style="margin-inline-start:auto">${esc(st.detail || "")}</span>
+        </div>`).join("") +
+        `<p class="${r.status === "READY" ? "" : "err"}" style="margin-top:8px">${esc(r.message)}</p>`;
+      toast(r.message, r.status === "READY" || r.status === "UP_TO_DATE" ? "ok" : "err");
+    } catch (e) {
+      toast(e.message, "err");
+      $("#upd-run").disabled = false;
+      $("#upd-run").textContent = "تلاش دوباره";
+    }
+  });
+}
 
 /* ---------- audit ---------- */
 RENDER.audit = async () => {
@@ -1336,14 +1608,25 @@ RENDER.customers = async () => {
   $("#cu-q").addEventListener("input", debounce(loadCustomers, 300));
   $("#cu-new").addEventListener("click", () => {
     openModal(`<h3>مشتری جدید</h3>
-      <label>نام</label><input id="nc-name" />
-      <label>شماره تماس</label><input id="nc-phone" placeholder="0912…" />
+      <div class="form-grid">
+        <div><label>نام</label><input id="nc-name" /></div>
+        <div><label>نام خانوادگی</label><input id="nc-last" /></div>
+        <div><label>شماره تماس</label><input id="nc-phone" placeholder="0912…" /></div>
+        <div><label>سقف اعتبار (۰ = بدون سقف)</label><input id="nc-limit" inputmode="numeric" value="0" /></div>
+        <div class="full"><label>آدرس</label><input id="nc-address" /></div>
+        <div class="full"><label>یادداشت</label><input id="nc-notes" /></div>
+      </div>
+      <p class="muted">ثبت فقط با شماره تماس هم مجاز است؛ نام را می‌توان بعداً تکمیل کرد.</p>
       <button id="nc-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت</button>`);
     $("#nc-save").addEventListener("click", async () => {
       try {
         await api("/customers", { method: "POST", body: JSON.stringify({
           name: $("#nc-name").value.trim() || $("#nc-phone").value.trim(),
-          phone: $("#nc-phone").value.trim() || null }) });
+          last_name: $("#nc-last").value.trim() || null,
+          phone: $("#nc-phone").value.trim() || null,
+          address: $("#nc-address").value.trim() || null,
+          notes: $("#nc-notes").value.trim() || null,
+          credit_limit: Number($("#nc-limit").value || 0) }) });
         closeModal(); toast("مشتری ثبت شد"); loadCustomers();
       } catch (e) { toast(e.message, "err"); }
     });
@@ -1353,13 +1636,24 @@ RENDER.customers = async () => {
 
 async function loadCustomers() {
   const q = $("#cu-q") ? $("#cu-q").value.trim() : "";
-  const rows = await api("/customers" + (q ? "?q=" + encodeURIComponent(q) : ""));
-  const body = rows.map((c) => `<tr>
-      <td>${esc(c.name)}</td><td>${esc(c.phone || "—")}</td>
-      <td><button class="btn btn-sm" onclick="window._custHistory(${c.id}, '${esc(c.name)}')">سوابق خرید</button></td>
-    </tr>`).join("");
-  $("#cu-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th></th></tr></thead>
-    <tbody>${body || `<tr><td colspan="3" class="muted empty">مشتری‌ای ثبت نشده است</td></tr>`}</tbody>`;
+  const params = new URLSearchParams({ with_debt: "true" });
+  if (q) params.set("q", q);
+  const rows = await api("/customers?" + params.toString());
+  const body = rows.map((c) => {
+    const bal = Number(c.balance || 0);
+    return `<tr>
+      <td>${esc(c.name)} ${esc(c.last_name || "")}</td>
+      <td>${esc(c.phone || "—")}</td>
+      <td class="${bal > 0 ? "ledger-amount debit" : "muted"}">
+        ${bal > 0 ? money(bal) : "تسویه"}</td>
+      <td>
+        <button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>
+        <button class="btn btn-ghost btn-sm" onclick="window._custHistory(${c.id}, '${esc(c.name)}')">سوابق خرید</button>
+      </td>
+    </tr>`;
+  }).join("");
+  $("#cu-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
+    <tbody>${body || `<tr><td colspan="4" class="muted empty">مشتری‌ای ثبت نشده است</td></tr>`}</tbody>`;
 }
 
 window._custHistory = async (id, name) => {
@@ -1487,8 +1781,173 @@ function debounce(fn, ms) {
 async function loadRuntimeConfig() {
   try { state.currency = await api("/settings/currency"); } catch (e) { /* defaults */ }
   try { state.units = await api("/units"); } catch (e) { state.units = []; }
+  try {
+    state.store = await api("/settings/store-profile");
+    const el = $("#sb-store");
+    if (el && state.store.name) el.textContent = state.store.name;
+    if (state.store.name) {
+      const brand = document.querySelector(".brand span");
+      if (brand) brand.textContent = state.store.name;
+    }
+  } catch (e) { state.store = {}; }
 }
 const unitById = (id) => state.units.find((u) => u.id === id) || null;
+
+
+/* ===========================================================================
+ * Theme engine (§23) and status bar (§21).
+ * The resolved theme comes from the server so the light/dark schedule lives in
+ * one place (settings) instead of being reimplemented per client.
+ * ========================================================================= */
+async function applyTheme(pref) {
+  try {
+    if (pref) await api("/settings/theme", { method: "PUT", body: JSON.stringify({ theme: pref }) });
+    const t = await api("/settings/theme");
+    state.theme = t;
+    document.documentElement.setAttribute("data-theme", t.resolved);
+    const btn = $("#sb-theme");
+    if (btn) {
+      btn.textContent = t.theme === "auto" ? "◐" : (t.resolved === "dark" ? "☾" : "☀");
+      btn.title = t.theme === "auto"
+        ? `خودکار (روشن ${t.light_at} تا ${t.dark_at}) — اکنون ${t.resolved === "dark" ? "تیره" : "روشن"}`
+        : `پوستهٔ ${t.resolved === "dark" ? "تیره" : "روشن"} (دستی)`;
+    }
+  } catch (e) { /* keep whatever theme is already applied */ }
+}
+
+/* auto mode must flip at the scheduled time without a reload */
+function scheduleThemeRefresh() {
+  clearInterval(window._themeTimer);
+  window._themeTimer = setInterval(() => {
+    if (state.theme && state.theme.theme === "auto") applyTheme();
+  }, 60000);
+}
+
+window.cycleTheme = async () => {
+  const order = ["auto", "light", "dark"];
+  const next = order[(order.indexOf((state.theme || {}).theme || "auto") + 1) % 3];
+  await applyTheme(next);
+  toast(`پوسته: ${next === "auto" ? "خودکار" : next === "light" ? "روشن" : "تیره"}`);
+};
+
+async function refreshStatusBar() {
+  const online = navigator.onLine;
+  const dot = $("#sb-net-dot"), net = $("#sb-net");
+  if (dot) dot.className = "sb-dot" + (online ? " on" : "");
+  if (net) net.textContent = online ? "متصل" : "آفلاین";
+
+  const user = $("#sb-user");
+  if (user && state.user) user.textContent = state.user.full_name || state.user.username;
+
+  try {
+    const t = await api("/settings/time");
+    state.serverTime = t;
+    const d = $("#sb-date"), c = $("#sb-clock");
+    if (d) d.textContent = `${t.weekday} ${t.jalali_date}`;
+    // Use the store-local time the server already computed. Re-parsing it with
+    // the browser's timezone showed a UTC client the wrong wall-clock time.
+    if (c) {
+      const hhmm = String(t.local).slice(11, 16);
+      c.textContent = hhmm.replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+    }
+    const db = $("#sb-db");
+    if (db) { db.textContent = "پایگاه‌داده"; db.className = "sb-item ok"; }
+  } catch (e) {
+    const db = $("#sb-db");
+    if (db) { db.textContent = "بدون اتصال به سرور"; db.className = "sb-item bad"; }
+  }
+}
+
+function startStatusBar() {
+  const btn = $("#sb-theme");
+  if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", cycleTheme); }
+  window.addEventListener("online", refreshStatusBar);
+  window.addEventListener("offline", refreshStatusBar);
+  refreshStatusBar();
+  clearInterval(window._sbTimer);
+  window._sbTimer = setInterval(refreshStatusBar, 30000);
+  scheduleThemeRefresh();
+}
+
+/* ===========================================================================
+ * Customer ledger (§30–35)
+ * ========================================================================= */
+window.showCustomerLedger = async (id) => {
+  let data;
+  try { data = await api(`/customers/${id}/ledger`); }
+  catch (e) { toast(e.message, "err"); return; }
+
+  const c = data.customer;
+  const bal = Number(data.balance || 0);
+  const rows = data.entries.map((e) => {
+    const amt = Number(e.amount);
+    const label = {
+      CREDIT_SALE: "فروش نسیه", PAYMENT: "پرداخت مشتری",
+      RETURN_REFUND: "برگشت کالا", ADJUSTMENT_DEBIT: "اصلاح (بدهکار)",
+      ADJUSTMENT_CREDIT: "اصلاح (بستانکار)", OPENING_BALANCE: "مانده ابتدای دوره",
+    }[e.entry_type] || e.entry_type;
+    return `<tr>
+      <td>${esc(faDateTime(e.created_at))}</td>
+      <td>${esc(label)}</td>
+      <td class="ledger-amount ${amt > 0 ? "debit" : "credit"}">
+        ${amt > 0 ? "+" : "−"}${money(Math.abs(amt))}</td>
+      <td>${money(e.balance_after)}</td>
+      <td class="muted">${esc(e.note || "")}${e.method ? ` (${esc(e.method)})` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  openModal(`<h3>حساب دفتری — ${esc(c.name)} ${esc(c.last_name || "")}</h3>
+    <div class="balance-hero ${bal > 0 ? "debt" : "clear"}">
+      <span class="muted">مانده حساب</span>
+      <b>${money(bal)}</b>
+      <span class="muted">${bal > 0 ? "بدهکار" : "تسویه"}</span>
+      <span class="sb-grow"></span>
+      <span class="muted">جمع خرید ${money(data.total_charged)} · جمع پرداخت ${money(data.total_paid)}</span>
+    </div>
+    ${bal > 0 ? `<div class="toolbar">
+      <input id="lg-amt" inputmode="numeric" placeholder="مبلغ دریافتی…" />
+      <select id="lg-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option>
+        <option value="TRANSFER">انتقال</option></select>
+      <button class="btn btn-primary btn-sm" onclick="doSettle(${id}, false)">ثبت پرداخت</button>
+      <button class="btn btn-sm" onclick="doSettle(${id}, true)">تسویه کامل (${money(bal)})</button>
+      <button class="btn btn-ghost btn-sm" onclick="smsDebtReminder(${id})">پیامک یادآوری</button>
+    </div>` : ""}
+    <div class="table-wrap"><table>
+      <thead><tr><th>تاریخ</th><th>نوع</th><th>مبلغ</th><th>مانده</th><th>توضیح</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="empty">تراکنشی ثبت نشده است</td></tr>`}</tbody>
+    </table></div>
+    <p class="muted" style="margin-top:8px">
+      این دفتر فقط-افزودنی است: اصلاح‌ها به‌صورت سند معکوس ثبت می‌شوند و هیچ
+      سطری حذف یا بازنویسی نمی‌شود.</p>
+  `);
+};
+
+window.doSettle = async (id, full) => {
+  const body = { method: ($("#lg-method") || {}).value || "CASH" };
+  if (!full) {
+    const v = parseFloat(($("#lg-amt") || {}).value);
+    if (!isFinite(v) || v <= 0) { toast("مبلغ نامعتبر", "err"); return; }
+    body.amount = v;
+  }
+  try {
+    const r = await api(`/customers/${id}/settle`, { method: "POST", body: JSON.stringify(body) });
+    toast(r.settled_in_full ? "حساب تسویه شد" : `ثبت شد — مانده ${money(r.balance)}`);
+    closeModal();
+    showCustomerLedger(id);
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.smsDebtReminder = async (id) => {
+  try {
+    const st = await api(`/customers/${id}/ledger`);
+    if (!st.customer.phone) { toast("این مشتری شماره تماس ندارد", "err"); return; }
+    await api("/sms/send", { method: "POST", body: JSON.stringify({
+      phone: st.customer.phone,
+      message: `${st.customer.name} گرامی، مانده حساب شما ${money(st.balance)} است.`,
+    })});
+    toast("پیامک یادآوری در صف ارسال قرار گرفت");
+  } catch (e) { toast(e.message, "err"); }
+};
 
 /* ---------- boot ---------- */
 async function boot() {
@@ -1498,6 +1957,8 @@ async function boot() {
     await loadRuntimeConfig();
     showApp();
     buildNav();
+    await applyTheme();
+    startStatusBar();
     go("dashboard");
   } catch (e) {
     localStorage.removeItem("token"); state.token = "";

@@ -153,3 +153,36 @@ def test_about_reports_version_and_developer(client, auth_headers):
     assert got["developer"] == "خواجوی"
     assert got["version"]
     assert got["app_name"]
+
+
+# --------------------------------------------------------------------------
+# Regression: ledger rows were persisted with created_at = NULL because the
+# migration emitted the column without DEFAULT now() while the model relied
+# solely on server_default. The UI then rendered every entry as 1348/10/11.
+# --------------------------------------------------------------------------
+def test_ledger_entries_have_a_creation_timestamp(client, auth_headers):
+    import uuid
+    phone = "0939" + uuid.uuid4().hex[:7]
+    cust = client.post("/api/customers", headers=auth_headers, json={
+        "name": "تست زمان", "phone": phone, "credit_limit": 1000000}).json()
+
+    r = client.post(f"/api/customers/{cust['id']}/ledger/adjust",
+                    headers=auth_headers,
+                    json={"amount": 25000, "entry_type": "ADJUSTMENT_DEBIT",
+                          "note": "بدهی ابتدای دوره"})
+    assert r.status_code in (200, 201), r.text
+
+    entries = client.get(f"/api/customers/{cust['id']}/ledger",
+                         headers=auth_headers).json()["entries"]
+    assert entries, "expected at least one ledger entry"
+    for e in entries:
+        assert e["created_at"], f"ledger entry persisted without created_at: {e}"
+
+
+def test_timestamp_mixin_defaults_are_python_side():
+    """The Python-side default must exist so correctness does not depend on
+    whatever DDL happens to be on disk."""
+    from app.models.sales import CustomerLedgerEntry
+    for col in ("created_at", "updated_at"):
+        c = CustomerLedgerEntry.__table__.c[col]
+        assert c.default is not None, f"{col} has no Python-side default"

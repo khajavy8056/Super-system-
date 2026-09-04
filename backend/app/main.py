@@ -122,6 +122,8 @@ for r in (
 
 # system router is intentionally unprefixed for /health
 app.include_router(system.router)
+# ...but the update endpoints belong on the normal authenticated API surface
+app.include_router(system.update_router, prefix="/api")
 
 
 # --- Error handling (BUG-020): users never see raw stack/SQL traces ----------
