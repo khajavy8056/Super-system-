@@ -40,6 +40,29 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "printer.footer": ("", "Receipt footer text", False),
     "sync.worker_interval_seconds": ("15", "Offline sync queue drain interval (seconds)", False),
     "stocktake.require_approval": ("true", "Stock adjustments need manager approval", False),
+    # --- store profile (§25) — printed on receipts and shown in the UI ---
+    "store.name": ("فروشگاه من", "Store name (receipt header, UI title)", False),
+    "store.legal_name": ("", "Registered legal name", False),
+    "store.phone": ("", "Store phone number", False),
+    "store.mobile": ("", "Store mobile number", False),
+    "store.address": ("", "Store address (printed on the receipt)", False),
+    "store.city": ("", "City", False),
+    "store.postal_code": ("", "Postal code", False),
+    "store.tax_id": ("", "Tax / economic ID", False),
+    "store.logo_path": ("", "Relative path of the store logo under MEDIA_DIR", False),
+    "store.receipt_note": ("از خرید شما سپاسگزاریم", "Footer note on the receipt", False),
+    # --- time & calendar (§22) ---
+    "time.timezone": ("Asia/Tehran", "IANA timezone for display and reports", False),
+    "time.calendar": ("jalali", "Display calendar: jalali | gregorian", False),
+    "time.ntp_enabled": ("true", "Check trusted network time at startup", False),
+    "time.ntp_servers": ("pool.ntp.org,time.google.com",
+                         "Comma-separated NTP servers (trusted time source)", False),
+    "time.max_drift_seconds": ("120",
+                               "Warn when local clock drifts more than this from NTP", False),
+    # --- appearance (§23) ---
+    "ui.theme": ("auto", "Theme: auto | light | dark", False),
+    "ui.theme_light_at": ("07:00", "Local time to switch to the light theme", False),
+    "ui.theme_dark_at": ("19:00", "Local time to switch to the dark theme", False),
 }
 
 

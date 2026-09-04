@@ -252,6 +252,73 @@ def check_hardware(db: Session, device_type: str) -> dict:
             "evidence": {"device": dev.name, "connection": dev.connection}}
 
 
+def check_time(db: Session) -> dict:
+    """Verify the machine clock against trusted network time (§22).
+
+    A wrong clock silently mis-dates invoices, so this is a first-class check.
+    It never rewrites the clock — it reports drift for a human to fix.
+    """
+    from . import sms as sms_svc
+    from .timeservice import check_time_sync, describe_now
+
+    servers = [x.strip() for x in
+               sms_svc.get_setting(db, "time.ntp_servers", "pool.ntp.org").split(",")
+               if x.strip()]
+    try:
+        max_drift = int(sms_svc.get_setting(db, "time.max_drift_seconds", "120") or 120)
+    except ValueError:
+        max_drift = 120
+
+    result = check_time_sync(servers, max_drift_seconds=max_drift, timeout=3.0)
+    now = describe_now(sms_svc.get_setting(db, "time.timezone", "Asia/Tehran"))
+
+    status = {"PASS": "PASS", "WARNING": "WARN", "UNVERIFIED": "SKIPPED"}[result["status"]]
+    return {
+        "status": status,
+        "detail": result["message"],
+        "evidence": {
+            "source": result["source"],
+            "drift_seconds": result["drift_seconds"],
+            "local_utc": result["local_utc"],
+            "timezone": now["timezone"],
+            "jalali_now": now["jalali"],
+        },
+    }
+
+
+def check_customer_ledger(db: Session) -> dict:
+    """Prove every customer account balance still equals its own history (§32).
+
+    This is a real data-validation test in the §45 sense: it recomputes each
+    balance from the append-only entries and compares it with the stored
+    witness, rather than asserting the feature is 'configured'.
+    """
+    from ..models import Customer as _Customer
+    from .ledger import verify_integrity
+
+    ids = list(db.execute(select(_Customer.id)).scalars())
+    checked = 0
+    broken: list[dict] = []
+    for cid in ids:
+        report = verify_integrity(db, cid)
+        if report["entries"] == 0:
+            continue
+        checked += 1
+        if not report["ok"]:
+            broken.append({"customer_id": cid, "mismatches": report["mismatches"]})
+
+    if broken:
+        return {"status": "FAIL",
+                "detail": f"{len(broken)} حساب مشتری با تاریخچهٔ خود مغایرت دارد",
+                "evidence": {"broken": broken[:5], "accounts_checked": checked}}
+    if checked == 0:
+        return {"status": "SKIPPED", "detail": "هیچ حساب دفتری فعالی وجود ندارد",
+                "evidence": {"customers": len(ids)}}
+    return {"status": "PASS",
+            "detail": f"{checked} حساب مشتری بررسی شد؛ مانده با تاریخچه مطابقت دارد",
+            "evidence": {"accounts_checked": checked}}
+
+
 # --- runner -------------------------------------------------------------------
 
 def run_full(db: Session, user: User | None = None, *, include_external: bool = True) -> dict:
@@ -262,6 +329,9 @@ def run_full(db: Session, user: User | None = None, *, include_external: bool = 
         _check("Media Storage", "core", lambda: check_storage(db)),
         _check("Internet", "network", lambda: check_internet(db)),
         _check("Mobile / LAN access", "network", lambda: check_lan(db)),
+        _check("Trusted time (NTP)", "core", lambda: check_time(db)),
+        _check("Customer ledger integrity", "data",
+               lambda: check_customer_ledger(db)),
     ]
 
     if include_external:

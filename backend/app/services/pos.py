@@ -426,6 +426,19 @@ def checkout(
     if abs(paid_total - total) > CENT:
         raise PosError("PAYMENT_MISMATCH", f"Paid {paid_total} but total is {total}")
 
+    # "افزودن به حساب دفتری" (§34): an ACCOUNT tender is not cash received —
+    # it is credit extended, so it requires a registered customer. A walk-in
+    # (customer_id IS NULL) has no account to charge, and silently treating
+    # that as paid would invent revenue that never arrives.
+    on_account = sum(
+        (Decimal(p["amount"]) for p in payments
+         if str(p.get("method", "CASH")).upper() == "ACCOUNT"), ZERO)
+    if on_account > ZERO and not customer_id:
+        raise PosError(
+            "ACCOUNT_REQUIRES_CUSTOMER",
+            "فروش نسیه فقط برای مشتری ثبت‌شده ممکن است؛ مشتری آزاد حساب دفتری ندارد",
+        )
+
     invoice = Invoice(
         invoice_number=_next_invoice_number(db),
         customer_id=customer_id,
@@ -434,10 +447,11 @@ def checkout(
         tax=tax,
         total_amount=total,
         payment_method=_payment_method(payments),
-        payment_status="PAID",
+        payment_status=("ON_ACCOUNT" if on_account >= total
+                        else ("PARTIAL" if on_account > ZERO else "PAID")),
         status="PAID",
         print_status="PENDING",
-        paid_at=datetime.utcnow(),
+        paid_at=None if on_account >= total else datetime.utcnow(),
         created_by=user.id if user else None,
     )
     db.add(invoice)
@@ -484,6 +498,21 @@ def checkout(
 
     for p in payments:
         db.add(Payment(invoice_id=invoice.id, method=p.get("method", "CASH"), amount=Decimal(p["amount"])))
+
+    # Charge the credit portion to the customer account in THIS transaction, so
+    # a later failure rolls the debt back with the sale (§32).
+    if on_account > ZERO:
+        from . import ledger as ledger_svc
+
+        try:
+            ledger_svc.post_entry(
+                db, customer_id=customer_id, entry_type="CREDIT_SALE",
+                amount=on_account, invoice_id=invoice.id,
+                note=f"فاکتور {invoice.invoice_number}",
+                user_id=user.id if user else None,
+            )
+        except ledger_svc.LedgerError as exc:
+            raise PosError(exc.code, str(exc))
 
     write_audit(
         db, action="SALE_CREATED", user_id=user.id if user else None,

@@ -234,8 +234,12 @@ def _invoice_out(inv) -> dict:
         "tax": float(inv.tax),
         "total_amount": float(inv.total_amount),
         "payment_method": inv.payment_method,
+        # exposed so the POS can show "نسیه / روی حساب" instead of implying the
+        # money was collected — an ACCOUNT sale is credit, not cash received
+        "payment_status": inv.payment_status,
         "status": inv.status,
         "print_status": inv.print_status,
+        "customer_id": inv.customer_id,
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": float(it.qty),
              "qty_display": float(it.qty),

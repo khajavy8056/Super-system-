@@ -8,7 +8,8 @@ from .inventory import ProductBatch, StockMovement, Stocktake, StocktakeItem
 from .marketing import Campaign, Coupon, CouponRedemption
 from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
-from .sales import Customer, Invoice, InvoiceItem, Payment, Return
+from .sales import (Customer, CustomerLedgerEntry, Invoice, InvoiceItem,
+                    Payment, Return)
 from .system import AuditLog, Counter, HardwareDevice, Notification, SmsMessage, SystemSetting
 from .user import Permission, Role, User
 
@@ -32,6 +33,7 @@ __all__ = [
     "InvoiceItem",
     "Payment",
     "Customer",
+    "CustomerLedgerEntry",
     "Return",
     "ExternalSource",
     "ProductResolverResult",
