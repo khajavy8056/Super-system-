@@ -67,13 +67,16 @@ class SmsStatus(str, Enum):
 class StocktakeStatus(str, Enum):
     DRAFT = "DRAFT"
     IN_PROGRESS = "IN_PROGRESS"
-    COMPLETED = "COMPLETED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    COMPLETED = "COMPLETED"  # legacy v0.1 value
+    ADJUSTED = "ADJUSTED"
     CANCELLED = "CANCELLED"
 
 
 class StocktakeItemStatus(str, Enum):
     PENDING = "PENDING"
     COUNTED = "COUNTED"
+    VERIFIED = "VERIFIED"      # counted, zero difference
     ADJUSTED = "ADJUSTED"
 
 

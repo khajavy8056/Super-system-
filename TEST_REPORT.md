@@ -149,6 +149,43 @@ $ python -m pytest tests/ -q
 
 ---
 
+## ۸. فاز ۲ — Stocktaking کامل + امنیت + Backup/Restore (2026-09-04)
+
+### چرخه کامل انبارگردانی (§19-20)
+```
+DRAFT → IN_PROGRESS (اولین شمارش) → PENDING_APPROVAL (پایان شمارش)
+      → ADJUSTED (تأیید مدیر با مجوز inventory.approve_stocktake)
+```
+- هر شمارش **بلافاصله ذخیره و Audit می‌شود** (STOCKTAKE_COUNTED) → Resume دقیق بعد از بستن برنامه (progress + next_item_id).
+- **هیچ تغییری قبل از تأیید مدیر اعمال نمی‌شود**؛ انباردار (Inventory Operator) اجازه Approve ندارد (403 تست‌شده).
+- Batchهای «صفرِ سیستمی» هم شمرده می‌شوند → کشف موجودی گم‌شده ممکن شد (اختلاف مثبت تست‌شده).
+- گزارش اختلافات با ارزش ریالی (§34).
+
+### امنیت
+| سناریو | نتیجه |
+|---|---|
+| ۶ ورود غلط → قفل موقت با 429 | PASS |
+| ورودهای ناموفق در Audit (USER_LOGIN_FAILED) | PASS |
+| Logout → توکن بلافاصله باطل (401 بعد از خروج) | PASS |
+| /auth/me اکنون permissions برمی‌گرداند → منوی نقش‌محور | PASS |
+| XSS: escaper روی سنک‌های Receipt/مودال‌ها + حذف prefill ادمین | PASS (کد) |
+| محدودیت: blocklist توکن in-memory است (تک‌پردازشه) — برای سرور چندترمینال جدول دائمی لازم است | مستند |
+
+### Backup/Restore
+| سناریو | نتیجه |
+|---|---|
+| Backup آنلاین → فروش → Restore → موجودی به نقطه Backup بازگشت | PASS |
+| فایل خراب/غیرSQLite → 400 بدون دست زدن به دیتابیس | PASS |
+| بکاپ ایمنی خودکار قبل از Restore + Audit | PASS |
+| چرخش نسخه‌ها (backup.keep) | PASS |
+
+```
+$ python -m pytest tests/ -q
+61 passed  (بدون xfail)
+```
+
+---
+
 ## ۶. تست‌های ناممکن در این محیط (اعلام صادقانه)
 
 | مورد | وضعیت |

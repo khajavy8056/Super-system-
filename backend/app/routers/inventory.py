@@ -25,6 +25,7 @@ class StocktakeIn(BaseModel):
     area: str | None = None
     product_ids: list[int] | None = None
     batch_ids: list[int] | None = None
+    include_zero: bool = True  # snapshot believed-empty batches too (BUG-018)
 
 
 class CountIn(BaseModel):
@@ -90,12 +91,14 @@ def movements(limit: int = Query(default=200, le=1000), db: Session = Depends(ge
     return movements_report(db, limit=limit)
 
 
-# --- Stocktaking -----------------------------------------------------------
+# --- Stocktaking (§19–20): create -> count (persist immediately) -------------
+# -> complete -> PENDING_APPROVAL -> manager approve -> adjustments applied
 @router.post("/stocktakes", status_code=201)
 def create_stocktake(body: StocktakeIn, db: Session = Depends(get_db),
                      user: User = Depends(require_permission("inventory.stocktake"))):
     st = inv.create_stocktake(db, name=body.name, area=body.area, user=user,
-                              product_ids=body.product_ids, batch_ids=body.batch_ids)
+                              product_ids=body.product_ids, batch_ids=body.batch_ids,
+                              include_zero=body.include_zero)
     db.commit()
     return {"id": st.id, "name": st.name, "status": st.status,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
@@ -121,6 +124,27 @@ def get_stocktake(stocktake_id: int, db: Session = Depends(get_db),
                       for i in st.items]}
 
 
+@router.get("/stocktakes/{stocktake_id}/progress")
+def stocktake_progress(stocktake_id: int, db: Session = Depends(get_db),
+                       _: User = Depends(require_permission("inventory.stocktake"))):
+    try:
+        return inv.stocktake_progress(db, stocktake_id)
+    except InventoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/stocktakes/{stocktake_id}/start")
+def start_stocktake(stocktake_id: int, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("inventory.stocktake"))):
+    try:
+        st = inv.start_stocktake(db, stocktake_id=stocktake_id, user=user)
+        db.commit()
+        return {"id": st.id, "status": st.status}
+    except InventoryError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/stocktakes/count")
 def count_item(body: CountIn, db: Session = Depends(get_db),
                user: User = Depends(require_permission("inventory.stocktake"))):
@@ -132,14 +156,51 @@ def count_item(body: CountIn, db: Session = Depends(get_db),
                 "difference": item.difference, "status": item.status}
     except InventoryError as e:
         db.rollback()
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("/stocktakes/{stocktake_id}/complete")
 def complete_stocktake(stocktake_id: int, db: Session = Depends(get_db),
                        user: User = Depends(require_permission("inventory.stocktake"))):
+    """Finish counting -> PENDING_APPROVAL. Stock is NOT changed yet."""
     try:
         st = inv.complete_stocktake(db, stocktake_id=stocktake_id, user=user)
+        db.commit()
+        return {"id": st.id, "status": st.status,
+                "differences": inv.stocktake_differences(db, stocktake_id)}
+    except InventoryError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/stocktakes/{stocktake_id}/differences")
+def stocktake_differences(stocktake_id: int, db: Session = Depends(get_db),
+                          _: User = Depends(require_permission("inventory.stocktake"))):
+    """System vs physical incl. value difference (§34)."""
+    try:
+        return inv.stocktake_differences(db, stocktake_id)
+    except InventoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/stocktakes/{stocktake_id}/approve")
+def approve_stocktake(stocktake_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("inventory.approve_stocktake"))):
+    """Manager approval applies the adjustments (audited per batch)."""
+    try:
+        st = inv.approve_stocktake(db, stocktake_id=stocktake_id, user=user)
+        db.commit()
+        return {"id": st.id, "status": st.status}
+    except InventoryError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/stocktakes/{stocktake_id}/cancel")
+def cancel_stocktake(stocktake_id: int, db: Session = Depends(get_db),
+                     user: User = Depends(require_permission("inventory.stocktake"))):
+    try:
+        st = inv.cancel_stocktake(db, stocktake_id=stocktake_id, user=user)
         db.commit()
         return {"id": st.id, "status": st.status}
     except InventoryError as e:

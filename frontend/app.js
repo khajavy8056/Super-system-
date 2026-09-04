@@ -95,25 +95,35 @@ $("#logout").addEventListener("click", () => {
   showLogin();
 });
 
-/* ---------- navigation ---------- */
+/* ---------- security helpers ---------- */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------- navigation (permission-aware) ---------- */
 const NAV = [
-  ["dashboard", "📊 داشبورد"],
-  ["pos", "🧾 صندوق (POS)"],
-  ["products", "📦 کالاها"],
-  ["batches", "📥 ورود کالا"],
-  ["inventory", "🏬 انبار و انبارگردانی"],
-  ["invoices", "🧮 فاکتورها"],
-  ["reports", "📈 گزارش‌ها"],
-  ["hardware", "🖨️ سخت‌افزار"],
-  ["users", "👥 کاربران"],
-  ["settings", "⚙️ تنظیمات"],
-  ["audit", "🕵️ لاگ‌ها"],
+  ["dashboard", "📊 داشبورد", "reports.view"],
+  ["pos", "🧾 صندوق (POS)", "pos.sell"],
+  ["products", "📦 کالاها", "products.view"],
+  ["batches", "📥 ورود کالا", "batches.manage"],
+  ["inventory", "🏬 انبار و انبارگردانی", "inventory.view"],
+  ["invoices", "🧮 فاکتورها", "reports.view"],
+  ["reports", "📈 گزارش‌ها", "reports.view"],
+  ["hardware", "🖨️ سخت‌افزار", "settings.manage"],
+  ["users", "👥 کاربران", "users.manage"],
+  ["settings", "⚙️ تنظیمات", "settings.manage"],
+  ["audit", "🕵️ لاگ‌ها", "audit.view"],
 ];
+
+function can(perm) {
+  if (!state.user) return false;
+  return (state.user.permissions || []).includes(perm);
+}
 
 function buildNav() {
   const nav = $("#nav");
   nav.innerHTML = "";
-  NAV.forEach(([key, label]) => {
+  NAV.forEach(([key, label, perm]) => {
+    if (!can(perm)) return;
     nav.append(el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
       onclick: () => go(key), text: label }));
   });
@@ -259,7 +269,7 @@ async function addToCart(p) {
   // multiple batches -> selector
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
-      <div class="b-title">${o.is_recommended ? "⭐ " : ""}${o.batch_number} — ${money(o.sell_price)}</div>
+      <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
       <div class="b-meta">خرید: ${money(o.buy_price)} | موجودی: ${o.current_qty} |
         انقضا: ${o.expiry_date || "—"} (${o.days_left ?? "—"} روز)</div>
     </div>`).join("");
@@ -364,7 +374,7 @@ function checkoutModal() {
 }
 
 function showReceipt(text) {
-  $("#last-receipt").innerHTML = `<h3>رسید</h3><pre class="receipt">${text}</pre>`;
+  $("#last-receipt").innerHTML = `<h3>رسید</h3><pre class="receipt">${esc(text)}</pre>`;
 }
 
 /* ---------- products ---------- */
@@ -479,6 +489,7 @@ RENDER.inventory = async () => {
 
 window._stDetail = async (id) => {
   const st = await api(`/inventory/stocktakes/${id}`);
+  const prog = await api(`/inventory/stocktakes/${id}/progress`);
   const rows = st.items.map((i) => `
     <tr>
       <td>${i.product_id}</td><td>${i.batch_id || "—"}</td><td>${i.system_qty}</td>
@@ -486,10 +497,25 @@ window._stDetail = async (id) => {
       <td>${i.difference ?? 0}</td>
       <td><button class="btn btn-sm" onclick="window._count(${i.id})">ثبت</button></td>
     </tr>`).join("");
-  openModal(`<h3>${st.name}</h3>
+  const pct = prog.total ? Math.round((prog.counted / prog.total) * 100) : 0;
+  let actions = "";
+  if (st.status === "PENDING_APPROVAL")
+    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._approve(${id})">تأیید مدیر و اعمال تطبیق</button>`;
+  else if (st.status !== "ADJUSTED" && st.status !== "CANCELLED")
+    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._complete(${id})">پایان شمارش (ارسال برای تأیید)</button>`;
+  openModal(`<h3>${esc(st.name)}</h3>
+    <p class="muted">وضعیت: ${st.status} | پیشرفت: ${prog.counted}/${prog.total} (${pct}%) — با بستن پنجره، شمارش‌ها ذخیره می‌ماند و بعداً قابل ادامه است.</p>
     <table><thead><tr><th>کالا</th><th>Batch</th><th>سیستم</th><th>فیزیکی</th><th>اختلاف</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table>
-    <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._complete(${id})">تایید و اعمال تطبیق</button>`);
+    ${actions}`);
+};
+
+window._approve = async (id) => {
+  try {
+    await api(`/inventory/stocktakes/${id}/approve`, { method: "POST" });
+    closeModal(); toast("تأیید مدیر انجام و موجودی تطبیق شد");
+    RENDER.inventory();
+  } catch (e) { toast(e.message, "err"); }
 };
 
 window._count = async (itemId) => {
@@ -502,7 +528,7 @@ window._count = async (itemId) => {
 window._complete = async (id) => {
   try {
     await api(`/inventory/stocktakes/${id}/complete`, { method: "POST" });
-    closeModal(); toast("انبارگردانی تکمیل و موجودی تطبیق شد");
+    closeModal(); toast("شمارش پایان یافت؛ در انتظار تأیید مدیر");
     RENDER.inventory();
   } catch (e) { toast(e.message, "err"); }
 };

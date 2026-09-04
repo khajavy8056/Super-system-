@@ -28,6 +28,7 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "sms.username": ("", "SMS provider username", True),
     "sms.password": ("", "SMS provider password", True),
     "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),
+    "backup.keep": ("10", "Number of backup files to retain (rotation)", False),
     "printer.header": ("", "Receipt header text", False),
     "printer.footer": ("", "Receipt footer text", False),
 }

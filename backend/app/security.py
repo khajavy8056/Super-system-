@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
+from uuid import uuid4
 
 import bcrypt
 import jwt
@@ -35,6 +37,7 @@ PERMISSIONS: dict[str, str] = {
     "batches.delete": "Delete a batch",
     "inventory.adjust": "Manual stock adjustment",
     "inventory.stocktake": "Run stocktaking",
+    "inventory.approve_stocktake": "Approve stocktaking results and apply adjustments",
     "inventory.view": "View stock",
     "pricing.manage": "Change prices",
     "pricing.view_cost": "View buy costs",
@@ -52,7 +55,8 @@ ROLE_PRESETS: dict[str, list[str]] = {
     "Administrator": list(PERMISSIONS.keys()),
     "Manager": [
         "products.manage", "products.view", "batches.manage", "inventory.adjust",
-        "inventory.stocktake", "inventory.view", "pricing.manage", "pricing.view_cost",
+        "inventory.stocktake", "inventory.approve_stocktake", "inventory.view",
+        "pricing.manage", "pricing.view_cost",
         "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
         "reports.view", "settings.manage", "audit.view",
     ],
@@ -77,10 +81,41 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, extra: dict | None = None) -> str:
-    payload = {"sub": subject, "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)}
+    payload = {"sub": subject, "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), "jti": uuid4().hex}
     if extra:
         payload.update(extra)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+# --- Token revocation (logout) -------------------------------------------------
+# In-memory blocklist of revoked token ids until their natural expiry.
+_REVOKED: dict[str, float] = {}
+
+
+def revoke_token(token: str) -> None:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return
+    exp = payload.get("exp")
+    if exp:
+        _REVOKED[payload.get("jti", token)] = float(exp)
+
+
+def _prune_revoked() -> None:
+    now = time.time()
+    for jti, exp in list(_REVOKED.items()):
+        if exp <= now:
+            _REVOKED.pop(jti, None)
+
+
+def is_revoked(token: str) -> bool:
+    _prune_revoked()
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return True
+    return payload.get("jti") in _REVOKED
 
 
 def decode_token(token: str) -> dict:
@@ -98,6 +133,8 @@ def _user_permission_codes(user: User) -> set[str]:
 
 
 def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Annotated[Session, Depends(get_db)]) -> User:
+    if is_revoked(token):
+        raise _CREDENTIAL_EXC
     payload = decode_token(token)
     user = db.get(User, int(payload["sub"]))
     if not user or not user.is_active:

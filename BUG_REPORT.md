@@ -71,17 +71,17 @@
 - **Fix:** write-only برای secrets + ماسک در پاسخ + ثبت Audit بدون مقدار.
 
 ### BUG-011 — نداشتن Rate-Limit / Logout / قفل حساب (Auth / امنیت)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۲ — Rate-limit ۵ تلاش/۵ دقیقه + قفل 429 + Logout با ابطال توکن jti-blocklist + Audit لاگین ناموفق)
 - **توضیح:** ۱۰ ورود غلط پشت‌سرهم → فقط 401 (بدون 429/قفل). `POST /api/auth/logout` وجود ندارد (405) → رویداد LOGOUT هم هرگز Audit نمی‌شود (نقض §43). ورودهای ناموفق Audit نمی‌شوند.
 - **Fix:** محدودسازی تلاش + logout با Audit + ثبت USER_LOGIN_FAILED.
 
 ### BUG-012 — XSS ذخیره‌شده در پنل وب (Frontend / امنیت)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۲ — escaper سراسری روی همه سنک‌های innerHTML + CSP از فاز ۰ + حذف رمز پیش‌فرض از فرم لاگین)
 - **توضیح:** نام کالا بدون escape داخل `innerHTML` تزریق می‌شود: مودال انتخاب Batch (`${p.name}`)، رسید (`showReceipt` → `<pre>${text}</pre>`)، مودال انبارگردانی (`${st.name}`). کاربرِ دارای `products.manage` می‌تواند در مرورگر صندوق‌دار کد اجرا کند. CSP هم وجود ندارد.
 - **Fix:** escaper/`textContent` برای همه سنک‌ها + CSP + Security headers.
 
 ### BUG-013 — اعتبارنامه پیش‌فرض admin/admin123 خودکار (Auth / استقرار)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** PARTIAL-FIXED (فاز ۲ — حذف prefill از فرم لاگین؛ Wizard اجباری تغییر رمز اولین‌بار → فاز نصب‌کننده)
 - **توضیح:** bootstrap همیشه admin با `ADMIN_PASSWORD` پیش‌فرض می‌سازد؛ فرم لاگین هم `value="admin"/"value="admin123"` پر شده؛ هیچ اجباری برای تغییر در اولین ورود نیست؛ SECRET_KEY پیش‌فرض هاردکد fallback.
 - **Fix:** wizard اولین‌بار (تولید رمز تصادفی + نمایش یک‌باره) + حذف prefilled.
 
@@ -106,7 +106,7 @@
 - **Fix:** تصمیم معماری: PriceVersion به‌عنوان منبع حقیقت + پیش‌فرض Batch جدید از آن، یا حذف صریح و اتصال تاریخچه به Batch.
 
 ### BUG-018 — Stocktaking ناقص (Inventory)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** FIXED (فاز ۲ — چرخه کامل §19: DRAFT→IN_PROGRESS→PENDING_APPROVAL→ADJUSTED + progress/next_item + شمول Batchهای صفر + Audit هر شمارش + مجوز inventory.approve_stocktake فقط برای مدیر)
 - **توضیح:** (۱) وضعیت `IN_PROGRESS` هرگز set نمی‌شود؛ (۲) اندپوینت پیشرفت/ادامه‌ی معنادار (remaining/resume) وجود ندارد — UI همه آیتم‌ها را در یک مودال نشان می‌دهد؛ (۳) **مرحله تأیید مدیر قبل از Adjustment وجود ندارد** (§19: Manager Approval → Adjustment) — هر انبارداری با `inventory.stocktake` مستقیم موجودی را تغییر می‌دهد؛ (۴) فقط Batchهای `current_qty>0` وارد لیست می‌شوند → کشف موجودیِ کالای «صفرِ سیستمی» غیرممکن است؛ (۵) شمارنده‌ی هر آیتم Audit نمی‌شود.
 - **Fix:** چرخه کامل §19-20 + `COUNTED_BY` + پیشرفت + تأیید دو مرحله‌ای.
 
@@ -121,7 +121,7 @@
 - **Fix:** middleware خطا + کد خطای کاربرپسند + همبستگی با لاگ فنی.
 
 ### BUG-021 — UI مبتنی بر نقش نیست + نواقص POS UI (Frontend)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** PARTIAL-FIXED (فاز ۲ — منوی مبتنی بر مجوز از /auth/me با permissions؛ POS اختصاصی/Kiosk → فاز ۳)
 - **توضیح:** منویnavigation ثابت است و بر اساس مجوز فیلتر نمی‌شود (Cashier می‌بیند: Settings/Users/Audit و بعد 403 می‌خورد). Cashier کل داشبورد مدیریتی (سود/ارزش انبار) را می‌بیند (اثبات: `cashier GET /reports/dashboard → 200`). POS: بدون Kiosk/تخفیف/مشتری؛ listener جدید `click` در هر ورود به view اضافه می‌شود (leak).
 - **Fix:** nav مبتنی بر مجوز (endpoint `/auth/me` باید permissions برگرداند) + POS اختصاصی.
 
@@ -137,7 +137,7 @@
 - **Fix:** بازنویسی صادقانه پس از هر فاز + جدول وضعیت IMPLEMENTED/TESTED/… (§54).
 
 ### BUG-024 — Restore و Backup خودکار غایب (Data Safety)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۲ — Restore واقعی با integrity_check + بررسی جداول + بکاپ ایمنی قبل از بازیابی + چرخش نگهداشت + تست Roundtrip کامل)
 - **توضیح:** Backup دستی SQLite واقعاً کار می‌کند؛ Restore وجود ندارد؛ زمان‌بندی خودکار و اعتبارسنجی Backup هیچ‌کدام وجود ندارد (§59).
 - **Fix:** Restore با تست واقعی + retention policy.
 

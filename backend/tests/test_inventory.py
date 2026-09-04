@@ -11,8 +11,13 @@ def test_stocktake_reconciliation(client, auth_headers, milk):
     c = client.post("/api/inventory/stocktakes/count", headers=auth_headers, json={
         "item_id": item["id"], "physical_qty": 28})
     assert c.json()["difference"] == -2
+    # v0.2 flow (§19): complete -> PENDING_APPROVAL -> manager approve -> adjust
     done = client.post(f"/api/inventory/stocktakes/{st['id']}/complete", headers=auth_headers)
-    assert done.json()["status"] == "COMPLETED"
+    assert done.json()["status"] == "PENDING_APPROVAL"
+    not_yet = client.get(f"/api/batches/{b['id']}", headers=auth_headers).json()
+    assert not_yet["current_qty"] == 30, "no change before approval"
+    approved = client.post(f"/api/inventory/stocktakes/{st['id']}/approve", headers=auth_headers)
+    assert approved.status_code == 200 and approved.json()["status"] == "ADJUSTED"
     b2 = client.get(f"/api/batches/{b['id']}", headers=auth_headers).json()
     assert b2["current_qty"] == 28
 
