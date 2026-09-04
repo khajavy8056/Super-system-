@@ -280,3 +280,70 @@ def adjust_ledger(customer_id: int, body: AdjustIn, db: Session = Depends(get_db
         "amount": entry.amount,
         "balance": entry.balance_after,
     }
+
+
+# ---------------------------------------------------------------------------
+# Debt reminder SMS (§35)
+# ---------------------------------------------------------------------------
+class DebtReminderIn(BaseModel):
+    #: Optional override; when omitted the configured template is rendered.
+    text: str | None = None
+
+
+@router.post("/{customer_id}/debt-reminder", status_code=201)
+def send_debt_reminder(customer_id: int, body: DebtReminderIn | None = None,
+                       db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("customers.settle"))):
+    """Queue a balance-reminder SMS for a customer who owes money.
+
+    The message is rendered from the ``sms.template.debt_reminder`` setting so
+    the shop can reword it without a code change. Delivery is asynchronous:
+    this only enqueues, exactly like every other SMS in the system (§68).
+    """
+    from datetime import datetime as _dt
+
+    from ..models import SmsMessage
+    from ..services.sms import get_setting
+
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "CUSTOMER_NOT_FOUND", "message": "مشتری یافت نشد"})
+
+    phone = (customer.phone or "").strip()
+    if not phone:
+        raise HTTPException(status_code=422, detail={
+            "code": "NO_PHONE", "message": "این مشتری شماره تماس ندارد"})
+
+    balance = ledger_svc.balance_of(db, customer_id)
+    if balance <= 0:
+        # Never nag a customer who does not owe anything.
+        raise HTTPException(status_code=409, detail={
+            "code": "NO_DEBT", "message": "این مشتری بدهی ندارد"})
+
+    if body is not None and body.text and body.text.strip():
+        text = body.text.strip()
+    else:
+        template = get_setting(
+            db, "sms.template.debt_reminder",
+            "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ "
+            "{amount} {currency} است. با تشکر.")
+        currency = "ریال" if get_setting(db, "pos.currency", "IRT") == "IRR" else "تومان"
+        store = get_setting(db, "store.name", "فروشگاه")
+        full_name = " ".join(
+            p for p in [customer.name, getattr(customer, "last_name", None)] if p)
+        text = (template
+                .replace("{customer}", full_name)
+                .replace("{store}", store)
+                .replace("{amount}", f"{balance:,.0f}")
+                .replace("{currency}", currency))
+
+    msg = SmsMessage(phone=phone, text=text, status="PENDING",
+                     created_at=_dt.utcnow())
+    db.add(msg)
+    write_audit(db, action="CUSTOMER_DEBT_REMINDER", user_id=user.id,
+                entity_type="Customer", entity_id=customer_id,
+                after={"phone": phone, "balance": str(balance), "chars": len(text)})
+    db.commit()
+    return {"id": msg.id, "status": msg.status, "phone": phone,
+            "text": text, "balance": float(balance)}

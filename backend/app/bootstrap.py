@@ -32,6 +32,10 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "sms.api_key": ("", "SMS provider API key (kavenegar)", True),
     "sms.sender": ("", "Sender line number (melipayamak)", False),
     "sms.file_path": ("data/sms_out.log", "Output file for the 'file' provider (dev/test)", False),
+    "sms.template.debt_reminder": (
+        "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر.",
+        "Debt reminder SMS template. Placeholders: {customer} {store} {amount} {currency}",
+        False),
     "sms.max_retries": ("5", "Max delivery attempts before FAILED", False),
     "sms.worker_interval_seconds": ("10", "Background dispatch interval (seconds)", False),
     "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),

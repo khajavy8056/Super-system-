@@ -1938,14 +1938,12 @@ window.doSettle = async (id, full) => {
 };
 
 window.smsDebtReminder = async (id) => {
+  /* The server renders the configured template and enforces "no debt, no
+     nag" — the client must not compose the message itself. */
   try {
-    const st = await api(`/customers/${id}/ledger`);
-    if (!st.customer.phone) { toast("این مشتری شماره تماس ندارد", "err"); return; }
-    await api("/sms/send", { method: "POST", body: JSON.stringify({
-      phone: st.customer.phone,
-      message: `${st.customer.name} گرامی، مانده حساب شما ${money(st.balance)} است.`,
-    })});
-    toast("پیامک یادآوری در صف ارسال قرار گرفت");
+    const r = await api(`/customers/${id}/debt-reminder`, { method: "POST",
+      body: JSON.stringify({}) });
+    toast(`پیامک یادآوری در صف ارسال قرار گرفت: ${r.phone}`);
   } catch (e) { toast(e.message, "err"); }
 };
 

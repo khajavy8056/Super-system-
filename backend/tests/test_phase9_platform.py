@@ -186,3 +186,67 @@ def test_timestamp_mixin_defaults_are_python_side():
     for col in ("created_at", "updated_at"):
         c = CustomerLedgerEntry.__table__.c[col]
         assert c.default is not None, f"{col} has no Python-side default"
+
+
+# --------------------------------------------------------------------------
+# Debt reminder SMS (§35)
+# --------------------------------------------------------------------------
+def _debtor(client, auth_headers, amount=75000):
+    import uuid
+    phone = "0939" + uuid.uuid4().hex[:7]
+    c = client.post("/api/customers", headers=auth_headers, json={
+        "name": "بدهکار", "phone": phone, "credit_limit": 10_000_000}).json()
+    client.post(f"/api/customers/{c['id']}/ledger/adjust", headers=auth_headers,
+                json={"amount": amount, "entry_type": "ADJUSTMENT_DEBIT",
+                      "note": "تست"})
+    return c
+
+
+def test_debt_reminder_queues_a_rendered_message(client, auth_headers):
+    c = _debtor(client, auth_headers)
+    r = client.post(f"/api/customers/{c['id']}/debt-reminder",
+                    headers=auth_headers, json={})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == "PENDING"
+    assert body["phone"] == c["phone"]
+    # placeholders must be substituted, never leaked to the customer
+    assert "{customer}" not in body["text"] and "{amount}" not in body["text"]
+    assert "بدهکار" in body["text"]
+    assert "75,000" in body["text"]
+    assert "تومان" in body["text"]
+
+
+def test_debt_reminder_refuses_when_there_is_no_debt(client, auth_headers):
+    import uuid
+    c = client.post("/api/customers", headers=auth_headers, json={
+        "name": "بی‌بدهی", "phone": "0939" + uuid.uuid4().hex[:7]}).json()
+    r = client.post(f"/api/customers/{c['id']}/debt-reminder",
+                    headers=auth_headers, json={})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "NO_DEBT"
+
+
+def test_debt_reminder_requires_a_phone_number(client, auth_headers):
+    c = client.post("/api/customers", headers=auth_headers,
+                    json={"name": "بدون تلفن"}).json()
+    client.post(f"/api/customers/{c['id']}/ledger/adjust", headers=auth_headers,
+                json={"amount": 5000, "entry_type": "ADJUSTMENT_DEBIT"})
+    r = client.post(f"/api/customers/{c['id']}/debt-reminder",
+                    headers=auth_headers, json={})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "NO_PHONE"
+
+
+def test_debt_reminder_unknown_customer_is_404(client, auth_headers):
+    r = client.post("/api/customers/999999/debt-reminder",
+                    headers=auth_headers, json={})
+    assert r.status_code == 404
+
+
+def test_debt_reminder_accepts_an_explicit_override(client, auth_headers):
+    c = _debtor(client, auth_headers)
+    r = client.post(f"/api/customers/{c['id']}/debt-reminder",
+                    headers=auth_headers, json={"text": "متن دستی"})
+    assert r.status_code == 201
+    assert r.json()["text"] == "متن دستی"
