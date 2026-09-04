@@ -39,3 +39,9 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Installer / build artifacts
+installer/standalone/build/
+installer/windows/dist/
+installer/output/
+scripts/stublibs/

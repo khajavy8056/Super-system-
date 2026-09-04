@@ -37,16 +37,22 @@ cd installer\windows
 .\build.ps1
 ```
 
-خروجی: `installer\output\SupermarketSystem-Setup.exe`
+خروجی: `installer\output\SupermarketSystem-Setup-0.1.0.exe`
 
-اسکریپت `build.ps1`:
-1. وابستگی‌های backend را نصب می‌کند.
-2. با PyInstaller یک executable واحد می‌سازد (`run_supermarket.exe`).
-3. با Inno Setup نصب‌کننده‌ای می‌سازد که:
-   - فایل‌ها را در `Program Files` نصب می‌کند،
-   - دیتابیس را در پوشه داده کاربر Initialize می‌کند،
-   - میانبر روی دسکتاپ/منوی استارت می‌سازد،
-   - سرویس پس‌زمینه و Uninstaller دارد.
+اسکریپت `build.ps1` (سه مرحله — شرح کامل و وضعیت تست‌شدگی: `docs/BUILD.md`):
+1. venv و وابستگی‌های backend را نصب می‌کند.
+2. با PyInstaller یک executable واحد می‌سازد (`SupermarketSystem.exe` با icon).
+3. با Inno Setup نصب‌کننده می‌سازد که:
+   - فایل‌ها را در `Program Files` نصب می‌کند (per-user، بدون نیاز به Admin)،
+   - دیتابیس و لاگ‌ها را در `%USERPROFILE%\SupermarketSystem` می‌سازد —
+     حذف/به‌روزرسانی برنامه داده را پاک نمی‌کند،
+   - میانبر دسکتاپ/منوی استارت و Uninstaller دارد.
+
+> **وضعیت تست (صادقانه):** بوتِ همان لانچر به‌صورت frozen (بیلد cx_Freeze
+> لینوکسی) کامل تست شده — `/health`، ورود، سرو کردن پنل/موبایل، ساخت DB با
+> 29 جدول و پایداری `secret.key` بین دو ری‌استارت (جزئیات در `docs/BUILD.md`).
+> خودِ بیلد PyInstaller ویندوزی و Setup.exe در sandbox قابل اجرا نبود →
+> **UNTESTED روی ویندوز واقعی**.
 
 ### اجرای دستی بدون نصب‌کننده
 

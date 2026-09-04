@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 
-ROOT = Path(os.path.abspath(SPECPATH)).parent.parent.parent  # repo root
+ROOT = Path(os.path.abspath(SPECPATH)).parent.parent  # repo root (installer/windows -> repo)
 
 a = Analysis(
     [str(ROOT / "installer" / "windows" / "run_supermarket.py")],
@@ -18,18 +18,11 @@ a = Analysis(
         "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
         "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto",
         "uvicorn.lifespan", "uvicorn.lifespan.on",
-        "app", "app.main", "app.database", "app.config", "app.security", "app.bootstrap",
-        "app.models", "app.models.catalog", "app.models.inventory", "app.models.sales",
-        "app.models.pricing", "app.models.external", "app.models.system", "app.models.user",
-        "app.services", "app.services.audit", "app.services.catalog", "app.services.inventory",
-        "app.services.pricing", "app.services.pos", "app.services.expiry",
-        "app.services.reports", "app.services.resolvers", "app.services.hardware",
-        "app.services.notifications",
-        "app.routers", "app.routers.auth", "app.routers.products", "app.routers.batches",
-        "app.routers.inventory", "app.routers.pricing", "app.routers.pos", "app.routers.invoices",
-        "app.routers.returns", "app.routers.resolvers", "app.routers.sms", "app.routers.hardware",
-        "app.routers.reports", "app.routers.users", "app.routers.audit", "app.routers.settings",
-        "app.routers.system",
+        # app's own modules are found by static analysis (no dynamic imports);
+        # listed explicitly anyway so a missing file fails the build loudly:
+        "app.main", "app.database", "app.bootstrap",
+        "app.services.providers", "app.services.providers.openfoodfacts",
+        "app.services.providers.custom_http",
     ],
     hookspath=[],
     runtime_hooks=[],
@@ -46,6 +39,7 @@ exe = EXE(
     a.datas,
     [],
     name="SupermarketSystem",
+    icon=str(ROOT / "installer" / "windows" / "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

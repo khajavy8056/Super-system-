@@ -261,3 +261,42 @@ $ python -m pytest tests/ -q
 | نصب‌کننده Windows (Setup.exe) روی ویندوز | **تست‌نشده** — محیط Linux |
 | دوربین موبایل / APK | **تست‌نشده** — موبایل اصلاً پیاده نشده |
 | Providerهای واقعی بارکد (GS1، ایرانی) | **تست‌نشده** — هیچ Provider قابل پیکربندی وجود ندارد (BUG-008) |
+
+## ۱۲. فاز ۶ — Installer + رندر واقعی UI (2026-09-04)
+
+### ۱۲.۱ رندر واقعی UI برای اسکرین‌شات (بدون X/GPU/fontconfig)
+
+| بررسی | نتیجه |
+|---|---|
+| تولید stub-libs از خود کتابخانه‌های PySide6 (`scripts/make_qt_stublibs.py`: objdump verneed+UND → version-script + soname درست) | PASS — import WebEngine و رندر کامل با 20 stub |
+| WebEngine offscreen: بارگذاری صفحه واقعی، متن فارسی DOM (title/innerText) | PASS |
+| 21 اسکرین‌شات PNG از همه بخش‌ها + 2 PDF (`scripts/shoot.py` + `scripts/shots.json`) | PASS — همه با بررسی «not-blank» (شمار رنگ ≥ 150) |
+| درون‌مایه تصاویر = صفحات واقعی: dashboard/reports/inventory/pos متن واقعی فارسی را نشان می‌دهند (استخراج DOM) | PASS |
+| PDF نهایی `docs/SCREENSHOTS.pdf` (23 صفحه، 21 تصوور، فونت Vazirmatn embed) | PASS |
+
+### ۱۲.۲ Frozen app (بیلد cx_Freeze لینوکس — تست‌پذیرترین مسیر installer)
+
+| بررسی | نتیجه |
+|---|---|
+| بوت exe در HOME جدا (`/tmp/fz-home`)، پورت تصادفی | PASS — /health=200 در ~3s |
+| ورود admin + JWT | PASS |
+| سرو `/`، `/mobile/`، manifest (frontend باندل‌شده) | PASS (200) |
+| API واقعی روی DB تازه | PASS (`/api/products` → JSON خالی درست) |
+| دیتای کاربر: `supermarket.db` (29 جدول) + `logs/` + `secret.key` | PASS |
+| ری‌استارت دوم: health/ورود OK و `secret.key` ثابت | PASS (توکن‌ها پایدار) |
+| همان لانچر در حالت dev (غیر frozen) | PASS |
+| رفع ریشه‌ای: باندل صریح `sqlalchemy.dialects.sqlite` (entry-point در frozen) | PASS (بدون آن NoSuchModuleError) |
+
+### ۱۲.۳ UNTESTED (اعلام صادقانه)
+
+- بیلد PyInstaller ویندوزی (`installer/windows/app.spec`)، `build.ps1`، Setup.exe
+  ساخته Inno Setup، امضای دیجیتال/SmartScreen — sandbox لینوکسی است؛
+  syntax و منطق بررسی شده ولی اجرا نشده‌اند.
+- رندر فارسی روی ویندوز (فونت سیستم) — در لینوکس با Vazirmatn تست شد.
+
+### ۱۲.۴ Regression
+
+```
+$ python -m pytest tests/ -q
+88 passed
+```
