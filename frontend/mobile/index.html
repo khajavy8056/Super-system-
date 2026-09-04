@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0f1420" />
+  <title>انبارگردانی — سامانه سوپرمارکت</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/mobile/styles.css" />
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="scanner" class="scanner hidden">
+    <video id="scan-video" playsinline muted></video>
+    <div class="scan-frame"></div>
+    <div class="scan-bar">
+      <input id="scan-manual" placeholder="یا بارکد را دستی وارد کنید…" inputmode="numeric" autocomplete="off" />
+      <div id="scan-status" class="muted">در حال اسکن…</div>
+      <button id="scan-close" class="btn">بستن</button>
+    </div>
+  </div>
+  <script src="/mobile/app.js"></script>
+</body>
+</html>

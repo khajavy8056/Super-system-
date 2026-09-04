@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>سیستم مدیریت سوپرمارکت</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <meta name="theme-color" content="#0f1420" />
 </head>
 <body>
   <!-- Login -->
@@ -44,5 +47,10 @@
   <div id="modal" class="modal-overlay hidden"></div>
 
   <script src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+    }
+  </script>
 </body>
 </html>

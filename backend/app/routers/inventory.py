@@ -117,8 +117,13 @@ def get_stocktake(stocktake_id: int, db: Session = Depends(get_db),
     st = db.get(Stocktake, stocktake_id)
     if not st:
         raise HTTPException(status_code=404, detail="STOCKTAKE_NOT_FOUND")
+    pids = [i.product_id for i in st.items]
+    products = {p.id: p for p in db.execute(select(Product).where(Product.id.in_(pids))).scalars()} if pids else {}
     return {"id": st.id, "name": st.name, "status": st.status, "area": st.area,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
+                       "product_name": (products.get(i.product_id).name if products.get(i.product_id) else f"#{i.product_id}"),
+                       "barcode": (products.get(i.product_id).barcode if products.get(i.product_id) else None),
+                       "image_url": (products.get(i.product_id).image_url if products.get(i.product_id) else None),
                        "system_qty": i.system_qty, "physical_qty": i.physical_qty,
                        "difference": i.difference, "status": i.status, "reason": i.reason}
                       for i in st.items]}
@@ -143,6 +148,29 @@ def start_stocktake(stocktake_id: int, db: Session = Depends(get_db),
     except InventoryError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/stocktakes/{stocktake_id}/item-by-barcode/{barcode}")
+def item_by_barcode(stocktake_id: int, barcode: str, db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("inventory.stocktake"))):
+    """Camera scan support (§23): find this session's item(s) for a scanned barcode."""
+    from ..services.catalog import get_product_by_barcode
+    st = db.get(Stocktake, stocktake_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="STOCKTAKE_NOT_FOUND")
+    product = get_product_by_barcode(db, barcode)
+    if not product:
+        raise HTTPException(status_code=404, detail={"code": "PRODUCT_NOT_FOUND",
+                                                     "message": "این بارکد در سیستم ثبت نشده است"})
+    items = [i for i in st.items if i.product_id == product.id]
+    if not items:
+        raise HTTPException(status_code=404, detail={"code": "ITEM_NOT_IN_SESSION",
+                                                     "message": "این کالا در فهرست این انبارگردانی نیست"})
+    return {"product": {"id": product.id, "name": product.name, "barcode": product.barcode,
+                        "image_url": product.image_url},
+            "items": [{"id": i.id, "batch_id": i.batch_id, "system_qty": i.system_qty,
+                       "physical_qty": i.physical_qty, "status": i.status,
+                       "difference": i.difference} for i in items]}
 
 
 @router.post("/stocktakes/count")
