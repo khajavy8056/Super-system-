@@ -53,7 +53,7 @@ $ python -m pytest tests/ -q
 
 ---
 
-## ۳. تست‌های رگرسیون اضافه‌شده در این فاز
+## ۳. تست‌های رگرسیون فاز Audit
 
 فایل `backend/tests/test_audit_regressions.py` اضافه شد: ۶ تست `xfail(strict=True)` که رفتار **صحیح** مورد انتظار را assert می‌کنند و فعلاً fail هستند (باگ‌ها هنوز Fix نشده‌اند):
 
@@ -75,7 +75,41 @@ $ python -m pytest tests/ -q   # پس از این فاز
 
 ---
 
-## ۴. تست‌های ناممکن در این محیط (اعلام صادقانه)
+## ۵. فاز ۰ — تثبیت P0 (2026-09-04، همان روز)
+
+### تغییرات اعمال‌شده
+| مورد | توضیح |
+|---|---|
+| `services/pos.py` | بازنویسی: محاسبات تخفیف/مالیات تک‌بار، موتور `allocate()` چند-Batch، کاهش اتمیک موجودی، شماره‌گذاری اتمیک با جدول `counters`، سقف تجمعی مرجوعی، وضعیت‌های REFUNDED صحیح |
+| `services/catalog.py` | ADR-001: ارث قیمت فروش از PriceVersion فعال + seed تاریخچه از اولین Batch |
+| `routers/settings.py` + `bootstrap.py` | ماسک secretها، سنتینل `__KEEP__`، به‌روزرسانی `is_secret`، پیش‌فرض‌های محرمانه |
+| `main.py` | Exception Handler سراسری + Error-ID + پیام کاربرپسند فارسی + Security Headers (CSP/XFO/nosniff) |
+| `database.py` + مهاجرت `c2f10a9b3e01` | تک‌مسیر کردن Alembic (stamp/upgrade در startup) |
+| `routers/pos.py` | پذیرش `discount` در خطوط سبد + خروجی discount در آیتم فاکتور |
+| `services/pricing.py` | price_freshness مقاوم به timezone |
+
+### نتیجه تست فاز ۰
+```
+$ python -m pytest tests/ -q
+34 passed, 1 xfailed  (1 xfail = REG-004 مربوط به فاز ۱ Resolver)
+```
+| سناریوی پذیرش جدید | نتیجه |
+|---|---|
+| تخفیف + مالیات ۱۰٪ (gross 3000 − 500 → tax 250 → total 2750) | **PASS** |
+| مرجوعی دوم فراتر از خرید → `RETURN_EXCEEDS_PURCHASE`، موجودی سالم، وضعیت REFUNDED | **PASS** |
+| تخصیص خودکار 7 از (A=3, B=10) → دو آیتم 3+4 با سود واقعی هر Batch (70) | **PASS** |
+| انتخاب Batch صریح split نمی‌شود (اصل §17) | **PASS** |
+| دو ترمینال همزمان روی Batch 5تایی → دقیقاً یک فروش موفق، موجودی 0 (بدون oversell) | **PASS** |
+| شماره فاکتورها پیوسته و یکتا | **PASS** |
+| Batch جدید قیمت را از PriceVersion فعال ارث می‌برد؛ Batch قدیم قیمت خودش را نگه می‌دارد | **PASS** |
+| secret در GET ماسک، سنتینل مقدار ذخیره‌شده را خراب نمی‌کند | **PASS** |
+| خطای شبیه‌سازی‌شده → 500 با code/message/error_id و بدون نشت متن exception | **PASS** |
+| `alembic upgrade head` بعد از بوت برنامه → no-op موفق در head (قبلاً crash) | **PASS** |
+| هدرهای امنیتی (CSP, X-Frame-Options, nosniff, Referrer-Policy) | **PASS** |
+
+---
+
+## ۶. تست‌های ناممکن در این محیط (اعلام صادقانه)
 
 | مورد | وضعیت |
 |---|---|

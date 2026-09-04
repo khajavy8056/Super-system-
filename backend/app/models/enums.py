@@ -25,6 +25,7 @@ class MovementType(str, Enum):
     TRANSFER_IN = "TRANSFER_IN"
     TRANSFER_OUT = "TRANSFER_OUT"
     STOCKTAKE = "STOCKTAKE"
+    VOID_REVERSAL = "VOID_REVERSAL"
 
 
 class PriceType(str, Enum):

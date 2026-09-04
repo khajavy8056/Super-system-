@@ -28,7 +28,8 @@ def _out(inv: Invoice) -> dict:
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": it.qty,
              "unit_buy_price": float(it.unit_buy_price), "unit_consumer_price": float(it.unit_consumer_price),
-             "unit_sell_price": float(it.unit_sell_price), "subtotal": float(it.subtotal),
+             "unit_sell_price": float(it.unit_sell_price), "discount": float(it.discount),
+             "subtotal": float(it.subtotal), "id": it.id,
              "profit": float(it.profit)}
             for it in inv.items
         ],

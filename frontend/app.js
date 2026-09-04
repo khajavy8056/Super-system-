@@ -630,10 +630,21 @@ RENDER.settings = async () => {
   const t = $("#s-table");
   const trs = rows.map((s) => el("tr", {},
     el("td", { text: s.key }),
-    el("td", {}, el("input", { value: s.value, id: "set-" + s.key.replace(/\./g, "_") })),
+    el("td", {}, (() => {
+      const input = el("input", { id: "set-" + s.key.replace(/\./g, "_") });
+      if (s.is_secret) {
+        input.setAttribute("type", "password");
+        input.setAttribute("placeholder", s.has_value ? "(بدون تغییر)" : "خالی");
+        input.setAttribute("autocomplete", "new-password");
+      } else input.value = s.value;
+      return input;
+    })()),
     el("td", { text: s.description || "" }),
     el("td", {}, el("button", { class: "btn btn-sm btn-primary", text: "ذخیره", onclick: async () => {
-      try { await api("/settings", { method: "PUT", body: JSON.stringify({ key: s.key, value: document.getElementById("set-" + s.key.replace(/\./g, "_")).value }) });
+      const input = document.getElementById("set-" + s.key.replace(/\./g, "_"));
+      let value = input.value;
+      if (s.is_secret && value === "") value = "__KEEP__"; // sentinel: keep stored secret
+      try { await api("/settings", { method: "PUT", body: JSON.stringify({ key: s.key, value, is_secret: !!s.is_secret }) });
         toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
     } }))));
   t.append(el("thead", {}, el("tr", {}, el("th", { text: "کلید" }), el("th", { text: "مقدار" }),

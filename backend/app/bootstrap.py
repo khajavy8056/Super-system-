@@ -11,24 +11,25 @@ from .config import settings
 from .models import Permission, Role, SystemSetting, User
 from .security import PERMISSIONS, ROLE_PRESETS, hash_password
 
-DEFAULT_SETTINGS: dict[str, tuple[str, str]] = {
-    "pos.tax_rate": ("0", "Tax rate in percent applied at checkout"),
-    "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID"),
-    "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID"),
-    "pos.currency": ("IRR", "Display currency code"),
-    "pos.allow_negative_stock": ("false", "Allow negative stock (requires permission + audit)"),
-    "expiry.block_sale": ("true", "Block sale of expired batches"),
-    "expiry.days.today": ("0", "Threshold (days) for 'expiring today' bucket"),
-    "expiry.days.three": ("3", "Threshold (days) for 'expiring in 3 days' bucket"),
-    "expiry.days.seven": ("7", "Threshold (days) for 'expiring in 7 days' bucket"),
-    "expiry.days.thirty": ("30", "Threshold (days) for 'expiring in 30 days' bucket"),
-    "barcode.scanner.min_interval_ms": ("30", "Minimum inter-keystroke interval to detect a scanner"),
-    "sms.provider": ("", "SMS provider code (e.g. melipayamak)"),
-    "sms.username": ("", "SMS provider username"),
-    "sms.password": ("", "SMS provider password"),
-    "printer.paper_width_mm": ("80", "Thermal printer paper width in mm"),
-    "printer.header": ("", "Receipt header text"),
-    "printer.footer": ("", "Receipt footer text"),
+DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
+    "pos.tax_rate": ("0", "Tax rate in percent applied at checkout", False),
+    "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID", False),
+    "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID", False),
+    "pos.currency": ("IRR", "Display currency code", False),
+    "pos.allow_negative_stock": ("false", "Allow negative stock (requires permission + audit)", False),
+    "pos.kiosk_shortcut": ("Ctrl+Shift+L", "POS kiosk/lock mode keyboard shortcut", False),
+    "expiry.block_sale": ("true", "Block sale of expired batches", False),
+    "expiry.days.today": ("0", "Threshold (days) for 'expiring today' bucket", False),
+    "expiry.days.three": ("3", "Threshold (days) for 'expiring in 3 days' bucket", False),
+    "expiry.days.seven": ("7", "Threshold (days) for 'expiring in 7 days' bucket", False),
+    "expiry.days.thirty": ("30", "Threshold (days) for 'expiring in 30 days' bucket", False),
+    "barcode.scanner.min_interval_ms": ("30", "Minimum inter-keystroke interval to detect a scanner", False),
+    "sms.provider": ("", "SMS provider code (e.g. melipayamak)", False),
+    "sms.username": ("", "SMS provider username", True),
+    "sms.password": ("", "SMS provider password", True),
+    "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),
+    "printer.header": ("", "Receipt header text", False),
+    "printer.footer": ("", "Receipt footer text", False),
 }
 
 
@@ -68,8 +69,8 @@ def bootstrap(db: Session) -> None:
 
     # 4. Default settings (only create, never overwrite user changes)
     current_keys = {s.key for s in db.execute(select(SystemSetting)).scalars()}
-    for key, (value, desc) in DEFAULT_SETTINGS.items():
+    for key, (value, desc, is_secret) in DEFAULT_SETTINGS.items():
         if key not in current_keys:
-            db.add(SystemSetting(key=key, value=value, description=desc))
+            db.add(SystemSetting(key=key, value=value, description=desc, is_secret=is_secret))
 
     db.commit()

@@ -20,6 +20,7 @@ class CartLineIn(BaseModel):
     product_id: int
     quantity: int = Field(default=1, ge=1)
     batch_id: int | None = None
+    discount: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class CartIn(BaseModel):
@@ -53,7 +54,8 @@ def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depe
 @router.post("/cart/validate")
 def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
     try:
-        items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity, batch_id=i.batch_id)
+        items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
+                                                   batch_id=i.batch_id, discount=i.discount)
                                            for i in body.items])
         return {"items": [_line_out(i) for i in items], "totals": _totals(items)}
     except PosError as e:
@@ -66,7 +68,8 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
     try:
         invoice = pos_svc.checkout(
             db,
-            items=[CartItem(product_id=i.product_id, quantity=i.quantity, batch_id=i.batch_id)
+            items=[CartItem(product_id=i.product_id, quantity=i.quantity, batch_id=i.batch_id,
+                           discount=i.discount)
                    for i in body.items],
             payments=[p.model_dump() for p in body.payments],
             user=user,
@@ -95,8 +98,12 @@ def _line_out(i: CartItem) -> dict:
 
 
 def _totals(items: list[CartItem]) -> dict:
+    gross = sum(((i.unit_sell_price or Decimal("0")) * i.quantity for i in items), Decimal("0"))
+    discount = sum((i.discount for i in items), Decimal("0"))
     return {
-        "subtotal": float(sum((i.subtotal for i in items), Decimal("0"))),
+        "gross": float(gross),
+        "discount": float(discount),
+        "subtotal": float(gross - discount),
         "profit": float(sum((i.profit for i in items), Decimal("0"))),
         "count": len(items),
     }
@@ -116,7 +123,7 @@ def _invoice_out(inv) -> dict:
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": it.qty,
              "unit_buy_price": float(it.unit_buy_price), "unit_sell_price": float(it.unit_sell_price),
-             "subtotal": float(it.subtotal), "profit": float(it.profit)}
+             "discount": float(it.discount), "subtotal": float(it.subtotal), "profit": float(it.profit)}
             for it in inv.items
         ],
     }

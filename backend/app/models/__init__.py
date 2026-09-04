@@ -7,7 +7,7 @@ from .external import ExternalSource, ImageAsset, MarketPrice, ProductResolverRe
 from .inventory import ProductBatch, StockMovement, Stocktake, StocktakeItem
 from .pricing import PriceVersion
 from .sales import Customer, Invoice, InvoiceItem, Payment, Return
-from .system import AuditLog, HardwareDevice, Notification, SmsMessage, SystemSetting
+from .system import AuditLog, Counter, HardwareDevice, Notification, SmsMessage, SystemSetting
 from .user import Permission, Role, User
 
 __all__ = [
@@ -38,6 +38,7 @@ __all__ = [
     "SmsMessage",
     "HardwareDevice",
     "AuditLog",
+    "Counter",
     "Notification",
     "SystemSetting",
 ]

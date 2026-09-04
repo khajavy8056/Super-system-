@@ -41,6 +41,15 @@ class HardwareDevice(TimestampMixin, Base):
     is_enabled: Mapped[bool] = mapped_column(default=True)
 
 
+class Counter(Base):
+    """Atomic named counters (e.g. daily invoice numbering) — see services/pos.py."""
+
+    __tablename__ = "counters"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

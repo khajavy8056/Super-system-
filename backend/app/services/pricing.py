@@ -116,10 +116,17 @@ def suggest_sell_price(db: Session, *, buy_cost: Decimal, target_margin: Decimal
 
 def price_freshness(updated_at: datetime | None, now: datetime | None = None, *,
                     fresh_days: int = 7, aging_days: int = 30) -> str:
-    """FRESH / AGING / STALE (§57)."""
+    """FRESH / AGING / STALE (§57). Tolerates naive and tz-aware datetimes (BUG-022)."""
+    from datetime import timezone
+
     if updated_at is None:
         return "STALE"
-    age = ((now or datetime.utcnow()) - updated_at).days
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age = (now - updated_at).days
     if age <= fresh_days:
         return "FRESH"
     if age <= aging_days:

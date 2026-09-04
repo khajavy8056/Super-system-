@@ -103,9 +103,21 @@ def receive_batch(
     user: User | None = None,
     note: str | None = None,
 ) -> ProductBatch:
-    """Register receiving: always creates a NEW batch + PURCHASE_IN movement."""
+    """Register receiving: always creates a NEW batch + PURCHASE_IN movement.
+
+    ADR-001: the batch inherits its sell price from the active SELL
+    PriceVersion when not provided, and snapshots it — so old-price batches
+    stay sellable at their own price (§16) while new batches follow the
+    current version. The first batch also seeds the price history."""
     if quantity_received <= 0:
         raise CatalogError("quantity_received must be positive")
+
+    from .pricing import active_price, set_price as set_price_version
+
+    current_active_sell = active_price(db, product.id, "SELL")
+    effective_sell = sell_price
+    if effective_sell is None:
+        effective_sell = current_active_sell  # inherit the current versioned price
 
     # Detect buy-price change vs. the most recent batch (§93).
     price_change_warning: str | None = None
@@ -128,8 +140,8 @@ def receive_batch(
         quantity_received=quantity_received,
         current_qty=quantity_received,
         buy_price=buy_price,
-        consumer_price=consumer_price if consumer_price is not None else (sell_price or buy_price),
-        sell_price=sell_price if sell_price is not None else (consumer_price or buy_price),
+        consumer_price=consumer_price if consumer_price is not None else (effective_sell or buy_price),
+        sell_price=effective_sell if effective_sell is not None else (consumer_price or buy_price),
         production_date=production_date,
         expiry_date=expiry_date,
         received_at=received_at or datetime.utcnow(),
@@ -138,6 +150,14 @@ def receive_batch(
     )
     db.add(batch)
     db.flush()
+
+    # Seed the price history if this is the product's first price (ADR-001).
+    if current_active_sell is None and batch.sell_price not in (None, 0):
+        set_price_version(
+            db, product=product, price_type="SELL", price=Decimal(batch.sell_price),
+            user=user, source="batch_initial", note=f"Seeded from first batch {batch.batch_number}",
+        )
+
 
     movement = StockMovement(
         product_id=product.id,

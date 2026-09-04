@@ -12,35 +12,35 @@
 ## باگ‌های Critical / High (بلاک‌کننده تجاری‌سازی)
 
 ### BUG-001 — کسر دوگانه تخفیف در Checkout (POS / مالی)
-- **Severity:** Critical · **Status:** OPEN
+- **Severity:** Critical · **Status:** FIXED (فاز ۰ — تست REG-001 + test_discount_via_api_with_tax)
 - **توضیح:** `item.subtotal = gross − item.discount` است؛ سپس در `checkout()`: `total = subtotal − discount + tax` → تخفیف **دو بار** کسر می‌شود. مالیات هم روی مبلغ غلط حساب می‌شود.
 - **Root Cause:** `app/services/pos.py` — تابع `checkout`، جمع `subtotal` و `discount` ناسازگار.
 - **اثبات:** کالای ۲,۰۰۰ با تخفیف ۵۰۰ → پرداخت صحیح ۱,۵۰۰ با `PAYMENT_MISMATCH` رد شد؛ سیستم ۱,۰۰۰ را «درست» می‌داند: `forced: subtotal=1500 discount=500 total=1000 (expected 1500)`
 - **Fix برنامه‌ریزی‌شده:** بازتعریف صریح: `gross = Σ(unit_price×qty)`، `subtotal = gross`، `total = gross − Σdiscount + tax(gross−Σdiscount)`؛ افزودن فیلد discount به `CartLineIn` API؛ تست رگرسیون.
 
 ### BUG-002 — مرجوعی بیش از مقدار خرید ممکن است (POS / یکپارچگی داده)
-- **Severity:** Critical · **Status:** OPEN
+- **Severity:** Critical · **Status:** FIXED (فاز ۰ — REG-002 + وضعیت REFUNDED/PARTIALLY)
 - **توضیح:** `process_return` فقط `qty > invoice_item.qty` را چک می‌کند؛ مجموع مرجوعی‌های قبلی همان آیتم چک نمی‌شود → با چند مرجوعی جزئی، موجودی به‌دلخواه تورم می‌یابد.
 - **Root Cause:** `app/services/pos.py::process_return` — عدم تجمیع `Return`های موجود.
 - **اثبات:** خرید ۲ عدد → دو بار مرجوعی ۲ عددی → هر دو `201`؛ موجودی Batch از ۱۰ به **۱۲** رسید (باید ۱۰ بماند).
 - **Fix:** `Σ(returns.qty) + qty ≤ invoice_item.qty` + وضعیت صحیح `REFUNDED` در تکمیل + تست.
 
 ### BUG-003 — تخصیص خودکار فروش بین چند Batch وجود ندارد (POS / معماری)
-- **Severity:** High (ادعای README خلاف واقع) · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۰ — موتور allocate + REG-003؛ انتخاب Batch صریح عمداً split نمی‌شود)
 - **توضیح:** اگر qty درخواستی از یک Batch بیشتر باشد، حتی وقتی مجموع چند Batch کافی است، `INSUFFICIENT_STOCK` داده می‌شود. سناریوی §37 (A=3، B=10، خرید 7) رد می‌شود.
 - **Root Cause:** `_resolve_cart_line` فقط تک‌Batch را می‌بیند؛ موتور Allocation پیاده نشده.
 - **اثبات:** `checkout qty7 (A=3@20,B=10@22): 422 INSUFFICIENT_STOCK «Only 3 available»`
 - **Fix:** تابع `allocate(db, product, qty, policy) → [(batch, qty)…]` + ثبت صریح به‌عنوان «تخصیص حسابداری» نه واقعیت فیزیکی (§17).
 
 ### BUG-004 — تصادم/بازاستفاده شماره فاکتور (POS / یکپارچگی)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۰ — جدول counters + شماره‌گذاری اتمیک؛ تست همزمانی سبز)
 - **توضیح:** `_next_invoice_number` بر پایه `COUNT(invoices per day)` است → (۱) زیر همزمانی دو فاکتور هم‌شماره می‌گیرند و دومی با `UNIQUE constraint failed: invoices.invoice_number` به‌صورت **500 خام** می‌شکند؛ (۲) با حذف رکورد، شماره بازاستفاده می‌شود.
 - **Root Cause:** شمارش به‌جای sequence اتمیک.
 - **اثبات:** probe همزمانی: `[('OK','INV-…000001'), ('ERR','UNIQUE constraint failed: invoices.invoice_number')]`
 - **Fix:** جدول sequence جدا با `UPDATE … RETURNING` (اتمیک) یا `max+1` داخل همان تراکنش با قفل.
 
 ### BUG-005 — پنجره Race در کسر موجودی (POS / همزمانی)
-- **Severity:** High · **Status:** OPEN (بررسی کد؛ اجرای همزمان در SQLite تک‌پردازشه به‌واسطه BUG-004 قبل از کسر متوقف شد)
+- **Severity:** High · **Status:** FIXED (فاز ۰ — کاهش اتمیک شرطی UPDATE…WHERE current_qty≥n؛ تست دو ترمینال همزمان: دقیقاً یک فروش موفق)
 - **توضیح:** الگوی read→validate→write بدون قفل سطر/کاهش اتمیک (`UPDATE … SET current_qty = current_qty − n WHERE current_qty ≥ n`) است. دو صندوق می‌توانند موجودی یکسان را بفروشند (TOCTOU).
 - **Fix:** کاهش اتمیک شرطی + بررسی `rowcount`؛ در PostgreSQL ردیف‌لاک؛ تست همزمانی واقعی.
 
@@ -66,7 +66,7 @@
 - **Fix:** نتیجه per-source با status code/خطا + timeout مجزا (§40).
 
 ### BUG-010 — افشای تنظیمات محرمانه (Settings / امنیت)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۰ — REG-005: ماسک + has_value + سنتینل __KEEP__ + به‌روزرسانی is_secret)
 - **توضیح:** `GET /api/settings` مقدار واقعی کلیدهای محرمانه را plaintext برمی‌گرداند (`sms.password` تست شد: `SUPER-SECRET-99` برگشت_data شد). ضمناً `upsert_setting` فیلد `is_secret` را به‌روز نمی‌کند.
 - **Fix:** write-only برای secrets + ماسک در پاسخ + ثبت Audit بدون مقدار.
 
@@ -86,7 +86,7 @@
 - **Fix:** wizard اولین‌بار (تولید رمز تصادفی + نمایش یک‌باره) + حذف prefilled.
 
 ### BUG-014 — ناسازگاری Alembic با create_all (Database)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** FIXED (فاز ۰ — create_all + stamp/upgrade در init_db؛ تأیید تجربی: upgrade بعد از بوت = no-op در head)
 - **توضیح:** برنامه در هر بوت `Base.metadata.create_all` می‌زند؛ پس از اولین اجرا، `alembic upgrade head` با `table brands already exists` fail می‌شود → سیستم مهاجرت عملاً بلااستفاده/گمراه‌کننده است.
 - **Fix:** حذف create_all از lifespan (فقط Alembic) + `alembic stamp` برای نصب‌های موجود.
 
@@ -101,7 +101,7 @@
 - **Fix:** درایور واقعی (ESC/POS) یا وضعیت صادقانه `NOT_SUPPORTED` تا راه‌اندازی درایور.
 
 ### BUG-017 — جداافتادگی کامل PriceVersion از موتور فروش (Pricing / معماری)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۰ — ADR-001: ارث قیمت از نسخه فعال + seed تاریخچه از اولین Batch؛ تست test_receive_inherits_active_price_version)
 - **توضیح:** `set_price` نسخه قیمت می‌سازد اما POS فقط `batch.sell_price` را می‌خواند → تغییر قیمت از API **هیچ اثری بر فروش ندارد**. `receive_batch` هم PriceVersion نمی‌سازد → «تاریخچه قیمت» عملاً همیشه خالی است. مستندات معماری خلاف این را القا می‌کند.
 - **Fix:** تصمیم معماری: PriceVersion به‌عنوان منبع حقیقت + پیش‌فرض Batch جدید از آن، یا حذف صریح و اتصال تاریخچه به Batch.
 
@@ -111,12 +111,12 @@
 - **Fix:** چرخه کامل §19-20 + `COUNTED_BY` + پیشرفت + تأیید دو مرحله‌ای.
 
 ### BUG-019 — منطق ناقص وضعیت مرجوعی/ابطال (POS)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** FIXED (فاز ۰ — REFUNDED/PARTIALLY_REFUNDED تجمعی + نوع VOID_REVERSAL + reference_id واقعی)
 - **توضیح:** `process_return` همیشه `PARTIALLY_REFUNDED` می‌گذارد حتی وقتی کل آیتم برگشته (باید REFUNDED شود)؛ `StockMovement(reference_id=0)` placeholder؛ Void از نوع `RETURN_IN` استفاده می‌کند (گمراه‌کننده در Ledger).
 - **Fix:** محاسبه وضعیت از مجموع مرجوعی‌ها + نوع movement مجزا (`VOID_REVERSAL` یا ثبت note).
 
 ### BUG-020 — نبود Exception Handler سراسری / Error-ID (API/UX)
-- **Severity:** Medium · **Status:** OPEN
+- **Severity:** Medium · **Status:** FIXED (فاز ۰ — هندلر سراسری + Error-ID + پیام فارسی؛ تست عدم نشت متن exception)
 - **توضیح:** خطای غیرمنتظره → 500 خام (در race واقعی، SQL خطا در پاسخ تست نمایان شد). هیچ Error-ID و پیام کاربرپسند و لاگ ساخت‌یافته‌ای وجود ندارد (نقض §42).
 - **Fix:** middleware خطا + کد خطای کاربرپسند + همبستگی با لاگ فنی.
 
@@ -127,6 +127,7 @@
 
 ### BUG-022 — کیفیت کد/عملکرد پراکنده (Backend)
 - **Severity:** Low · **Status:** OPEN
+- **Status:** PARTIAL-FIXED (فاز ۰: price_freshness tz ✓ · باقی موارد در پاکسازی فاز ۲)
 - **توضیح:** `product_total_stock` با `__import__("sqlalchemy")`؛ `if total > 0 or True` کد مرده؛ `total = len(all-rows)` به‌جای COUNT؛ unused import (`notify` در pos.py)؛ تاریخ‌های naive/aware مخلوط → `price_freshness` با `now` آگاه TypeError می‌دهد (اثبات‌شده)؛ `count_item` خطای اعتبارسنجی را 404 می‌دهد؛ پارامتر `group` گزارش فروش ignore می‌شود.
 - **Fix:** پاکسازی + lint (ruff) در CI.
 
