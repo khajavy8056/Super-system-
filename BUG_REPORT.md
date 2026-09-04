@@ -91,12 +91,12 @@
 - **Fix:** حذف create_all از lifespan (فقط Alembic) + `alembic stamp` برای نصب‌های موجود.
 
 ### BUG-015 — SMS صف بی‌فرستنده (SMS)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۳ — Providerهای melipayamak/kavenegar + Worker پس‌زمینه با Retry/FAILED + provider «file» برای تست قطعی؛ تست زنده اینترنت از sandbox ممکن نبود → فقط UNTESTED-LIVE ثبت شد)
 - **توضیح:** `POST /sms/send` فقط رکورد `PENDING` می‌سازد؛ هیچ Worker/Provider/زمان‌بندی وجود ندارد → پیام همیشه PENDING می‌ماند (تأیید کد + grep). مستندات API کد خطای `SMS_PROVIDER_ERROR` را می‌دهد که وجود خارجی ندارد.
 - **Fix:** Adapter ملی‌پیامک/کاوه‌نگار + Worker با retry (SmsStatus.RETRYING استفاده نشده).
 
 ### BUG-016 — ثبت موفقیت جعلی چاپ (Hardware / صداقت داده)
-- **Severity:** High · **Status:** OPEN
+- **Severity:** High · **Status:** FIXED (فاز ۳ — حذف مسیر SUCCESS جعلی؛ اتصال‌ها: file:// واقعی، escpos: با درایور اختیاری python-escpos، بقیه NOT_SUPPORTED/DRIVER_UNAVAILABLE صادقانه + تست)
 - **توضیح:** با دستگاه PRINTER با status=CONNECTED (بدون هیچ درایوری) → `print_receipt` مقدار `print_status=SUCCESS` و `ok=True` برمی‌گرداند بی‌آنکه بایتی چاپ شود (اثبات‌شده). Drawer هم در حالت CONNECTED «pulse sent» برمی‌گرداند بدون ارسال.
 - **Fix:** درایور واقعی (ESC/POS) یا وضعیت صادقانه `NOT_SUPPORTED` تا راه‌اندازی درایور.
 
@@ -121,7 +121,7 @@
 - **Fix:** middleware خطا + کد خطای کاربرپسند + همبستگی با لاگ فنی.
 
 ### BUG-021 — UI مبتنی بر نقش نیست + نواقص POS UI (Frontend)
-- **Severity:** Medium · **Status:** PARTIAL-FIXED (فاز ۲ — منوی مبتنی بر مجوز از /auth/me با permissions؛ POS اختصاصی/Kiosk → فاز ۳)
+- **Severity:** Medium · **Status:** FIXED (فاز ۳ — POS اختصاصی تمام‌صفحه §6 + Kiosk/Lock §7 با خروج فقط با احراز مدیر + منوی نقش‌محور + پنهان‌سازی سود/قیمت خرید از صندوق‌دار بدون pricing.view_cost)
 - **توضیح:** منویnavigation ثابت است و بر اساس مجوز فیلتر نمی‌شود (Cashier می‌بیند: Settings/Users/Audit و بعد 403 می‌خورد). Cashier کل داشبورد مدیریتی (سود/ارزش انبار) را می‌بیند (اثبات: `cashier GET /reports/dashboard → 200`). POS: بدون Kiosk/تخفیف/مشتری؛ listener جدید `click` در هر ورود به view اضافه می‌شود (leak).
 - **Fix:** nav مبتنی بر مجوز (endpoint `/auth/me` باید permissions برگرداند) + POS اختصاصی.
 

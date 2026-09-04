@@ -6,7 +6,8 @@ const state = {
   token: localStorage.getItem("token") || "",
   user: null,
   view: "dashboard",
-  cart: [], // {product_id, batch_id, quantity, ...}
+  kiosk: localStorage.getItem("kiosk") === "1",
+  kioskShortcut: "Ctrl+Shift+L",
 };
 
 /* ---------- helpers ---------- */
@@ -82,7 +83,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     state.user = me;
     showApp();
     buildNav();
-    go("dashboard");
+    if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
     $("#login-error").classList.remove("hidden");
@@ -204,178 +205,331 @@ function priceCard(title, pricing) {
   );
 }
 
-/* ---------- POS ---------- */
+/* ---------- POS — dedicated terminal screen (§6) + Kiosk lock (§7) ---------- */
+const posState = { cart: [], customer: null };
+
+function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
+
+function renderPosCart() {
+  const tbl = $("#pos-cart-table");
+  if (!tbl) return;
+  if (!posState.cart.length) {
+    tbl.innerHTML = `<tbody><tr><td class="muted" style="padding:24px;text-align:center">سبد خالی است — بارکد را اسکن کنید</td></tr></tbody>`;
+  } else {
+    const showCost = can("pricing.view_cost");
+    const rows = posState.cart.map((it, idx) => `
+      <tr>
+        <td>${esc(it.product_name)}<div class="muted" style="font-size:11px">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + esc(it.expiry_date) : ""}</div></td>
+        <td class="qty"><button class="btn btn-sm" onclick="posQty(${idx},1)">+</button>
+          <input value="${it.quantity}" onchange="posQty(${idx},0,this.value)" />
+          <button class="btn btn-sm" onclick="posQty(${idx},-1)">−</button></td>
+        <td>${money(it.unit_sell_price)}</td>
+        <td>${it.discount ? "<div class=\"muted\" style=\"font-size:11px\">−" + money(it.discount) + "</div>" : ""}${money(posGross(it) - (it.discount || 0))}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="posRemove(${idx})">✕</button></td>
+      </tr>`).join("");
+    tbl.innerHTML = `<thead><tr><th>کالا</th><th>تعداد</th><th>فی</th><th>جمع</th><th></th></tr></thead><tbody>${rows}</tbody>`;
+  }
+  // totals
+  const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
+  const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
+  const count = posState.cart.reduce((a, it) => a + it.quantity, 0);
+  const showCost = can("pricing.view_cost");
+  const profit = posState.cart.reduce((a, it) => a + (posGross(it) - (it.discount || 0) - (it.unit_buy_price || 0) * it.quantity), 0);
+  $("#pos-totals").innerHTML = `
+    <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
+    <div class="row"><span class="muted">جمع</span><span>${money(gross)}</span></div>
+    ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc)}</span></div>
+    ${showCost ? `<div class="row"><span class="muted">سود تخمینی</span><span class="ok">${money(profit)}</span></div>` : ""}`;
+  $("#pos-customer").innerHTML = posState.customer
+    ? `👤 ${esc(posState.customer.name)} ${posState.customer.phone ? "· " + esc(posState.customer.phone) : ""} <button class="btn btn-sm" onclick="posClearCustomer()">✕</button>`
+    : `<span class="muted">بدون مشتری (F8)</span>`;
+}
+
+window.posQty = (idx, delta, direct) => {
+  const it = posState.cart[idx];
+  if (!it) return;
+  if (delta === 0 && direct !== undefined) it.quantity = Math.max(1, parseInt(direct || "1", 10) || 1);
+  else it.quantity = Math.max(1, it.quantity + delta);
+  renderPosCart();
+};
+window.posRemove = (idx) => { posState.cart.splice(idx, 1); renderPosCart(); };
+window.posClearCustomer = () => { posState.customer = null; renderPosCart(); };
+
+function posClock() {
+  const el = $("#pos-clock");
+  if (!el) return;
+  el.textContent = new Date().toLocaleTimeString("fa-IR");
+}
+
 RENDER.pos = async () => {
-  const v = $("#view");
-  v.innerHTML = `
-    <div class="pos-wrap">
-      <div>
-        <input id="pos-scan" class="scan-input" placeholder="اسکن بارکد… (تمرکز همیشه اینجاست)" autocomplete="off" />
-        <div class="card" style="margin-top:12px">
-          <h3>سبد خرید</h3>
-          <div id="cart-table-wrap"></div>
-          <div id="cart-totals" class="card" style="margin-top:8px"></div>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <button id="btn-checkout" class="btn btn-primary" style="flex:2">پرداخت / ثبت فروش</button>
-            <button id="btn-void" class="btn btn-danger">خالی کردن سبد</button>
+  let cfg = { shortcut: "Ctrl+Shift+L", store_name: "فروشگاه" };
+  try { cfg = await api("/pos/kiosk/config"); } catch (e) { /* defaults */ }
+  state.kioskShortcut = cfg.shortcut;
+  $("#view").innerHTML = `
+    <div class="pos-screen" id="pos-screen">
+      <div class="pos-header">
+        <div class="pos-store">🏪 ${esc(cfg.store_name)}</div>
+        <div class="pos-register">صندوق: ${esc(state.user ? state.user.full_name || state.user.username : "")}</div>
+        <div class="pos-clock" id="pos-clock"></div>
+        <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "🔓 خروج کیوسک" : "🔒 قفل (میان‌بر)"}</button>
+      </div>
+      <div class="pos-main">
+        <div class="pos-cart"><table class="pos-cart-table" id="pos-cart-table"></table></div>
+        <div class="pos-side">
+          <input id="pos-scan" class="pos-scan" placeholder="＝ اسکن بارکد…" autocomplete="off" autofocus />
+          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
+          <div id="pos-customer" class="pos-customer"></div>
+          <div id="pos-totals" class="pos-totals"></div>
+          <div class="pos-actions">
+            <button class="pos-btn pos-btn-pay" id="pos-pay">پرداخت (F2)</button>
+            <button class="pos-btn" id="pos-discount-btn">تخفیف (F4)</button>
+            <button class="pos-btn" id="pos-customer-btn">مشتری (F8)</button>
+            <button class="pos-btn pos-btn-danger" id="pos-clear-btn">خالی کردن (Esc)</button>
           </div>
         </div>
       </div>
-      <div class="card">
-        <h3>راهنمای سریع</h3>
-        <p class="muted">بارکد را اسکن کنید. اگر کالا چند Batch (قیمت قدیم/جدید) داشته باشد، انتخابگر نمایش داده می‌شود. سیستم بر اساس سیاست FEFO/Hybrid بهترین Batch را پیشنهاد می‌دهد.</p>
-        <p class="muted">کلید <span class="kbd">Enter</span> = افزودن | <span class="kbd">F12</span> = پرداخت</p>
-        <div id="last-receipt"></div>
-      </div>
+      <div id="pos-receipt"></div>
     </div>`;
-  const scan = $("#pos-scan");
-  scan.focus();
-  document.addEventListener("click", () => scan.focus());
-  scan.addEventListener("keydown", async (e) => {
+  $("#pos-scan").addEventListener("keydown", async (e) => {
     if (e.key !== "Enter") return;
-    const barcode = scan.value.trim();
-    scan.value = "";
-    if (!barcode) return;
-    await addByBarcode(barcode);
+    const bc = e.target.value.trim();
+    e.target.value = "";
+    if (bc) await posAddByBarcode(bc);
   });
-  $("#btn-void").addEventListener("click", () => { state.cart = []; renderCart(); });
-  $("#btn-checkout").addEventListener("click", () => checkoutModal());
-  document.addEventListener("keydown", (e) => { if (e.key === "F12") { e.preventDefault(); checkoutModal(); } });
-  renderCart();
+  $("#pos-pay").addEventListener("click", () => posCheckoutModal());
+  $("#pos-discount-btn").addEventListener("click", () => posDiscountModal());
+  $("#pos-customer-btn").addEventListener("click", () => posCustomerModal());
+  $("#pos-clear-btn").addEventListener("click", () => { posState.cart = []; renderPosCart(); });
+  $("#pos-kiosk-btn").addEventListener("click", () => (state.kiosk ? exitKioskPrompt() : enterKiosk()));
+  posClock();
+  renderPosCart();
+  $("#pos-scan").focus();
 };
 
-async function addByBarcode(barcode) {
+async function posAddByBarcode(barcode) {
+  let p;
   try {
-    const p = await api(`/products/barcode/${barcode}`);
-    await addToCart(p);
+    p = await api(`/products/barcode/${encodeURIComponent(barcode)}`);
   } catch (err) {
-    // Unknown product -> resolve
     try {
-      const r = await api(`/barcode/resolve/${barcode}`);
-      toast(`بارکد ناشناخته: ${r.message || "نیاز به ثبت دستی"}`, "err");
-      $("#pos-scan").focus();
-    } catch (e2) {
-      toast("کالا یافت نشد", "err");
-    }
+      const r = await api(`/barcode/resolve/${encodeURIComponent(barcode)}`);
+      if (r.origin === "local" && r.product) p = r.product;
+      else toast(r.message || "بارکد ناشناخته — ثبت دستی لازم است", "err");
+    } catch (e2) { toast("کالا یافت نشد", "err"); }
+    $("#pos-scan").focus();
+    if (!p) return;
   }
-}
-
-async function addToCart(p) {
   let options;
   try { options = await api(`/pos/batch-options/${p.id}`); } catch (e) { toast(e.message, "err"); return; }
   const opts = options.options || [];
-  if (opts.length === 0) { toast("موجودی برای این کالا موجود نیست", "err"); return; }
-  if (opts.length === 1) { pushCart(p, opts[0], 1); return; }
-  // multiple batches -> selector
+  if (!opts.length) { toast("موجودی قابل فروش ندارد", "err"); return; }
+  if (opts.length === 1) { posPushCart(p, opts[0], 1); return; }
+  // چند Batch / قیمت قدیم-جدید (§16): صندوق‌دار انتخاب می‌کند
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">خرید: ${money(o.buy_price)} | موجودی: ${o.current_qty} |
-        انقضا: ${o.expiry_date || "—"} (${o.days_left ?? "—"} روز)</div>
+      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + esc(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
     </div>`).join("");
-  openModal(`<h3>${p.name} — انتخاب Batch / قیمت</h3>${rows}
-    <p class="muted">سیستم بر اساس سیاست موجودی پیشنهاد داده؛ می‌توانید Batch واقعی را انتخاب کنید.</p>`);
+  openModal(`<h3>${esc(p.name)} — انتخاب قیمت / Batch</h3>${rows}
+    <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ Batch واقعی قفسه را شما انتخاب می‌کنید.</p>`);
   document.querySelectorAll(".batch-option").forEach((node) =>
     node.addEventListener("click", () => {
       const b = opts.find((o) => o.batch_id == node.dataset.batch);
-      closeModal(); pushCart(p, b, 1);
+      closeModal(); posPushCart(p, b, 1);
     }));
 }
 
-function pushCart(p, batch, qty) {
-  const existing = state.cart.find((i) => i.product_id === p.id && i.batch_id === batch.batch_id);
+function posPushCart(p, batch, qty) {
+  const existing = posState.cart.find((i) => i.product_id === p.id && i.batch_id === batch.batch_id);
   if (existing) existing.quantity += qty;
-  else state.cart.push({ product_id: p.id, product_name: p.name, batch_id: batch.batch_id,
+  else posState.cart.push({ product_id: p.id, product_name: p.name, batch_id: batch.batch_id,
     batch_number: batch.batch_number, quantity: qty, unit_sell_price: batch.sell_price,
-    unit_buy_price: batch.buy_price, expiry_date: batch.expiry_date });
-  renderCart();
+    unit_buy_price: batch.buy_price, expiry_date: batch.expiry_date, discount: 0 });
+  renderPosCart();
+  $("#pos-scan").focus();
 }
 
-function renderCart() {
-  const wrap = $("#cart-table-wrap");
-  if (!state.cart.length) { wrap.innerHTML = `<p class="muted">سبد خالی است.</p>`; $("#cart-totals").innerHTML = ""; return; }
-  let subtotal = 0, profit = 0;
-  const rows = state.cart.map((it, idx) => {
-    const st = it.unit_sell_price * it.quantity;
-    const pr = (it.unit_sell_price - it.unit_buy_price) * it.quantity;
-    subtotal += st; profit += pr;
-    return el("tr", {},
-      el("td", { text: it.product_name }),
-      el("td", { text: it.batch_number || "—" }),
-      el("td", {}, qtyCtrl(idx, it)),
-      el("td", { text: money(st) }),
-      el("td", {}, el("button", { class: "btn btn-sm btn-danger", text: "✕", onclick: () => { state.cart.splice(idx, 1); renderCart(); } })),
-    );
-  });
-  wrap.innerHTML = "";
-  wrap.append(el("table", { class: "cart-table" },
-    el("thead", {}, el("tr", {},
-      el("th", { text: "کالا" }), el("th", { text: "Batch" }), el("th", { text: "تعداد" }),
-      el("th", { text: "جمع" }), el("th", {}))),
-    el("tbody", {}, ...rows)));
-  $("#cart-totals").innerHTML =
-    `<div style="display:flex;justify-content:space-between"><span>جمع</span><strong>${money(subtotal)}</strong></div>
-     <div style="display:flex;justify-content:space-between"><span class="muted">سود تخمینی</span><span class="ok">${money(profit)}</span></div>`;
-}
-
-function qtyCtrl(idx, it) {
-  return el("span", {},
-    el("button", { class: "btn btn-sm", text: "+", onclick: () => { it.quantity++; renderCart(); } }),
-    el("span", { text: " " + it.quantity + " ", style: "min-width:24px;display:inline-block;text-align:center" }),
-    el("button", { class: "btn btn-sm", text: "−", onclick: () => { it.quantity = Math.max(1, it.quantity - 1); renderCart(); } }),
-  );
-}
-
-function checkoutModal() {
-  if (!state.cart.length) { toast("سبد خالی است", "err"); return; }
-  let subtotal = 0;
-  state.cart.forEach((it) => subtotal += it.unit_sell_price * it.quantity);
-  openModal(`
-    <h3>پرداخت</h3>
-    <p>جمع کل: <strong>${money(subtotal)}</strong></p>
-    <label>روش پرداخت</label>
-    <select id="pay-method">
-      <option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option>
-    </select>
-    <div id="pay-split" class="hidden" style="margin-top:8px">
-      <label>مبلغ نقدی</label><input id="pay-cash" type="number" value="0" />
-      <label>مبلغ کارت</label><input id="pay-card" type="number" value="0" />
-    </div>
-    <div style="display:flex;gap:8px;margin-top:16px">
-      <button id="btn-pay" class="btn btn-primary btn-block">ثبت و پرداخت</button>
-      <button class="btn" onclick="closeModal()">انصراف</button>
-    </div>`);
-  $("#pay-method").addEventListener("change", (e) => {
-    $("#pay-split").classList.toggle("hidden", e.target.value !== "MIXED");
-  });
-  $("#btn-pay").addEventListener("click", async () => {
-    const method = $("#pay-method").value;
-    let payments;
-    if (method === "MIXED") {
-      const cash = Number($("#pay-cash").value || 0), card = Number($("#pay-card").value || 0);
-      payments = [{ method: "CASH", amount: cash }, { method: "CARD", amount: card }];
-    } else payments = [{ method, amount: subtotal }];
-    try {
-      const inv = await api("/pos/checkout", {
-        method: "POST",
-        body: JSON.stringify({ items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.quantity })), payments }),
+/* POS: discount (line or whole cart, split proportionally) */
+function posDiscountModal() {
+  if (!posState.cart.length) { toast("سبد خالی است", "err"); return; }
+  const options = posState.cart.map((it, idx) =>
+    `<option value="${idx}">${esc(it.product_name)} (${money(posGross(it))})</option>`).join("");
+  openModal(`<h3>تخفیف</h3>
+    <label>اعمال روی</label>
+    <select id="disc-target"><option value="-1">کل سبد</option>${options}</select>
+    <label>مبلغ تخفیف (ریال)</label>
+    <input id="disc-amount" type="number" min="0" value="0" />
+    <button id="disc-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال</button>`);
+  $("#disc-apply").addEventListener("click", () => {
+    const target = parseInt($("#disc-target").value, 10);
+    const amount = Number($("#disc-amount").value || 0);
+    if (amount <= 0) { toast("مبلغ نامعتبر", "err"); return; }
+    if (target >= 0) {
+      const it = posState.cart[target];
+      if (amount > posGross(it)) { toast("تخفیف از مبلغ خط بیشتر است", "err"); return; }
+      it.discount = amount;
+    } else {
+      const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
+      if (amount > gross) { toast("تخفیف از جمع سبد بیشتر است", "err"); return; }
+      // تقسیم متناسب؛ باقی‌مانده گرد شدن روی آخرین خط
+      let assigned = 0;
+      posState.cart.forEach((it, i) => {
+        if (i === posState.cart.length - 1) { it.discount = amount - assigned; return; }
+        it.discount = Math.round((posGross(it) / gross) * amount);
+        assigned += it.discount;
       });
-      state.cart = [];
-      closeModal();
-      renderCart();
-      toast(`فروش ثبت شد: ${inv.invoice_number}`);
-      try {
-        const print = await api(`/invoices/${inv.invoice_id}/print`, { method: "POST" });
-        if (print.ok && typeof print.message === "string") showReceipt(print.message);
-        else toast("چاپ: " + print.message, print.ok ? "ok" : "err");
-      } catch (e) { /* print is non-blocking */ }
-    } catch (err) { toast(err.message, "err"); }
+    }
+    closeModal(); renderPosCart();
   });
 }
 
-function showReceipt(text) {
-  $("#last-receipt").innerHTML = `<h3>رسید</h3><pre class="receipt">${esc(text)}</pre>`;
+/* POS: customer */
+function posCustomerModal() {
+  openModal(`<h3>مشتری</h3>
+    <label>شماره موبایل</label><input id="cust-phone" autocomplete="off" />
+    <label>نام (برای مشتری جدید)</label><input id="cust-name" autocomplete="off" />
+    <button id="cust-save" class="btn btn-primary btn-block" style="margin-top:14px">انتخاب / ایجاد</button>`);
+  $("#cust-save").addEventListener("click", async () => {
+    const phone = $("#cust-phone").value.trim();
+    const name = $("#cust-name").value.trim();
+    try {
+      if (!phone && !name) { posState.customer = null; closeModal(); renderPosCart(); return; }
+      let c = null;
+      if (phone) {
+        try { c = await api(`/customers/phone/${encodeURIComponent(phone)}`); } catch (e) { c = null; }
+      }
+      if (!c && name) c = await api("/customers", { method: "POST", body: JSON.stringify({ name: name || phone, phone: phone || null }) });
+      if (!c && phone) { toast("مشتری یافت نشد؛ نام را هم وارد کنید", "err"); return; }
+      posState.customer = c; closeModal(); renderPosCart();
+    } catch (e) { toast(e.message, "err"); }
+  });
 }
+
+/* POS: checkout */
+function posCheckoutModal() {
+  if (!posState.cart.length) { toast("سبد خالی است", "err"); return; }
+  const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
+  const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
+  const total = gross - disc;
+  openModal(`<h3>پرداخت</h3>
+    <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
+    <label>روش پرداخت</label>
+    <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option></select>
+    <div id="pay-cash-area" style="margin-top:8px">
+      <label>دریافتی نقدی</label><input id="pay-cash" type="number" value="${total}" />
+      <div id="pay-change" class="muted"></div>
+    </div>
+    <div id="pay-split" class="hidden" style="margin-top:8px">
+      <label>مبلغ نقدی</label><input id="pay-cash2" type="number" value="0" />
+      <label>مبلغ کارت</label><input id="pay-card" type="number" value="${total}" />
+    </div>
+    <button id="btn-pay" class="btn btn-primary btn-block" style="margin-top:14px">ثبت فروش (Enter)</button>`);
+  const updChange = () => {
+    const cash = Number($("#pay-cash").value || 0);
+    $("#pay-change").textContent = cash >= total ? `باقی‌مانده: ${money(cash - total)}` : "نقصانه!";
+  };
+  $("#pay-method").addEventListener("change", (e) => {
+    const m = e.target.value;
+    $("#pay-cash-area").classList.toggle("hidden", m !== "CASH");
+    $("#pay-split").classList.toggle("hidden", m !== "MIXED");
+  });
+  $("#pay-cash").addEventListener("input", updChange); updChange();
+  $("#btn-pay").addEventListener("click", () => doCheckout(total));
+  $("#pay-cash").focus();
+  $("#pay-cash").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCheckout(total); } });
+}
+
+async function doCheckout(total) {
+  const method = $("#pay-method").value;
+  let payments;
+  if (method === "MIXED") {
+    const cash = Number($("#pay-cash2").value || 0), card = Number($("#pay-card").value || 0);
+    payments = [{ method: "CASH", amount: cash }, { method: "CARD", amount: card }];
+  } else payments = [{ method, amount: total }];
+  try {
+    const inv = await api("/pos/checkout", {
+      method: "POST",
+      body: JSON.stringify({
+        items: posState.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id,
+                                           quantity: i.quantity, discount: i.discount || 0 })),
+        payments, customer_id: posState.customer ? posState.customer.id : null }),
+    });
+    posState.cart = []; posState.customer = null;
+    closeModal(); renderPosCart();
+    toast(`فروش ثبت شد: ${inv.invoice_number}`);
+    try {
+      const pr = await api(`/invoices/${inv.invoice_id}/print`, { method: "POST" });
+      if (pr.ok && typeof pr.message === "string" && pr.message.includes("\n"))
+        $("#pos-receipt").innerHTML = `<pre class="receipt">${esc(pr.message)}</pre>`;
+      else toast("چاپ: " + pr.message, pr.ok ? "ok" : "err");
+    } catch (e) { /* printing never blocks the sale */ }
+  } catch (err) { toast(err.message, "err"); }
+}
+
+/* ---------- Kiosk / Lock mode (§7) ---------- */
+async function enterKiosk() {
+  state.kiosk = true;
+  localStorage.setItem("kiosk", "1");
+  document.body.classList.add("kiosk");
+  try { await document.documentElement.requestFullscreen(); } catch (e) { /* user gesture needed */ }
+  go("pos");
+}
+
+function exitKioskPrompt() {
+  openModal(`<h3>🔓 خروج از حالت کیوسک</h3>
+    <p class="muted">خروج تنها با احراز هویت مدیر امکان‌پذیر است.</p>
+    <label>نام کاربری مدیر</label><input id="kiosk-user" autocomplete="off" />
+    <label>رمز عبور</label><input id="kiosk-pass" type="password" autocomplete="current-password" />
+    <button id="kiosk-unlock" class="btn btn-primary btn-block" style="margin-top:14px">تأیید و خروج</button>`);
+  $("#kiosk-user").focus();
+  $("#kiosk-unlock").addEventListener("click", kioskUnlock);
+  $("#kiosk-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") kioskUnlock(); });
+}
+
+async function kioskUnlock() {
+  try {
+    await api("/pos/kiosk/unlock", { method: "POST",
+      body: JSON.stringify({ username: $("#kiosk-user").value.trim(), password: $("#kiosk-pass").value }) });
+    state.kiosk = false;
+    localStorage.removeItem("kiosk");
+    document.body.classList.remove("kiosk");
+    try { if (document.fullscreenElement) await document.exitFullscreen(); } catch (e) {}
+    closeModal(); toast("خروج از حالت کیوسک انجام شد");
+    go("dashboard");
+  } catch (e) { toast(e.message, "err"); }
+}
+
+/* single global keyboard dispatcher (no listener leaks) */
+function matchesShortcut(e, combo) {
+  if (!combo) return false;
+  const parts = combo.toLowerCase().split("+").map((x) => x.trim());
+  const key = parts[parts.length - 1];
+  const needCtrl = parts.includes("ctrl"), needShift = parts.includes("shift"), needAlt = parts.includes("alt");
+  return e.key.toLowerCase() === key && e.ctrlKey === needCtrl && e.shiftKey === needShift && e.altKey === needAlt;
+}
+
+document.addEventListener("keydown", (e) => {
+  // kiosk lock shortcut works anywhere in the app
+  if (matchesShortcut(e, state.kioskShortcut || "Ctrl+Shift+L")) {
+    e.preventDefault();
+    if (!state.kiosk) enterKiosk(); else if (state.view === "pos") exitKioskPrompt();
+    return;
+  }
+  if (state.view !== "pos" || !$("#pos-screen")) return;
+  const modalOpen = !$("#modal").classList.contains("hidden");
+  if (e.key === "F2") { e.preventDefault(); if (!modalOpen) posCheckoutModal(); }
+  else if (e.key === "F4") { e.preventDefault(); if (!modalOpen) posDiscountModal(); }
+  else if (e.key === "F8") { e.preventDefault(); if (!modalOpen) posCustomerModal(); }
+  else if (e.key === "Delete" && !modalOpen) { posState.cart.pop(); renderPosCart(); }
+  else if (e.key === "Escape" && !modalOpen) { posState.cart = []; renderPosCart(); }
+  const tag = ((document.activeElement && document.activeElement.tagName) || "").toLowerCase();
+  if (!modalOpen && tag !== "input" && tag !== "textarea" && tag !== "select" && e.key.length === 1) {
+    $("#pos-scan").focus();
+  }
+});
+
+setInterval(() => { if (state.view === "pos") posClock(); }, 1000);
 
 /* ---------- products ---------- */
 RENDER.products = async () => {

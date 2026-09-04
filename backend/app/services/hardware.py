@@ -51,8 +51,11 @@ def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "") -> str
 
 
 def _printer(db: Session) -> HardwareDevice | None:
+    """Latest registered enabled printer (a terminal has ONE active printer)."""
     return db.execute(
-        select(HardwareDevice).where(HardwareDevice.device_type == "PRINTER", HardwareDevice.is_enabled.is_(True))
+        select(HardwareDevice)
+        .where(HardwareDevice.device_type == "PRINTER", HardwareDevice.is_enabled.is_(True))
+        .order_by(HardwareDevice.id.desc()).limit(1)
     ).scalar_one_or_none()
 
 
@@ -89,16 +92,38 @@ def print_receipt(db: Session, *, invoice: Invoice) -> tuple[bool, str]:
                     reference="Printer disconnected")
         return False, "PRINTER_OFFLINE: device not connected"
 
-    # A real ESC/POS driver would send bytes here. Without a driver the receipt
-    # is returned for the terminal to print.
-    invoice.print_status = "SUCCESS"
-    write_audit(db, action="PRINT_SUCCESS", entity_type="Invoice", entity_id=invoice.id)
-    return True, text
+    # Honest hardware layer (BUG-016): without a REAL driver we never record
+    # SUCCESS. Supported real paths today: file:// sink and escpos:// when the
+    # optional python-escpos driver is installed (see requirements-hardware.txt).
+    if device.connection and device.connection.startswith("escpos:"):
+        try:
+            from ..services.escpos_driver import print_via_escpos  # optional dependency
+        except ImportError:
+            invoice.print_status = "FAILED"
+            write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
+                        reference="DRIVER_UNAVAILABLE: python-escpos not installed")
+            return False, "DRIVER_UNAVAILABLE: install python-escpos (requirements-hardware.txt)"
+        ok, detail = print_via_escpos(device.connection, text)
+        if ok:
+            invoice.print_status = "SUCCESS"
+            write_audit(db, action="PRINT_SUCCESS", entity_type="Invoice", entity_id=invoice.id)
+            return True, "printed via ESC/POS driver"
+        invoice.print_status = "FAILED"
+        write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
+                    reference=detail)
+        return False, f"PRINTER_ERROR: {detail}"
+
+    invoice.print_status = "FAILED"
+    write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
+                reference="NOT_SUPPORTED: no real driver for this connection type")
+    return False, "NOT_SUPPORTED: no real driver for this connection type (use file:// for testing or install the ESC/POS driver)"
 
 
 def open_cash_drawer(db: Session) -> tuple[bool, str]:
     drawer = db.execute(
-        select(HardwareDevice).where(HardwareDevice.device_type == "CASH_DRAWER", HardwareDevice.is_enabled.is_(True))
+        select(HardwareDevice)
+        .where(HardwareDevice.device_type == "CASH_DRAWER", HardwareDevice.is_enabled.is_(True))
+        .order_by(HardwareDevice.id.desc()).limit(1)
     ).scalar_one_or_none()
     if not drawer or drawer.status != "CONNECTED":
         return False, "CASH_DRAWER_UNAVAILABLE"

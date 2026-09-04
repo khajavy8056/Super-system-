@@ -20,6 +20,7 @@ from .routers import (
     audit,
     auth,
     batches,
+    customers,
     hardware,
     inventory,
     invoices,
@@ -45,8 +46,13 @@ if not logger.handlers:  # avoid duplicate handlers under test reloads
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .database import SessionLocal
+    from .services import sms as sms_svc
+
     init_db()
+    sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
     yield
+    sms_svc.stop_worker()
 
 
 app = FastAPI(
@@ -66,7 +72,8 @@ app.add_middleware(
 
 API = "/api"
 for r in (
-    auth.router, products.router, batches.router, inventory.router, pricing.router,
+    auth.router, products.router, batches.router, customers.router,
+    inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
 ):

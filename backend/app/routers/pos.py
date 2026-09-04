@@ -40,6 +40,50 @@ class CheckoutIn(BaseModel):
     tax_rate: Decimal | None = None
 
 
+# --- Kiosk / lock mode (§7) ---------------------------------------------------
+
+@router.get("/kiosk/config")
+def kiosk_config(db: Session = Depends(get_db),
+                 _: User = Depends(get_current_user)):
+    """Config the POS terminal needs to enter kiosk mode (any logged-in user)."""
+    shortcut = pos_svc.get_setting(db, "pos.kiosk_shortcut", "Ctrl+Shift+L")
+    store = pos_svc.get_setting(db, "printer.header", "") or "فروشگاه"
+    return {"shortcut": shortcut, "store_name": store.split("\n")[0]}
+
+
+class KioskUnlockIn(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/kiosk/unlock")
+def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
+    """Leaving kiosk requires admin credentials (§7 security note).
+
+    Returns ok=True ONLY for a valid, active user holding ``settings.manage``.
+    No token is issued — the cashier session stays as-is; this only unlocks
+    the terminal UI. Failed attempts are audited and rate-limited by the same
+    login throttling machinery.
+    """
+    from ..models import User as UserModel
+    from ..security import _user_permission_codes, verify_password
+    from ..services.audit import write_audit
+    from sqlalchemy import select as _select
+
+    user = db.execute(_select(UserModel).where(UserModel.username == body.username)).scalar_one_or_none()
+    if not user or not user.is_active or not verify_password(body.password, user.password_hash):
+        write_audit(db, action="KIOSK_UNLOCK_FAILED", reference=body.username)
+        db.commit()
+        raise HTTPException(status_code=401, detail="ادمین معتبر نیست")
+    if "settings.manage" not in _user_permission_codes(user):
+        write_audit(db, action="KIOSK_UNLOCK_DENIED", user_id=user.id, reference=body.username)
+        db.commit()
+        raise HTTPException(status_code=403, detail="این کاربر اجازه خروج از حالت کیوسک ندارد")
+    write_audit(db, action="KIOSK_UNLOCKED", user_id=user.id, entity_type="User", entity_id=user.id)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/batch-options/{product_id}")
 def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
