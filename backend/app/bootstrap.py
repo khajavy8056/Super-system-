@@ -15,7 +15,9 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "pos.tax_rate": ("0", "Tax rate in percent applied at checkout", False),
     "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID", False),
     "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID", False),
-    "pos.currency": ("IRR", "Display currency code", False),
+    "pos.currency": ("IRT", "Base currency: IRT (تومان) | IRR (ریال). Amounts are STORED in this unit.", False),
+    "pos.coupon_enabled": ("true", "Enable coupon entry at the POS", False),
+    "pos.print_after_checkout": ("true", "Automatically print the receipt after checkout", False),
     "pos.allow_negative_stock": ("false", "Allow negative stock (requires permission + audit)", False),
     "pos.kiosk_shortcut": ("Ctrl+Shift+L", "POS kiosk/lock mode keyboard shortcut", False),
     "expiry.block_sale": ("true", "Block sale of expired batches", False),
@@ -36,10 +38,14 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "backup.keep": ("10", "Number of backup files to retain (rotation)", False),
     "printer.header": ("", "Receipt header text", False),
     "printer.footer": ("", "Receipt footer text", False),
+    "sync.worker_interval_seconds": ("15", "Offline sync queue drain interval (seconds)", False),
+    "stocktake.require_approval": ("true", "Stock adjustments need manager approval", False),
 }
 
 
 def bootstrap(db: Session) -> None:
+    from .services.units import ensure_units
+
     # 1. Permissions
     existing = {p.code for p in db.execute(select(Permission)).scalars()}
     for code, desc in PERMISSIONS.items():
@@ -78,5 +84,8 @@ def bootstrap(db: Session) -> None:
     for key, (value, desc, is_secret) in DEFAULT_SETTINGS.items():
         if key not in current_keys:
             db.add(SystemSetting(key=key, value=value, description=desc, is_secret=is_secret))
+
+    # 5. Default measurement units (§25 — piece / kg / gram / liter ...)
+    ensure_units(db)
 
     db.commit()

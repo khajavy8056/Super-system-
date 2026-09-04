@@ -18,7 +18,8 @@ router = APIRouter(prefix="/pos", tags=["pos"])
 
 class CartLineIn(BaseModel):
     product_id: int
-    quantity: int = Field(default=1, ge=1)
+    #: decimal quantities are first-class (12.500 Kg) — §25
+    quantity: Decimal = Field(default=Decimal("1"), gt=0)
     batch_id: int | None = None
     discount: Decimal = Field(default=Decimal("0"), ge=0)
 
@@ -26,6 +27,8 @@ class CartLineIn(BaseModel):
 class CartIn(BaseModel):
     items: list[CartLineIn]
     tax_rate: Decimal | None = None
+    coupon_code: str | None = None
+    customer_id: int | None = None
 
 
 class PaymentIn(BaseModel):
@@ -37,7 +40,10 @@ class CheckoutIn(BaseModel):
     items: list[CartLineIn]
     payments: list[PaymentIn]
     customer_id: int | None = None
+    customer_phone: str | None = None
+    customer_name: str | None = None
     tax_rate: Decimal | None = None
+    coupon_code: str | None = None
 
 
 # --- Kiosk / lock mode (§7) ---------------------------------------------------
@@ -101,7 +107,28 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
         items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
                                                    batch_id=i.batch_id, discount=i.discount)
                                            for i in body.items])
-        return {"items": [_line_out(i) for i in items], "totals": _totals(items)}
+        totals = _totals(items)
+        coupon = None
+        if body.coupon_code:
+            from ..services import coupons as coupon_svc
+
+            phone = None
+            if body.customer_id:
+                from ..models import Customer
+                cust = db.get(Customer, body.customer_id)
+                phone = cust.phone if cust else None
+            try:
+                ev = coupon_svc.evaluate(db, code=body.coupon_code,
+                                         amount=Decimal(str(totals["subtotal"])),
+                                         customer_id=body.customer_id, customer_phone=phone)
+                coupon = {"code": ev["code"], "discount": float(ev["discount"]),
+                          "campaign": ev["campaign"], "ok": True}
+                totals["coupon_discount"] = float(ev["discount"])
+                totals["subtotal"] = float(Decimal(str(totals["subtotal"])) - ev["discount"])
+            except coupon_svc.CouponError as exc:
+                coupon = {"code": body.coupon_code, "ok": False,
+                          "error_code": exc.code, "message": exc.message}
+        return {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon}
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -110,6 +137,18 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
 def checkout(body: CheckoutIn, db: Session = Depends(get_db),
              user: User = Depends(require_permission("pos.sell"))):
     try:
+        customer_id = body.customer_id
+        if customer_id is None and body.customer_phone:
+            # Phone book: a phone number alone is enough to create a customer (§30)
+            from ..models import Customer
+
+            phone = body.customer_phone.strip()
+            cust = db.execute(select(Customer).where(Customer.phone == phone)).scalar_one_or_none()
+            if cust is None:
+                cust = Customer(name=(body.customer_name or phone).strip(), phone=phone)
+                db.add(cust)
+                db.flush()
+            customer_id = cust.id
         invoice = pos_svc.checkout(
             db,
             items=[CartItem(product_id=i.product_id, quantity=i.quantity, batch_id=i.batch_id,
@@ -117,11 +156,44 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
                    for i in body.items],
             payments=[p.model_dump() for p in body.payments],
             user=user,
-            customer_id=body.customer_id,
+            customer_id=customer_id,
             tax_rate=body.tax_rate,
+            coupon_code=body.coupon_code,
         )
+
+        # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
+        # built but INSIDE the same transaction, so nothing is half-committed.
+        from ..models import Customer as _C
+        from ..services import coupons as coupon_svc
+
+        customer = db.get(_C, customer_id) if customer_id else None
+        issued = coupon_svc.issue_next_purchase_coupon(
+            db, invoice=invoice, customer=customer, user=user)
+
+        if customer and customer.phone:
+            from ..services import sms as sms_svc
+            from ..services import sync as sync_svc
+
+            lines = [f"فاکتور {invoice.invoice_number}",
+                     f"مبلغ: {invoice.total_amount:,.0f}"]
+            if issued:
+                lines.append(f"کد تخفیف خرید بعدی: {issued.code}")
+                if issued.valid_until:
+                    lines.append(f"تا {issued.valid_until.date()}")
+            msg = sms_svc.queue_sms(db, phone=customer.phone, text="\n".join(lines),
+                                    reference_type="Invoice", reference_id=invoice.id)
+            # queued for retry-safe delivery; never blocks the sale (§48)
+            sync_svc.enqueue(db, job_type="SMS", payload={"sms_id": msg.id},
+                             reference_type="Invoice", reference_id=invoice.id,
+                             idempotency_key=f"sms:invoice:{invoice.id}", user_id=user.id)
+
+        out = _invoice_out(invoice)
+        out["coupon_code"] = body.coupon_code
+        out["issued_coupon"] = ({"code": issued.code,
+                                 "valid_until": issued.valid_until.isoformat()
+                                 if issued.valid_until else None} if issued else None)
         db.commit()
-        return _invoice_out(invoice)
+        return out
     except PosError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
@@ -131,7 +203,7 @@ def _line_out(i: CartItem) -> dict:
     return {
         "product_id": i.product_id, "product_name": i.product_name,
         "batch_id": i.batch_id, "batch_number": i.batch_number,
-        "quantity": i.quantity,
+        "quantity": float(i.quantity),
         "unit_buy_price": float(i.unit_buy_price or 0),
         "unit_consumer_price": float(i.unit_consumer_price or 0),
         "unit_sell_price": float(i.unit_sell_price or 0),
@@ -165,9 +237,70 @@ def _invoice_out(inv) -> dict:
         "status": inv.status,
         "print_status": inv.print_status,
         "items": [
-            {"product_id": it.product_id, "batch_id": it.batch_id, "qty": it.qty,
+            {"product_id": it.product_id, "batch_id": it.batch_id, "qty": float(it.qty),
+             "qty_display": float(it.qty),
              "unit_buy_price": float(it.unit_buy_price), "unit_sell_price": float(it.unit_sell_price),
              "discount": float(it.discount), "subtotal": float(it.subtotal), "profit": float(it.profit)}
             for it in inv.items
         ],
     }
+
+
+# --- POS search (§26) ------------------------------------------------------------
+
+@router.get("/search")
+def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
+               _: User = Depends(require_permission("pos.sell"))):
+    """Cashier search by barcode, product name, SKU or product code.
+
+    An exact barcode/SKU hit is always returned first so scanning stays instant,
+    then partial name matches for typed searches (e.g. «شیر»).
+    """
+    from ..models import ProductBatch, Unit
+    from sqlalchemy import func as _f
+
+    term = (q or "").strip()
+    if not term:
+        return {"query": q, "items": []}
+
+    exact = db.execute(
+        select(Product).where(
+            Product.deleted_at.is_(None),
+            (Product.barcode == term) | (_f.lower(Product.sku) == term.lower()),
+        )
+    ).scalars().all()
+
+    like = f"%{term}%"
+    partial = db.execute(
+        select(Product).where(
+            Product.deleted_at.is_(None),
+            Product.is_active.is_(True),
+            (Product.name.ilike(like)) | (Product.barcode.ilike(like))
+            | (Product.sku.ilike(like)) | (Product.model.ilike(like)),
+        ).order_by(Product.name.asc()).limit(limit)
+    ).scalars().all()
+
+    seen: set[int] = set()
+    ordered: list[Product] = []
+    for p in exact + partial:
+        if p.id not in seen:
+            seen.add(p.id)
+            ordered.append(p)
+
+    items = []
+    for p in ordered[:limit]:
+        options = pos_svc.get_batch_options(db, p)
+        unit = db.get(Unit, p.unit_id) if p.unit_id else None
+        total = float(sum((o.batch.current_qty for o in options), 0))
+        items.append({
+            "product_id": p.id, "name": p.name, "barcode": p.barcode, "sku": p.sku,
+            "image_url": p.image_url,
+            "unit": {"name": unit.name, "symbol": unit.symbol,
+                     "allow_decimal": unit.allow_decimal,
+                     "decimals": unit.decimals} if unit else None,
+            "available_qty": total,
+            "price_count": len({float(o.batch.sell_price) for o in options}),
+            "exact": p in exact,
+            "batches": [o.as_dict() for o in options],
+        })
+    return {"query": term, "count": len(items), "items": items}

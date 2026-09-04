@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,9 +22,11 @@ from .routers import (
     auth,
     batches,
     customers,
+    diagnostics,
     hardware,
     inventory,
     invoices,
+    marketing,
     pos,
     pricing,
     products,
@@ -44,15 +47,52 @@ if not logger.handlers:  # avoid duplicate handlers under test reloads
     logger.addHandler(_h)
 
 
+# --- offline sync worker ------------------------------------------------------
+_sync_stop = threading.Event()
+_sync_thread: threading.Thread | None = None
+
+
+def _start_sync_worker(session_factory) -> None:
+    global _sync_thread
+    if _sync_thread and _sync_thread.is_alive():
+        return
+    _sync_stop.clear()
+
+    def run():
+        from .services import sync as sync_svc
+
+        while not _sync_stop.is_set():
+            try:
+                db = session_factory()
+                try:
+                    sync_svc.run_once(db)
+                finally:
+                    db.close()
+            except Exception:  # the queue worker must never die
+                logging.getLogger("supermarket.sync").exception("sync worker tick failed")
+            _sync_stop.wait(15)
+
+    _sync_thread = threading.Thread(target=run, name="sync-worker", daemon=True)
+    _sync_thread.start()
+
+
+def _stop_sync_worker() -> None:
+    _sync_stop.set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .database import SessionLocal
     from .services import sms as sms_svc
 
+    from .services import sync as sync_svc
+
     init_db()
     sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
+    _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
     yield
     sms_svc.stop_worker()
+    _stop_sync_worker()
 
 
 app = FastAPI(
@@ -72,10 +112,11 @@ app.add_middleware(
 
 API = "/api"
 for r in (
-    auth.router, products.router, batches.router, customers.router,
+    auth.router, products.router, products.unit_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
+    marketing.router, diagnostics.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -140,7 +181,18 @@ def _find_frontend_dir() -> Path | None:
     return None
 
 
+# Locally stored product images (§21) are served from the same origin so the
+# panel and the PWA never depend on a third-party URL.
+_MEDIA_DIR = Path(settings.MEDIA_DIR)
+_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
 _FRONTEND_DIR = _find_frontend_dir()
 if _FRONTEND_DIR is not None:
     from fastapi.staticfiles import StaticFiles
+
+    app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
+    # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
+    _MOBILE_DIR = _FRONTEND_DIR / "mobile"
+    if _MOBILE_DIR.exists():
+        app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

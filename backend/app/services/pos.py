@@ -39,6 +39,7 @@ from ..models import (
 )
 from . import expiry as expiry_svc
 from .audit import write_audit
+from .units import QuantityError, to_qty, validate_for_unit
 
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
@@ -55,7 +56,7 @@ class PosError(Exception):
 @dataclass
 class CartItem:
     product_id: int
-    quantity: int = 1
+    quantity: Decimal = Decimal("1")
     batch_id: int | None = None
     unit_sell_price: Decimal | None = None
     unit_buy_price: Decimal | None = None
@@ -152,24 +153,25 @@ def recommend_batch(db: Session, product: Product) -> ProductBatch | None:
     return batches[0] if batches else None
 
 
-def available_qty(db: Session, product: Product) -> int:
-    """Total sellable quantity across batches."""
-    return sum(b.current_qty for b in sellable_batches(db, product))
+def available_qty(db: Session, product: Product) -> Decimal:
+    """Total sellable quantity across batches (decimal-aware, §25)."""
+    return sum((to_qty(b.current_qty) for b in sellable_batches(db, product)), ZERO)
 
 
-def allocate(db: Session, product: Product, qty: int) -> list[tuple[ProductBatch, int]]:
+def allocate(db: Session, product: Product, qty: Decimal) -> list[tuple[ProductBatch, Decimal]]:
     """Accounting allocation of ``qty`` across sellable batches per policy.
 
     This is an inventory-accounting allocation (which batch's cost/stock is
     consumed) — NOT a claim about which physical unit the customer took (§17).
     The cashier may always override with an explicit batch selection.
     """
+    qty = to_qty(qty)
     if qty <= 0:
         raise PosError("INVALID_QUANTITY", "Quantity must be positive")
     remaining = qty
-    allocation: list[tuple[ProductBatch, int]] = []
+    allocation: list[tuple[ProductBatch, Decimal]] = []
     for b in sellable_batches(db, product):
-        take = min(remaining, b.current_qty)
+        take = min(remaining, to_qty(b.current_qty))
         if take > 0:
             allocation.append((b, take))
             remaining -= take
@@ -183,15 +185,15 @@ def allocate(db: Session, product: Product, qty: int) -> list[tuple[ProductBatch
     return allocation
 
 
-def _apportion(total: Decimal, parts: list[int]) -> list[Decimal]:
+def _apportion(total: Decimal, parts: list[Decimal]) -> list[Decimal]:
     """Split ``total`` proportionally over ``parts`` (ints) without losing cents.
     The last part absorbs the rounding remainder so Σparts == total."""
     if not parts:
         return []
-    whole = sum(parts)
+    whole = sum((Decimal(p) for p in parts), ZERO)
     if whole == 0:
         return [ZERO] * len(parts)
-    out = [((total * Decimal(p)) / Decimal(whole)).quantize(CENT, ROUND_HALF_UP) for p in parts[:-1]]
+    out = [((total * Decimal(p)) / whole).quantize(CENT, ROUND_HALF_UP) for p in parts[:-1]]
     out.append((total - sum(out, ZERO)).quantize(CENT, ROUND_HALF_UP))
     return out
 
@@ -208,6 +210,10 @@ def _resolve_cart_line(db: Session, item: CartItem) -> CartItem:
     product = db.get(Product, item.product_id)
     if not product or product.deleted_at is not None:
         raise PosError("PRODUCT_NOT_FOUND", f"Product {item.product_id} not found")
+    try:
+        item.quantity = validate_for_unit(db, product, item.quantity)
+    except QuantityError as exc:
+        raise PosError("INVALID_QUANTITY", str(exc))
     if item.quantity <= 0:
         raise PosError("INVALID_QUANTITY", "Quantity must be positive")
     if item.discount is None or item.discount < 0:
@@ -235,8 +241,8 @@ def _resolve_cart_line(db: Session, item: CartItem) -> CartItem:
     if expiry_svc.block_expired_policy(db) and batch.expiry_date and batch.expiry_date < date.today():
         raise PosError("BATCH_EXPIRED", f"Batch {batch.batch_number} is expired and blocked for sale")
 
-    if item.quantity > batch.current_qty:
-        others = available_qty(db, product) - batch.current_qty
+    if item.quantity > to_qty(batch.current_qty):
+        others = available_qty(db, product) - to_qty(batch.current_qty)
         hint = f" ({others} more available in other batches)" if others > 0 else ""
         raise PosError(
             "INSUFFICIENT_STOCK",
@@ -333,7 +339,7 @@ def _next_invoice_number(db: Session) -> str:
     raise PosError("NUMBERING_FAILED", "Could not allocate an invoice number; please retry")
 
 
-def _atomic_deduct(db: Session, batch_id: int, qty: int) -> None:
+def _atomic_deduct(db: Session, batch_id: int, qty: Decimal) -> None:
     """Atomically deduct stock: UPDATE ... WHERE current_qty >= qty.
 
     Under two concurrent terminals selling the same batch, exactly one UPDATE
@@ -341,6 +347,7 @@ def _atomic_deduct(db: Session, batch_id: int, qty: int) -> None:
     pre-validation reads (BUG-005)."""
     from sqlalchemy import case
 
+    qty = to_qty(qty)
     res = db.execute(
         update(ProductBatch)
         .where(
@@ -371,6 +378,7 @@ def checkout(
     user: User | None = None,
     customer_id: int | None = None,
     tax_rate: Decimal | None = None,
+    coupon_code: str | None = None,
 ) -> Invoice:
     """Atomic checkout (blueprint §18–21). Caller wraps in try/except + commit/rollback.
 
@@ -386,6 +394,29 @@ def checkout(
     discount = sum((i.discount for i in resolved), ZERO)
     if discount > gross:
         raise PosError("INVALID_DISCOUNT", "Total discount exceeds cart amount")
+
+    # Coupon is evaluated against the post-line-discount amount, then consumed
+    # inside this same transaction (§37–38) so a failed sale never burns it.
+    coupon_info = None
+    if coupon_code:
+        from . import coupons as coupon_svc
+
+        phone = None
+        if customer_id:
+            from ..models import Customer as _Customer
+            cust = db.get(_Customer, customer_id)
+            phone = cust.phone if cust else None
+        try:
+            coupon_info = coupon_svc.evaluate(
+                db, code=coupon_code, amount=gross - discount,
+                customer_id=customer_id, customer_phone=phone,
+            )
+        except coupon_svc.CouponError as exc:
+            raise PosError(exc.code, exc.message)
+        discount += coupon_info["discount"]
+        if discount > gross:
+            discount = gross
+
     taxable = gross - discount
     rate = tax_rate if tax_rate is not None else Decimal(get_setting(db, "pos.tax_rate", "0"))
     tax = (taxable * rate / 100).quantize(CENT, ROUND_HALF_UP)
@@ -440,14 +471,27 @@ def checkout(
             created_by=user.id if user else None,
         ))
 
+    if coupon_info is not None:
+        from . import coupons as coupon_svc
+
+        try:
+            coupon_svc.consume(
+                db, coupon_id=coupon_info["coupon_id"], amount=coupon_info["discount"],
+                invoice_id=invoice.id, customer_id=customer_id, user=user,
+            )
+        except coupon_svc.CouponError as exc:
+            raise PosError(exc.code, exc.message)
+
     for p in payments:
         db.add(Payment(invoice_id=invoice.id, method=p.get("method", "CASH"), amount=Decimal(p["amount"])))
 
     write_audit(
         db, action="SALE_CREATED", user_id=user.id if user else None,
         entity_type="Invoice", entity_id=invoice.id,
-        after={"invoice_number": invoice.invoice_number, "total": str(total)},
+        after={"invoice_number": invoice.invoice_number, "total": str(total),
+               "coupon": coupon_info["code"] if coupon_info else None},
     )
+    invoice.applied_coupon_code = coupon_info["code"] if coupon_info else None  # transient
     return invoice
 
 
@@ -467,7 +511,7 @@ def void_invoice(db: Session, *, invoice: Invoice, user: User | None = None, rea
         if item.batch_id:
             batch = db.get(ProductBatch, item.batch_id)
             if batch:
-                batch.current_qty += item.qty
+                batch.current_qty = to_qty(batch.current_qty) + to_qty(item.qty)
                 if batch.status == "SOLD_OUT":
                     batch.status = "ACTIVE"
                 db.add(StockMovement(
@@ -486,9 +530,9 @@ def void_invoice(db: Session, *, invoice: Invoice, user: User | None = None, rea
     return invoice
 
 
-def returned_qty_for_item(db: Session, invoice_item_id: int) -> int:
+def returned_qty_for_item(db: Session, invoice_item_id: int) -> Decimal:
     """Total already-returned quantity for an invoice line (completed returns)."""
-    return int(
+    return to_qty(
         db.execute(
             select(func.coalesce(func.sum(Return.qty), 0)).where(
                 Return.invoice_item_id == invoice_item_id,
@@ -503,7 +547,7 @@ def process_return(
     *,
     invoice: Invoice,
     invoice_item: InvoiceItem,
-    qty: int,
+    qty: Decimal,
     user: User | None = None,
     reason: str | None = None,
     refund_amount: Decimal | None = None,
@@ -511,21 +555,22 @@ def process_return(
     """Batch-aware return with a cumulative cap (BUG-002) and honest states (BUG-019)."""
     if invoice.status not in ("PAID", "PARTIALLY_REFUNDED", "REFUNDED"):
         raise PosError("INVALID_STATE", "Can only return from a paid invoice")
+    qty = to_qty(qty)
     if qty <= 0:
         raise PosError("INVALID_QUANTITY", "Return quantity must be positive")
 
     already = returned_qty_for_item(db, invoice_item.id)
-    if already + qty > invoice_item.qty:
+    if already + qty > to_qty(invoice_item.qty):
         raise PosError(
             "RETURN_EXCEEDS_PURCHASE",
-            f"Only {invoice_item.qty - already} of this line can still be returned "
+            f"Only {to_qty(invoice_item.qty) - already} of this line can still be returned "
             f"({already} already returned of {invoice_item.qty})",
         )
 
     if invoice_item.batch_id:
         batch = db.get(ProductBatch, invoice_item.batch_id)
         if batch:
-            batch.current_qty += qty
+            batch.current_qty = to_qty(batch.current_qty) + qty
             if batch.status == "SOLD_OUT":
                 batch.status = "ACTIVE"
             db.add(StockMovement(
@@ -552,7 +597,7 @@ def process_return(
     # Invoice state reflects the aggregated returns of ALL its lines (BUG-019).
     all_items = list(invoice.items)
     fully_returned = all(
-        returned_qty_for_item(db, i.id) >= i.qty for i in all_items
+        returned_qty_for_item(db, i.id) >= to_qty(i.qty) for i in all_items
     )
     invoice.status = "REFUNDED" if fully_returned else "PARTIALLY_REFUNDED"
 

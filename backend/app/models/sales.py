@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 from .base import TimestampMixin
-from .pricing import MONEY
+from .pricing import MONEY, QTY
 
 
 class Invoice(TimestampMixin, Base):
@@ -48,7 +48,7 @@ class InvoiceItem(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
 
-    qty: Mapped[int] = mapped_column(Integer, default=1)
+    qty: Mapped[Decimal] = mapped_column(QTY, default=1)
 
     unit_buy_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
     unit_consumer_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
@@ -96,7 +96,7 @@ class Return(TimestampMixin, Base):
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), index=True)
     invoice_item_id: Mapped[int] = mapped_column(ForeignKey("invoice_items.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
-    qty: Mapped[int] = mapped_column(Integer, default=1)
+    qty: Mapped[Decimal] = mapped_column(QTY, default=1)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="COMPLETED")
     refund_amount: Mapped[Decimal] = mapped_column(MONEY, default=0)

@@ -20,7 +20,7 @@ router = APIRouter(prefix="/batches", tags=["batches"])
 class ReceiveIn(BaseModel):
     product_id: int | None = None
     barcode: str | None = None
-    quantity_received: int = Field(gt=0)
+    quantity_received: Decimal = Field(gt=0)  # decimal-aware (§25)
     buy_price: Decimal = Field(ge=0)
     consumer_price: Decimal | None = None
     sell_price: Decimal | None = None
@@ -33,7 +33,7 @@ class ReceiveIn(BaseModel):
 def _out(b: ProductBatch) -> dict:
     return {
         "id": b.id, "product_id": b.product_id, "batch_number": b.batch_number,
-        "quantity_received": b.quantity_received, "current_qty": b.current_qty,
+        "quantity_received": float(b.quantity_received), "current_qty": float(b.current_qty),
         "buy_price": float(b.buy_price), "consumer_price": float(b.consumer_price),
         "sell_price": float(b.sell_price),
         "production_date": str(b.production_date) if b.production_date else None,

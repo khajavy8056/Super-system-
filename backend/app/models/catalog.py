@@ -38,6 +38,10 @@ class Unit(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
     symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Whether fractional quantities are meaningful for this unit (Kg, L, g...)
+    allow_decimal: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Number of decimals shown/accepted in the UI for this unit.
+    decimals: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     products: Mapped[list["Product"]] = relationship(back_populates="unit")

@@ -13,14 +13,15 @@ from sqlalchemy.orm import Session
 
 from ..models import Product, ProductBatch, StockMovement, Stocktake, StocktakeItem, User
 from .audit import write_audit
+from .units import to_qty
 
 
 class InventoryError(Exception):
     pass
 
 
-def product_total_stock(db: Session, product_id: int) -> int:
-    return int(
+def product_total_stock(db: Session, product_id: int) -> Decimal:
+    return to_qty(
         db.execute(
             select(func.coalesce(func.sum(ProductBatch.current_qty), 0))
             .where(ProductBatch.product_id == product_id)
@@ -61,16 +62,17 @@ def adjust_batch(
     db: Session,
     *,
     batch: ProductBatch,
-    new_current_qty: int,
+    new_current_qty,
     user: User | None = None,
     reason: str | None = None,
     movement_type: str = "ADJUSTMENT",
 ) -> ProductBatch:
     """Manually reconcile a batch's system quantity (adjustment / waste)."""
+    new_current_qty = to_qty(new_current_qty)
     if new_current_qty < 0:
         raise InventoryError("Cannot set a negative batch quantity")
-    delta = new_current_qty - batch.current_qty
-    before = batch.current_qty
+    delta = new_current_qty - to_qty(batch.current_qty)
+    before = to_qty(batch.current_qty)
     batch.current_qty = new_current_qty
     if batch.status in ("SOLD_OUT",) and new_current_qty > 0:
         batch.status = "ACTIVE"
@@ -85,23 +87,26 @@ def adjust_batch(
     write_audit(
         db, action="STOCK_ADJUSTED", user_id=user.id if user else None,
         entity_type="ProductBatch", entity_id=batch.id,
-        before={"current_qty": before}, after={"current_qty": new_current_qty}, reference=reason,
+        before={"current_qty": float(before)},
+        after={"current_qty": float(new_current_qty)}, reference=reason,
     )
     return batch
 
 
-def record_waste(db: Session, *, batch: ProductBatch, qty: int, user: User | None = None, reason: str | None = None) -> ProductBatch:
+def record_waste(db: Session, *, batch: ProductBatch, qty, user: User | None = None,
+                 reason: str | None = None) -> ProductBatch:
+    qty = to_qty(qty)
     if qty <= 0:
         raise InventoryError("Waste quantity must be positive")
-    if batch.current_qty < qty:
+    if to_qty(batch.current_qty) < qty:
         raise InventoryError("Insufficient stock to waste")
-    return adjust_batch(db, batch=batch, new_current_qty=batch.current_qty - qty,
+    return adjust_batch(db, batch=batch, new_current_qty=to_qty(batch.current_qty) - qty,
                         user=user, reason=reason or "Waste", movement_type="WASTE")
 
 
 def create_stocktake(db: Session, *, name: str, area: str | None = None, user: User | None = None,
                      product_ids: list[int] | None = None, batch_ids: list[int] | None = None,
-                     include_zero: bool = True) -> Stocktake:
+                     include_zero: bool = True, warehouse_id: int | None = None) -> Stocktake:
     """Snapshot batches for counting (§19).
 
     ``include_zero=True`` also snapshots batches the system believes are empty —
@@ -109,7 +114,7 @@ def create_stocktake(db: Session, *, name: str, area: str | None = None, user: U
     stocktake must be able to discover (BUG-018).
     """
     st = Stocktake(name=name, status="DRAFT", area=area, started_at=datetime.utcnow(),
-                   created_by=user.id if user else None)
+                   warehouse_id=warehouse_id, created_by=user.id if user else None)
     db.add(st)
     db.flush()
 
@@ -122,13 +127,15 @@ def create_stocktake(db: Session, *, name: str, area: str | None = None, user: U
         batches = db.execute(stmt).scalars().all()
     else:
         stmt = select(ProductBatch).where(ProductBatch.status.in_(["ACTIVE", "SOLD_OUT", "EXPIRED"]))
+        if warehouse_id is not None:
+            stmt = stmt.where(ProductBatch.warehouse_id == warehouse_id)
         if not include_zero:
             stmt = stmt.where(ProductBatch.current_qty > 0)
         batches = db.execute(stmt).scalars().all()
 
     for b in batches:
         db.add(StocktakeItem(stocktake_id=st.id, product_id=b.product_id, batch_id=b.id,
-                             system_qty=b.current_qty, status="PENDING"))
+                             system_qty=to_qty(b.current_qty), status="PENDING"))
     db.flush()
     write_audit(db, action="STOCKTAKE_CREATED", user_id=user.id if user else None,
                 entity_type="Stocktake", entity_id=st.id, after={"name": name, "items": len(batches)})
@@ -157,16 +164,31 @@ def stocktake_progress(db: Session, stocktake_id: int) -> dict:
     items = list(st.items)
     counted = [i for i in items if i.status in ("COUNTED", "ADJUSTED")]
     pending = [i for i in items if i.status == "PENDING"]
+    ordered = sorted(items, key=lambda i: i.id)
+    position = 0
+    if st.cursor_item_id:
+        for idx, it in enumerate(ordered, start=1):
+            if it.id == st.cursor_item_id:
+                position = idx
+                break
+    if not position:
+        position = len(counted)
+    total = len(items)
     return {
         "id": st.id, "name": st.name, "status": st.status,
-        "total": len(items), "counted": len(counted), "remaining": len(pending),
+        "warehouse_id": st.warehouse_id, "area": st.area,
+        "total": total, "counted": len(counted), "remaining": len(pending),
+        "percent": round(100 * len(counted) / total, 1) if total else 0.0,
+        "position": position,
+        "cursor_item_id": st.cursor_item_id,
         "next_item_id": pending[0].id if pending else None,
+        "resumable": st.status in ("DRAFT", "IN_PROGRESS") and bool(pending),
         "started_at": st.started_at.isoformat() if st.started_at else None,
         "completed_at": st.completed_at.isoformat() if st.completed_at else None,
     }
 
 
-def count_stocktake_item(db: Session, *, item_id: int, physical_qty: int,
+def count_stocktake_item(db: Session, *, item_id: int, physical_qty, 
                          reason: str | None = None, user: User | None = None) -> StocktakeItem:
     """Save one physical count IMMEDIATELY (§25: every operation persists)."""
     item = db.get(StocktakeItem, item_id)
@@ -175,18 +197,31 @@ def count_stocktake_item(db: Session, *, item_id: int, physical_qty: int,
     st = item.stocktake
     if st.status in ("PENDING_APPROVAL", "ADJUSTED", "CANCELLED"):
         raise InventoryError(f"Stocktake is {st.status}; counting is closed")
+    physical_qty = to_qty(physical_qty)
     if physical_qty < 0:
         raise InventoryError("Physical quantity cannot be negative")
+    product = db.get(Product, item.product_id)
+    if product is not None:
+        from .units import QuantityError, validate_for_unit
+        try:
+            physical_qty = validate_for_unit(db, product, physical_qty)
+        except QuantityError as exc:
+            raise InventoryError(str(exc))
     if st.status == "DRAFT":
         st.status = "IN_PROGRESS"
     item.physical_qty = physical_qty
-    item.difference = physical_qty - item.system_qty
+    item.difference = physical_qty - to_qty(item.system_qty)
     item.reason = reason
     item.status = "COUNTED"
+    item.counted_at = datetime.utcnow()
+    item.counted_by = user.id if user else None
+    # Persist the cursor so a closed/crashed app resumes at the right row (§14)
+    st.cursor_item_id = item.id
     write_audit(db, action="STOCKTAKE_COUNTED",
                 user_id=user.id if user else None,
                 entity_type="StocktakeItem", entity_id=item.id,
-                after={"physical_qty": physical_qty, "difference": item.difference},
+                after={"physical_qty": float(physical_qty),
+                       "difference": float(item.difference)},
                 reference=f"stocktake:{st.id}")
     db.flush()
     return item
@@ -209,11 +244,13 @@ def complete_stocktake(db: Session, *, stocktake_id: int, user: User | None = No
             continue
         if item.difference != 0:
             diffs.append({"item_id": item.id, "batch_id": item.batch_id,
-                          "system_qty": item.system_qty, "physical_qty": item.physical_qty,
-                          "difference": item.difference})
+                          "system_qty": float(item.system_qty),
+                          "physical_qty": float(item.physical_qty),
+                          "difference": float(item.difference)})
 
     st.status = "PENDING_APPROVAL"
     st.completed_at = datetime.utcnow()
+    st.completed_by = user.id if user else None
     write_audit(
         db, action="STOCKTAKE_COMPLETED", user_id=user.id if user else None,
         entity_type="Stocktake", entity_id=st.id,
@@ -234,7 +271,7 @@ def stocktake_differences(db: Session, stocktake_id: int) -> list[dict]:
             continue
         batch = db.get(ProductBatch, item.batch_id) if item.batch_id else None
         cost = Decimal(batch.buy_price) if batch else Decimal("0")
-        diff = (item.physical_qty or 0) - item.system_qty
+        diff = to_qty(item.physical_qty or 0) - to_qty(item.system_qty)
         if diff == 0 and item.status != "ADJUSTED":
             continue
         product = db.get(Product, item.product_id)
@@ -242,8 +279,9 @@ def stocktake_differences(db: Session, stocktake_id: int) -> list[dict]:
             "item_id": item.id, "product_id": item.product_id,
             "product_name": product.name if product else f"#{item.product_id}",
             "batch_id": item.batch_id,
-            "system_qty": item.system_qty, "physical_qty": item.physical_qty,
-            "difference": diff,
+            "system_qty": float(item.system_qty),
+            "physical_qty": float(item.physical_qty),
+            "difference": float(diff),
             "value_difference": float(cost * diff),
             "reason": item.reason, "status": item.status,
         })
@@ -270,7 +308,8 @@ def approve_stocktake(db: Session, *, stocktake_id: int, user: User | None = Non
         batch = db.get(ProductBatch, item.batch_id) if item.batch_id else None
         if batch:
             adjust_batch(
-                db, batch=batch, new_current_qty=max(0, batch.current_qty + item.difference),
+                db, batch=batch,
+                new_current_qty=max(Decimal("0"), to_qty(batch.current_qty) + to_qty(item.difference)),
                 user=user, reason=item.reason or f"Stocktake #{st.id}", movement_type="STOCKTAKE",
             )
             item.status = "ADJUSTED"

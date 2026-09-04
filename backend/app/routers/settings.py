@@ -61,3 +61,48 @@ def upsert_setting(body: SettingIn, db: Session = Depends(get_db),
                                        "value": "***" if body.is_secret else body.value})
     db.commit()
     return {"key": s.key, "value": "" if s.is_secret else s.value, "is_secret": s.is_secret}
+
+
+# --- Currency (§39) ------------------------------------------------------------
+
+@router.get("/currency")
+def get_currency(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Base currency used for BOTH storage and display.
+
+    Changing it never rewrites stored amounts — that would silently multiply
+    every historical figure by 10. The API therefore reports the base unit and
+    the UI formats accordingly.
+    """
+    from ..services.units import currency_config
+
+    return currency_config(db)
+
+
+class CurrencyIn(BaseModel):
+    code: str
+
+
+@router.put("/currency")
+def set_currency(body: CurrencyIn, db: Session = Depends(get_db),
+                 user: User = Depends(require_permission("settings.manage"))):
+    from ..models import Invoice
+    from ..services.units import CURRENCIES
+
+    code = body.code.strip().upper()
+    if code not in CURRENCIES:
+        raise HTTPException(status_code=422, detail="UNSUPPORTED_CURRENCY")
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == "pos.currency")).scalar_one_or_none()
+    old = row.value if row else None
+    has_data = db.execute(select(Invoice.id).limit(1)).scalar_one_or_none() is not None
+    if row is None:
+        db.add(SystemSetting(key="pos.currency", value=code,
+                             description="Base currency", is_secret=False))
+    else:
+        row.value = code
+    write_audit(db, action="CURRENCY_CHANGED", user_id=user.id,
+                entity_type="SystemSetting", entity_id=None,
+                before={"currency": old}, after={"currency": code})
+    db.commit()
+    return {"code": code, "changed_from": old,
+            "warning": ("فاکتورهای ثبت‌شده وجود دارد؛ مقادیر ذخیره‌شده تبدیل نمی‌شوند "
+                        "و فقط واحد نمایش تغییر می‌کند." if has_data and old != code else None)}

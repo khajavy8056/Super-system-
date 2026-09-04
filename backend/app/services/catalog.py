@@ -92,7 +92,7 @@ def receive_batch(
     db: Session,
     *,
     product: Product,
-    quantity_received: int,
+    quantity_received,
     buy_price: Decimal,
     consumer_price: Decimal | None = None,
     sell_price: Decimal | None = None,
@@ -109,6 +109,12 @@ def receive_batch(
     PriceVersion when not provided, and snapshots it — so old-price batches
     stay sellable at their own price (§16) while new batches follow the
     current version. The first batch also seeds the price history."""
+    from .units import QuantityError, to_qty, validate_for_unit
+
+    try:
+        quantity_received = validate_for_unit(db, product, to_qty(quantity_received))
+    except QuantityError as exc:
+        raise CatalogError(str(exc))
     if quantity_received <= 0:
         raise CatalogError("quantity_received must be positive")
 
@@ -173,7 +179,8 @@ def receive_batch(
     write_audit(
         db, action="BATCH_CREATED", user_id=user.id if user else None,
         entity_type="ProductBatch", entity_id=batch.id,
-        after={"batch_number": batch.batch_number, "qty": quantity_received, "buy": str(buy_price)},
+        after={"batch_number": batch.batch_number, "qty": float(quantity_received),
+               "buy": str(buy_price)},
     )
     if price_change_warning:
         notify(db, type="PRICE_CHANGE", title="Buy price changed", body=price_change_warning,

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # External resolvers — optional. Enabled only when a source is configured.
     EXTERNAL_TIMEOUT_SECONDS: float = 8.0
 
+    # Server binding (used by the launcher and reported by diagnostics/LAN check)
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    # Local media storage for downloaded product images (§21 — never hotlink)
+    MEDIA_DIR: str = str(_BASE_DIR / "data" / "media")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

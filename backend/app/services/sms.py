@@ -116,6 +116,39 @@ PROVIDERS = {
 }
 
 
+# --- Enqueue / single dispatch ---------------------------------------------------
+
+def queue_sms(db: Session, *, phone: str, text: str,
+              reference_type: str | None = None, reference_id: int | None = None) -> SmsMessage:
+    """Persist a message as PENDING. The worker delivers it (offline-safe)."""
+    msg = SmsMessage(phone=phone.strip(), text=text.strip(), status="PENDING",
+                     reference_type=reference_type, reference_id=reference_id)
+    db.add(msg)
+    db.flush()
+    return msg
+
+
+def dispatch_one(db: Session, sms_id: int) -> str:
+    """Send a single message now; raises SmsProviderError so the sync queue
+    can apply its backoff policy."""
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None:
+        raise SmsProviderError("NOT_FOUND", f"sms {sms_id}")
+    if msg.status == "SENT":
+        return "ALREADY_SENT"
+    provider_code = get_setting(db, "sms.provider", "").strip()
+    sender = PROVIDERS.get(provider_code)
+    if sender is None:
+        raise SmsProviderError("CONFIG_MISSING", f"provider={provider_code or 'none'}")
+    response = sender(db, msg.phone, msg.text)
+    msg.status = "SENT"
+    msg.sent_at = datetime.utcnow()
+    msg.provider_response = response
+    msg.error_message = None
+    db.flush()
+    return response
+
+
 # --- Dispatcher ----------------------------------------------------------------
 
 def dispatch_pending(db: Session, *, limit: int = 20) -> dict:

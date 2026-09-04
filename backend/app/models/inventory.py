@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 from .base import TimestampMixin
-from .pricing import MONEY
+from .pricing import MONEY, QTY
 
 
 class ProductBatch(TimestampMixin, Base):
@@ -23,8 +23,8 @@ class ProductBatch(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_number: Mapped[str] = mapped_column(String(64), index=True)
-    quantity_received: Mapped[int] = mapped_column(Integer, default=0)
-    current_qty: Mapped[int] = mapped_column(Integer, default=0)
+    quantity_received: Mapped[Decimal] = mapped_column(QTY, default=0)
+    current_qty: Mapped[Decimal] = mapped_column(QTY, default=0)
 
     buy_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
     consumer_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
@@ -54,7 +54,7 @@ class StockMovement(TimestampMixin, Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
     movement_type: Mapped[str] = mapped_column(String(24), index=True)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False)  # signed
+    quantity: Mapped[Decimal] = mapped_column(QTY, nullable=False)  # signed
     reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit_cost: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
@@ -76,6 +76,10 @@ class Stocktake(TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    completed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    warehouse_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: last item the operator was on — lets a phone resume mid-session (§14)
+    cursor_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     items: Mapped[list["StocktakeItem"]] = relationship(back_populates="stocktake")
 
@@ -87,11 +91,13 @@ class StocktakeItem(Base):
     stocktake_id: Mapped[int] = mapped_column(ForeignKey("stocktakes.id"), index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
-    system_qty: Mapped[int] = mapped_column(Integer, default=0)
-    physical_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    difference: Mapped[int] = mapped_column(Integer, default=0)
+    system_qty: Mapped[Decimal] = mapped_column(QTY, default=0)
+    physical_qty: Mapped[Decimal | None] = mapped_column(QTY, nullable=True)
+    difference: Mapped[Decimal] = mapped_column(QTY, default=0)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    counted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    counted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     stocktake: Mapped["Stocktake"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship()

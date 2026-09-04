@@ -8,7 +8,9 @@ receipt is always renderable for preview/reprint.
 from __future__ import annotations
 
 import math
+import socket
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -143,3 +145,60 @@ def detect_scanner(intervals_ms: list[float], threshold_ms: float | None = None,
         return False
     threshold = threshold_ms if threshold_ms is not None else setting_default
     return max(intervals_ms) <= threshold and (len(intervals_ms) >= 3 or max(intervals_ms) <= threshold / 2)
+
+
+# --- Diagnostic probes (§43) ---------------------------------------------------
+
+def probe_printer(db: Session, device: HardwareDevice) -> tuple[bool, str]:
+    """Real reachability probe for a printer. Never fakes a success."""
+    conn = (device.connection or "").strip()
+    if conn.startswith("file://"):
+        path = Path(conn[len("file://"):])
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8"):
+                pass
+            return True, f"file sink writable: {path}"
+        except OSError as e:
+            return False, f"file sink not writable: {e}"
+    if conn.startswith("escpos:"):
+        try:
+            from .escpos_driver import probe_escpos
+        except ImportError:
+            return False, "DRIVER_UNAVAILABLE: python-escpos not installed"
+        return probe_escpos(conn)
+    if conn.startswith("tcp://"):
+        host_port = conn[len("tcp://"):]
+        host, _, port = host_port.partition(":")
+        try:
+            with socket.create_connection((host, int(port or 9100)), timeout=3):
+                return True, f"TCP printer reachable at {host}:{port or 9100}"
+        except (OSError, ValueError) as e:
+            return False, f"TCP printer unreachable: {e}"
+    return False, "NOT_SUPPORTED: unknown connection scheme (use file://, tcp:// or escpos:)"
+
+
+def probe_drawer(db: Session, device: HardwareDevice) -> tuple[bool, str]:
+    """A cash drawer is pulsed through the printer — probe that path."""
+    printer = _printer(db)
+    if printer is None:
+        return False, "Cash drawer needs a configured printer to send the pulse"
+    ok, detail = probe_printer(db, printer)
+    return ok, ("drawer pulse path available via printer — " + detail) if ok else detail
+
+
+def probe_scanner(db: Session, device: HardwareDevice) -> tuple[bool, str]:
+    """USB-HID scanners present as keyboards: no port to open. We verify the
+    device record and the detection threshold instead, and say so honestly."""
+    threshold = get_setting(db, "barcode.scanner.min_interval_ms", "30")
+    conn = (device.connection or "HID").strip()
+    if conn.startswith("tcp://"):
+        host, _, port = conn[len("tcp://"):].partition(":")
+        try:
+            with socket.create_connection((host, int(port or 9100)), timeout=3):
+                return True, f"network scanner reachable at {host}:{port}"
+        except (OSError, ValueError) as e:
+            return False, f"network scanner unreachable: {e}"
+    return True, (f"HID keyboard-wedge scanner registered; timing detection active "
+                  f"(threshold {threshold} ms). A physical scan is required for "
+                  f"end-to-end confirmation.")
