@@ -1,0 +1,5 @@
+# Optional hardware drivers — install only on the machine with the devices.
+# python-escpos drives real thermal printers (USB/network/Windows spooler).
+# Without it the system stays HONEST: printing returns DRIVER_UNAVAILABLE,
+# never a fake success (see services/hardware.py).
+python-escpos>=3.1,<4.0
