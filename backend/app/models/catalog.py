@@ -63,6 +63,13 @@ class Product(TimestampMixin, SoftDeleteMixin, Base):
     min_stock_alert: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # §16 — loose/bulk goods (تخمه، حبوبات، وزنی) carry no manufacturer GTIN.
+    # They still need a scannable code, so the system mints an internal one
+    # (INT-000001). The flag records WHY the barcode looks synthetic, which
+    # matters when deciding whether to consult external catalogues at all:
+    # an internal code means nothing to OpenFoodFacts.
+    has_own_barcode: Mapped[bool] = mapped_column(Boolean, default=True)
+
     brand: Mapped["Brand | None"] = relationship(back_populates="products")
     category: Mapped["Category | None"] = relationship(back_populates="products")
     unit: Mapped["Unit | None"] = relationship(back_populates="products")

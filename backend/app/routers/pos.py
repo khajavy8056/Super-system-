@@ -260,7 +260,7 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
     An exact barcode/SKU hit is always returned first so scanning stays instant,
     then partial name matches for typed searches (e.g. «شیر»).
     """
-    from ..models import ProductBatch, Unit
+    from ..models import Brand, ProductBatch, Unit
     from sqlalchemy import func as _f
 
     term = (q or "").strip()
@@ -275,12 +275,20 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
     ).scalars().all()
 
     like = f"%{term}%"
+    # §18 — brand is searchable too: a cashier types «دماوند» (the brand)
+    # far more often than the full product name.
+    brand_ids = db.execute(
+        select(Brand.id).where(Brand.name.ilike(like))
+    ).scalars().all()
+    conditions = ((Product.name.ilike(like)) | (Product.barcode.ilike(like))
+                  | (Product.sku.ilike(like)) | (Product.model.ilike(like)))
+    if brand_ids:
+        conditions = conditions | (Product.brand_id.in_(brand_ids))
     partial = db.execute(
         select(Product).where(
             Product.deleted_at.is_(None),
             Product.is_active.is_(True),
-            (Product.name.ilike(like)) | (Product.barcode.ilike(like))
-            | (Product.sku.ilike(like)) | (Product.model.ilike(like)),
+            conditions,
         ).order_by(Product.name.asc()).limit(limit)
     ).scalars().all()
 

@@ -26,9 +26,19 @@ class ProductBatch(TimestampMixin, Base):
     quantity_received: Mapped[Decimal] = mapped_column(QTY, default=0)
     current_qty: Mapped[Decimal] = mapped_column(QTY, default=0)
 
+    # §6 — every money figure belongs to the BATCH, never to the Product.
+    # The same product bought twice at different prices keeps both histories,
+    # so margin per batch stays computable years later.
     buy_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: What the supplier invoiced, when it differs from the landed buy_price
+    #: (freight, rebates). Kept separate so buy_price stays the costing basis.
+    supplier_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     consumer_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
     sell_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: Per-batch discount and tax; a clearance batch can be marked down without
+    #: touching the product or any other batch.
+    discount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    tax: Mapped[Decimal] = mapped_column(MONEY, default=0)
 
     production_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)

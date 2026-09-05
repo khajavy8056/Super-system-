@@ -19,7 +19,8 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 
 class ProductIn(BaseModel):
-    barcode: str
+    # §16: optional — a loose/bulk item gets an internal INT- code minted.
+    barcode: str | None = None
     name: str
     sku: str | None = None
     brand_id: int | None = None
@@ -29,6 +30,7 @@ class ProductIn(BaseModel):
     description: str | None = None
     image_url: str | None = None
     min_stock_alert: int = 0
+    has_own_barcode: bool = True
 
 
 class ProductPatch(BaseModel):
@@ -50,6 +52,7 @@ def _out(p: Product) -> dict:
         "brand_id": p.brand_id, "category_id": p.category_id, "unit_id": p.unit_id,
         "model": p.model, "description": p.description, "image_url": p.image_url,
         "min_stock_alert": p.min_stock_alert, "is_active": p.is_active,
+        "has_own_barcode": bool(getattr(p, "has_own_barcode", True)),
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
 
@@ -84,6 +87,153 @@ def get_product(product_id: int, db: Session = Depends(get_db), _: User = Depend
     if not p or p.deleted_at is not None:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     return _out(p)
+
+
+# --- Brands & Categories -----------------------------------------------------
+# Products carry brand_id/category_id, but until now there was no way to create
+# one, so those columns could only ever be null. §18 needs brand search to have
+# something to search. Routes are declared before "/{product_id}" would be
+# reached for these literals — FastAPI matches in declaration order, and both
+# live under distinct prefixes, so no shadowing occurs.
+
+class TaxonomyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+@router.get("/brands")
+def list_brands(q: str | None = Query(default=None), db: Session = Depends(get_db),
+                _: User = Depends(require_permission("products.view"))):
+    from ..models import Brand
+    stmt = select(Brand)
+    if q:
+        stmt = stmt.where(Brand.name.ilike(f"%{q}%"))
+    rows = db.execute(stmt.order_by(Brand.name.asc())).scalars().all()
+    return [{"id": b.id, "name": b.name} for b in rows]
+
+
+@router.post("/brands", status_code=201)
+def create_brand(body: TaxonomyIn, db: Session = Depends(get_db),
+                 user: User = Depends(require_permission("products.manage"))):
+    from ..models import Brand
+    name = body.name.strip()
+    existing = db.execute(
+        select(Brand).where(func.lower(Brand.name) == name.lower())
+    ).scalar_one_or_none()
+    if existing:
+        # Idempotent: re-sending the same brand returns it rather than
+        # littering the catalogue with near-identical rows.
+        return {"id": existing.id, "name": existing.name}
+    b = Brand(name=name)
+    db.add(b)
+    db.commit()
+    db.refresh(b)
+    return {"id": b.id, "name": b.name}
+
+
+@router.get("/categories")
+def list_categories(q: str | None = Query(default=None), db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("products.view"))):
+    from ..models import Category
+    stmt = select(Category)
+    if q:
+        stmt = stmt.where(Category.name.ilike(f"%{q}%"))
+    rows = db.execute(stmt.order_by(Category.name.asc())).scalars().all()
+    return [{"id": c.id, "name": c.name} for c in rows]
+
+
+@router.post("/categories", status_code=201)
+def create_category(body: TaxonomyIn, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("products.manage"))):
+    from ..models import Category
+    name = body.name.strip()
+    existing = db.execute(
+        select(Category).where(func.lower(Category.name) == name.lower())
+    ).scalar_one_or_none()
+    if existing:
+        return {"id": existing.id, "name": existing.name}
+    c = Category(name=name)
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id, "name": c.name}
+
+
+class DuplicateCheckIn(BaseModel):
+    name: str
+    barcode: str | None = None
+    brand_id: int | None = None
+    model: str | None = None
+    unit_id: int | None = None
+
+
+@router.post("/check-duplicate")
+def check_duplicate(body: DuplicateCheckIn, db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("products.view"))):
+    """§33 — warn before creating what may be an existing product.
+
+    Advisory only: barcode equality is the sole hard identity rule (§32), so
+    this never blocks or auto-merges. An exact barcode hit is reported
+    separately from fuzzy name matches because the two mean different things.
+    """
+    exact = None
+    if body.barcode and body.barcode.strip():
+        hit = catalog.get_product_by_barcode(db, body.barcode.strip())
+        if hit:
+            exact = _out(hit)
+
+    candidates = catalog.find_possible_duplicates(
+        db, name=body.name, brand_id=body.brand_id, model=body.model,
+        unit_id=body.unit_id)
+    return {"exact_barcode_match": exact, "possible_duplicates": candidates,
+            "has_warning": bool(exact or candidates)}
+
+
+@router.get("/{product_id}/detail")
+def product_detail(product_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("products.view"))):
+    """§5 — the product header plus every batch that ever belonged to it.
+
+    Depleted batches are returned too (``current_qty == 0``): they are the
+    product's purchase-price history and deleting them would erase the margin
+    record. The caller decides how to present active vs historical.
+    """
+    from ..models import ProductBatch
+
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+
+    rows = db.execute(
+        select(ProductBatch).where(ProductBatch.product_id == product_id)
+        .order_by(ProductBatch.received_at.desc(), ProductBatch.id.desc())
+    ).scalars().all()
+
+    def _b(b) -> dict:
+        return {
+            "id": b.id, "batch_number": b.batch_number,
+            "quantity_received": float(b.quantity_received),
+            "current_qty": float(b.current_qty),
+            "buy_price": float(b.buy_price),
+            "supplier_price": float(b.supplier_price) if b.supplier_price is not None else None,
+            "consumer_price": float(b.consumer_price),
+            "sell_price": float(b.sell_price),
+            "discount": float(b.discount or 0), "tax": float(b.tax or 0),
+            "production_date": str(b.production_date) if b.production_date else None,
+            "expiry_date": str(b.expiry_date) if b.expiry_date else None,
+            "received_at": b.received_at.isoformat() if b.received_at else None,
+            "status": b.status, "note": b.note,
+            "is_depleted": float(b.current_qty) <= 0,
+        }
+
+    batches = [_b(b) for b in rows]
+    active = [b for b in batches if not b["is_depleted"]]
+    return {
+        "product": _out(p),
+        "total_stock": sum(b["current_qty"] for b in active),
+        "active_batches": active,
+        "depleted_batches": [b for b in batches if b["is_depleted"]],
+        "batch_count": len(batches),
+    }
 
 
 @router.post("", status_code=201)

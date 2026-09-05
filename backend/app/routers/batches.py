@@ -28,6 +28,10 @@ class ReceiveIn(BaseModel):
     expiry_date: date | None = None
     batch_number: str | None = None
     note: str | None = None
+    # §6 — money fields belong to the batch, not the product.
+    supplier_price: Decimal | None = None
+    discount: Decimal | None = None
+    tax: Decimal | None = None
 
 
 def _out(b: ProductBatch) -> dict:
@@ -36,6 +40,8 @@ def _out(b: ProductBatch) -> dict:
         "quantity_received": float(b.quantity_received), "current_qty": float(b.current_qty),
         "buy_price": float(b.buy_price), "consumer_price": float(b.consumer_price),
         "sell_price": float(b.sell_price),
+        "supplier_price": float(b.supplier_price) if b.supplier_price is not None else None,
+        "discount": float(b.discount or 0), "tax": float(b.tax or 0),
         "production_date": str(b.production_date) if b.production_date else None,
         "expiry_date": str(b.expiry_date) if b.expiry_date else None,
         "received_at": b.received_at.isoformat() if b.received_at else None,
@@ -78,6 +84,8 @@ def receive(body: ReceiveIn, db: Session = Depends(get_db),
             sell_price=body.sell_price, production_date=body.production_date,
             expiry_date=body.expiry_date, batch_number=body.batch_number,
             received_at=datetime.utcnow(), user=user, note=body.note,
+            supplier_price=body.supplier_price, discount=body.discount,
+            tax=body.tax,
         )
         db.commit()
         return _out(batch)
