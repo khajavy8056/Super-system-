@@ -89,7 +89,11 @@ jobs:
             choco install innosetup -y --no-progress
           }
           if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
-          & $iscc installer\windows\setup.iss
+          # Pass the version explicitly so the artifact name always matches
+          # what the application reports (setup.iss guards this with #ifndef).
+          $v = (Select-String -Path backend\app\__init__.py `
+                -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          & $iscc "/DMyAppVersion=$v" installer\windows\setup.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
       - name: Locate and checksum the Setup.exe
