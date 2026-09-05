@@ -318,7 +318,7 @@ $Steps = @(
         $Script:Iscc = $iscc
     }}
 
-    @{ Name = 'ساخت فایل اجرایی برنامه'; Action = {
+    @{ Name = 'ساخت فایل اجرایی خودکفا'; Action = {
         param($Report)
         & $Report 'اجرای PyInstaller (طولانی‌ترین مرحله) ...'
         Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $ScriptDir -Report $Report `
@@ -329,7 +329,19 @@ $Steps = @(
             throw "PyInstaller بدون خطا تمام شد اما فایل خروجی ساخته نشد:`n$exe"
         }
         $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-        & $Report "فایل اجرایی ساخته شد ($mb مگابایت)."
+
+        # Self-containment check. PyInstaller embeds CPython plus every
+        # dependency, so the result must be tens of megabytes. A suspiciously
+        # small file means the interpreter was NOT bundled and the installer
+        # would fail on any machine without Python -- exactly the failure this
+        # deliverable exists to prevent. Better to fail here than on a
+        # customer's counter.
+        if ($mb -lt 15) {
+            throw ("فایل اجرایی تنها $mb مگابایت است؛ به‌نظر می‌رسد مفسر پایتون " +
+                   "و وابستگی‌ها داخل آن جاسازی نشده‌اند. فایل نصب روی سیستمی " +
+                   "که پایتون ندارد کار نخواهد کرد. مرحلهٔ نصب وابستگی‌ها را بررسی کنید.")
+        }
+        & $Report "فایل اجرایی خودکفا ساخته شد ($mb مگابایت) — شامل مفسر پایتون و همهٔ وابستگی‌ها."
     }}
 
     @{ Name = 'ساخت فایل نصب نهایی (Setup.exe)'; Action = {
@@ -343,7 +355,12 @@ $Steps = @(
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }
         $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+        if ($mb -lt 10) {
+            throw "فایل نصب تنها $mb مگابایت است؛ احتمالاً فایل اجرایی داخل آن قرار نگرفته."
+        }
         & $Report "فایل نصب آمادهٔ توزیع است ($mb مگابایت)."
+        & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
+        & $Report "مسیر: $setup"
         $Script:FinalSetup = $setup
     }}
 )

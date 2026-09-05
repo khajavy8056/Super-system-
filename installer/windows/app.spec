@@ -1,6 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec — builds a single-file Windows executable.
 # Usage:  pyinstaller --clean app.spec
+#
+# SELF-CONTAINMENT (this is the whole point of the deliverable):
+# PyInstaller embeds the CPython interpreter itself plus every third-party
+# package from backend/requirements.txt into the one .exe produced here. The
+# frontend, the mobile PWA and the Alembic migrations ride along as `datas`.
+# Therefore the machine the Setup.exe is installed on needs NO Python, no pip,
+# no Node and no database engine — SQLite is part of the Python standard
+# library. Everything is downloaded once, on the BUILD machine, by
+# BUILD-SETUP.bat, and baked in here.
 import os
 from pathlib import Path
 
@@ -47,6 +56,9 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # keep console for logs; set False for a windowed app
+    # No console window: the end user gets the graphical panel in their
+    # browser, and a stray black cmd window reads as "something is broken".
+    # All logs still go to %USERPROFILE%\SupermarketSystem\logs\.
+    console=False,
     disable_windowed_traceback=False,
 )

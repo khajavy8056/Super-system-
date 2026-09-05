@@ -15,7 +15,7 @@
 ; existing symbol is an error in Inno Setup, hence the guard: this default
 ; only applies when ISCC is invoked by hand without the switch.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.0"
+  #define MyAppVersion "0.3.1"
 #endif
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
