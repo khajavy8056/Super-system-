@@ -87,6 +87,10 @@ class Shooter:
         loop.exec()
         if not result["done"]:
             log("  js timeout (continuing)")
+        elif result["value"] not in (None, ""):
+            # Surface the return value: a silent step that quietly did nothing
+            # was previously indistinguishable from one that worked.
+            log(f"  js -> {str(result['value'])[:200]}")
         return result["value"]
 
     def _capture(self, view, name: str, pdf: bool = False, full_height: bool = True,

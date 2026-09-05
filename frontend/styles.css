@@ -286,3 +286,13 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 1
   color: var(--muted); font-size: 12px; }
 #p-resolve-status.ok { color: var(--green); }
 #p-resolve-status.err { color: var(--red); }
+
+/* Product-detail modal: the batch table carries ten price/date columns, so it
+   needs far more room than a confirmation dialog. Capped at the viewport so it
+   stays usable on a POS monitor and tablet. */
+/* Raise the 560px cap that .modal imposes on its parent container. */
+.modal:has(> .modal-wide) { max-width: min(1180px, 94vw); }
+.modal-wide { width: 100%; }
+.modal-wide table { width: 100%; font-size: 13px; }
+.modal-wide th, .modal-wide td { white-space: nowrap; padding: 7px 9px; }
+.modal-wide h4 { margin: 14px 0 6px; font-size: 14px; opacity: .85; }

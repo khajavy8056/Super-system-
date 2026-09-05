@@ -940,13 +940,47 @@ RENDER.products = async () => {
 
   $("#p-add").addEventListener("click", async () => {
     try {
+      const barcode = $("#p-barcode").value.trim();
+      const name = $("#p-name").value.trim();
+      if (!name) { toast("نام کالا الزامی است", "err"); return; }
+
+      // Brand/category were typed by the operator but never sent — resolve
+      // the free-text names to real rows so the FKs stop being null.
+      const brandName = $("#p-brand").value.trim();
+      const catName = $("#p-category").value.trim();
+      const brand = brandName
+        ? await api("/products/brands", { method: "POST", body: JSON.stringify({ name: brandName }) })
+        : null;
+      const category = catName
+        ? await api("/products/categories", { method: "POST", body: JSON.stringify({ name: catName }) })
+        : null;
+
+      // §33 — warn before creating a probable duplicate. Advisory: the
+      // operator may confirm, because two real products can share a name.
+      const dup = await api("/products/check-duplicate", { method: "POST",
+        body: JSON.stringify({ name, barcode: barcode || null,
+                               brand_id: brand ? brand.id : null }) });
+      if (dup.has_warning) {
+        const lines = dup.exact_barcode_match
+          ? `کالایی با همین بارکد وجود دارد: ${dup.exact_barcode_match.name}`
+          : "کالاهای مشابه: " + dup.possible_duplicates
+              .map((c) => `${c.name} (${Math.round(c.confidence * 100)}٪)`).join("، ");
+        if (!confirm(`${lines}\n\nآیا مطمئن هستید که این کالای جدیدی است؟`)) return;
+      }
+
       const body = {
-        barcode: $("#p-barcode").value.trim(), name: $("#p-name").value.trim(),
-        min_stock_alert: Number($("#p-min").value || 5),
+        name, min_stock_alert: Number($("#p-min").value || 5),
+        // §16 — no barcode typed means a loose/bulk item; the server mints
+        // an internal INT- code instead of rejecting the product.
+        has_own_barcode: Boolean(barcode),
       };
+      if (barcode) body.barcode = barcode;
+      if (brand) body.brand_id = brand.id;
+      if (category) body.category_id = category.id;
       const img = $("#p-image-url").value.trim();
       if (img) body.image_url = img;
-      await api("/products", { method: "POST", body: JSON.stringify(body) });
+      const created = await api("/products", { method: "POST", body: JSON.stringify(body) });
+      if (!barcode) toast(`بارکد داخلی ساخته شد: ${created.barcode}`);
       toast("کالا ثبت شد");
       RENDER.products();
     } catch (e) { toast(e.message, "err"); }
@@ -958,15 +992,78 @@ RENDER.products = async () => {
       ? el("img", { class: "thumb", src: p.image_url.startsWith("http") ? p.image_url
           : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" })
       : el("span", { class: "thumb thumb-empty", text: "—" })),
-    el("td", { text: p.barcode }), el("td", { text: p.name }),
+    el("td", {}, el("span", {
+      // §16 — an internal code is visibly distinct from a real GTIN so staff
+      // know it means nothing to external catalogues.
+      class: p.has_own_barcode === false ? "badge badge-gray" : "",
+      text: p.barcode })),
+    el("td", { text: p.name }),
     el("td", { text: p.min_stock_alert }),
-    el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" }))));
+    el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" })),
+    el("td", {}, el("button", { class: "btn btn-ghost btn-sm",
+      text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
   const tbl = $("#p-table");
   tbl.innerHTML = "";
   tbl.append(el("thead", {}, el("tr", {},
     el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
-    el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }))),
+    el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }),
+    el("th", { text: "" }))),
     el("tbody", {}, ...rows));
+};
+
+/* ---------- §5: product detail — one identity, all its batches ----------
+ * The batch list is the product's price history. Depleted batches are shown
+ * in a separate, dimmed section rather than hidden, because deleting them
+ * would erase the record of what each purchase actually cost. */
+window.showProductDetail = async function showProductDetail(productId) {
+  try {
+    const d = await api(`/products/${productId}/detail`);
+    const p = d.product;
+
+    const money = (n) => (n === null || n === undefined ? "—" : fmt(n));
+    const batchTable = (list, dim) => {
+      if (!list.length) return el("p", { class: "muted", text: "موردی نیست." });
+      const rows = list.map((b) => el("tr", { style: dim ? "opacity:.62" : "" },
+        el("td", { text: b.batch_number }),
+        el("td", { text: b.current_qty + " / " + b.quantity_received }),
+        el("td", { text: money(b.buy_price) }),
+        el("td", { text: money(b.supplier_price) }),
+        el("td", { text: money(b.sell_price) }),
+        el("td", { text: money(b.consumer_price) }),
+        el("td", { text: b.discount ? money(b.discount) : "—" }),
+        el("td", { text: b.tax ? money(b.tax) : "—" }),
+        el("td", { text: b.expiry_date || "—" }),
+        el("td", { text: (b.received_at || "").slice(0, 10) })));
+      const t = el("table", {});
+      t.append(el("thead", {}, el("tr", {},
+        el("th", { text: "شماره بچ" }), el("th", { text: "موجودی/دریافتی" }),
+        el("th", { text: "خرید" }), el("th", { text: "تأمین‌کننده" }),
+        el("th", { text: "فروش" }), el("th", { text: "مصرف‌کننده" }),
+        el("th", { text: "تخفیف" }), el("th", { text: "مالیات" }),
+        el("th", { text: "انقضا" }), el("th", { text: "تاریخ ورود" }))),
+        el("tbody", {}, ...rows));
+      return t;
+    };
+
+    const body = el("div", {});
+    body.append(el("p", { class: "muted", text:
+      `بارکد ${p.barcode}${p.has_own_barcode === false ? " (بارکد داخلی — کالای فله)" : ""}` +
+      ` · موجودی کل: ${d.total_stock} · تعداد بچ: ${d.batch_count}` }));
+    body.append(el("h4", { text: "بچ‌های فعال" }));
+    body.append(batchTable(d.active_batches, false));
+    body.append(el("h4", { text: "بچ‌های تمام‌شده (تاریخچهٔ قیمت — حذف نمی‌شوند)",
+                           style: "margin-top:16px" }));
+    body.append(batchTable(d.depleted_batches, true));
+
+    // openModal takes an HTML string, so render a shell then mount the
+    // built nodes into it (keeps names/notes escaped as text, not HTML).
+    // Ten price/date columns need more room than the default modal width.
+    openModal(`<div class="modal-wide"><h3 id="pd-title"></h3><div id="pd-body"></div>
+      <div style="margin-top:14px;text-align:left">
+        <button class="btn btn-ghost" onclick="closeModal()">بستن</button></div></div>`);
+    $("#pd-title").textContent = p.name;
+    $("#pd-body").append(body);
+  } catch (e) { toast(e.message, "err"); }
 };
 
 /* ---------- batches (receiving) ---------- */
@@ -978,8 +1075,11 @@ RENDER.batches = async () => {
       <div><label>بارکد</label><input id="b-barcode" placeholder="اسکن بارکد" /></div>
       <div><label>تعداد</label><input id="b-qty" type="number" value="1" /></div>
       <div><label>قیمت خرید</label><input id="b-buy" type="number" /></div>
+      <div><label>قیمت تأمین‌کننده</label><input id="b-supplier" type="number" /></div>
       <div><label>قیمت مصرف‌کننده</label><input id="b-consumer" type="number" /></div>
       <div><label>قیمت فروش</label><input id="b-sell" type="number" /></div>
+      <div><label>تخفیف بچ</label><input id="b-discount" type="number" /></div>
+      <div><label>مالیات بچ</label><input id="b-tax" type="number" /></div>
       <div><label>تاریخ انقضا</label><input id="b-expiry" type="date" /></div>
     </div>
     <button id="b-receive" class="btn btn-primary" style="margin-top:12px">ثبت ورود</button>
@@ -989,7 +1089,10 @@ RENDER.batches = async () => {
     try {
       const body = { barcode: $("#b-barcode").value.trim(), quantity_received: Number($("#b-qty").value),
         buy_price: Number($("#b-buy").value), consumer_price: Number($("#b-consumer").value || 0) || null,
-        sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null };
+        sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null,
+        supplier_price: Number($("#b-supplier").value || 0) || null,
+        discount: Number($("#b-discount").value || 0) || null,
+        tax: Number($("#b-tax").value || 0) || null };
       await api("/batches/receive", { method: "POST", body: JSON.stringify(body) });
       toast("ورود کالا ثبت شد");
       RENDER.batches();

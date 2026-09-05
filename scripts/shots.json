@@ -440,5 +440,46 @@
         "wait_ms": 600
       }
     ]
+  },
+  {
+    "name": "phase11",
+    "url": "http://127.0.0.1:8000/",
+    "viewport": [
+      1440,
+      980
+    ],
+    "settle_ms": 1200,
+    "steps": [
+      {
+        "js": "(async()=>{if(document.querySelector('.session-item')||document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'already';document.querySelector('#login-username').value='admin';document.querySelector('#login-password').value='admin123';document.querySelector('#login-form').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));for(let i=0;i<60;i++){if(document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'app-visible';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+      },
+      {
+        "wait_ms": 1500
+      }
+    ],
+    "shots": [
+      {
+        "name": "40-product-batch-detail",
+        "steps": [
+          {
+            "js": "closeModal(); go('products');"
+          },
+          {
+            "wait_ms": 1500
+          },
+          {
+            "js": "window.showProductDetail(1)"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "JSON.stringify({modal:!document.querySelector('#modal').classList.contains('hidden'), rows:document.querySelectorAll('#pd-body tbody tr').length})"
+          }
+        ],
+        "wait_ms": 600,
+        "full_height": false
+      }
+    ]
   }
 ]
