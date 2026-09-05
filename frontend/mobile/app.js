@@ -571,8 +571,41 @@ async function listScreen(title, loader, rowFn, extra) {
 
 window.showProducts = () => listScreen("کالاها",
   async () => (await api("/products?limit=100")).items,
-  (p) => `<div class="stock-row"><div><b>${esc(p.name)}</b>
-    <div class="muted">${esc(p.barcode)}${p.sku ? " · " + esc(p.sku) : ""}</div></div></div>`);
+  // §5 on mobile — tapping a product opens its batch/price history, the same
+  // truth the desktop shows. §16: an internal code is labelled as such so
+  // staff do not expect an external lookup to resolve it.
+  (p) => `<div class="stock-row" onclick="showProductBatches(${p.id})">
+    <div><b>${esc(p.name)}</b>
+    <div class="muted">${esc(p.barcode)}${p.has_own_barcode === false ? " (داخلی)" : ""}${p.sku ? " · " + esc(p.sku) : ""}</div></div>
+    <div class="muted">${icon("back", 16)}</div></div>`);
+
+/* §5 — product batches on a phone. Prices are per batch and never merged, so
+ * the sheet lists each batch separately rather than showing one "the price". */
+window.showProductBatches = async (productId) => {
+  try {
+    const d = await api(`/products/${productId}/detail`);
+    const row = (b, dim) => `<div class="stock-row" style="${dim ? "opacity:.6" : ""}">
+      <div><b>${esc(b.batch_number)}</b>
+        <div class="muted">خرید ${money(b.buy_price)} · فروش ${money(b.sell_price)}
+          ${b.expiry_date ? " · انقضا " + esc(b.expiry_date) : ""}</div></div>
+      <div><b>${qtyFmt(b.current_qty)}</b></div></div>`;
+    closeSheet();
+    $("#app").insertAdjacentHTML("beforeend", `
+      <div class="sheet" id="m-sheet">
+        <div class="sheet-body">
+          <h2>${esc(d.product.name)}</h2>
+          <p class="muted">${esc(d.product.barcode)}${d.product.has_own_barcode === false ? " (بارکد داخلی)" : ""}
+            · موجودی کل ${qtyFmt(d.total_stock)} · ${d.batch_count} بچ</p>
+          <h3>بچ‌های فعال</h3>
+          ${d.active_batches.length ? d.active_batches.map((b) => row(b, false)).join("")
+            : '<p class="muted">موجودی فعالی نیست.</p>'}
+          ${d.depleted_batches.length ? "<h3>تمام‌شده (تاریخچهٔ قیمت)</h3>"
+            + d.depleted_batches.map((b) => row(b, true)).join("") : ""}
+          <button class="btn" onclick="closeSheet()">بستن</button>
+        </div>
+      </div>`);
+  } catch (e) { toast(e.message, "err"); }
+};
 
 window.showCustomersM = () => listScreen("مشتریان",
   () => api("/customers"),

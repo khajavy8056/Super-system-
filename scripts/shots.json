@@ -481,5 +481,46 @@
         "full_height": false
       }
     ]
+  },
+  {
+    "name": "phase11m",
+    "url": "http://127.0.0.1:8000/mobile/",
+    "viewport": [
+      420,
+      860
+    ],
+    "settle_ms": 1200,
+    "steps": [
+      {
+        "js": "(async()=>{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'username=admin&password=admin123'});const j=await r.json();localStorage.setItem('m_token',j.access_token);location.reload();return 'logged-in';})()"
+      },
+      {
+        "wait_ms": 2500
+      }
+    ],
+    "shots": [
+      {
+        "name": "41-mobile-product-batches",
+        "steps": [
+          {
+            "js": "showProducts()"
+          },
+          {
+            "wait_ms": 1500
+          },
+          {
+            "js": "window.showProductBatches(1)"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "JSON.stringify({sheet:!!document.querySelector('#m-sheet'),rows:document.querySelectorAll('#m-sheet .stock-row').length})"
+          }
+        ],
+        "wait_ms": 500,
+        "full_height": false
+      }
+    ]
   }
 ]
