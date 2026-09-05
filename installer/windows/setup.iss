@@ -1,4 +1,4 @@
-; Inno Setup script — builds SupermarketSystem-Setup-<version>.exe
+; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
 ; Prerequisite: build the app first with build.ps1 (creates dist\SupermarketSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
@@ -7,9 +7,10 @@
 ;   - the frozen-app launcher logic (run_supermarket.py) was built with
 ;     cx_Freeze on Linux and boot-tested end-to-end (health/login/frontend/DB).
 ;   - see docs/BUILD.md for the full Windows build procedure to run locally.
+;   - or just double-click BUILD-SETUP.bat in this folder.
 
 #define MyAppName "Supermarket System"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.4.0"
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
 #define MyAppURL "https://example.invalid/"
@@ -33,7 +34,7 @@ SetupIconFile=icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesInstallIn64BitMode=x64
 CloseApplications=yes
 
 [Languages]
@@ -59,12 +60,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-; stop the app if running (best effort) before deleting files
-Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "KillApp"
-
 [UninstallDelete]
-; delete app files only — user DATA in %USERPROFILE%\SupermarketSystem (DB, logs,
+; delete app files only - user DATA in %USERPROFILE%\SupermarketSystem (DB, logs,
 ; secret key) is intentionally NOT touched by uninstall
 Type: filesandordirs; Name: "{app}"
 

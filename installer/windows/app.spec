@@ -23,6 +23,11 @@ a = Analysis(
         "app.main", "app.database", "app.bootstrap",
         "app.services.providers", "app.services.providers.openfoodfacts",
         "app.services.providers.custom_http",
+        # CRITICAL (found by the cx_Freeze frozen boot test): SQLAlchemy loads
+        # the sqlite dialect via entry points -> frozen apps miss it without this
+        "sqlalchemy.dialects.sqlite",
+        # starlette imports the multipart parser lazily on first form POST
+        "multipart", "python_multipart",
     ],
     hookspath=[],
     runtime_hooks=[],

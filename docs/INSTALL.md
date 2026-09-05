@@ -37,7 +37,9 @@ cd installer\windows
 .\build.ps1
 ```
 
-خروجی: `installer\output\SupermarketSystem-Setup-0.1.0.exe`
+ساده‌ترین راه: دابل‌کلیک روی `installer\windows\BUILD-SETUP.bat`.
+
+خروجی: `installer\output\SupermarketSystem-Setup-0.4.0.exe` (+ نسخهٔ portable)
 
 اسکریپت `build.ps1` (سه مرحله — شرح کامل و وضعیت تست‌شدگی: `docs/BUILD.md`):
 1. venv و وابستگی‌های backend را نصب می‌کند.

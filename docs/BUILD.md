@@ -1,4 +1,4 @@
-# Build & Packaging — فاز ۶
+# Build & Packaging — فاز ۶ (v0.4.0)
 
 این سند روش رسمی ساخت بسته‌های نصبی و وضعیت تست‌شدگی هر مسیر را شرح می‌دهد.
 اصل پروژه (Master Prompt): هر مسیری که در sandbox قابل تست نبوده، صادقانه
@@ -12,7 +12,9 @@ installer/
 │   ├── run_supermarket.py   ← لانچر مشترک (frozen و dev) — منطق یکسان
 │   ├── app.spec             ← spec پکی‌جینگ PyInstaller (onefile)
 │   ├── setup.iss            ← اسکریپت Inno Setup (Setup.exe ویندوزی)
-│   ├── build.ps1            ← اسکریپت یک‌ضرب ویندوزی (۳ مرحله)
+│   ├── BUILD-SETUP.bat      ← ورودی یک‌کلیک (دابل‌کلیک = ساخت نصب‌کننده)
+│   ├── build.ps1            ← اسکریپت ساخت واقعی (پیش‌پرواز + چک هر مرحله)
+│   ├── README.md            ← راهنمای فارسی + عیب‌یابی
 │   └── icon.ico             ← آیکون (ساخته‌شده از frontend/icons/icon-512.png)
 └── standalone/
     └── setup.py             ← بیلد cx_Freeze (برای تست frozen در لینوکس)
@@ -32,13 +34,12 @@ installer/
 
 روی ویندوز 10/11 با Python 3.11+:
 
-```powershell
-git clone <repo>; cd Super-system-
-powershell -ExecutionPolicy Bypass -File .\installer\windows\build.ps1
-# خروجی:
-#   installer\windows\dist\SupermarketSystem.exe
-#   installer\output\SupermarketSystem-Setup-0.1.0.exe   (نیاز به Inno Setup 6)
-```
+ساده‌ترین راه: دابل‌کلیک روی `installer\windows\BUILD-SETUP.bat`
+(یا از خط فرمان: `powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1`)
+
+خروجی:
+- `installer\output\SupermarketSystem-0.4.0-portable.exe` (همیشه — بدون نیاز به Inno)
+- `installer\output\SupermarketSystem-Setup-0.4.0.exe` (اگر Inno Setup 6 نصب باشد)
 
 مراحل build.ps1: (1) venv + نصب `requirements.txt` و pyinstaller،
 (2) `pyinstaller --clean app.spec` → onefile با frontend و icon،
