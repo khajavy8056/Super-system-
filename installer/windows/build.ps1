@@ -3,7 +3,7 @@
 #
 # Produces:
 #   installer\windows\dist\SupermarketSystem.exe        (PyInstaller onefile)
-#   installer\output\SupermarketSystem-Setup-0.1.0.exe  (Inno Setup, if installed)
+#   installer\output\SupermarketSystem-Setup-0.2.0.exe  (Inno Setup, if installed)
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 

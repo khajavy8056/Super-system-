@@ -12,6 +12,9 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "frontend"), "frontend"),
+        # Migrations must travel with the installed app (see setup.py note).
+        (str(ROOT / "backend" / "alembic"), "alembic"),
+        (str(ROOT / "backend" / "alembic.ini"), "."),
     ],
     hiddenimports=[
         "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",

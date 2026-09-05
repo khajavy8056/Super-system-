@@ -9,7 +9,7 @@
 ;   - see docs/BUILD.md for the full Windows build procedure to run locally.
 
 #define MyAppName "Supermarket System"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
 #define MyAppURL "https://example.invalid/"

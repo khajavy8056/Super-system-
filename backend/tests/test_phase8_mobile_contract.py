@@ -181,3 +181,13 @@ def test_mobile_app_never_hardcodes_a_localhost_backend():
 def test_service_worker_never_caches_or_fakes_api_responses():
     sw = (MOBILE_JS.parents[1] / "sw.js").read_text(encoding="utf-8")
     assert 'url.pathname.startsWith("/api")' in sw, "API must be network-only"
+
+
+def test_mobile_root_without_trailing_slash_redirects(client):
+    """A phone user types "<lan-ip>:8000/m" by hand; a bare StaticFiles mount
+    404s on that and only answers "/m/"."""
+    r = client.get("/m", follow_redirects=False)
+    assert r.status_code in (301, 307, 308), \
+        f"/m must redirect to /m/, got {r.status_code}"
+    assert r.headers["location"].endswith("/m/")
+    assert client.get("/m", follow_redirects=True).status_code == 200

@@ -38,6 +38,11 @@ build_options = {
     ],
     "include_files": [
         (str(ROOT / "frontend"), "frontend"),
+        # Ship the migration tree so an INSTALLED shop can still upgrade its
+        # database on a later release. Without these the frozen app logs
+        # "Alembic sync skipped" and silently never migrates.
+        (str(ROOT / "backend" / "alembic"), "alembic"),
+        (str(ROOT / "backend" / "alembic.ini"), "alembic.ini"),
     ],
     "excludes": ["tkinter", "pytest", "pip", "setuptools", "wheel"],
     "optimize": 1,
@@ -53,7 +58,7 @@ executables = [
 
 setup(
     name="SupermarketSystem",
-    version="0.1.0",
+    version="0.2.0",
     description="Supermarket ERP / Smart Inventory / POS — standalone server",
     options={"build_exe": build_options},
     executables=executables,

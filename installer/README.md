@@ -12,7 +12,7 @@ cd installer\windows
 .\build.ps1
 ```
 
-خروجی: `installer\output\SupermarketSystem-Setup-0.1.0.exe`
+خروجی: `installer\output\SupermarketSystem-Setup-0.2.0.exe`
 
 مراحل:
 1. وابستگی‌های backend نصب می‌شود.

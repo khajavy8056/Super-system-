@@ -196,5 +196,14 @@ if _FRONTEND_DIR is not None:
     # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
     _MOBILE_DIR = _FRONTEND_DIR / "mobile"
     if _MOBILE_DIR.exists():
+        # A phone on the shop Wi-Fi is typed by hand: "192.168.1.5:8000/m".
+        # A bare mount only answers "/m/" and 404s on "/m", which reads as
+        # "the app is broken" to a staff member. Redirect the slashless form.
+        from fastapi.responses import RedirectResponse
+
+        @app.get("/m", include_in_schema=False)
+        def _mobile_root():
+            return RedirectResponse(url="/m/", status_code=307)
+
         app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
