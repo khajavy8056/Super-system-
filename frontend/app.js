@@ -838,32 +838,134 @@ RENDER.products = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card" style="margin-bottom:14px">
     <h3>ثبت کالای جدید</h3>
+    <p class="muted">بارکد را اسکن کنید تا نام، برند، دسته و تصویر به‌صورت
+      خودکار از منابع مجاز بازیابی شود. داده‌های بیرونی همیشه پیش از ثبت
+      نیازمند تأیید شما هستند.</p>
     <div class="form-row">
-      <div><label>بارکد</label><input id="p-barcode" placeholder="اسکن یا تایپ بارکد" /></div>
+      <div><label>بارکد</label>
+        <input id="p-barcode" placeholder="اسکن یا تایپ بارکد" autocomplete="off" /></div>
+      <div style="align-self:end">
+        <button id="p-lookup" class="btn btn-ghost">بازیابی خودکار اطلاعات</button></div>
+    </div>
+    <div id="p-resolve-status" class="muted" style="margin-top:8px"></div>
+    <div class="form-row" style="margin-top:8px">
       <div><label>نام کالا</label><input id="p-name" /></div>
+      <div><label>برند</label><input id="p-brand" /></div>
+      <div><label>دسته</label><input id="p-category" /></div>
       <div><label>حداقل موجودی هشدار</label><input id="p-min" type="number" value="5" /></div>
     </div>
+    <div id="p-image-box" class="hidden" style="margin-top:10px">
+      <label>تصویر کالا</label>
+      <div class="img-preview">
+        <img id="p-image" alt="تصویر کالا" />
+        <div class="img-meta"><span id="p-image-meta" class="muted"></span>
+          <button id="p-image-clear" class="btn btn-ghost btn-sm">حذف تصویر</button></div>
+      </div>
+    </div>
+    <input id="p-image-url" type="hidden" />
     <button id="p-add" class="btn btn-primary" style="margin-top:12px">ثبت کالا</button>
   </div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+
+  const setImage = (path) => {
+    $("#p-image-url").value = path || "";
+    const box = $("#p-image-box");
+    if (path) {
+      $("#p-image").src = path.startsWith("http") ? path : `/media/${path.replace(/^\/?media\//, "")}`;
+      box.classList.remove("hidden");
+    } else { box.classList.add("hidden"); $("#p-image").removeAttribute("src"); }
+  };
+  $("#p-image-clear").addEventListener("click", () => { setImage(null); $("#p-image-meta").textContent = ""; });
+
+  /* Scan -> multi-source lookup -> fill the form. The operator still confirms. */
+  const lookup = async () => {
+    const code = $("#p-barcode").value.trim();
+    if (!code) return;
+    const status = $("#p-resolve-status");
+    status.className = "muted";
+    status.textContent = "در حال جست‌وجو در منابع…";
+    try {
+      const r = await api(`/barcode/scan?barcode=${encodeURIComponent(code)}`,
+        { method: "POST", body: JSON.stringify({ with_image: true }) });
+
+      if (r.origin === "invalid") {
+        status.className = "err"; status.textContent = r.message; return;
+      }
+      if (r.origin === "local" || r.origin === "cache") {
+        status.className = "err";
+        status.textContent = `${r.message} — «${(r.product || {}).name || ""}»`;
+        return;
+      }
+      const d = r.draft || {};
+      if (d.name) $("#p-name").value = d.name;
+      if (d.brand) $("#p-brand").value = d.brand;
+      if (d.category) $("#p-category").value = d.category;
+      setImage(d.image_url || null);
+      if (r.image && r.image.stored) {
+        // Credit the source whose bytes were actually kept, not merely the
+        // first candidate tried — several sources may offer an image.
+        const won = (r.image.candidates || []).find(
+          (c) => c.local_path && c.local_path === r.image.best_local_path);
+        const dim = won && won.validation && won.validation.width
+          ? ` · ${won.validation.width}×${won.validation.height}` : "";
+        $("#p-image-meta").textContent =
+          `منبع: ${(won && won.source) || "—"}${dim} · ذخیره‌شدهٔ محلی`;
+      }
+
+      const tried = (r.sources || []).length;
+      const failed = (r.sources || []).filter((x) => !x.ok);
+      if (r.coverage && r.coverage.fields_found) {
+        status.className = "ok";
+        status.textContent =
+          `${r.coverage.fields_found} فیلد از ${tried} منبع بازیابی شد` +
+          (r.coverage.image_found ? " + تصویر" : " (بدون تصویر)") +
+          " — لطفاً بررسی و تأیید کنید.";
+      } else {
+        status.className = "err";
+        // Be explicit about WHY nothing came back; silence here was the old bug.
+        status.textContent = failed.length
+          ? `هیچ داده‌ای یافت نشد. خطای منابع: ${failed.map((f) => `${f.source}=${(f.error || {}).kind}`).join("، ")} — ثبت دستی لازم است.`
+          : (tried ? "منابع پاسخ دادند اما داده‌ای برای این بارکد نداشتند — ثبت دستی لازم است."
+                   : "هیچ منبعی فعال نیست — در تنظیمات یک منبع اضافه کنید یا دستی ثبت کنید.");
+      }
+    } catch (e) {
+      status.className = "err"; status.textContent = `خطا در بازیابی: ${e.message}`;
+    }
+  };
+  $("#p-lookup").addEventListener("click", lookup);
+  // A hardware barcode gun ends its burst with Enter.
+  $("#p-barcode").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); lookup(); }
+  });
+
   $("#p-add").addEventListener("click", async () => {
     try {
-      await api("/products", { method: "POST", body: JSON.stringify({
+      const body = {
         barcode: $("#p-barcode").value.trim(), name: $("#p-name").value.trim(),
-        min_stock_alert: Number($("#p-min").value || 5) }) });
+        min_stock_alert: Number($("#p-min").value || 5),
+      };
+      const img = $("#p-image-url").value.trim();
+      if (img) body.image_url = img;
+      await api("/products", { method: "POST", body: JSON.stringify(body) });
       toast("کالا ثبت شد");
-      $("#p-barcode").value = ""; $("#p-name").value = "";
       RENDER.products();
     } catch (e) { toast(e.message, "err"); }
   });
+
   const { items } = await api("/products?limit=200");
   const rows = items.map((p) => el("tr", {},
-    el("td", { text: p.barcode }), el("td", { text: p.name }), el("td", { text: p.min_stock_alert }),
+    el("td", {}, p.image_url
+      ? el("img", { class: "thumb", src: p.image_url.startsWith("http") ? p.image_url
+          : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" })
+      : el("span", { class: "thumb thumb-empty", text: "—" })),
+    el("td", { text: p.barcode }), el("td", { text: p.name }),
+    el("td", { text: p.min_stock_alert }),
     el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" }))));
   const tbl = $("#p-table");
   tbl.innerHTML = "";
   tbl.append(el("thead", {}, el("tr", {},
-    el("th", { text: "بارکد" }), el("th", { text: "نام" }), el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }))),
+    el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
+    el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }))),
     el("tbody", {}, ...rows));
 };
 

@@ -70,12 +70,18 @@ def transport(handler) -> httpx.Client:
 
 @pytest.fixture(scope="module", autouse=True)
 def clean_sources():
-    """Isolation: no external sources may leak in from other test modules."""
+    """Isolation: no external sources may leak in from other test modules.
+
+    Deactivate rather than delete. Bootstrap now registers default sources on
+    first boot, and once any resolver result / market price references one, a
+    hard DELETE trips the FK. Only `_active_sources` matters for isolation, so
+    flipping is_active is both sufficient and safe.
+    """
     from app.database import init_db
     init_db()  # tables exist even when this module runs first
     s = SessionLocal()
     for src in s.execute(select(ExternalSource)).scalars():
-        s.delete(src)
+        src.is_active = False
     s.commit()
     s.close()
     yield

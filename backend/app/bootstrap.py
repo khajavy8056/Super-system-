@@ -115,4 +115,62 @@ def bootstrap(db: Session) -> None:
     # 5. Default measurement units (§25 — piece / kg / gram / liter ...)
     ensure_units(db)
 
+    # 6. Default product-resolver sources (§9-§11)
+    #
+    # Without at least one registered source the whole multi-source resolver is
+    # dead code on a fresh install: scanning an unknown barcode returned
+    # origin="none" with an empty `sources` list, so "add product by scan"
+    # silently degraded to fully manual entry. Providers existed; nothing was
+    # ever wired to them.
+    #
+    # OpenFoodFacts is the one source we can ship enabled by default and still
+    # respect the licensing rule: the data is community-owned and published
+    # under the Open Database License (ODbL), the API is public and keyless,
+    # and it explicitly permits reuse with attribution. Commercial Iranian
+    # catalogues (Holoo and friends) are deliberately NOT shipped — copying
+    # them is exactly what the brief forbids. A shop that holds its own licence
+    # for such a service can add it at runtime as a `custom_http` source
+    # without any code change.
+    ensure_default_sources(db)
+
     db.commit()
+
+
+#: Sources registered on first boot. Only openly-licensed, keyless services.
+DEFAULT_SOURCES: list[dict] = [
+    {
+        "code": "openfoodfacts",
+        "name": "OpenFoodFacts (ODbL, public, keyless)",
+        "source_type": "PRODUCT",
+        "priority": 10,
+        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
+        "is_active": True,
+    },
+    {
+        # Same upstream, registered separately so the IMAGE pipeline has a
+        # source of its own and can be disabled independently of name/brand
+        # lookups (a shop may want text but not pictures, or vice versa).
+        "code": "openfoodfacts_img",
+        "name": "OpenFoodFacts Images (ODbL)",
+        "source_type": "IMAGE",
+        "priority": 10,
+        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
+        "is_active": True,
+    },
+]
+
+
+def ensure_default_sources(db: Session) -> None:
+    """Register the built-in resolver sources (idempotent).
+
+    Existing rows are never modified: if an operator disabled or re-pointed a
+    source, that decision must survive a restart.
+    """
+    from .models import ExternalSource
+
+    existing = {s.code for s in db.execute(select(ExternalSource)).scalars()}
+    for spec in DEFAULT_SOURCES:
+        if spec["code"] in existing:
+            continue
+        db.add(ExternalSource(**spec))
+    db.flush()

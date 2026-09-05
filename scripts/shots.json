@@ -256,6 +256,32 @@
         ],
         "wait_ms": 800,
         "pdf": true
+      },
+      {
+        "name": "38-admin-scan-autofill",
+        "wait_ms": 800,
+        "full_height": false,
+        "steps": [
+          {
+            "js": "(async()=>{closeModal();go('products');await new Promise(r=>setTimeout(r,1500));$('#p-barcode').value='3017620422003';$('#p-lookup').click();})()"
+          },
+          {
+            "wait_ms": 6000
+          }
+        ]
+      },
+      {
+        "name": "39-admin-scan-no-data",
+        "wait_ms": 800,
+        "full_height": false,
+        "steps": [
+          {
+            "js": "(async()=>{go('products');await new Promise(r=>setTimeout(r,1500));$('#p-barcode').value='6260101010016';$('#p-lookup').click();})()"
+          },
+          {
+            "wait_ms": 8000
+          }
+        ]
       }
     ]
   },

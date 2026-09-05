@@ -232,3 +232,69 @@ def _resolve_simple(db: Session, model_name: str, value: str | None) -> int | No
         db.add(row)
         db.flush()
     return row.id
+
+
+# ---------------------------------------------------------------------------
+# One-shot scan-to-draft (§9-§11, §21)
+# ---------------------------------------------------------------------------
+class ScanDraftIn(BaseModel):
+    #: Also attempt image download. Off for a fast text-only lookup.
+    with_image: bool = True
+
+
+@router.post("/scan")
+def scan_to_draft(barcode: str, body: ScanDraftIn | None = None,
+                  db: Session = Depends(get_db),
+                  _: User = Depends(require_permission("products.view"))):
+    """Everything the 'add product by scanning' screen needs, in one call.
+
+    Returns a *draft* — never a saved product. External data always requires
+    human confirmation (§52), so the caller gets suggested field values, the
+    per-field source and confidence, and a locally-stored image path. The
+    operator reviews and presses save.
+
+    A failure to reach any source is reported, not hidden: the draft simply
+    comes back with whatever was found (possibly nothing) and ``need_manual``
+    set, so product creation is never blocked by a dead network (§40).
+    """
+    result = resolvers.resolve_barcode(db, barcode)
+
+    if result.get("origin") == "invalid":
+        db.commit()
+        return {**result, "draft": None, "image": None}
+
+    # Already known locally / previously approved: hand back the real product.
+    if result.get("origin") in ("local", "cache"):
+        db.commit()
+        return {**result, "draft": None, "image": None,
+                "message": "این بارکد قبلاً در سامانه ثبت شده است"}
+
+    merged = result.get("merged") or {}
+    draft = {field: info.get("chosen") for field, info in merged.items()
+             if info.get("chosen")}
+
+    image = None
+    if (body is None or body.with_image) and draft is not None:
+        try:
+            image = resolvers.resolve_image(db, barcode)
+        except Exception as exc:  # never let image trouble block the draft
+            image = {"stored": False, "best_local_path": None,
+                     "note": f"دریافت تصویر ناموفق بود: {type(exc).__name__}"}
+
+    db.commit()
+
+    if image and image.get("best_local_path"):
+        draft["image_url"] = image["best_local_path"]
+
+    filled = [k for k in ("name", "brand", "category", "unit", "description")
+              if draft.get(k)]
+    return {
+        **result,
+        "draft": draft,
+        "image": image,
+        "filled_fields": filled,
+        "coverage": {
+            "fields_found": len(filled),
+            "image_found": bool(image and image.get("stored")),
+        },
+    }
