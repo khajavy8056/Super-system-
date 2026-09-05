@@ -241,3 +241,49 @@ def test_duplicate_check_is_quiet_for_a_genuinely_new_product(client, H):
     assert r.status_code == 200
     assert r.json()["has_warning"] is False
     assert r.json()["possible_duplicates"] == []
+
+
+# --- §31: an external update must enrich, never duplicate ---------------------
+
+def test_reapplying_external_data_updates_and_never_duplicates(client, H):
+    """§31/§32 — same barcode means same product, so re-resolve must UPDATE.
+
+    This previously returned 409 and left the operator unable to enrich a
+    sparse record from a second source.
+    """
+    bc = new_barcode()
+    first = client.post("/api/barcode/apply", headers=H, json={
+        "barcode": bc, "name": "ماست کم‌چرب"})
+    assert first.status_code in (200, 201), first.text
+    assert first.json()["created"] is True
+    pid = first.json()["product"]["id"]
+
+    second = client.post("/api/barcode/apply", headers=H, json={
+        "barcode": bc, "name": "ماست کم‌چرب ۹۰۰ گرمی",
+        "brand": "کاله", "description": "به‌روزرسانی از منبع دوم"})
+    assert second.status_code in (200, 201), second.text
+    assert second.json()["created"] is False, "must update, not create"
+    assert second.json()["product"]["id"] == pid, "a duplicate product was created"
+
+    detail = client.get(f"/api/products/{pid}", headers=H).json()
+    assert detail["name"] == "ماست کم‌چرب ۹۰۰ گرمی"
+    assert detail["brand_id"] is not None
+
+    listing = client.get(f"/api/products?q={bc}", headers=H).json()["items"]
+    assert len([p for p in listing if p["barcode"] == bc]) == 1
+
+
+def test_external_update_does_not_wipe_local_data_with_blanks(client, H):
+    """A sparse second source must not erase fields the operator already set."""
+    bc = new_barcode()
+    pid = client.post("/api/barcode/apply", headers=H, json={
+        "barcode": bc, "name": "کره حیوانی", "description": "توضیح محلی مهم",
+        "min_stock_alert": 7}).json()["product"]["id"]
+
+    client.post("/api/barcode/apply", headers=H,
+                json={"barcode": bc, "name": "کره حیوانی ۵۰ گرمی"})
+
+    after = client.get(f"/api/products/{pid}", headers=H).json()
+    assert after["name"] == "کره حیوانی ۵۰ گرمی"
+    assert after["description"] == "توضیح محلی مهم", "blank source wiped local data"
+    assert after["min_stock_alert"] == 7

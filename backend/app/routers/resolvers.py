@@ -188,7 +188,9 @@ class ApplyIn(BaseModel):
     model: str | None = None
     description: str | None = None
     image_url: str | None = None
-    min_stock_alert: int = 0
+    #: Optional on purpose. A sparse external source that omits this must not
+    #: reset an existing product's reorder threshold to zero (§31).
+    min_stock_alert: int | None = None
     review_ids: list[int] = Field(default_factory=list)
 
 
@@ -203,22 +205,36 @@ def apply_resolved(body: ApplyIn, db: Session = Depends(get_db),
     brand_id = _resolve_simple(db, "Brand", body.brand)
     category_id = _resolve_simple(db, "Category", body.category)
     unit_id = _resolve_simple(db, "Unit", body.unit)
-    try:
-        product = catalog.create_product(
-            db, barcode=body.barcode, name=body.name, user=user,
-            sku=body.sku, brand_id=brand_id, category_id=category_id, unit_id=unit_id,
-            model=body.model, description=body.description, image_url=body.image_url,
-            min_stock_alert=body.min_stock_alert,
+    # §31 — re-resolving a barcode we already stock must UPDATE that product,
+    # never create a second one and never fail. The barcode is the identity
+    # (§32), so an existing row is by definition the same product; refusing
+    # with 409 left the operator unable to enrich a sparse record.
+    existing = catalog.get_product_by_barcode(db, body.barcode)
+    created = existing is None
+    if existing is not None:
+        product = catalog.update_product(
+            db, existing, user=user, name=body.name, sku=body.sku,
+            brand_id=brand_id, category_id=category_id, unit_id=unit_id,
+            model=body.model, description=body.description,
+            image_url=body.image_url, min_stock_alert=body.min_stock_alert,
         )
-    except CatalogError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    else:
+        try:
+            product = catalog.create_product(
+                db, barcode=body.barcode, name=body.name, user=user,
+                sku=body.sku, brand_id=brand_id, category_id=category_id, unit_id=unit_id,
+                model=body.model, description=body.description, image_url=body.image_url,
+                min_stock_alert=body.min_stock_alert or 0,
+            )
+        except CatalogError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     for rid in body.review_ids:
         row = db.get(ProductResolverResult, rid)
         if row and row.barcode == body.barcode:
             row.status = "APPROVED"
             row.product_id = product.id
     db.commit()
-    return {"product": resolvers._product_dict(product)}
+    return {"product": resolvers._product_dict(product), "created": created}
 
 
 def _resolve_simple(db: Session, model_name: str, value: str | None) -> int | None:
