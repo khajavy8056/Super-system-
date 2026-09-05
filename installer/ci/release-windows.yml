@@ -6,7 +6,7 @@
 # windows-latest runner and attached to the GitHub Release.
 #
 # Trigger: pushing a v* tag, or manually from the Actions tab.
-name: Build Windows installer
+name: Build and publish release assets
 
 on:
   push:
@@ -121,3 +121,66 @@ jobs:
           } else { "${{ inputs.tag }}" }
           gh release upload $tag "${{ steps.artifact.outputs.path }}" `
             "${{ steps.artifact.outputs.path }}.sha256" --clobber
+
+  # The development sandbox can build this tarball but cannot upload it:
+  # uploads.github.com is outside its egress allowlist. Building it here keeps
+  # the Linux artifact reproducible and attached by the same trusted job.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt cx_Freeze
+
+      - name: Run the test suite
+        working-directory: backend
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
+      - name: Build the frozen application
+        working-directory: installer/standalone
+        run: python setup.py build
+
+      - name: Boot the frozen build and verify it serves the panel
+        shell: bash
+        run: |
+          cd installer/standalone/build/exe.linux-*
+          export HOME=$(mktemp -d)
+          NO_BROWSER=1 ./SupermarketSystem > /tmp/boot.log 2>&1 &
+          for i in $(seq 1 60); do
+            sleep 2
+            port=$(grep -oP 'http://127.0.0.1:\K[0-9]+' /tmp/boot.log | head -1) || true
+            if [ -n "$port" ] && curl -sf "http://127.0.0.1:$port/" > /dev/null; then
+              echo "frozen build serves the panel on :$port"
+              # migrations must run inside the frozen app, not be skipped
+              grep -q "Alembic sync skipped" /tmp/boot.log \
+                && { echo "ERROR: migrations were skipped"; exit 1; }
+              curl -sf -o /dev/null -w '/m -> %{http_code}\n' "http://127.0.0.1:$port/m"
+              exit 0
+            fi
+          done
+          tail -50 /tmp/boot.log; exit 1
+
+      - name: Package and checksum
+        run: |
+          cd installer/standalone/build
+          tar -czf "$GITHUB_WORKSPACE/SupermarketSystem-0.2.0-linux-x86_64.tar.gz" exe.linux-*
+          cd "$GITHUB_WORKSPACE"
+          sha256sum SupermarketSystem-0.2.0-linux-x86_64.tar.gz > SHA256SUMS-linux.txt
+
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
+          gh release upload "$tag" \
+            SupermarketSystem-0.2.0-linux-x86_64.tar.gz \
+            SHA256SUMS-linux.txt --clobber
