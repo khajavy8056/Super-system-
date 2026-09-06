@@ -239,7 +239,7 @@ def test_version_is_consistent_everywhere(client, auth_headers):
     """One number: __init__.py, /health, the OpenAPI spec, the Inno script."""
     from app import __version__
 
-    assert __version__ == "1.2.5"
+    assert __version__ == "1.2.6"
     health = client.get("/health").json()
     assert health["version"] == __version__
     assert client.get("/openapi.json").json()["info"]["version"] == __version__

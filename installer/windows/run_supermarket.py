@@ -205,8 +205,58 @@ def open_window(url: str, base: Path, log):
     return None
 
 
+def _bind_std_streams(log_file: Path) -> None:
+    """In a windowed (console=False) PyInstaller build ``sys.stdout`` and
+    ``sys.stderr`` are ``None``. Anything that touches them - ``print``,
+    ``logging.StreamHandler(sys.stdout)``, uvicorn's default log config
+    (``sys.stdout.isatty()``) - raises, and because the server ran on a
+    daemon thread that exception was swallowed: the process sat idle with no
+    window and no error (the v1.2.5 report). Redirect both streams to the
+    log file so nothing can ever trip on a missing console again."""
+    if sys.stdout is None or sys.stderr is None or getattr(sys, "frozen", False):
+        try:
+            fh = open(log_file, "a", encoding="utf-8", buffering=1)
+            if sys.stdout is None or getattr(sys, "frozen", False):
+                sys.stdout = fh
+            if sys.stderr is None or getattr(sys, "frozen", False):
+                sys.stderr = fh
+        except OSError:
+            import io
+
+            sys.stdout = sys.stdout or io.StringIO()
+            sys.stderr = sys.stderr or io.StringIO()
+
+
+def _message_box(text: str, title: str = "Supermarket System", icon: int = 0x10) -> None:
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, title, icon | 0x100000)  # MB_RTLREADING
+    except Exception:
+        print(text, file=sys.stderr)
+
+
+def _single_instance_port(base: Path) -> int | None:
+    """If a previous instance is still serving, return its port so a second
+    click re-opens the window instead of silently starting a duplicate."""
+    pf = base / "server.port"
+    try:
+        port = int(pf.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1.0) as resp:
+            if resp.status == 200:
+                return port
+    except OSError:
+        pass
+    return None
+
+
 def main() -> None:
     base = data_dir()
+    log_file = base / "logs" / "supermarket.log"
+    _bind_std_streams(log_file)
     sys.path.insert(0, str(backend_dir()))
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
@@ -214,13 +264,25 @@ def main() -> None:
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ENVIRONMENT", "production")
 
-    log_file = base / "logs" / "supermarket.log"
+    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
+    if not getattr(sys, "frozen", False) and sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=[logging.FileHandler(log_file, encoding="utf-8"), logging.StreamHandler(sys.stdout)],
+        handlers=handlers,
+        force=True,
     )
+    logging.getLogger("alembic").setLevel(logging.WARNING)
     log = logging.getLogger("launcher")
+    log.info("=== launcher start (frozen=%s, exe=%s) ===", getattr(sys, "frozen", False), sys.executable)
+
+    # Second click while already running -> just bring the panel up again.
+    running = _single_instance_port(base)
+    if running:
+        log.info("instance already running on port %s; opening window only", running)
+        open_window(f"http://127.0.0.1:{running}", base, log)
+        return
 
     import uvicorn
     from app.database import init_db
@@ -228,30 +290,49 @@ def main() -> None:
     init_db()
 
     port = free_port()
+    (base / "server.port").write_text(str(port), encoding="utf-8")
     log.info("data dir: %s", base)
     log.info("log file: %s", log_file)
 
-    server = threading.Thread(
-        target=uvicorn.run,
-        args=("app.main:app",),
-        kwargs={"host": "127.0.0.1", "port": port, "log_level": "warning"},
-        daemon=True,
-    )
+    server_error: dict = {}
+
+    def serve() -> None:
+        try:
+            # log_config=None: uvicorn's default dictConfig builds console
+            # formatters that call sys.stdout.isatty(); with the root logger
+            # already configured to the file above, plain propagation is
+            # exactly what we want.
+            uvicorn.run("app.main:app", host="127.0.0.1", port=port,
+                        log_level="warning", log_config=None)
+        except BaseException as exc:  # noqa: BLE001
+            server_error["exc"] = exc
+            log.exception("backend server crashed")
+
+    server = threading.Thread(target=serve, name="uvicorn", daemon=True)
     server.start()
 
     url = f"http://127.0.0.1:{port}"
-    print(f"Supermarket System is starting at {url}")
+    log.info("Supermarket System is starting at %s", url)
     window = None
     if wait_healthy(port):
         log.info("healthy, opening the application window")
         window = open_window(url, base, log)
     else:
-        log.error("backend did not become healthy in time; open %s manually", url)
-        print(f"Backend slow to start — open {url} in your browser.")
+        detail = f"{type(server_error['exc']).__name__}: {server_error['exc']}" if server_error else "سرور در ۳۰ ثانیه آماده نشد."
+        log.error("backend did not become healthy: %s", detail)
+        _message_box(
+            "برنامه نتوانست سرویس داخلی خود را راه‌اندازی کند.\n\n"
+            f"{detail[:600]}\n\n"
+            f"گزارش کامل: {log_file}\n"
+            "در صورت تکرار، این فایل را برای پشتیبانی ارسال کنید."
+        )
+        sys.exit(1)
 
     try:
         while True:
             time.sleep(1)
+            if server_error:
+                raise RuntimeError(f"backend stopped: {server_error['exc']}")
             # If the user closes the application window the process should end
             # too, otherwise a headless server is left holding the port and the
             # shortcut appears to "do nothing" on the next launch.
@@ -260,10 +341,12 @@ def main() -> None:
                          window.returncode)
                 break
     except KeyboardInterrupt:
-        print("Shutting down. Goodbye!")
+        pass
     finally:
-        if window is not None and window.poll() is None:
-            window.terminate()
+        try:
+            (base / "server.port").unlink()
+        except OSError:
+            pass
 
 
 def _fatal(exc: BaseException) -> None:
@@ -286,12 +369,7 @@ def _fatal(exc: BaseException) -> None:
         "اگر این خطا پس از به‌روزرسانی رخ داده، از پایگاه داده نسخهٔ پشتیبان بگیرید و دوباره اجرا کنید؛ "
         "در صورت تکرار، فایل گزارش را برای پشتیبانی ارسال کنید."
     )
-    try:
-        import ctypes
-
-        ctypes.windll.user32.MessageBoxW(None, msg, "Supermarket System", 0x10 | 0x100000)  # MB_ICONERROR | MB_RTLREADING
-    except Exception:
-        print(msg, file=sys.stderr)
+    _message_box(msg)
 
 
 if __name__ == "__main__":
