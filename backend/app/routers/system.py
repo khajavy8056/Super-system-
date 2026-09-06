@@ -182,11 +182,19 @@ class UpdateAuthIn(BaseModel):
 
 
 @update_router.get("/update/check")
-def check_update(_: User = Depends(require_permission("settings.manage"))):
-    """Report whether a newer release exists. Read-only and side-effect free."""
-    from ..services.updater import check_for_update
+def check_update(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    """Report whether a newer release exists. Read-only and side-effect free.
+    Channel = GitHub (§269) or the configured update server (§270)."""
+    from ..services.updater import UpdateError, channel_from_settings, check_for_update
 
-    return check_for_update()
+    try:
+        channel = channel_from_settings(db)
+    except UpdateError as exc:
+        return {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
+                "detail": str(exc), "message": str(exc)}
+    out = check_for_update(channel)
+    out["channel"] = type(channel).__name__.replace("Channel", "").lower()
+    return out
 
 
 @update_router.post("/update/prepare")

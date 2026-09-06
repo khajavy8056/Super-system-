@@ -204,22 +204,26 @@ def check_sms(db: Session) -> dict:
     # real panels: validate credentials presence, then a live credit/status call
     missing = []
     if provider == "melipayamak":
-        for k in ("sms.username", "sms.password", "sms.sender"):
+        need = ["sms.username", "sms.password"]
+        mode = (sms_svc.get_setting(db, "sms.melipayamak_mode", "line") or "line").lower()
+        need.append("sms.melipayamak_body_id" if mode == "pattern" else "sms.sender")
+        for k in need:
             if not sms_svc.get_setting(db, k, ""):
                 missing.append(k)
     if provider == "kavenegar" and not sms_svc.get_setting(db, "sms.api_key", ""):
         missing.append("sms.api_key")
     if missing:
         return {"status": "FAIL", "detail": "Missing settings: " + ", ".join(missing)}
+    if provider == "melipayamak":
+        try:
+            info = sms_svc.melipayamak_credit(db)
+        except sms_svc.SmsProviderError as exc:
+            return {"status": "FAIL", "detail": f"melipayamak: {exc.kind} — {exc.detail}"}
+        return {"status": "PASS", "detail": f"melipayamak OK — اعتبار: {info['credit']}",
+                "evidence": {"credit": info["credit"]}}
     try:
-        if provider == "kavenegar":
-            key = sms_svc.get_setting(db, "sms.api_key", "")
-            r = httpx.get(f"https://api.kavenegar.com/v1/{key}/account/info.json", timeout=8)
-        else:
-            r = httpx.post("https://rest.payamak-panel.com/api/SendSMS/GetCredit",
-                           json={"username": sms_svc.get_setting(db, "sms.username", ""),
-                                 "password": sms_svc.get_setting(db, "sms.password", "")},
-                           timeout=8)
+        key = sms_svc.get_setting(db, "sms.api_key", "")
+        r = httpx.get(f"https://api.kavenegar.com/v1/{key}/account/info.json", timeout=8)
     except httpx.HTTPError as exc:
         return {"status": "FAIL", "detail": f"network: {type(exc).__name__}"}
     ok = r.status_code == 200

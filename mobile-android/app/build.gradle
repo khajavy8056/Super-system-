@@ -1,0 +1,55 @@
+plugins { id("com.android.application") }
+
+// Version is read from the single source of truth: backend/app/__init__.py
+def appVersion = "1.2.0"
+def initPy = new File(rootDir, "../backend/app/__init__.py")
+if (initPy.exists()) {
+    def m = (initPy.text =~ /__version__\s*=\s*"([^"]+)"/)
+    if (m.find()) appVersion = m.group(1)
+}
+def parts = appVersion.tokenize(".").collect { it.toInteger() }
+def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+
+android {
+    namespace "ir.khajavy.supermarket"
+    compileSdk 34
+    defaultConfig {
+        applicationId "ir.khajavy.supermarket"
+        minSdk 24
+        targetSdk 34
+        versionCode code
+        versionName appVersion
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the debug key unless SUPERMARKET_KEYSTORE is provided (CI).
+        }
+    }
+    signingConfigs {
+        if (System.getenv("SUPERMARKET_KEYSTORE")) {
+            release {
+                storeFile file(System.getenv("SUPERMARKET_KEYSTORE"))
+                storePassword System.getenv("SUPERMARKET_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SUPERMARKET_KEY_ALIAS")
+                keyPassword System.getenv("SUPERMARKET_KEY_PASSWORD")
+            }
+        }
+    }
+    if (System.getenv("SUPERMARKET_KEYSTORE")) {
+        buildTypes.release.signingConfig = signingConfigs.release
+    } else {
+        buildTypes.release.signingConfig = signingConfigs.debug
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "androidx.webkit:webkit:1.11.0"
+    implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
+}

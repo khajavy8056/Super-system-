@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">سوپرمارکت — موبایل</string>
+    <string name="setup_title">اتصال به سرور فروشگاه</string>
+    <string name="setup_hint">آدرس سرور در شبکهٔ داخلی، مثلاً http://192.168.1.10:8000</string>
+    <string name="setup_test">آزمایش اتصال</string>
+    <string name="setup_save">ذخیره و ورود</string>
+    <string name="setup_ok">اتصال برقرار شد ✓</string>
+    <string name="setup_fail">اتصال برقرار نشد — آدرس و شبکهٔ Wi‑Fi را بررسی کنید</string>
+    <string name="offline_banner">آفلاین — شمارش‌ها ذخیره و بعداً همگام می‌شوند</string>
+    <string name="menu_change_server">تغییر سرور</string>
+    <string name="developer">طراحی و توسعه توسط خواجوی</string>
+</resources>

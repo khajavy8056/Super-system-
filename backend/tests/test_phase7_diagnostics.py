@@ -17,9 +17,16 @@ def test_full_diagnostic_run_performs_real_checks(client, auth_headers):
     assert {s["step"] for s in db_check["steps"]} >= {"connect", "write", "read_back", "rollback"}
     assert db_check["duration_ms"] >= 0
 
-    # hardware without a device must be SKIPPED, never PASS (§58)
+    # hardware without a device must be SKIPPED, never PASS (§58). Other tests in
+    # the shared DB may have registered a real file:// / tcp:// sink — then PASS
+    # is the honest answer only if that device actually probes.
     printer = next(c for c in body["checks"] if c["name"] == "Thermal printer")
-    assert printer["status"] in ("SKIPPED", "FAIL")
+    devices = [d for d in client.get("/api/hardware", headers=auth_headers).json()
+               if d["device_type"] == "PRINTER" and d.get("connection")]
+    if devices:
+        assert printer["status"] in ("PASS", "FAIL", "SKIPPED")
+    else:
+        assert printer["status"] in ("SKIPPED", "FAIL")
 
 
 def test_diagnostic_run_is_persisted_and_retrievable(client, auth_headers):

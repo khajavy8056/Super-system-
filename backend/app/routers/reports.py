@@ -21,7 +21,7 @@ def dashboard(db: Session = Depends(get_db), _: User = Depends(require_permissio
 @router.get("/sales")
 def sales(start: date, end: date, group: str = "daily", db: Session = Depends(get_db),
           _: User = Depends(require_permission("reports.view"))):
-    """group: daily | product (§49)."""
+    """group: daily | weekly | monthly (Jalali buckets) | product (§49, §137)."""
     return rep.sales_report(db, start, end, group)
 
 

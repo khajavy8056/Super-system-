@@ -30,7 +30,10 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "sms.username": ("", "SMS provider username", True),
     "sms.password": ("", "SMS provider password", True),
     "sms.api_key": ("", "SMS provider API key (kavenegar)", True),
-    "sms.sender": ("", "Sender line number (melipayamak)", False),
+    "sms.sender": ("", "Sender line number (melipayamak, line mode)", False),
+    "sms.melipayamak_mode": ("line", "melipayamak mode: line (SendSMS from own line) | pattern (BaseServiceNumber / خط خدماتی)", False),
+    "sms.melipayamak_body_id": ("", "melipayamak pattern (bodyId) for pattern mode", False),
+    "sms.melipayamak_url": ("", "Override REST base URL (proxy/testing); empty = official", False),
     "sms.file_path": ("data/sms_out.log", "Output file for the 'file' provider (dev/test)", False),
     "sms.template.debt_reminder": (
         "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر.",
@@ -97,6 +100,10 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
                          "Comma-separated NTP servers (trusted time source)", False),
     "time.max_drift_seconds": ("120",
                                "Warn when local clock drifts more than this from NTP", False),
+    # --- updates (§269/§270) ---
+    "update.channel": ("github", "Update channel: github | server", False),
+    "update.server_url": ("", "Update server manifest URL (JSON: version, asset_url, sha256 ...)", False),
+    "update.server_token": ("", "Bearer token for the update server (optional)", True),
     # --- appearance (§23) ---
     "ui.theme": ("auto", "Theme: auto | light | dark", False),
     "ui.theme_light_at": ("07:00", "Local time to switch to the light theme", False),

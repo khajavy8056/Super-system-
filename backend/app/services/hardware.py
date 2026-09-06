@@ -24,32 +24,118 @@ def get_setting(db: Session, key: str, default: str) -> str:
     return row.value if row else default
 
 
-def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "") -> str:
-    """Render a thermal-receipt style text (ESC/POS plain, 80mm-ish)."""
-    W = 32
+_RECEIPT_TZ: dict = {}
+
+
+def _fa_date(dt) -> str:
+    """Jalali date/time for the receipt (falls back to ISO)."""
+    if not dt:
+        return "-"
+    try:
+        from datetime import timezone as _tz
+        from zoneinfo import ZoneInfo
+        from .timeservice import format_jalali
+        # timestamps are stored naive-UTC; the receipt must show shop local time
+        tzname = _RECEIPT_TZ.get("name") or "Asia/Tehran"
+        try:
+            local = (dt.replace(tzinfo=_tz.utc) if dt.tzinfo is None else dt).astimezone(ZoneInfo(tzname))
+        except Exception:
+            local = dt
+        return format_jalali(local, with_time=True)
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
+                 columns: int = 32, store: dict | None = None,
+                 currency_label: str = "تومان") -> str:
+    """Persian thermal receipt (§17, §243). ``columns`` follows the paper width
+    (§180): 32 for 58 mm, 42 for 76 mm, 48 for 80 mm."""
+    W = max(24, int(columns))
+    store = store or {}
     lines: list[str] = []
-    sep = "=" * W
-    lines.append(header.center(W))
+    sep = "-" * W
+
+    def kv(label: str, value: str) -> str:
+        pad = W - len(label) - len(value)
+        return f"{label}{' ' * max(1, pad)}{value}"
+
+    if store.get("name"):
+        lines.append(store["name"].center(W))
+    if header:
+        lines.append(header.center(W))
+    for k in ("address", "phone"):
+        if store.get(k):
+            lines.append(str(store[k]).center(W))
     lines.append(sep)
-    lines.append(f"INVOICE: {invoice.invoice_number}")
-    lines.append(f"DATE: {invoice.created_at.strftime('%Y-%m-%d %H:%M') if invoice.created_at else '-'}")
+    lines.append(kv("فاکتور:", invoice.invoice_number))
+    lines.append(kv("تاریخ:", _fa_date(invoice.created_at)))
+    if invoice.customer is not None:
+        lines.append(kv("مشتری:", (invoice.customer.name or "")[: W - 8]))
     lines.append(sep)
     for it in invoice.items:
-        name = (it.product.name if it.product else f"#{it.product_id}")[:20]
-        lines.append(f"{name}")
-        lines.append(f"  {it.qty} x {it.unit_sell_price:,.0f} = {it.subtotal:,.0f}")
-        if it.batch:
-            lines.append(f"  Batch: {it.batch.batch_number}")
+        name = (it.product.name if it.product else f"#{it.product_id}")[: W - 2]
+        lines.append(name)
+        lines.append(kv(f"  {it.qty:g} × {it.unit_sell_price:,.0f}", f"{it.subtotal:,.0f}"))
+        if it.discount:
+            lines.append(kv("  تخفیف خط", f"-{it.discount:,.0f}"))
     lines.append(sep)
-    lines.append(f"SUBTOTAL : {invoice.subtotal:,.0f}")
-    lines.append(f"DISCOUNT : {invoice.discount:,.0f}")
-    lines.append(f"TAX      : {invoice.tax:,.0f}")
-    lines.append(f"TOTAL    : {invoice.total_amount:,.0f}")
-    lines.append(f"PAID     : {invoice.payment_method}")
+    lines.append(kv("جمع کل:", f"{invoice.subtotal:,.0f}"))
+    if invoice.discount:
+        lines.append(kv("تخفیف:", f"-{invoice.discount:,.0f}"))
+    if invoice.tax:
+        lines.append(kv("مالیات:", f"{invoice.tax:,.0f}"))
+    lines.append(kv("قابل پرداخت:", f"{invoice.total_amount:,.0f} {currency_label}"))
+    method = {"CASH": "نقدی", "CARD": "کارت", "ACCOUNT": "نسیه (حساب دفتری)",
+              "MIXED": "ترکیبی"}.get(invoice.payment_method, invoice.payment_method)
+    lines.append(kv("روش پرداخت:", method))
     lines.append(sep)
-    lines.append(footer.center(W))
-    lines.append("Thank you!")
+    if footer:
+        lines.append(footer.center(W))
+    lines.append("از خرید شما سپاسگزاریم".center(W))
     return "\n".join(lines)
+
+
+def printer_profile(db: Session) -> dict:
+    """Resolved printer settings (§180–§182)."""
+    from .escpos_driver import columns_for_width
+    width = int(get_setting(db, "printer.paper_width_mm", "80") or 80)
+    cur = get_setting(db, "pos.currency", "IRT")
+    return {
+        "paper_width_mm": width,
+        "columns": columns_for_width(width),
+        "cut": get_setting(db, "printer.cut", "true").lower() == "true",
+        "drawer_enabled": get_setting(db, "printer.drawer.enabled", "true").lower() == "true",
+        "drawer_pin": int(get_setting(db, "printer.drawer.pin", "2") or 2),
+        "header": get_setting(db, "printer.header", ""),
+        "footer": get_setting(db, "printer.footer", ""),
+        "store": {"name": get_setting(db, "store.name", ""),
+                  "address": get_setting(db, "store.address", ""),
+                  "phone": get_setting(db, "store.phone", "")},
+        "currency_label": "ریال" if cur == "IRR" else "تومان",
+        "logo_file": _logo_file(get_setting(db, "store.logo_path", "")),
+    }
+
+
+def _logo_file(logo_path: str) -> str | None:
+    """Map the stored `/media/store-logo.png?v=..` URL to a raster file on disk."""
+    if not logo_path or not logo_path.startswith("/media/"):
+        return None
+    from pathlib import Path
+    from ..config import settings as app_settings
+    name = logo_path[len("/media/"):].split("?", 1)[0]
+    f = Path(app_settings.MEDIA_DIR) / name
+    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and f.is_file():
+        return str(f)
+    return None
+
+
+def render_receipt(db: Session, invoice: Invoice) -> str:
+    prof = printer_profile(db)
+    _RECEIPT_TZ["name"] = get_setting(db, "time.timezone", "Asia/Tehran") or "Asia/Tehran"
+    return receipt_text(invoice, header=prof["header"], footer=prof["footer"],
+                        columns=prof["columns"], store=prof["store"],
+                        currency_label=prof["currency_label"])
 
 
 def _printer(db: Session) -> HardwareDevice | None:
@@ -61,76 +147,92 @@ def _printer(db: Session) -> HardwareDevice | None:
     ).scalar_one_or_none()
 
 
-def print_receipt(db: Session, *, invoice: Invoice) -> tuple[bool, str]:
-    """Attempt to print. Returns (ok, message). Never raises for hardware issues."""
-    header = get_setting(db, "printer.header", "")
-    footer = get_setting(db, "printer.footer", "")
-    text = receipt_text(invoice, header=header, footer=footer)
+def print_receipt(db: Session, *, invoice: Invoice, kick_drawer: bool = False) -> tuple[bool, str]:
+    """Attempt to print. Returns (ok, message). Never raises for hardware issues.
+
+    Real transports: ``file://`` (test sink), ``tcp://host[:9100]`` (raw
+    ESC/POS, pure Python) and ``escpos:`` (python-escpos for USB/Windows).
+    SUCCESS is recorded only when bytes were actually delivered."""
+    prof = printer_profile(db)
+    text = render_receipt(db, invoice)
     device = _printer(db)
 
-    if device is None:
+    def fail(reason: str, msg: str) -> tuple[bool, str]:
         invoice.print_status = "FAILED"
-        write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
-                    reference="No printer configured")
-        return False, "PRINTER_OFFLINE: no printer configured"
+        write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id, reference=reason)
+        return False, msg
 
-    if device.connection and device.connection.startswith("file://"):
-        # Test/headless sink: write the receipt to a file.
+    if device is None:
+        return fail("No printer configured", "PRINTER_OFFLINE: no printer configured")
+
+    conn = (device.connection or "").strip()
+    if conn.startswith("file://"):
         try:
-            path = device.connection[len("file://"):]
+            path = Path(conn[len("file://"):])
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
             invoice.print_status = "SUCCESS"
             write_audit(db, action="PRINT_SUCCESS", entity_type="Invoice", entity_id=invoice.id)
             return True, "printed to file"
         except OSError as e:
-            invoice.print_status = "FAILED"
-            write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id, reference=str(e))
-            return False, f"PRINTER_OFFLINE: {e}"
+            return fail(str(e), f"PRINTER_OFFLINE: {e}")
 
-    if device.status != "CONNECTED":
-        invoice.print_status = "FAILED"
-        write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
-                    reference="Printer disconnected")
-        return False, "PRINTER_OFFLINE: device not connected"
-
-    # Honest hardware layer (BUG-016): without a REAL driver we never record
-    # SUCCESS. Supported real paths today: file:// sink and escpos:// when the
-    # optional python-escpos driver is installed (see requirements-hardware.txt).
-    if device.connection and device.connection.startswith("escpos:"):
-        try:
-            from ..services.escpos_driver import print_via_escpos  # optional dependency
-        except ImportError:
-            invoice.print_status = "FAILED"
-            write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
-                        reference="DRIVER_UNAVAILABLE: python-escpos not installed")
-            return False, "DRIVER_UNAVAILABLE: install python-escpos (requirements-hardware.txt)"
-        ok, detail = print_via_escpos(device.connection, text)
+    if conn.startswith("tcp://") or conn.startswith("escpos:"):
+        from .escpos_driver import print_via_escpos
+        ok, detail = print_via_escpos(
+            conn, text, columns=prof["columns"], cut=prof["cut"],
+            kick_drawer=kick_drawer and prof["drawer_enabled"], drawer_pin=prof["drawer_pin"],
+            logo_path=prof["logo_file"])
         if ok:
             invoice.print_status = "SUCCESS"
-            write_audit(db, action="PRINT_SUCCESS", entity_type="Invoice", entity_id=invoice.id)
-            return True, "printed via ESC/POS driver"
-        invoice.print_status = "FAILED"
-        write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
-                    reference=detail)
-        return False, f"PRINTER_ERROR: {detail}"
+            write_audit(db, action="PRINT_SUCCESS", entity_type="Invoice", entity_id=invoice.id,
+                        reference=detail)
+            return True, "printed via ESC/POS"
+        return fail(detail, detail)
 
-    invoice.print_status = "FAILED"
-    write_audit(db, action="PRINT_FAILED", entity_type="Invoice", entity_id=invoice.id,
-                reference="NOT_SUPPORTED: no real driver for this connection type")
-    return False, "NOT_SUPPORTED: no real driver for this connection type (use file:// for testing or install the ESC/POS driver)"
+    if device.status != "CONNECTED":
+        return fail("Printer disconnected", "PRINTER_OFFLINE: device not connected")
+    return fail("NOT_SUPPORTED: no real driver for this connection type",
+                "NOT_SUPPORTED: use file://, tcp://host:9100 or escpos:usb:VID:PID")
 
 
 def open_cash_drawer(db: Session) -> tuple[bool, str]:
+    """§19/§182 — kick the drawer through the receipt printer (ESC p).
+
+    A drawer has no port of its own; it is wired to the printer's DK
+    connector. So the pulse goes to the *printer* connection. Honest result:
+    True only when the bytes were delivered."""
+    prof = printer_profile(db)
+    if not prof["drawer_enabled"]:
+        return False, "CASH_DRAWER_DISABLED"
     drawer = db.execute(
         select(HardwareDevice)
         .where(HardwareDevice.device_type == "CASH_DRAWER", HardwareDevice.is_enabled.is_(True))
         .order_by(HardwareDevice.id.desc()).limit(1)
     ).scalar_one_or_none()
-    if not drawer or drawer.status != "CONNECTED":
+    printer = _printer(db)
+    conn = ((drawer.connection if drawer and drawer.connection else None)
+            or (printer.connection if printer else "") or "").strip()
+    if not drawer and not printer:
         return False, "CASH_DRAWER_UNAVAILABLE"
-    # Pulse is emitted by the printer driver (ESC/POS 0x1B 0x70) in real setups.
-    return True, "drawer pulse sent"
+    if conn.startswith("file://"):
+        try:
+            with open(conn[len("file://"):], "a", encoding="utf-8") as f:
+                f.write("\n[ESC p] cash drawer kick\n")
+            write_audit(db, action="DRAWER_OPENED", entity_type="HardwareDevice",
+                        entity_id=drawer.id if drawer else None, reference="file sink")
+            return True, "drawer pulse written (file sink)"
+        except OSError as e:
+            return False, f"CASH_DRAWER_UNAVAILABLE: {e}"
+    if conn.startswith("tcp://") or conn.startswith("escpos:"):
+        from .escpos_driver import kick_drawer
+        ok, detail = kick_drawer(conn, prof["drawer_pin"])
+        write_audit(db, action="DRAWER_OPENED" if ok else "DRAWER_FAILED",
+                    entity_type="HardwareDevice", entity_id=drawer.id if drawer else None,
+                    reference=detail)
+        return ok, ("drawer pulse sent" if ok else f"CASH_DRAWER_UNAVAILABLE: {detail}")
+    return False, "CASH_DRAWER_UNAVAILABLE"
 
 
 def detect_scanner(intervals_ms: list[float], threshold_ms: float | None = None,

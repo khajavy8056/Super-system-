@@ -6,12 +6,13 @@
  *   fail visibly. The mobile app queues writes locally in IndexedDB and syncs
  *   when the network returns (§25–26); the SW does not fake responses.
  */
-const CACHE = "supermarket-shell-v2";
+const CACHE = "supermarket-shell-v3";
 const SHELL = [
   "/", "/app.js", "/styles.css",
   "/mobile/", "/mobile/app.js", "/mobile/styles.css",
   "/manifest.webmanifest",
-  "/icons/icon-192.png", "/icons/icon-512.png",
+  "/icons/icon-192.png", "/icons/icon-512.png", "/icons/logo.svg",
+  "/fonts/Vazirmatn-Regular.woff2", "/fonts/Vazirmatn-Bold.woff2",
 ];
 
 self.addEventListener("install", (event) => {

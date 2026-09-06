@@ -139,3 +139,27 @@ the code as meaningless to external catalogues.
 
 ### دسته‌بندی
 - `POST /api/products/categories` فیلد `parent_id?` (§79)؛ `GET` فیلدهای `parent_id`, `parent_name`, `path`.
+
+## افزوده‌های v1.2.0
+
+### بانک اولیهٔ کالا / ورود CSV (§80–82)
+- `GET /api/products/import/starter` — خلاصهٔ بانک بسته‌بندی‌شده (تعداد کالا/دسته/زیردسته، ستون‌ها).
+- `POST /api/products/import/starter?dry_run=false` — ورود idempotent با موجودی صفر؛ پاسخ `{created, skipped, errors[], stock_note}`.
+- `POST /api/products/import/csv` (multipart `file`, UTF-8; ستون‌ها `category,subcategory,name,brand,unit,min_stock_alert,barcode`) — `400 BAD_HEADER` / `BAD_ENCODING`.
+
+### لوگوی فروشگاه (§214)
+- `POST /api/settings/store-profile/logo` (multipart `file`, PNG/JPEG/SVG/WebP ≤ 2MB) → `{logo_path: "/media/store-logo.png?v=…"}`؛ خطاها `UNSUPPORTED_TYPE`, `TOO_LARGE`, `CORRUPT`.
+- `DELETE /api/settings/store-profile/logo` → لوگوی پیش‌فرض.
+
+### گزارش فروش (§137–138)
+- `GET /api/reports/sales?start&end&group=daily|weekly|monthly|product` — `monthly`/`weekly` گروه‌های شمسی `{period, first_day, last_day, invoice_count, total}`.
+
+### به‌روزرسانی (§270)
+- `GET /api/system/update/check` اکنون فیلد `channel` (`github` | `updateserver`) و وضعیت `CONFIG_MISSING` دارد. تنظیمات: `update.channel`, `update.server_url`, `update.server_token`.
+
+### سخت‌افزار (§178–182)
+- `POST /api/hardware` با `connection` یکی از `tcp://host:9100`, `escpos:usb:VID:PID`, `escpos:win:NAME`, `file:///path`.
+- `POST /api/hardware/test/print` — با پروفایل واقعی (`printer.*`, لوگو)؛ در نبود دستگاه `PRINTER_NOT_CONFIGURED`.
+
+### پیامک (§164–165)
+- `POST /api/sms/test-connection` برای ملی‌پیامک اعتبار واقعی (`GetCredit`) را برمی‌گرداند؛ حالت‌های `sms.melipayamak_mode=line|pattern`.

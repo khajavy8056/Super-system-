@@ -148,7 +148,8 @@ def test_print_real_file_sink_and_escpos_driver_missing(client, admin_h, tmp_pat
         "connection": f"file://{sink}"})
     r = client.post(f"/api/invoices/{inv['invoice_id']}/print", headers=admin_h).json()
     assert r["ok"] is True and r["print_status"] == "SUCCESS"
-    assert sink.exists() and "INVOICE" in sink.read_text(encoding="utf-8")
+    txt = sink.read_text(encoding="utf-8")
+    assert sink.exists() and "فاکتور" in txt and inv["invoice_number"] in txt  # Persian receipt
 
     client.post("/api/hardware", headers=admin_h, json={
         "device_type": "PRINTER", "name": "EscposPrinter", "status": "CONNECTED",

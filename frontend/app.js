@@ -38,7 +38,8 @@ function toast(msg, kind = "ok") {
 }
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const headers = { ...(opts.headers || {}) };
+  if (!(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
   const res = await fetch(API + path, { ...opts, headers });
   if (res.status === 204) return null;
@@ -365,8 +366,9 @@ function renderPosCart() {
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const count = posState.cart.reduce((a, it) => a + Number(it.quantity), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
+  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon));
   const showCost = can("pricing.view_cost");
-  const profit = posState.cart.reduce((a, it) => a + (posGross(it) - (it.discount || 0) - (it.unit_buy_price || 0) * it.quantity), 0) - coupon;
+  const profit = posState.cart.reduce((a, it) => a + (posGross(it) - (it.discount || 0) - (it.unit_buy_price || 0) * it.quantity), 0) - coupon - invDisc;
   $("#pos-totals").innerHTML = `
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
     <div class="row"><span class="muted">جمع</span><span>${money(gross)}</span></div>
@@ -834,12 +836,24 @@ async function doCheckout(total) {
     }
     try {
       const pr = await api(`/invoices/${inv.invoice_id}/print`, { method: "POST" });
-      if (pr.ok && typeof pr.message === "string" && pr.message.includes("\n"))
-        $("#pos-receipt").innerHTML = `<pre class="receipt">${esc(pr.message)}</pre>`;
-      else toast("چاپ: " + pr.message, pr.ok ? "ok" : "err");
+      const PRINT_FA = { PRINTER_NOT_CONFIGURED: "پرینتری ثبت نشده است", PRINTER_OFFLINE: "پرینتر در دسترس نیست", PRINTER_ERROR: "خطای پرینتر", NOT_SUPPORTED: "نوع اتصال پشتیبانی نمی‌شود" };
+      const code = String(pr.message || "").split(":")[0].trim();
+      const status = pr.ok ? `<span class="badge badge-green">چاپ شد</span>`
+        : `<span class="badge badge-red">چاپ نشد — ${esc(PRINT_FA[code] || pr.message)}</span> <button class="btn btn-sm" onclick="reprintInvoice(${inv.invoice_id})">چاپ مجدد</button>`;
+      $("#pos-receipt").innerHTML = `<div class="card" style="margin-top:12px"><div class="row" style="justify-content:space-between;align-items:center"><strong>رسید ${esc(inv.invoice_number)}</strong>${status}</div>
+        <pre class="receipt">${esc(pr.receipt_text || "")}</pre></div>`;
+      if (!pr.ok) toast("چاپ: " + (PRINT_FA[code] || pr.message), "err");
     } catch (e) { /* printing never blocks the sale */ }
   } catch (err) { toast(err.message, "err"); }
 }
+
+async function reprintInvoice(id) {
+  try {
+    const pr = await api(`/invoices/${id}/print`, { method: "POST" });
+    toast(pr.ok ? "چاپ شد" : "چاپ نشد: " + pr.message, pr.ok ? "ok" : "err");
+  } catch (e) { toast(e.message, "err"); }
+}
+window.reprintInvoice = reprintInvoice;
 
 /* ---------- Kiosk / Lock mode (§7) ---------- */
 async function enterKiosk() {
@@ -940,7 +954,40 @@ RENDER.products = async () => {
     <input id="p-image-url" type="hidden" />
     <button id="p-add" class="btn btn-primary" style="margin-top:12px">ثبت کالا</button>
   </div>
+  <div class="card" style="margin-bottom:14px">
+    <h3>بانک اولیهٔ کالاها (موجودی صفر)</h3>
+    <p class="muted" id="p-starter-info">فهرست آمادهٔ کالاهای رایج سوپرمارکت (دسته/زیردسته/واحد) را می‌توانید با یک کلیک وارد کنید. همهٔ کالاها با موجودی صفر ساخته می‌شوند و موجودی فقط با رسید ورود اضافه می‌شود. اجرای دوباره، کالای تکراری نمی‌سازد.</p>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="p-starter" class="btn">ورود بانک اولیه</button>
+      <label class="btn btn-ghost file-btn">انتخاب فایل CSV<input type="file" id="p-csv" accept=".csv,text/csv" /></label>
+      <span id="p-csv-name" class="muted"></span>
+      <button id="p-csv-up" class="btn btn-ghost">ورود فایل CSV فروشگاه</button>
+      <a class="muted" href="/api/products/import/starter" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode</a>
+    </div>
+    <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
+  </div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+
+  const starterOut = (r) => {
+    $("#p-starter-out").textContent = r.ok === false ? (r.message || "خطا")
+      : `${r.created} کالا ایجاد شد، ${r.skipped} مورد تکراری/خالی رد شد${r.errors && r.errors.length ? `، ${r.errors.length} خطا` : ""}. ${r.stock_note || ""}`;
+  };
+  api("/products/import/starter").then((i) => {
+    $("#p-starter-info").textContent += ` (${i.products} کالا در ${i.categories} دسته و ${i.subcategories} زیردسته)`;
+  }).catch(() => {});
+  $("#p-starter").addEventListener("click", async () => {
+    if (!confirm("بانک اولیهٔ کالاها با موجودی صفر وارد شود؟")) return;
+    try { starterOut(await api("/products/import/starter", { method: "POST" })); toast("بانک اولیه وارد شد"); RENDER.products(); }
+    catch (e) { toast(e.message, "err"); }
+  });
+  $("#p-csv").addEventListener("change", () => { $("#p-csv-name").textContent = ($("#p-csv").files[0] || {}).name || ""; });
+  $("#p-csv-up").addEventListener("click", async () => {
+    const f = $("#p-csv").files[0];
+    if (!f) { toast("ابتدا فایل CSV را انتخاب کنید", "err"); return; }
+    const fd = new FormData(); fd.append("file", f, f.name);
+    try { starterOut(await api("/products/import/csv", { method: "POST", body: fd })); toast("فایل وارد شد"); }
+    catch (e) { toast(e.message, "err"); }
+  });
 
   // §78/§79 — existing categories (with parent path) as suggestions
   api("/products/categories").then((cats) => {
@@ -1380,6 +1427,8 @@ function voidInvoiceModal(i) {
 /* ---------- reports (§49) ---------- */
 const REPORT_TABS = [
   ["daily", "فروش روزانه", "reports.view"],
+  ["weekly", "فروش هفتگی", "reports.view"],
+  ["monthly", "فروش ماهانه (شمسی)", "reports.view"],
   ["cashiers", "صندوق‌دارها", "reports.view"],
   ["profit", "سود به تفکیک Batch", "reports.view"],
   ["inventory", "ارزش موجودی", "reports.view"],
@@ -1428,6 +1477,18 @@ async function runReport(tab) {
         el("h3", { text: `فروش روزانه (مجموع: ${money(d.total_sales)} در ${d.invoice_count} فاکتور)` }),
         el("table", {}, el("thead", {}, el("tr", {},
           el("th", { text: "تاریخ" }), el("th", { text: "فاکتور" }), el("th", { text: "فروش" }))),
+          el("tbody", {}, ...rows))));
+    } else if (tab === "weekly" || tab === "monthly") {
+      const d = await api(`/reports/sales?start=${start}&end=${end}&group=${tab}`);
+      const rows = (d.groups || []).map((g) => el("tr", {},
+        el("td", { text: g.period }), el("td", { class: "muted", text: `${g.first_day} → ${g.last_day}` }),
+        el("td", { text: g.invoice_count }), el("td", { text: money(g.total) })));
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" },
+        el("h3", { text: `${tab === "monthly" ? "فروش ماهانه" : "فروش هفتگی"} (مجموع: ${money(d.total_sales)} در ${d.invoice_count} فاکتور)` }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: tab === "monthly" ? "ماه شمسی" : "هفته" }), el("th", { text: "بازه" }),
+          el("th", { text: "فاکتور" }), el("th", { text: "فروش" }))),
           el("tbody", {}, ...rows))));
     } else if (tab === "cashiers") {
       const rows = await api(`/reports/cashiers?start=${start}&end=${end}`);
@@ -1527,8 +1588,9 @@ RENDER.hardware = async () => {
       <div class="form-row">
         <div><label>نوع</label><select id="h-type"><option>PRINTER</option><option>BARCODE_SCANNER</option><option>CASH_DRAWER</option></select></div>
         <div><label>نام</label><input id="h-name" /></div>
-        <div><label>اتصال (اختیاری)</label><input id="h-conn" placeholder="file:///receipt.txt یا پورت" /></div>
+        <div><label>اتصال</label><input id="h-conn" placeholder="tcp://192.168.1.50:9100 | escpos:usb:04b8:0e15 | escpos:win:POS-80 | file:///receipt.txt" /></div>
       </div>
+      <p class="muted" style="margin-top:6px">پرینتر شبکه: <code>tcp://IP:9100</code> (بدون نیاز به درایور) · USB: <code>escpos:usb:VID:PID</code> · اسپولر ویندوز: <code>escpos:win:نام‌چاپگر</code>. کشوی پول از طریق همین پرینتر (ESC p) باز می‌شود؛ پین و فعال‌بودن آن در تنظیمات ← «کشوی پول».</p>
       <button id="h-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
       <div style="margin-top:14px">
         <button id="h-test-print" class="btn">تست چاپ</button>
@@ -1537,9 +1599,11 @@ RENDER.hardware = async () => {
     </div>
   </div>`;
   const health = await api("/hardware/health");
-  $("#h-status").innerHTML = `<p>پرینتر: <span class="badge badge-${health.printer === "CONNECTED" ? "green" : "red"}">${health.printer}</span></p>
-    <p>اسکنر: <span class="badge badge-${health.scanner === "CONNECTED" ? "green" : "red"}">${health.scanner}</span></p>
-    <p>کشوی پول: <span class="badge badge-${health.cash_drawer === "CONNECTED" ? "green" : "red"}">${health.cash_drawer}</span></p>`;
+  const HW_FA = { CONNECTED: "متصل", DISCONNECTED: "قطع", UNKNOWN: "نامشخص", NOT_CONFIGURED: "پیکربندی‌نشده", ERROR: "خطا" };
+  const hwBadge = (st) => `<span class="badge badge-${st === "CONNECTED" ? "green" : "red"}">${esc(HW_FA[st] || st)}</span>`;
+  $("#h-status").innerHTML = `<p>پرینتر: ${hwBadge(health.printer)}</p>
+    <p>اسکنر: ${hwBadge(health.scanner)}</p>
+    <p>کشوی پول: ${hwBadge(health.cash_drawer)}</p>`;
   $("#h-add").addEventListener("click", async () => {
     try { await api("/hardware", { method: "POST", body: JSON.stringify({ device_type: $("#h-type").value, name: $("#h-name").value, connection: $("#h-conn").value || null }) });
       toast("ثبت شد"); RENDER.hardware(); } catch (e) { toast(e.message, "err"); }
@@ -1581,6 +1645,85 @@ RENDER.users = async () => {
 /* §36 — the settings page used to be one undifferentiated key/value dump.
    It is now grouped into Persian categories with a tab bar, so an operator
    changing the receipt footer never has to scroll past SMS credentials. */
+/* Persian descriptions for every settings key (§246 — no English leaks in the UI). */
+const SETTING_FA = {
+ "pos.tax_rate": "نرخ مالیات (درصد)",
+ "pos.allocation_policy": "سیاست انتخاب Batch پیش‌فرض (FIFO/FEFO)",
+ "pos.batch_selection_mode": "حالت انتخاب Batch در صندوق (خودکار/پرسش)",
+ "pos.currency": "واحد پول پایه: IRT تومان | IRR ریال (مبالغ با همین واحد ذخیره می‌شوند)",
+ "pos.coupon_enabled": "فعال‌بودن کوپن در صندوق",
+ "pos.print_after_checkout": "چاپ خودکار رسید پس از پرداخت",
+ "pos.allow_negative_stock": "اجازهٔ فروش با موجودی منفی",
+ "pos.kiosk_shortcut": "کلید میانبر حالت قفل صندوق",
+ "expiry.block_sale": "مسدودکردن فروش کالای منقضی",
+ "expiry.days.today": "آستانهٔ هشدار: امروز (روز)",
+ "expiry.days.three": "آستانهٔ هشدار: ۳ روز",
+ "expiry.days.seven": "آستانهٔ هشدار: ۷ روز",
+ "expiry.days.thirty": "آستانهٔ هشدار: ۳۰ روز",
+ "barcode.scanner.min_interval_ms": "حداقل فاصلهٔ کلیدها برای تشخیص بارکدخوان (میلی‌ثانیه)",
+ "sms.provider": "سرویس پیامک: melipayamak | kavenegar | file | خالی=غیرفعال",
+ "sms.username": "نام کاربری پنل پیامک",
+ "sms.password": "رمز/کلید API پنل پیامک",
+ "sms.api_key": "کلید API (کاوه‌نگار)",
+ "sms.sender": "شمارهٔ خط ارسال (حالت خط اختصاصی)",
+ "sms.melipayamak_mode": "حالت ملی‌پیامک: line (خط اختصاصی) | pattern (الگو/خط خدماتی)",
+ "sms.melipayamak_body_id": "شناسهٔ الگو (bodyId) در حالت pattern",
+ "sms.melipayamak_url": "آدرس REST جایگزین (پروکسی/آزمون)؛ خالی = رسمی",
+ "sms.file_path": "مسیر فایل خروجی سرویس file (آزمایشی)",
+ "sms.template.debt_reminder": "الگوی پیامک یادآوری بدهی",
+ "sms.template.invoice": "الگوی پیامک فاکتور",
+ "sms.template.coupon": "الگوی پیامک کوپن",
+ "sms.template.low_stock": "الگوی پیامک هشدار انبار",
+ "sms.template.daily_report": "الگوی پیامک گزارش روزانهٔ مدیریت",
+ "sms.admin_phone": "شمارهٔ مدیر برای هشدار/گزارش (پیش‌فرض: همراه فروشگاه)",
+ "sms.low_stock_alert": "ارسال هشدار کمبود موجودی پس از اسکن انبار",
+ "sms.send_invoice": "ارسال پیامک فاکتور به مشتری ثبت‌شده",
+ "sms.max_retries": "حداکثر تلاش ارسال پیش از FAILED",
+ "sms.worker_interval_seconds": "فاصلهٔ اجرای صف پیامک (ثانیه)",
+ "printer.paper_width_mm": "عرض کاغذ پرینتر حرارتی (۵۸/۷۶/۸۰ میلی‌متر)",
+ "printer.cut": "برش کاغذ پس از هر رسید (ESC/POS)",
+ "printer.drawer.enabled": "باز کردن کشوی پول در فروش نقدی",
+ "printer.drawer.pin": "پین کشوی پول (۲ یا ۵)",
+ "printer.header": "متن سربرگ رسید",
+ "printer.footer": "متن پای رسید",
+ "inventory.default_min_stock": "حداقل موجودی پیش‌فرض کالای جدید",
+ "inventory.low_stock_alert": "اعلان کمبود موجودی در داشبورد",
+ "products.autofill_requires_confirm": "داده‌های Resolver پیش از ثبت نیاز به تأیید دارند",
+ "pricing.default_margin_percent": "درصد سود پیش‌فرض برای پیشنهاد قیمت",
+ "pricing.round_to": "گردکردن قیمت به مضرب",
+ "customers.default_credit_limit": "سقف اعتبار پیش‌فرض مشتری",
+ "ledger.block_over_limit": "مسدودکردن فروش دفتری بالاتر از سقف",
+ "marketing.coupon_prefix": "پیشوند کد کوپن",
+ "marketing.max_discount_percent": "حداکثر درصد تخفیف مجاز",
+ "network.lan_port": "پورت سرویس در شبکهٔ داخلی",
+ "security.session_minutes": "مدت اعتبار نشست (دقیقه)",
+ "security.require_admin_for_void_paid": "ابطال فاکتور پرداخت‌شده نیازمند رمز مدیر",
+ "backup.keep": "تعداد نسخه‌های پشتیبان نگه‌داشته‌شده",
+ "sync.worker_interval_seconds": "فاصلهٔ اجرای صف همگام‌سازی (ثانیه)",
+ "stocktake.require_approval": "نهایی‌سازی انبارگردانی نیازمند تأیید مدیر",
+ "store.name": "نام فروشگاه",
+ "store.legal_name": "نام حقوقی",
+ "store.phone": "تلفن",
+ "store.mobile": "همراه",
+ "store.address": "آدرس",
+ "store.city": "شهر",
+ "store.postal_code": "کد پستی",
+ "store.tax_id": "شناسهٔ مالیاتی",
+ "store.logo_path": "مسیر لوگو (از تب پروفایل بارگذاری کنید)",
+ "store.receipt_note": "یادداشت پای فاکتور",
+ "time.timezone": "منطقهٔ زمانی",
+ "time.calendar": "تقویم نمایش (jalali)",
+ "time.ntp_enabled": "همگام‌سازی ساعت با NTP",
+ "time.ntp_servers": "سرورهای NTP",
+ "time.max_drift_seconds": "حداکثر اختلاف مجاز ساعت (ثانیه)",
+ "update.channel": "کانال به‌روزرسانی: github | server",
+ "update.server_url": "آدرس manifest سرور به‌روزرسانی (JSON: version, asset_url, sha256 …)",
+ "update.server_token": "توکن Bearer سرور به‌روزرسانی (اختیاری)",
+ "ui.theme": "پوسته: light | dark | auto",
+ "ui.theme_light_at": "ساعت شروع حالت روشن (auto)",
+ "ui.theme_dark_at": "ساعت شروع حالت تیره (auto)"
+};
+
 const SET_CATEGORIES = [
   { id: "store",    label: "پروفایل فروشگاه", prefixes: ["store."], panel: "store" },
   { id: "general",  label: "عمومی و زمان",    prefixes: ["time.", "sync."], panel: "general" },
@@ -1602,7 +1745,7 @@ const SET_CATEGORIES = [
   { id: "security", label: "امنیت",           prefixes: ["security."] },
   { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."] },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
-  { id: "update",   label: "به‌روزرسانی",     prefixes: [], panel: "update" },
+  { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
@@ -1660,8 +1803,7 @@ async function renderSettingsPanel(cat, allRows) {
     card.innerHTML = `<h3>به‌روزرسانی سامانه</h3><div id="upd-box" class="muted">در حال بررسی…</div>
       <div id="upd-steps" style="margin-top:10px"></div>`;
     body.append(card);
-    await renderUpdateBox();
-    return;
+    renderUpdateBox();  // settings table for update.* follows below (no return)
   }
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });
@@ -1717,7 +1859,7 @@ async function renderSettingsPanel(cat, allRows) {
       } else input.value = r.value;
       return input;
     })()),
-    el("td", { text: r.description || "" }),
+    el("td", { text: SETTING_FA[r.key] || r.description || "" }),
     el("td", {}, el("button", { class: "btn btn-sm btn-primary", text: "ذخیره", onclick: async () => {
       const input = document.getElementById("set-" + r.key.replace(/\./g, "_"));
       let value = input.value;
@@ -1741,12 +1883,46 @@ const STORE_FIELDS = [
   ["receipt_note", "یادداشت پای فاکتور", true],
 ];
 
+/* §214 — store logo is shown everywhere the system logo used to be. */
+function applyStoreLogo(path) {
+  const src = path || "/icons/logo.svg";
+  document.querySelectorAll(".brand-logo, .about-logo, .login-logo").forEach((img) => { img.src = src; });
+}
+
 async function renderStoreProfile() {
   let p = {};
   try { p = await api("/settings/store-profile"); } catch (e) { /* empty form */ }
   $("#store-form").innerHTML = STORE_FIELDS.map(([key, label, full]) =>
     `<div class="${full ? "full" : ""}"><label>${label}</label>
-       <input id="sp-${key}" value="${esc(p[key] || "")}" /></div>`).join("");
+       <input id="sp-${key}" value="${esc(p[key] || "")}" /></div>`).join("") +
+    `<div class="full"><label>لوگوی فروشگاه (PNG/JPEG/SVG، حداکثر ۲ مگابایت)</label>
+       <div class="row" style="align-items:center;gap:12px">
+         <img id="sp-logo-preview" src="${esc(p.logo_path || "/icons/logo.svg")}" alt="لوگو" style="width:56px;height:56px;object-fit:contain;border-radius:8px;background:var(--bg2)" />
+         <label class="btn btn-sm btn-ghost file-btn">انتخاب تصویر<input type="file" id="sp-logo" accept="image/png,image/jpeg,image/svg+xml,image/webp" /></label>
+         <span id="sp-logo-name" class="muted"></span>
+         <button class="btn btn-sm" id="sp-logo-up">بارگذاری</button>
+         <button class="btn btn-sm btn-ghost" id="sp-logo-del">حذف لوگو</button>
+       </div></div>`;
+  $("#sp-logo").addEventListener("change", () => { $("#sp-logo-name").textContent = ($("#sp-logo").files[0] || {}).name || ""; });
+  $("#sp-logo-up").addEventListener("click", async () => {
+    const f = $("#sp-logo").files[0];
+    if (!f) { toast("ابتدا یک فایل انتخاب کنید", "err"); return; }
+    const fd = new FormData(); fd.append("file", f, f.name);
+    try {
+      const r = await api("/settings/store-profile/logo", { method: "POST", body: fd });
+      $("#sp-logo-preview").src = r.logo_path; applyStoreLogo(r.logo_path);
+      if (state.store) state.store.logo_path = r.logo_path;
+      toast("لوگو ذخیره شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $("#sp-logo-del").addEventListener("click", async () => {
+    try {
+      await api("/settings/store-profile/logo", { method: "DELETE" });
+      $("#sp-logo-preview").src = "/icons/logo.svg"; applyStoreLogo("");
+      if (state.store) state.store.logo_path = "";
+      toast("لوگوی پیش‌فرض بازگردانده شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
   $("#store-save").addEventListener("click", async () => {
     const body = {};
     STORE_FIELDS.forEach(([key]) => { body[key] = $("#sp-" + key).value.trim(); });
@@ -1845,14 +2021,23 @@ async function renderUpdateBox() {
   const box = $("#upd-box");
   try {
     const r = await api("/system/update/check");
+    const chan = r.channel === "updateserver" || r.channel === "server"
+      ? "سرور به‌روزرسانی داخلی" : "GitHub Releases";
+    const chanLine = `<div class="muted" style="margin-top:6px">کانال: ${chan} — در تنظیمات همین بخش
+      (<code>update.channel</code> = github | server، <code>update.server_url</code>) قابل تغییر است.
+      بستهٔ دریافتی همیشه با SHA-256 اعلام‌شده تطبیق داده می‌شود.</div>`;
+    if (r.status === "CONFIG_MISSING") {
+      box.innerHTML = `<span class="badge badge-amber">پیکربندی ناقص</span> ${esc(r.message)} ${chanLine}`;
+      return;
+    }
     if (r.status === "UNAVAILABLE") {
       box.innerHTML = `<span class="badge badge-blue">بدون دسترسی</span>
-        ${esc(r.message)} <span class="muted">(نسخهٔ فعلی ${esc(r.current_version)})</span>`;
+        ${esc(r.message)} <span class="muted">(نسخهٔ فعلی ${esc(r.current_version)})</span>${chanLine}`;
       return;
     }
     if (!r.update_available) {
       box.innerHTML = `<span class="badge badge-green">به‌روز</span>
-        نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.`;
+        نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.${chanLine}`;
       return;
     }
     box.innerHTML = `<span class="badge badge-amber">نسخهٔ جدید</span>
@@ -2258,6 +2443,7 @@ async function loadRuntimeConfig() {
     state.store = await api("/settings/store-profile");
     const el = $("#sb-store");
     if (el && state.store.name) el.textContent = state.store.name;
+    if (state.store.logo_path) applyStoreLogo(state.store.logo_path);
     if (state.store.name) {
       const brand = document.querySelector(".brand span");
       if (brand) brand.textContent = state.store.name;

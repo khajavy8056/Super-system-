@@ -1,0 +1,15 @@
+{
+  "name": "supermarket-devtools",
+  "private": true,
+  "description": "Dev-only tooling: jsdom UI smoke tests, headless-Chromium screenshots and PDF builder (not shipped).",
+  "scripts": {
+    "smoke": "node uitest/smoke-views.js && node uitest/smoke-mobile.js && node uitest/smoke-v1_1.js && node uitest/smoke-v1_2.js",
+    "shots": "node shoot_chromium.js shots.json",
+    "pdf": "node make_pdf_chromium.js"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
+    "jsdom": "^30.0.1",
+    "puppeteer-core": "^25.10.0"
+  }
+}

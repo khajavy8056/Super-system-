@@ -93,6 +93,20 @@ def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depe
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    from ..services.hardware import render_receipt
     ok, message = print_receipt(db, invoice=inv)
     db.commit()
-    return {"invoice_id": inv.id, "print_status": inv.print_status, "ok": ok, "message": message}
+    return {"invoice_id": inv.id, "print_status": inv.print_status, "ok": ok, "message": message,
+            "receipt_text": render_receipt(db, inv)}
+
+
+@router.get("/{invoice_id}/receipt")
+def receipt_preview(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+    """Rendered receipt text (what the thermal printer receives) — on-screen preview / browser print."""
+    from ..services.hardware import render_receipt, printer_profile
+    inv = db.get(Invoice, invoice_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    prof = printer_profile(db)
+    return {"invoice_id": inv.id, "invoice_number": inv.invoice_number, "columns": prof["columns"],
+            "print_status": inv.print_status, "receipt_text": render_receipt(db, inv)}

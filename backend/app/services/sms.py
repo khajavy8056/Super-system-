@@ -46,19 +46,36 @@ def get_setting(db: Session, key: str, default: str) -> str:
 
 # --- Providers ----------------------------------------------------------------
 
-def _send_melipayamak(db: Session, phone: str, text: str) -> str:
+MELIPAYAMAK_BASE = "https://rest.payamak-panel.com/api/SendSMS"
+
+# RetStatus codes documented by Melipayamak for SendSMS / BaseServiceNumber.
+MELIPAYAMAK_STATUS = {
+    0: "نام کاربری یا رمز عبور اشتباه است", 1: "ارسال موفق", 2: "اعتبار کافی نیست",
+    3: "محدودیت در ارسال روزانه", 4: "محدودیت در حجم ارسال", 5: "شماره فرستنده معتبر نیست",
+    6: "سامانه در حال بروزرسانی است", 7: "متن حاوی کلمهٔ فیلترشده است",
+    9: "ارسال از خطوط عمومی از طریق وب‌سرویس امکان‌پذیر نیست", 10: "کاربر مورد نظر فعال نیست",
+    11: "ارسال نشد", 12: "مدارک کاربر کامل نیست", 14: "متن حاوی لینک است",
+    15: "ارسال به بیش از ۱ شماره بدون درج «لغو۱۱» ممکن نیست", 16: "شمارهٔ گیرنده‌ای یافت نشد",
+    17: "متن پیامک خالی است", 35: "شماره در لیست سیاه مخابرات است",
+}
+
+
+def _melipayamak_base(db: Session) -> str:
+    """Endpoint override for tests / self-hosted proxies (sms.melipayamak_url)."""
+    return (get_setting(db, "sms.melipayamak_url", "") or MELIPAYAMAK_BASE).rstrip("/")
+
+
+def _melipayamak_post(db: Session, method: str, data: dict) -> dict:
+    """POST like the official client does: form-encoded, JSON back.
+    Reference: github.com/Melipayamak/melipayamak-python (sms/rest.py)."""
     username = get_setting(db, "sms.username", "")
     password = get_setting(db, "sms.password", "")
-    sender = get_setting(db, "sms.sender", "")
-    if not (username and password and sender):
-        raise SmsProviderError("CONFIG_MISSING", "sms.username/sms.password/sms.sender required")
+    if not (username and password):
+        raise SmsProviderError("CONFIG_MISSING", "sms.username/sms.password required")
     try:
-        resp = httpx.post(
-            "https://rest.payamak-panel.com/api/SendSMS/SendSMS",
-            json={"username": username, "password": password, "to": phone,
-                  "from": sender, "text": text},
-            timeout=app_settings.EXTERNAL_TIMEOUT_SECONDS,
-        )
+        resp = httpx.post(f"{_melipayamak_base(db)}/{method}",
+                          data={"username": username, "password": password, **data},
+                          timeout=app_settings.EXTERNAL_TIMEOUT_SECONDS)
     except httpx.HTTPError as exc:
         raise SmsProviderError("NETWORK", type(exc).__name__) from exc
     if resp.status_code != 200:
@@ -66,12 +83,67 @@ def _send_melipayamak(db: Session, phone: str, text: str) -> str:
     try:
         body = resp.json()
     except ValueError as exc:
-        raise SmsProviderError("INVALID_RESPONSE", str(exc)) from exc
-    # Melipayamak returns Value==1 (or RetStatus/Status codes) on success
-    value = body.get("Value") if isinstance(body, dict) else None
-    if value not in (1, "1"):
-        raise SmsProviderError("PROVIDER_REJECTED", json.dumps(body, ensure_ascii=False)[:200])
+        raise SmsProviderError("INVALID_RESPONSE", resp.text[:200]) from exc
+    if not isinstance(body, dict):
+        raise SmsProviderError("INVALID_RESPONSE", str(body)[:200])
+    return body
+
+
+def _melipayamak_check(body: dict) -> None:
+    """Melipayamak signals success with RetStatus==1 and Value = RecId (a long
+    number). A small Value together with RetStatus!=1 is an error code."""
+    ret = body.get("RetStatus")
+    try:
+        ret = int(ret)
+    except (TypeError, ValueError):
+        ret = None
+    if ret == 1:
+        return
+    code = ret if ret is not None else body.get("Value")
+    try:
+        code_i = int(code)
+    except (TypeError, ValueError):
+        code_i = -1
+    raise SmsProviderError(f"MELI_{code}", MELIPAYAMAK_STATUS.get(code_i, body.get("StrRetStatus") or str(body)[:120]))
+
+
+def _send_melipayamak(db: Session, phone: str, text: str) -> str:
+    """§165 — Melipayamak. Two modes:
+
+    * ``sms.melipayamak_mode = line``   → ``SendSMS`` from the shop's own line
+      (``sms.sender``). Needs a dedicated line; public lines are refused (9).
+    * ``sms.melipayamak_mode = pattern`` → ``BaseServiceNumber`` (خط خدماتی
+      اشتراکی) with ``sms.melipayamak_body_id``; the message text is sent as the
+      pattern variables joined by ';' (§166). Works without a dedicated line
+      and is not affected by carrier advertising filters.
+    """
+    mode = (get_setting(db, "sms.melipayamak_mode", "line") or "line").strip().lower()
+    if mode == "pattern":
+        body_id = get_setting(db, "sms.melipayamak_body_id", "").strip()
+        if not body_id:
+            raise SmsProviderError("CONFIG_MISSING", "sms.melipayamak_body_id required for pattern mode")
+        # a pattern takes positional variables; we send each line as one variable
+        variables = ";".join(part.strip() for part in text.split("\n") if part.strip())
+        body = _melipayamak_post(db, "BaseServiceNumber", {"text": variables, "to": phone, "bodyId": body_id})
+    else:
+        sender = get_setting(db, "sms.sender", "")
+        if not sender:
+            raise SmsProviderError("CONFIG_MISSING", "sms.sender required (line mode)")
+        body = _melipayamak_post(db, "SendSMS", {"to": phone, "from": sender, "text": text, "isFlash": "false"})
+    _melipayamak_check(body)
     return json.dumps(body, ensure_ascii=False)
+
+
+def melipayamak_credit(db: Session) -> dict:
+    """GetCredit — used by the connection test (§177)."""
+    body = _melipayamak_post(db, "GetCredit", {})
+    _melipayamak_check(body)
+    return {"credit": body.get("Value"), "raw": body}
+
+
+def melipayamak_delivery(db: Session, rec_id: str) -> dict:
+    """GetDeliveries2 — delivery status of a sent message (§170)."""
+    return _melipayamak_post(db, "GetDeliveries2", {"recId": rec_id})
 
 
 def _send_kavenegar(db: Session, phone: str, text: str) -> str:

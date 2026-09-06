@@ -322,6 +322,33 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
         ).all()
         out["groups"] = [{"date": str(r[0]), "invoice_count": int(r[1]),
                           "total": float(Decimal(r[2]))} for r in rows]
+    elif group in ("monthly", "weekly"):
+        # Jalali month / week buckets (§137, §138). SQLite cannot group by the
+        # Persian calendar, so bucket in Python on the (bounded) day rows.
+        from .timeservice import to_jalali
+        rows = db.execute(
+            select(func.date(Invoice.created_at), func.count(Invoice.id),
+                   func.coalesce(func.sum(Invoice.total_amount), 0))
+            .where(_paid_filter(s0, e1))
+            .group_by(func.date(Invoice.created_at))
+            .order_by(func.date(Invoice.created_at))
+        ).all()
+        buckets: dict[str, dict] = {}
+        for r in rows:
+            d = date.fromisoformat(str(r[0]))
+            jy, jm, jd = to_jalali(d)
+            if group == "monthly":
+                key = f"{jy:04d}/{jm:02d}"
+            else:
+                # Jalali week: 7-day blocks counted from Farvardin 1 of that year
+                doy = (jm - 1) * 31 - max(0, jm - 7) + jd if jm <= 6 else 186 + (jm - 7) * 30 + jd
+                key = f"{jy:04d}-هفته {((doy - 1) // 7) + 1:02d}"
+            b = buckets.setdefault(key, {"period": key, "invoice_count": 0, "total": 0.0,
+                                         "first_day": str(r[0]), "last_day": str(r[0])})
+            b["invoice_count"] += int(r[1])
+            b["total"] += float(Decimal(r[2]))
+            b["last_day"] = str(r[0])
+        out["groups"] = list(buckets.values())
     elif group == "product":
         rows = db.execute(
             select(Product.name, func.coalesce(func.sum(InvoiceItem.qty), 0),

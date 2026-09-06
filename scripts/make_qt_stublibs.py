@@ -35,6 +35,8 @@ TARGETS = [
     "libxkbcommon.so.0", "libxkbfile.so.1", "libgbm.so.1", "libXcomposite.so.1",
     "libXdamage.so.1", "libXfixes.so.3", "libXrandr.so.2", "libXtst.so.6",
     "libxcb-dri3.so.0", "libdbus-1.so.3", "libudev.so.1",
+    # PySide 6.7 additionally links these (absent on minimal hosts)
+    "libXi.so.6", "libXrender.so.1", "libdrm.so.2", "libxshmfence.so.1",
 ]
 # fallback routing for UNversioned undefined symbols (by name prefix)
 PREFIX = {
@@ -58,6 +60,12 @@ PREFIX = {
     "libxcb-dri3.so.0": ("xcb_dri3",),
     "libdbus-1.so.3": ("dbus_",),
     "libudev.so.1": ("udev_",),
+    "libXi.so.6": ("XI", "XGetExtensionVersion", "XListInputDevices", "XFreeDeviceList",
+                   "XOpenDevice", "XCloseDevice", "XSelectExtensionEvent", "XQueryDeviceState",
+                   "XFreeDeviceState", "XGetDeviceButtonMapping"),
+    "libXrender.so.1": ("XRender",),
+    "libdrm.so.2": ("drm",),
+    "libxshmfence.so.1": ("xshmfence_",),
 }
 
 

@@ -7,7 +7,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; }
 body {
-  font-family: "Segoe UI", Tahoma, "Vazirmatn", sans-serif;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
   background: var(--bg); color: var(--text); font-size: 16px;
   overscroll-behavior: none;
 }

@@ -48,7 +48,7 @@
         "name": "04-pos-price-choice",
         "steps": [
           {
-            "js": "(async()=>{const s=document.querySelector('#pos-scan');s.value='6260000000001';s.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));for(let i=0;i<60;i++){if(document.querySelector('.batch-option'))return 'modal';await new Promise(r=>setTimeout(r,150));}return 'no-modal';})()"
+            "js": "(async()=>{const s=document.querySelector('#pos-scan');s.value='6260101010017';s.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));for(let i=0;i<60;i++){if(document.querySelector('.batch-option'))return 'modal';await new Promise(r=>setTimeout(r,150));}return 'no-modal';})()"
           }
         ],
         "wait_ms": 500
@@ -57,7 +57,7 @@
         "name": "05-pos-cart",
         "steps": [
           {
-            "js": "(async()=>{const rec=document.querySelector('.batch-option.recommended')||document.querySelector('.batch-option');rec.click();await new Promise(r=>setTimeout(r,400));const s=document.querySelector('#pos-scan');s.value='6260000000003';s.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));for(let i=0;i<40;i++){if(document.querySelector('#pos-cart-table tr'))return 'cart';await new Promise(r=>setTimeout(r,150));}return 'no-cart';})()"
+            "js": "(async()=>{const rec=document.querySelector('.batch-option.recommended')||document.querySelector('.batch-option');rec.click();await new Promise(r=>setTimeout(r,400));const s=document.querySelector('#pos-scan');s.value='6260404040023';s.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));for(let i=0;i<40;i++){if(document.querySelector('#pos-cart-table tr'))return 'cart';await new Promise(r=>setTimeout(r,150));}return 'no-cart';})()"
           }
         ],
         "wait_ms": 700
@@ -520,6 +520,119 @@
         ],
         "wait_ms": 500,
         "full_height": false
+      }
+    ]
+  },
+  {
+    "name": "admin-v12",
+    "url": "http://127.0.0.1:8000/",
+    "viewport": [
+      1440,
+      900
+    ],
+    "settle_ms": 1200,
+    "steps": [
+      {
+        "js": "(async()=>{if(document.querySelector('.session-item')||document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'already';document.querySelector('#login-username').value='admin';document.querySelector('#login-password').value='admin123';document.querySelector('#login-form').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));for(let i=0;i<60;i++){if(document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'app-visible';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+      },
+      {
+        "wait_ms": 1500
+      }
+    ],
+    "shots": [
+      {
+        "name": "43-products-starter-catalog",
+        "steps": [
+          {
+            "js": "go('products')"
+          }
+        ],
+        "wait_ms": 1500
+      },
+      {
+        "name": "44-reports-monthly",
+        "steps": [
+          {
+            "js": "go('reports')"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "[...document.querySelectorAll('#rep-tabs button')].find(b=>b.textContent.includes('ماهانه')).click()"
+          }
+        ],
+        "wait_ms": 1500
+      },
+      {
+        "name": "45-settings-store-logo",
+        "steps": [
+          {
+            "js": "go('settings')"
+          },
+          {
+            "wait_ms": 1000
+          },
+          {
+            "js": "[...document.querySelectorAll('.set-tab')].find(t=>t.textContent.includes('پروفایل')).click()"
+          }
+        ],
+        "wait_ms": 1200
+      },
+      {
+        "name": "46-settings-update-channel",
+        "steps": [
+          {
+            "js": "go('settings')"
+          },
+          {
+            "wait_ms": 1000
+          },
+          {
+            "js": "[...document.querySelectorAll('.set-tab')].find(t=>t.textContent.includes('به‌روزرسانی')).click()"
+          }
+        ],
+        "wait_ms": 2500
+      },
+      {
+        "name": "47-settings-printer",
+        "steps": [
+          {
+            "js": "go('settings')"
+          },
+          {
+            "wait_ms": 1000
+          },
+          {
+            "js": "[...document.querySelectorAll('.set-tab')].find(t=>t.textContent.includes('پرینتر')).click()"
+          }
+        ],
+        "wait_ms": 1200
+      },
+      {
+        "name": "48-hardware-connection-hints",
+        "steps": [
+          {
+            "js": "go('hardware')"
+          }
+        ],
+        "wait_ms": 1200
+      },
+      {
+        "name": "49-warehouses-transfer",
+        "steps": [
+          {
+            "js": "go('inventory')"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "(document.querySelector('#wh-card')||document.querySelector('#view')).scrollIntoView()"
+          }
+        ],
+        "wait_ms": 800,
+        "full_height": true
       }
     ]
   }

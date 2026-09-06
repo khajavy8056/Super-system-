@@ -60,25 +60,27 @@ def health(db: Session = Depends(get_db), _: User = Depends(require_permission("
 @router.post("/test/print")
 def test_print(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
     """Honest test print: ok=True ONLY when something was really printed/written."""
-    text = "Supermarket System\n--- TEST PRINT ---\n" + "x" * 32 + "\n" + "y" * 24 + "\n"
+    prof = hw.printer_profile(db)
+    W = prof["columns"]
+    text = "\n".join([(prof["store"]["name"] or "Supermarket System").center(W), "--- تست چاپ ---".center(W),
+                      "x" * W, "۰۱۲۳۴۵۶۷۸۹ 0123456789", f"عرض کاغذ: {prof['paper_width_mm']} mm / {W} ستون",
+                      "-" * W])
     device = hw._printer(db)
     if device is None:
         return {"ok": False, "message": "PRINTER_OFFLINE: no printer configured"}
-    if device.connection and device.connection.startswith("file://"):
+    conn = (device.connection or "").strip()
+    if conn.startswith("file://"):
         try:
-            with open(device.connection[len("file://"):], "w", encoding="utf-8") as f:
+            with open(conn[len("file://"):], "w", encoding="utf-8") as f:
                 f.write(text)
             return {"ok": True, "message": "test receipt written (file sink)"}
         except OSError as e:
             return {"ok": False, "message": f"PRINTER_OFFLINE: {e}"}
-    if device.connection and device.connection.startswith("escpos:"):
-        try:
-            from ..services.escpos_driver import print_via_escpos
-        except ImportError:
-            return {"ok": False, "message": "DRIVER_UNAVAILABLE: install python-escpos (requirements-hardware.txt)"}
-        ok, detail = print_via_escpos(device.connection, text)
+    if conn.startswith("tcp://") or conn.startswith("escpos:"):
+        from ..services.escpos_driver import print_via_escpos
+        ok, detail = print_via_escpos(conn, text, columns=W, cut=prof["cut"])
         return {"ok": ok, "message": "ESC/POS: " + detail}
-    return {"ok": False, "message": "NOT_SUPPORTED: no real driver for this connection type"}
+    return {"ok": False, "message": "NOT_SUPPORTED: use file://, tcp://host:9100 or escpos:usb:VID:PID"}
 
 
 @router.post("/test/drawer")

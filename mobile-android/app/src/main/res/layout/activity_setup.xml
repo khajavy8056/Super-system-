@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:gravity="center" android:padding="28dp"
+    android:layoutDirection="rtl" android:background="#0f1420">
+
+    <ImageView android:layout_width="96dp" android:layout_height="96dp"
+        android:src="@mipmap/ic_launcher" android:layout_marginBottom="18dp" android:contentDescription="@string/app_name" />
+
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="@string/setup_title" android:textColor="#e5e7eb" android:textSize="20sp" android:textStyle="bold" />
+
+    <EditText android:id="@+id/server_url" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="18dp" android:hint="@string/setup_hint" android:inputType="textUri"
+        android:textDirection="ltr" android:textColor="#e5e7eb" android:textColorHint="#8b93a7"
+        android:backgroundTint="#3b82f6" android:padding="12dp" android:autofillHints="url" />
+
+    <TextView android:id="@+id/status" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" android:textColor="#8b93a7" />
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:layout_marginTop="16dp">
+        <Button android:id="@+id/btn_test" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/setup_test" />
+        <Button android:id="@+id/btn_save" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/setup_save" android:layout_marginStart="8dp"
+            android:backgroundTint="#3b82f6" android:textColor="#ffffff" />
+    </LinearLayout>
+
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginTop="40dp" android:text="@string/developer" android:textColor="#8b93a7" android:textSize="12sp" />
+</LinearLayout>

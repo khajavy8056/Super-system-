@@ -87,6 +87,8 @@ class ReleaseInfo:
     asset_url: str | None = None
     asset_size: int = 0
     html_url: str | None = None
+    #: expected SHA-256 of the asset (update server / SHA256SUMS); enforced when set
+    sha256: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -135,13 +137,81 @@ class GitHubChannel(UpdateChannel):
             published_at=data.get("published_at"),
             html_url=data.get("html_url"),
         )
+        sums_url = None
         for asset in data.get("assets") or []:
-            if ASSET_PATTERN.search(asset.get("name", "")):
-                info.asset_name = asset.get("name")
+            name = asset.get("name", "")
+            if name.upper().startswith("SHA256SUMS"):
+                sums_url = asset.get("browser_download_url")
+            elif info.asset_name is None and ASSET_PATTERN.search(name):
+                info.asset_name = name
                 info.asset_url = asset.get("browser_download_url")
                 info.asset_size = int(asset.get("size") or 0)
-                break
+        if sums_url and info.asset_name:
+            # §276 — checksum published next to the installer, enforced at verify time
+            try:
+                txt = httpx.get(sums_url, timeout=timeout, follow_redirects=True).text
+                for line in txt.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[-1].lstrip("*") == info.asset_name:
+                        info.sha256 = parts[0].lower()
+            except httpx.HTTPError:
+                pass
         return info
+
+
+class UpdateServerChannel(UpdateChannel):
+    """§270 — a self-hosted update server. Contract: GET <url> returns JSON
+    ``{"version": "1.2.0", "name": ..., "notes": ..., "published_at": ...,
+       "asset_name": "...Setup.exe", "asset_url": "https://...", "asset_size": 123,
+       "sha256": "<hex>"}``. ``sha256`` is enforced when present."""
+
+    def __init__(self, url: str, token: str | None = None):
+        self.url = url
+        self.token = token
+
+    def fetch_latest(self, timeout: float = 8.0) -> ReleaseInfo:
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            resp = httpx.get(self.url, headers=headers, timeout=timeout, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            raise UpdateError("CHANNEL_UNREACHABLE", str(exc)) from exc
+        if resp.status_code == 404:
+            raise UpdateError("NO_RELEASE", "هیچ نسخه‌ای روی سرور به‌روزرسانی نیست")
+        if resp.status_code >= 400:
+            raise UpdateError("CHANNEL_ERROR", f"HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise UpdateError("CHANNEL_ERROR", "invalid JSON from update server") from exc
+        info = ReleaseInfo(version=str(data.get("version") or "").lstrip("vV"),
+                           name=data.get("name") or "", notes=data.get("notes") or "",
+                           published_at=data.get("published_at"), html_url=data.get("html_url"))
+        info.asset_name = data.get("asset_name")
+        info.asset_url = data.get("asset_url")
+        info.asset_size = int(data.get("asset_size") or 0)
+        if data.get("sha256"):
+            info.sha256 = str(data["sha256"]).lower()
+        return info
+
+
+def channel_from_settings(db) -> UpdateChannel:
+    """Pick the channel the shop configured (§269 GitHub now, §270 server later)."""
+    from sqlalchemy import select as _select
+    from ..models import SystemSetting
+
+    def get(key, default=""):
+        row = db.execute(_select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+        return (row.value if row and row.value is not None else default)
+
+    kind = (get("update.channel", "github") or "github").strip().lower()
+    if kind == "server":
+        url = get("update.server_url", "").strip()
+        if not url:
+            raise UpdateError("CONFIG_MISSING", "update.server_url تنظیم نشده است")
+        return UpdateServerChannel(url, token=get("update.server_token", "") or None)
+    return GitHubChannel()
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +399,8 @@ def prepare_update(
                   "بررسی و آماده‌سازی به‌روزرسانی آغاز شد")
     db.commit()
     try:
+        if channel is None:
+            channel = channel_from_settings(db)
         result = _prepare_update(db, channel=channel, download=download, dest_dir=dest_dir)
     except Exception as exc:  # noqa: BLE001
         _audit_update(db, "UPDATE_FAILED", "CRASHED", str(exc)[:500])
@@ -415,7 +487,8 @@ def _prepare_update(
 
     # 4. verify before trusting
     try:
-        verified = verify_package(dest, expected_size=release.asset_size)
+        verified = verify_package(dest, expected_size=release.asset_size,
+                                  expected_sha256=release.sha256)
     except UpdateError as exc:
         dest.unlink(missing_ok=True)
         plan.record("اعتبارسنجی بسته", "FAIL", str(exc))

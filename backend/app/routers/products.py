@@ -4,7 +4,7 @@ from typing import Annotated
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -164,6 +164,52 @@ def create_category(body: TaxonomyIn, db: Session = Depends(get_db),
 # NOTE: declared AFTER the static /brands and /categories routes; FastAPI matches
 # in declaration order and '/{product_id}' used to swallow them (BUG: 422 on GET
 # /products/categories).
+# --- §80–82 starter catalog / CSV import (declared before /{product_id}) ---------
+@router.get("/import/starter")
+def starter_catalog_info(_: User = Depends(require_permission("products.manage"))):
+    """Describe the bundled zero-stock starter catalog and the CSV columns."""
+    from ..services import starter_catalog
+    return starter_catalog.bundled_summary()
+
+
+@router.post("/import/starter")
+def import_starter_catalog(dry_run: bool = False, db: Session = Depends(get_db),
+                           user: User = Depends(require_permission("products.manage"))):
+    """Import the bundled starter catalog (idempotent, zero stock)."""
+    from ..services import starter_catalog
+    from ..services.audit import write_audit
+    res = starter_catalog.import_csv(db, None, user=user, dry_run=dry_run)
+    if not dry_run and res.get("ok"):
+        write_audit(db, action="CATALOG_IMPORT", user_id=user.id, entity_type="Product",
+                    after={"source": "bundled", "created": res["created"], "skipped": res["skipped"]})
+    db.commit()
+    return res
+
+
+@router.post("/import/csv")
+async def import_products_csv(file: UploadFile = File(...), dry_run: bool = False,
+                              db: Session = Depends(get_db),
+                              user: User = Depends(require_permission("products.manage"))):
+    """Import the shop's own product list (UTF-8 CSV, columns: category, subcategory,
+    name, brand, unit, min_stock_alert, barcode). Stock stays zero."""
+    from ..services import starter_catalog
+    from ..services.audit import write_audit
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail={"code": "BAD_ENCODING",
+                                                     "message": "فایل باید UTF-8 باشد."})
+    res = starter_catalog.import_csv(db, text, user=user, dry_run=dry_run)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res)
+    if not dry_run:
+        write_audit(db, action="CATALOG_IMPORT", user_id=user.id, entity_type="Product",
+                    after={"source": file.filename, "created": res["created"], "skipped": res["skipped"]})
+    db.commit()
+    return res
+
+
 @router.get("/{product_id}")
 def get_product(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("products.view"))):
     p = db.get(Product, product_id)

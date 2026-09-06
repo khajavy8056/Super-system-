@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import settings as app_settings
 from ..database import get_db
 from ..models import SystemSetting, User
 from ..security import get_current_user, require_permission
@@ -163,6 +166,74 @@ def put_store_profile(body: StoreProfileIn, db: Session = Depends(get_db),
                 entity_type="SystemSetting", after=changes)
     db.commit()
     return {f: _get(db, f"store.{f}") for f in _STORE_FIELDS}
+
+
+_LOGO_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/svg+xml": ".svg", "image/webp": ".webp"}
+_LOGO_MAX = 2 * 1024 * 1024
+
+
+def _set(db: Session, key: str, value: str) -> None:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    if row is None:
+        db.add(SystemSetting(key=key, value=value, is_secret=False))
+    else:
+        row.value = value
+
+
+@router.post("/store-profile/logo")
+async def upload_store_logo(file: UploadFile = File(...), db: Session = Depends(get_db),
+                            user: User = Depends(require_permission("settings.manage"))):
+    """Store logo (§214): PNG/JPEG/SVG/WebP ≤ 2 MB, served from /media and used
+    on receipts, the sidebar and the About page."""
+    ext = _LOGO_TYPES.get((file.content_type or "").lower())
+    if ext is None:
+        raise HTTPException(status_code=400, detail={
+            "code": "UNSUPPORTED_TYPE",
+            "message": "فرمت لوگو باید PNG، JPEG، SVG یا WebP باشد."})
+    data = await file.read()
+    if len(data) > _LOGO_MAX:
+        raise HTTPException(status_code=413, detail={
+            "code": "TOO_LARGE", "message": "حجم لوگو نباید بیش از ۲ مگابایت باشد."})
+    if not data:
+        raise HTTPException(status_code=400, detail={"code": "EMPTY", "message": "فایل خالی است."})
+    if ext == ".png" and not data.startswith(b"\x89PNG"):
+        raise HTTPException(status_code=400, detail={"code": "CORRUPT", "message": "فایل PNG معتبر نیست."})
+    if ext == ".jpg" and not data.startswith(b"\xff\xd8"):
+        raise HTTPException(status_code=400, detail={"code": "CORRUPT", "message": "فایل JPEG معتبر نیست."})
+    media = Path(app_settings.MEDIA_DIR)
+    media.mkdir(parents=True, exist_ok=True)
+    for old in media.glob("store-logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    dest = media / f"store-logo{ext}"
+    dest.write_bytes(data)
+    import time as _t
+    url = f"/media/{dest.name}?v={int(_t.time())}"
+    before = _get(db, "store.logo_path")
+    _set(db, "store.logo_path", url)
+    write_audit(db, action="STORE_LOGO_UPDATED", user_id=user.id, entity_type="SystemSetting",
+                before={"logo_path": before}, after={"logo_path": url, "bytes": len(data)})
+    db.commit()
+    return {"logo_path": url, "bytes": len(data)}
+
+
+@router.delete("/store-profile/logo")
+def delete_store_logo(db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("settings.manage"))):
+    media = Path(app_settings.MEDIA_DIR)
+    for old in media.glob("store-logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    before = _get(db, "store.logo_path")
+    _set(db, "store.logo_path", "")
+    write_audit(db, action="STORE_LOGO_REMOVED", user_id=user.id, entity_type="SystemSetting",
+                before={"logo_path": before}, after={"logo_path": ""})
+    db.commit()
+    return {"logo_path": ""}
 
 
 # ---------------------------------------------------------------------------

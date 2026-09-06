@@ -1,3 +1,7 @@
+/* §244 — Persian typeface bundled locally (offline-safe). Vazirmatn, SIL OFL 1.1
+   (fonts/OFL-Vazirmatn.txt). */
+@font-face { font-family: "Vazirmatn"; src: url("/fonts/Vazirmatn-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Vazirmatn"; src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
 :root, [data-theme="dark"] {
   --bg: #0f1420;
   --bg2: #171e2e;
@@ -37,7 +41,7 @@ html[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
-  font-family: "Segoe UI", Tahoma, "Vazirmatn", sans-serif;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
   background: var(--bg); color: var(--text); font-size: 14px;
 }
 .hidden { display: none !important; }
@@ -130,7 +134,7 @@ tr:hover td { background: rgba(59,130,246,0.06); }
 .toast.err { border-color: var(--red); color: var(--red); }
 .toast.ok { border-color: var(--green); color: var(--green); }
 
-.receipt { font-family: monospace; white-space: pre-wrap; background: #fff; color: #111; padding: 16px; border-radius: 8px; direction: ltr; text-align: left; }
+.receipt { font-family: "Vazirmatn", monospace; white-space: pre; overflow-x: auto; background: #fff; color: #111; padding: 16px; border-radius: 8px; direction: rtl; text-align: right; font-size: 13px; line-height: 1.6; max-width: 520px; margin: 10px auto 0; }
 .kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--muted); }
 
 /* ============ POS terminal screen (§6) ============ */
@@ -323,3 +327,7 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 1
   background: transparent; color: var(--text); cursor: pointer; font-size: 13px; }
 .set-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .set-panel .kv-row td { padding: 8px 6px; }
+
+/* §80–82 / §214 — Persian file pickers (hide the browser's English control) */
+.file-btn { position: relative; overflow: hidden; display: inline-flex; width: auto; cursor: pointer; }
+.file-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }

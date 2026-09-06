@@ -24,6 +24,8 @@ a = Analysis(
         # Migrations must travel with the installed app (see setup.py note).
         (str(ROOT / "backend" / "alembic"), "alembic"),
         (str(ROOT / "backend" / "alembic.ini"), "."),
+        # §80–82 bundled zero-stock starter catalog (read at runtime via __file__).
+        (str(ROOT / "backend" / "app" / "data"), "app/data"),
     ],
     hiddenimports=[
         "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
