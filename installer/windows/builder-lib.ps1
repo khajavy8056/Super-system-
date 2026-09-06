@@ -168,24 +168,76 @@ function Invoke-Native {
 function Test-PythonExe {
     <#
       Return "<major>.<minor>.<micro>" when $Exe is a real CPython >= 3.11
-      that actually starts, otherwise $null. Never throws: a broken
-      candidate (e.g. the Microsoft Store "python.exe" stub in WindowsApps,
-      which exits 9009 and prints nothing) must not abort the whole search.
+      that actually starts, otherwise $null. Never throws.
+
+      ROOT CAUSE of the v1.2.2 "installed but not found" report: this probe
+      used  -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])'.
+      Windows PowerShell 5.1 hands native programs their arguments WITHOUT
+      re-escaping embedded double quotes, so python received
+          import sys;print(%d.%d.%d%sys.version_info[:3])
+      -> SyntaxError -> exit 1 -> EVERY candidate was rejected, including the
+      perfectly good Python that was already installed and even the one we had
+      just installed ourselves. The probe now uses arguments that contain no
+      quote characters at all (python -V prints "Python 3.11.9"), and a second,
+      quote-free -c probe as fallback. Every rejection is logged WITH the raw
+      output so the reason is never a mystery again.
     #>
     param([string]$Exe)
     if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $null }
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $out = (& $Exe -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])' 2>&1)
-        if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
-        $ver = ($out | Where-Object { "$_" -match '^\d+\.\d+\.\d+$' } | Select-Object -First 1)
-        if (-not $ver) { return $null }
-        $ver = "$ver".Trim(); $parts = $ver.Split('.')
+        $raw = @()
+        try { $raw = @(& $Exe -V 2>&1 | ForEach-Object { "$_" }) } catch { $raw = @("$_") }
+        $code = $LASTEXITCODE
+        $ver = $null
+        foreach ($l in $raw) {
+            $m = [regex]::Match($l, 'Python\s+(\d+)\.(\d+)\.(\d+)')
+            if ($m.Success) { $ver = ('{0}.{1}.{2}' -f $m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value); break }
+        }
+        if (-not $ver) {
+            # Fallback probe: no quote characters in the argument.
+            try { $raw2 = @(& $Exe -c 'import sys;print(sys.version_info[0],sys.version_info[1],sys.version_info[2])' 2>&1 | ForEach-Object { "$_" }) } catch { $raw2 = @("$_") }
+            $code = $LASTEXITCODE
+            foreach ($l in $raw2) {
+                $m = [regex]::Match($l, '^\s*(\d+)\s+(\d+)\s+(\d+)\s*$')
+                if ($m.Success) { $ver = ('{0}.{1}.{2}' -f $m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value); break }
+            }
+            $raw += $raw2
+        }
+        if (-not $ver) {
+            Write-Log ("Candidate rejected (no version, exit {0}): {1}`n      output: {2}" -f $code, $Exe, (($raw | Select-Object -First 5) -join ' | '))
+            return $null
+        }
+        $parts = $ver.Split('.')
         if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11) { return $ver }
         Write-Log "Ignoring Python $ver at $Exe (need >= 3.11)"
         return $null
-    } catch { return $null } finally { $ErrorActionPreference = $prevEap }
+    } catch {
+        Write-Log "Candidate rejected (exception): $Exe -> $_"
+        return $null
+    } finally { $ErrorActionPreference = $prevEap }
+}
+
+function Get-PythonDiagnostics {
+    <#
+      Self-diagnosis used when no Python is accepted: lists every candidate
+      with its raw probe output. Shown to the user and written to the log so a
+      failure report contains the cause, not just the symptom.
+    #>
+    $lines = @()
+    foreach ($c in (Get-PythonCandidates)) {
+        $exists = Test-Path -LiteralPath $c
+        $out = '(missing)'
+        if ($exists) {
+            $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            try { $out = ((& $c -V 2>&1 | ForEach-Object { "$_" }) -join ' ') + " [exit $LASTEXITCODE]" } catch { $out = "exception: $_" }
+            finally { $ErrorActionPreference = $prevEap }
+        }
+        $lines += ("  {0}  ->  {1}" -f $c, $out)
+    }
+    if ($lines.Count -eq 0) { $lines = @('  (هیچ کاندیدایی پیدا نشد)') }
+    return ($lines -join "`n")
 }
 
 function Get-PythonCandidates {
@@ -267,14 +319,15 @@ function Get-PythonCandidates {
 
 function Find-Python {
     param([scriptblock]$Report)
-    foreach ($exe in (Get-PythonCandidates)) {
+    $cands = @(Get-PythonCandidates)
+    Write-Log ("Python candidates ({0}): {1}" -f $cands.Count, ($cands -join ' ; '))
+    foreach ($exe in $cands) {
         $ver = Test-PythonExe $exe
         if ($ver) {
             Write-Log "Found Python $ver at $exe"
             $Script:PythonVersionFound = $ver
             return $exe
         }
-        Write-Log "Candidate rejected: $exe"
     }
     return $null
 }
@@ -319,7 +372,7 @@ function Install-Python {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try {
         $proc = Start-Process -FilePath $dst -Wait -PassThru -ArgumentList @(
-            '/quiet', 'InstallAllUsers=0', 'PrependPath=1', "TargetDir=$target",
+            '/quiet', 'InstallAllUsers=0', 'PrependPath=1', "TargetDir=`"$target`"",
             'Include_pip=1', 'Include_launcher=1', 'AssociateFiles=0', 'Include_test=0'
         )
         Write-Log "python installer exit code: $($proc.ExitCode)"
@@ -335,7 +388,10 @@ function Install-Python {
     if ($exe) { return $exe }
 
     $log = Join-Path $env:TEMP 'Python 3.11.9 (64-bit)_*.log'
-    throw ("نصب‌کنندهٔ پایتون اجرا شد (کد خروج $($proc.ExitCode)) اما هیچ python.exe سالمی پیدا نشد.`n" +
+    $diag = Get-PythonDiagnostics
+    Write-Log "Python diagnostics:`n$diag"
+    throw ("نتیجهٔ بررسی همهٔ مسیرهای پایتون:`n$diag`n`n" +
+           "نصب‌کنندهٔ پایتون اجرا شد (کد خروج $($proc.ExitCode)) اما هیچ python.exe سالمی پیدا نشد.`n" +
            "مسیر انتظار: $direct`n" +
            "اگر پایتون از قبل در جای دیگری نصب است، مسیر کامل python.exe را در متغیر " +
            "SUPERMARKET_PYTHON قرار دهید و دوباره اجرا کنید، مثلاً:`n" +
@@ -421,7 +477,8 @@ $Steps = @(
             & $Report "پایتون $($Script:PythonVersionFound) پیدا شد: $exe"
             & $Report 'پایتون از قبل نصب است؛ چیزی دانلود نمی‌شود.'
         } else {
-            & $Report 'پایتون مناسبی یافت نشد.'
+            & $Report 'پایتون مناسبی یافت نشد. نتیجهٔ بررسی مسیرها:'
+            foreach ($l in (Get-PythonDiagnostics).Split("`n")) { & $Report $l }
             $exe = Install-Python -Report $Report
             & $Report 'پایتون با موفقیت نصب شد.'
         }
