@@ -67,8 +67,73 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _sync_alembic()
+    # Self-healing schema reconciliation (v1.2.5). ``create_all`` only creates
+    # MISSING TABLES; it never adds columns to tables that already exist. A
+    # shop database created by an older release (or one whose alembic_version
+    # table is absent, e.g. v0.x) therefore kept an old ``units`` table and the
+    # first SELECT crashed the installed app with "no such column:
+    # units.allow_decimal". Any column present in the models but missing in
+    # the database is now added in place (additive only, data preserved).
+    _reconcile_schema()
     with SessionLocal() as db:
         bootstrap(db)
+
+
+def _reconcile_schema() -> list[str]:
+    """Add every model column missing from the live database. Returns the
+    list of ``table.column`` names added. Never destructive, never fatal."""
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger("supermarket.db")
+    added: list[str] = []
+    try:
+        insp = inspect(engine)
+        existing_tables = set(insp.get_table_names())
+        with engine.begin() as conn:
+            for table in Base.metadata.sorted_tables:
+                if table.name not in existing_tables:
+                    continue
+                have = {c["name"] for c in insp.get_columns(table.name)}
+                for col in table.columns:
+                    if col.name in have:
+                        continue
+                    ddl = _add_column_ddl(conn, table.name, col)
+                    conn.execute(text(ddl))
+                    added.append(f"{table.name}.{col.name}")
+        if added:
+            log.warning("schema reconciled: added missing columns %s", ", ".join(added))
+    except Exception as exc:  # pragma: no cover - defensive
+        log.error("schema reconciliation failed: %s", exc)
+    return added
+
+
+def _add_column_ddl(conn, table: str, col) -> str:
+    """Render ``ALTER TABLE ... ADD COLUMN`` for one column, with a safe
+    default so NOT NULL columns can be added to non-empty tables."""
+    from sqlalchemy.schema import CreateColumn
+
+    spec = str(CreateColumn(col).compile(dialect=conn.dialect))
+    # SQLite cannot add a NOT NULL column without a default; if the model has
+    # no server_default derive one from the Python default or a type-neutral
+    # fallback so the ALTER never fails mid-way.
+    if "NOT NULL" in spec.upper() and "DEFAULT" not in spec.upper():
+        default = None
+        if col.default is not None and getattr(col.default, "is_scalar", False):
+            v = col.default.arg
+            default = "1" if v is True else "0" if v is False else repr(v)
+        if default is None:
+            py = col.type.python_type if hasattr(col.type, "python_type") else str
+            try:
+                default = "0" if py in (int, float, bool) or py.__name__ == "Decimal" else "''"
+            except Exception:
+                default = "''"
+        spec = spec.replace("NOT NULL", f"NOT NULL DEFAULT {default}", 1)
+    # SQLite: PRIMARY KEY / UNIQUE cannot be added via ALTER; strip them.
+    for kw in (" PRIMARY KEY", " UNIQUE"):
+        spec = spec.replace(kw, "")
+    return f"ALTER TABLE {table} ADD COLUMN {spec}"
 
 
 def _sync_alembic() -> None:

@@ -3,6 +3,17 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [1.2.5] - 2026-09-07 (رفع کرش هنگام اجرای برنامهٔ نصب‌شده: «no such column: units.allow_decimal»)
+
+### Fixed
+- **برنامهٔ نصب‌شده بلافاصله با `sqlite3.OperationalError: no such column: units.allow_decimal` کرش می‌کرد.** علت: پایگاه دادهٔ موجود در `%USERPROFILE%\SupermarketSystem\supermarket.db` با نسخهٔ قدیمی‌تر (v0.x) ساخته شده بود؛ `create_all` فقط جدول‌های **غایب** را می‌سازد و هرگز ستون به جدول موجود اضافه نمی‌کند، و چون آن پایگاه داده جدول `alembic_version` نداشت، migrationها هم به‌جای اجرا فقط stamp می‌شدند. نتیجه: جدول `units` قدیمی ماند و اولین SELECT شکست خورد.
+  - **خوددرمانی اسکیمای پایگاه داده (`_reconcile_schema`)**: در هر شروع، هر ستونی که در مدل‌ها هست ولی در پایگاه داده نیست، به‌صورت افزایشی (بدون حذف داده) با `ALTER TABLE ... ADD COLUMN` و مقدار پیش‌فرض امن اضافه می‌شود. بازتولید سناریو با پایگاه دادهٔ واقعی v0.4.0 → پس از رفع، ورود و همهٔ endpointها 200.
+  - آزمون رگرسیون `tests/test_schema_reconcile.py` (حذف ستون → شروع → ستون برمی‌گردد؛ اسکیمای زنده هیچ ستون غایبی ندارد).
+- **لانچر ویندوز (`run_supermarket.py`)**: به‌جای پنجرهٔ خام «Unhandled exception in script» PyInstaller، پیام فارسی خوانا با مسیر لاگ و پایگاه داده نمایش می‌دهد و traceback کامل را در `logs\supermarket.log` می‌نویسد.
+
+### Changed
+- نسخه در backend / Inno / standalone / Android → 1.2.5. ۲۷۶ آزمون، ۱۵۸ عملیات API.
+
 ## [1.2.4] - 2026-09-07 (رفع توقف مرحلهٔ ۵/۶ سازندهٔ نصب‌کننده روی اولین خط لاگ PyInstaller)
 
 ### Fixed

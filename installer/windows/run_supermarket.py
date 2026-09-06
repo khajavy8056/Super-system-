@@ -266,5 +266,39 @@ def main() -> None:
             window.terminate()
 
 
+def _fatal(exc: BaseException) -> None:
+    """Show a readable message (and where the log is) instead of PyInstaller's
+    raw 'Unhandled exception in script' dialog; the full traceback is logged."""
+    import traceback
+
+    base = data_dir()
+    log_file = base / "logs" / "supermarket.log"
+    try:
+        with open(log_file, "a", encoding="utf-8") as fh:
+            fh.write("\n=== FATAL on startup ===\n" + traceback.format_exc())
+    except Exception:
+        pass
+    msg = (
+        "برنامه هنگام شروع با خطا مواجه شد و اجرا نشد.\n\n"
+        f"{type(exc).__name__}: {str(exc)[:600]}\n\n"
+        f"گزارش کامل: {log_file}\n"
+        f"پایگاه داده: {base / 'supermarket.db'}\n\n"
+        "اگر این خطا پس از به‌روزرسانی رخ داده، از پایگاه داده نسخهٔ پشتیبان بگیرید و دوباره اجرا کنید؛ "
+        "در صورت تکرار، فایل گزارش را برای پشتیبانی ارسال کنید."
+    )
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, msg, "Supermarket System", 0x10 | 0x100000)  # MB_ICONERROR | MB_RTLREADING
+    except Exception:
+        print(msg, file=sys.stderr)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        _fatal(exc)
+        sys.exit(1)
