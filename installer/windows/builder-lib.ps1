@@ -165,42 +165,116 @@ function Invoke-Native {
     }
 }
 
-function Find-Python {
+function Test-PythonExe {
     <#
-      Locate a usable Python >= 3.11. Order matters: the py launcher is the
-      most reliable on Windows, then PATH, then the standard per-user install
-      location that our own bootstrap uses.
+      Return "<major>.<minor>.<micro>" when $Exe is a real CPython >= 3.11
+      that actually starts, otherwise $null. Never throws: a broken
+      candidate (e.g. the Microsoft Store "python.exe" stub in WindowsApps,
+      which exits 9009 and prints nothing) must not abort the whole search.
     #>
-    $candidates = @()
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($py) { $candidates += ,@($py.Source, @('-3', '-c', 'import sys;print(sys.executable)')) }
-    foreach ($n in 'python.exe', 'python3.exe') {
-        $c = Get-Command $n -ErrorAction SilentlyContinue
-        if ($c) { $candidates += ,@($c.Source, @('-c', 'import sys;print(sys.executable)')) }
-    }
-    $local = Join-Path $env:LOCALAPPDATA 'Programs\Python'
-    if (Test-Path $local) {
-        Get-ChildItem $local -Directory -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending | ForEach-Object {
-                $exe = Join-Path $_.FullName 'python.exe'
-                if (Test-Path $exe) { $candidates += ,@($exe, @('-c', 'import sys;print(sys.executable)')) }
+    param([string]$Exe)
+    if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $null }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = (& $Exe -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])' 2>&1)
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+        $ver = ($out | Where-Object { "$_" -match '^\d+\.\d+\.\d+$' } | Select-Object -First 1)
+        if (-not $ver) { return $null }
+        $ver = "$ver".Trim(); $parts = $ver.Split('.')
+        if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11) { return $ver }
+        Write-Log "Ignoring Python $ver at $Exe (need >= 3.11)"
+        return $null
+    } catch { return $null } finally { $ErrorActionPreference = $prevEap }
+}
+
+function Get-PythonCandidates {
+    <#
+      Every place a CPython can legitimately live on Windows, most reliable
+      first. v1.2.1 only looked at PATH + the per-user folder, so a Python
+      installed "for all users" (C:\Program Files\Python311) or one whose
+      PATH entry was not ticked at install time was reported as "not found"
+      even though it was there -- and then the auto-download could not make
+      it visible either. All of these are now checked:
+        1. explicit override  ($env:SUPERMARKET_PYTHON)
+        2. PEP 514 registry   (HKCU + HKLM, 64 and 32 bit views) - this is
+           how the official installer registers itself, PATH or not
+        3. the py launcher    (py -0p lists every registered interpreter)
+        4. PATH               (python.exe / python3.exe)
+        5. well-known folders (%LOCALAPPDATA%\Programs\Python, Program Files,
+           C:\PythonXY, and the launcher's own %LOCALAPPDATA%\Programs\Python\Launcher)
+    #>
+    $list = New-Object System.Collections.Generic.List[string]
+    $add = { param($p) if ($p) { $p = "$p".Trim().Trim('"'); if ($p -and -not $list.Contains($p)) { $list.Add($p) } } }
+
+    if ($env:SUPERMARKET_PYTHON) { & $add $env:SUPERMARKET_PYTHON }
+
+    foreach ($root in @('HKCU:\Software\Python\PythonCore',
+                        'HKLM:\Software\Python\PythonCore',
+                        'HKLM:\Software\WOW6432Node\Python\PythonCore')) {
+        if (Test-Path $root) {
+            Get-ChildItem $root -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object {
+                $ip = Join-Path $_.PSPath 'InstallPath'
+                if (Test-Path $ip) {
+                    $props = Get-ItemProperty $ip -ErrorAction SilentlyContinue
+                    if ($props) {
+                        if ($props.PSObject.Properties['ExecutablePath']) { & $add $props.ExecutablePath }
+                        if ($props.PSObject.Properties['(default)'])      { & $add (Join-Path $props.'(default)' 'python.exe') }
+                    }
+                }
             }
+        }
     }
 
-    foreach ($cand in $candidates) {
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if (-not $py) {
+        foreach ($lp in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
+                          (Join-Path $env:WINDIR 'py.exe'))) {
+            if (Test-Path $lp) { $py = @{ Source = $lp }; break }
+        }
+    }
+    if ($py) {
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
         try {
-            $exe = & $cand[0] @($cand[1]) 2>$null
-            if ($LASTEXITCODE -ne 0 -or -not $exe) { continue }
-            $exe = ($exe | Select-Object -First 1).ToString().Trim()
-            $ver = & $exe -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>$null
-            if ($LASTEXITCODE -ne 0) { continue }
-            $parts = $ver.Trim().Split('.')
-            if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11) {
-                Write-Log "Found Python $ver at $exe"
-                return $exe
+            (& $py.Source -0p 2>&1) | ForEach-Object {
+                $m = [regex]::Match("$_", '([A-Za-z]:\\[^\r\n]*python\.exe)', 'IgnoreCase')
+                if ($m.Success) { & $add $m.Groups[1].Value }
             }
-            Write-Log "Ignoring Python $ver at $exe (need >= 3.11)"
-        } catch { continue }
+            $one = (& $py.Source -3 -c 'import sys;print(sys.executable)' 2>&1 | Select-Object -First 1)
+            if ($LASTEXITCODE -eq 0 -and "$one" -match 'python\.exe$') { & $add "$one" }
+        } catch {} finally { $ErrorActionPreference = $prevEap }
+    }
+
+    foreach ($n in 'python.exe', 'python3.exe') {
+        Get-Command $n -All -ErrorAction SilentlyContinue | ForEach-Object {
+            # The Store stub lives in ...\WindowsApps\ and is not a real Python.
+            if ($_.Source -notmatch '\\WindowsApps\\') { & $add $_.Source }
+        }
+    }
+
+    $roots = @()
+    if ($env:LOCALAPPDATA)          { $roots += (Join-Path $env:LOCALAPPDATA 'Programs\Python') }
+    if ($env:ProgramFiles)          { $roots += $env:ProgramFiles }
+    if (${env:ProgramFiles(x86)})   { $roots += ${env:ProgramFiles(x86)} }
+    $roots += $env:SystemDrive + '\'
+    foreach ($r in $roots) {
+        if (-not (Test-Path $r)) { continue }
+        Get-ChildItem $r -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | ForEach-Object { & $add (Join-Path $_.FullName 'python.exe') }
+    }
+    return $list
+}
+
+function Find-Python {
+    param([scriptblock]$Report)
+    foreach ($exe in (Get-PythonCandidates)) {
+        $ver = Test-PythonExe $exe
+        if ($ver) {
+            Write-Log "Found Python $ver at $exe"
+            $Script:PythonVersionFound = $ver
+            return $exe
+        }
+        Write-Log "Candidate rejected: $exe"
     }
     return $null
 }
@@ -217,33 +291,56 @@ function Install-Python {
     $url = "https://www.python.org/ftp/python/$pyVer/python-$pyVer-$arch.exe"
     $dst = Join-Path $WorkDir "python-$pyVer-$arch.exe"
 
-    & $Report "دانلود پایتون $pyVer ..."
-    Write-Log "Downloading $url"
-    try {
-        # TLS 1.2 is not the default on stock Windows PowerShell 5.1 and
-        # python.org refuses anything older.
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $ProgressPreference = 'SilentlyContinue'   # the CLI bar is very slow
-        Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing
-    } catch {
-        throw "دانلود پایتون ناموفق بود. اتصال اینترنت را بررسی کنید.`nجزئیات: $_"
+    # Re-use a previous download (a failed run must not download twice).
+    if ((Test-Path $dst) -and (Get-Item $dst).Length -gt 20MB) {
+        & $Report "فایل نصب پایتون از اجرای قبلی موجود است؛ دانلود مجدد انجام نمی‌شود."
+    } else {
+        & $Report "دانلود پایتون $pyVer ..."
+        Write-Log "Downloading $url"
+        try {
+            # TLS 1.2 is not the default on stock Windows PowerShell 5.1 and
+            # python.org refuses anything older.
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $ProgressPreference = 'SilentlyContinue'   # the CLI bar is very slow
+            Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing
+        } catch {
+            throw "دانلود پایتون ناموفق بود. اتصال اینترنت را بررسی کنید.`nجزئیات: $_"
+        }
     }
 
+    # Install into a FIXED, KNOWN directory. v1.2.1 relied on PATH being
+    # refreshed after a silent install, which does not happen when the same
+    # version was already present (the installer then runs a silent "modify"
+    # that changes nothing) -- the exact "installed but not found, please
+    # restart" dead end users hit. With TargetDir we know where python.exe is
+    # and verify it directly instead of hoping PATH changed.
+    $target = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311'
     & $Report 'نصب پایتون (بدون نیاز به دسترسی مدیر) ...'
-    # InstallAllUsers=0 keeps this a per-user install => no UAC prompt.
-    Invoke-Native -FilePath $dst -Report $Report -Arguments @(
-        '/quiet', 'InstallAllUsers=0', 'PrependPath=1',
-        'Include_pip=1', 'Include_launcher=1', 'AssociateFiles=0'
-    )
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        $proc = Start-Process -FilePath $dst -Wait -PassThru -ArgumentList @(
+            '/quiet', 'InstallAllUsers=0', 'PrependPath=1', "TargetDir=$target",
+            'Include_pip=1', 'Include_launcher=1', 'AssociateFiles=0', 'Include_test=0'
+        )
+        Write-Log "python installer exit code: $($proc.ExitCode)"
+    } finally { $ErrorActionPreference = $prevEap }
 
-    # The installer updates PATH for FUTURE processes only; refresh ours so the
-    # very next step can find python without asking the user to reboot.
+    # Refresh PATH for THIS process (installer only updates future processes).
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-                [Environment]::GetEnvironmentVariable('Path', 'User')
+                [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path
 
+    $direct = Join-Path $target 'python.exe'
+    if (Test-PythonExe $direct) { return $direct }
     $exe = Find-Python
-    if (-not $exe) { throw 'پایتون نصب شد اما پیدا نشد. لطفاً یک‌بار ویندوز را restart کنید و دوباره تلاش کنید.' }
-    return $exe
+    if ($exe) { return $exe }
+
+    $log = Join-Path $env:TEMP 'Python 3.11.9 (64-bit)_*.log'
+    throw ("نصب‌کنندهٔ پایتون اجرا شد (کد خروج $($proc.ExitCode)) اما هیچ python.exe سالمی پیدا نشد.`n" +
+           "مسیر انتظار: $direct`n" +
+           "اگر پایتون از قبل در جای دیگری نصب است، مسیر کامل python.exe را در متغیر " +
+           "SUPERMARKET_PYTHON قرار دهید و دوباره اجرا کنید، مثلاً:`n" +
+           "  set SUPERMARKET_PYTHON=C:\Python311\python.exe`n" +
+           "گزارش نصب‌کنندهٔ پایتون: $log")
 }
 
 function Find-InnoSetup {
@@ -284,6 +381,7 @@ $Script:PythonExe  = $null
 $Script:VenvPy     = $null
 $Script:Iscc       = $null
 $Script:Portable   = $null
+$Script:PythonVersionFound = $null
 $Script:FinalSetup = $null
 
 $Steps = @(
@@ -317,10 +415,11 @@ $Steps = @(
 
     @{ Name = 'یافتن یا نصب پایتون ۳٫۱۱+'; Action = {
         param($Report)
+        & $Report 'جست‌وجوی پایتون نصب‌شده (رجیستری، py launcher، PATH، پوشه‌های استاندارد) ...'
         $exe = Find-Python
         if ($exe) {
-            $v = & $exe -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])'
-            & $Report "پایتون $($v.Trim()) پیدا شد."
+            & $Report "پایتون $($Script:PythonVersionFound) پیدا شد: $exe"
+            & $Report 'پایتون از قبل نصب است؛ چیزی دانلود نمی‌شود.'
         } else {
             & $Report 'پایتون مناسبی یافت نشد.'
             $exe = Install-Python -Report $Report

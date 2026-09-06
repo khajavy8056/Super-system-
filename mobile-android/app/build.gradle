@@ -1,7 +1,7 @@
 plugins { id("com.android.application") }
 
 // Version is read from the single source of truth: backend/app/__init__.py
-def appVersion = "1.2.1"
+def appVersion = "1.2.2"
 def initPy = new File(rootDir, "../backend/app/__init__.py")
 if (initPy.exists()) {
     def m = (initPy.text =~ /__version__\s*=\s*"([^"]+)"/)
