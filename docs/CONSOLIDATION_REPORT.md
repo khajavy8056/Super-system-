@@ -85,8 +85,13 @@ UPDATE_STARTED/COMPLETED/FAILED ثبت می‌شوند. Backup قبل از updat
 - کد: Branch `arena/01a076d3-super-system` push شد (تک‌کامیت تمیز روی main).
 - نسخه: `1.0.0` در همهٔ نقاط یکسان.
 - تست: ۲۵۰ موفق + اجرای DOM.
-- تگ/Release گیت‌هاب: به دلیل محدودیت توکن App برای ساخت Release و تگ از طریق
-  `gh`، **NOT VERIFIED** از این نشست؛ دستورهای لازم در پایین مستند است.
+- تگ: `v1.0.0` push شد. ✅
+- Release گیت‌هاب: **ایجاد شد** (بدون asset) —
+  `https://github.com/khajavy8056/Super-system-/releases/tag/v1.0.0`. ✅
+- آپلود asset از این سندباکس: **ناممکن** — `uploads.github.com` خارج از
+  allowlist خروج شبکه است (خطای EOF). سورس tarball + checksum به‌صورت محلی
+  ساخته و در `/tmp/relassets/` محاسبه شد؛ CI پس از فعال‌سازی، Setup.exe و
+  tarball لینوکس و checksumها را به همین Release پیوست می‌کند.
 
 ### فعال‌سازی نهایی توسط نگهدارنده (دارای مجوز)
 ```bash
