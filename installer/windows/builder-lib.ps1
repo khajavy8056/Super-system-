@@ -149,15 +149,34 @@ function Invoke-Native {
         Write-Log "RUN: `"$FilePath`" $($Arguments -join ' ')"
         if ($Report) { & $Report ("‌» " + (Split-Path -Leaf $FilePath) + ' ' + ($Arguments -join ' ')) }
 
-        $output = & $FilePath @Arguments 2>&1 | ForEach-Object {
-            $line = $_.ToString()
-            Write-Log "    $line"
-            $line
+        # ROOT CAUSE of the v1.2.3 "step 5/6 fails at '596 INFO: PyInstaller:
+        # 6.22.2'" report: this library runs under $ErrorActionPreference =
+        # 'Stop'. In Windows PowerShell 5.1, "2>&1" wraps every stderr line of
+        # a native program in a NativeCommandError, and under 'Stop' the FIRST
+        # such line becomes a terminating exception. PyInstaller writes ALL of
+        # its ordinary progress ("596 INFO: PyInstaller: 6.22.2", ...) to
+        # stderr, so the build was aborted on its very first log line even
+        # though nothing had failed. pip's warnings can trigger the same.
+        # The native call therefore runs with 'Continue'; the exit code below
+        # remains the only verdict.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = 0
+        try {
+            $output = @(& $FilePath @Arguments 2>&1 | ForEach-Object {
+                $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+                Write-Log "    $line"
+                $line
+            })
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
         }
-        if ($LASTEXITCODE -ne 0) {
+        if ($null -eq $code) { $code = 0 }
+        if ($code -ne 0) {
             $tail = ($output | Select-Object -Last 15) -join "`n"
             throw ("خطا در اجرای {0} (کد خروج {1}).`n--- آخرین خروجی ---`n{2}" -f `
-                   (Split-Path -Leaf $FilePath), $LASTEXITCODE, $tail)
+                   (Split-Path -Leaf $FilePath), $code, $tail)
         }
         return $output
     } finally {
