@@ -1,4 +1,4 @@
-<#
+﻿<#
 ================================================================================
  Supermarket System - graphical Setup builder
 ================================================================================
@@ -80,7 +80,7 @@ try {
     # Without WPF we cannot show anything graphical; tell the user plainly
     # instead of dying with a raw .NET stack trace.
     $msg = "این سیستم از رابط گرافیکی WPF پشتیبانی نمی‌کند.`n`n" +
-           "لطفاً نسخهٔ متنی را اجرا کنید:`n" +
+           "لطفاً نسخه متنی را اجرا کنید:`n" +
            "powershell -ExecutionPolicy Bypass -File builder-gui.ps1 -Silent`n`nجزئیات: $_"
     try { [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
           [System.Windows.Forms.MessageBox]::Show($msg) } catch { Write-Host $msg }
@@ -92,7 +92,7 @@ try {
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="سازندهٔ فایل نصب — سیستم مدیریت فروشگاه"
+        Title="سازنده فایل نصب - سیستم مدیریت فروشگاه"
         Width="760" Height="560" MinWidth="640" MinHeight="480"
         WindowStartupLocation="CenterScreen"
         FlowDirection="RightToLeft"
@@ -151,13 +151,13 @@ try {
                  FontSize="21" FontWeight="Bold" Foreground="White"/>
       <TextBlock x:Name="TxtSubtitle" FontSize="13" Foreground="#94A3B8" Margin="0,6,0,0"
                  TextWrapping="Wrap"
-                 Text="این ابزار همهٔ پیش‌نیازها را بررسی و در صورت نیاز نصب می‌کند، سپس یک فایل Setup.exe کامل و قابل توزیع می‌سازد."/>
+                 Text="این ابزار همه پیش‌نیازها را بررسی و در صورت نیاز نصب می‌کند، سپس یک فایل Setup.exe کامل و قابل توزیع می‌سازد."/>
     </StackPanel>
 
     <Border Grid.Row="1" Background="#1E293B" CornerRadius="10" Padding="16,13" Margin="0,18,0,0">
       <StackPanel>
-        <TextBlock x:Name="TxtStep" Text="آمادهٔ شروع" FontSize="15" FontWeight="SemiBold"/>
-        <TextBlock x:Name="TxtDetail" Text="برای شروع، دکمهٔ «شروع ساخت» را بزنید."
+        <TextBlock x:Name="TxtStep" Text="آماده شروع" FontSize="15" FontWeight="SemiBold"/>
+        <TextBlock x:Name="TxtDetail" Text="برای شروع، دکمه «شروع ساخت» را بزنید."
                    FontSize="12" Foreground="#94A3B8" Margin="0,5,0,0" TextWrapping="Wrap"/>
       </StackPanel>
     </Border>
@@ -185,7 +185,7 @@ try {
 
     <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,16,0,0">
       <Button x:Name="BtnStart" Content="شروع ساخت"/>
-      <Button x:Name="BtnFolder" Content="بازکردن پوشهٔ خروجی" Margin="10,0,0,0"
+      <Button x:Name="BtnFolder" Content="بازکردن پوشه خروجی" Margin="10,0,0,0"
               Background="#334155" IsEnabled="False"/>
       <Button x:Name="BtnLog" Content="نمایش گزارش" Margin="10,0,0,0" Background="#334155"/>
       <Button x:Name="BtnClose" Content="بستن" Margin="10,0,0,0" Background="#334155"/>
@@ -279,13 +279,13 @@ $BtnStart.Add_Click({
             foreach ($s in $Steps) {
                 $i++
                 $base = [double](($i - 1) * 100 / $total)
-                & $SetUiFn -Step ("مرحلهٔ $i از $total — " + $s.Name) -Percent $base -LogLine ("== " + $s.Name)
+                & $SetUiFn -Step ("مرحله $i از $total - " + $s.Name) -Percent $base -LogLine ("== " + $s.Name)
                 $report = { param($m) & $SetUiFn -Detail $m -LogLine ("   " + $m) }.GetNewClosure()
                 & $s.Action $report
                 & $SetUiFn -Percent ([double]($i * 100 / $total))
             }
             & $SetUiFn -Step '✅ ساخت با موفقیت به پایان رسید' `
-                       -Detail "فایل نصب در پوشهٔ installer\output آمادهٔ توزیع است." `
+                       -Detail "فایل نصب در پوشه installer\output آماده توزیع است." `
                        -Percent 100 -LogLine '== DONE'
             return @{ ok = $true }
         } catch {

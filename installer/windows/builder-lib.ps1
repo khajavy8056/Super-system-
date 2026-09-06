@@ -1,4 +1,4 @@
-<#
+﻿<#
 ================================================================================
  builder-lib.ps1 - ONE shared build engine for the Supermarket System installer.
 ================================================================================
@@ -210,7 +210,7 @@ function Install-Python {
     if (-not $Script:AllowDownloads) {
         throw ("پایتون ۳٫۱۱ یا جدیدتر روی این سیستم پیدا نشد.`n" +
                "آن را از https://www.python.org/downloads/ نصب کنید و در مراحل نصب " +
-               "گزینهٔ «Add python.exe to PATH» را بزنید، سپس دوباره تلاش کنید.")
+               "گزینه «Add python.exe to PATH» را بزنید، سپس دوباره تلاش کنید.")
     }
     $arch = if ([Environment]::Is64BitOperatingSystem) { 'amd64' } else { 'win32' }
     $pyVer = '3.11.9'
@@ -291,7 +291,7 @@ $Steps = @(
         param($Report)
         & $Report "ویندوز: $([Environment]::OSVersion.VersionString)"
         & $Report ("معماری: " + $(if ([Environment]::Is64BitOperatingSystem) { '64-bit' } else { '32-bit' }))
-        & $Report "پوشهٔ پروژه: $RepoRoot"
+        & $Report "پوشه پروژه: $RepoRoot"
 
         # Full repository preflight. The #1 cause of "compiler errors / exit
         # code 1" was building from a partial copy of the project, so every
@@ -308,7 +308,7 @@ $Steps = @(
             if (-not (Test-Path (Join-Path $RepoRoot $f))) { $missing += $f }
         }
         if ($missing.Count -gt 0) {
-            throw ("پوشهٔ پروژه ناقص است. این فایل‌ها پیدا نشدند:`n  " +
+            throw ("پوشه پروژه ناقص است. این فایل‌ها پیدا نشدند:`n  " +
                    ($missing -join "`n  ") +
                    "`n`nکل مخزن را دانلود کنید و BUILD-SETUP.bat را داخل installer\windows\ نگه دارید.")
         }
@@ -349,7 +349,7 @@ $Steps = @(
             '-m', 'pip', 'install', '--disable-pip-version-check',
             '-r', (Join-Path $RepoRoot 'backend\requirements.txt'), 'pyinstaller'
         )
-        & $Report 'همهٔ وابستگی‌ها نصب شدند.'
+        & $Report 'همه وابستگی‌ها نصب شدند.'
     }}
 
     @{ Name = 'یافتن یا نصب Inno Setup'; Action = {
@@ -389,7 +389,7 @@ $Steps = @(
         if ($mb -lt 15) {
             throw ("فایل اجرایی تنها $mb مگابایت است؛ به‌نظر می‌رسد مفسر پایتون " +
                    "و وابستگی‌ها داخل آن جاسازی نشده‌اند. فایل نصب روی سیستمی " +
-                   "که پایتون ندارد کار نخواهد کرد. مرحلهٔ نصب وابستگی‌ها را بررسی کنید.")
+                   "که پایتون ندارد کار نخواهد کرد. مرحله نصب وابستگی‌ها را بررسی کنید.")
         }
         & $Report "فایل اجرایی خودکفا ساخته شد ($mb مگابایت)."
 
@@ -398,7 +398,7 @@ $Steps = @(
         $portable = Join-Path $OutputDir "SupermarketSystem-$Version-portable.exe"
         Copy-Item $exe $portable -Force
         $Script:Portable = $portable
-        & $Report "نسخهٔ قابل‌حمل (بدون نیاز به نصب): $portable"
+        & $Report "نسخه قابل‌حمل (بدون نیاز به نصب): $portable"
     }}
 
     @{ Name = 'ساخت فایل نصب نهایی (Setup.exe)'; Action = {
@@ -406,11 +406,11 @@ $Steps = @(
         if (-not $Script:Iscc) {
             if ($Script:RequireSetup) {
                 throw ("Inno Setup 6 روی این سیستم نصب نیست و دانلود خودکار غیرفعال است.`n" +
-                       "نسخهٔ قابل‌حمل ساخته شد و به‌تنهایی کار می‌کند:`n  $Script:Portable`n" +
+                       "نسخه قابل‌حمل ساخته شد و به‌تنهایی کار می‌کند:`n  $Script:Portable`n" +
                        "برای ساخت Setup.exe کلاسیک، Inno Setup 6 را از " +
                        "https://jrsoftware.org/isdl.php نصب کنید و دوباره اجرا کنید.")
             }
-            & $Report 'Inno Setup نصب نیست؛ فقط نسخهٔ قابل‌حمل ساخته شد (خطا نیست).'
+            & $Report 'Inno Setup نصب نیست؛ فقط نسخه قابل‌حمل ساخته شد (خطا نیست).'
             return
         }
         & $Report 'اجرای Inno Setup ...'
@@ -425,7 +425,7 @@ $Steps = @(
         if ($mb -lt 10) {
             throw "فایل نصب تنها $mb مگابایت است؛ احتمالاً فایل اجرایی داخل آن قرار نگرفته."
         }
-        & $Report "فایل نصب آمادهٔ توزیع است ($mb مگابایت)."
+        & $Report "فایل نصب آماده توزیع است ($mb مگابایت)."
         & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
         & $Report "مسیر: $setup"
         $Script:FinalSetup = $setup

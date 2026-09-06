@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 #  Command-line build of the Windows installer for Supermarket System.
 #
 #    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1

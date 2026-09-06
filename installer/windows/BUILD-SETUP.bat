@@ -38,6 +38,21 @@ if not exist "%HERE%build.ps1" (
   exit /b 1
 )
 
+REM --- Syntax self-check (a real fix for the 1.2.0 "Missing closing '}'" report) ----
+REM The scripts contain Persian text; without a UTF-8 BOM the legacy ANSI parser
+REM read some bytes as quote marks and reported bogus "missing }" errors. The
+REM files now carry a BOM, and this pre-parse proves they load on THIS machine
+REM before anything is built.
+"%PS%" -NoProfile -ExecutionPolicy Bypass -Command "$e=$null; $t=$null; foreach($f in @('%HERE%builder-lib.ps1','%HERE%build.ps1','%HERE%builder-gui.ps1')){ [void][System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$t,[ref]$e); if($e){ Write-Host ('[ERROR] PowerShell cannot parse ' + $f); $e | ForEach-Object { Write-Host ('   ' + $_.Extent.StartLineNumber + ': ' + $_.Message) }; exit 3 } }; exit 0"
+if errorlevel 3 (
+  echo.
+  echo  The build scripts could not be parsed. Re-download the repository ZIP;
+  echo  do not open/save the .ps1 files with an editor that strips the UTF-8 BOM.
+  echo.
+  pause
+  exit /b 3
+)
+
 "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%HERE%build.ps1" %*
 set "RC=%ERRORLEVEL%"
 

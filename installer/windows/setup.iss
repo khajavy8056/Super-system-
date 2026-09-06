@@ -1,4 +1,4 @@
-; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
+﻿; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
 ; Prerequisite: build the app first with build.ps1 (creates dist\SupermarketSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.2.1"
 #endif
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
@@ -58,6 +58,9 @@ WizardResizable=yes
 ; aborts compilation ("Unrecognised identifier"). x64 works on every 6.x.
 ArchitecturesInstallIn64BitMode=x64
 CloseApplications=yes
+; Refuse to run on anything older than Windows 7 SP1 with a clear message
+; rather than failing with an obscure Windows error mid-install.
+MinVersion=6.1sp1
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -68,10 +71,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1
-
-; Refuse to run on anything older than Windows 7 SP1 with a clear message
-; rather than failing with an obscure Windows error mid-install.
-MinVersion=6.1sp1
 
 [Files]
 ; Fail early and legibly if the app was never built.
