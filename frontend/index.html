@@ -6,14 +6,16 @@
   <title>سیستم مدیریت سوپرمارکت</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="icon" type="image/svg+xml" href="/icons/logo.svg" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <meta name="theme-color" content="#0f1420" />
 </head>
 <body>
   <!-- Login -->
   <div id="login-view" class="login-wrap hidden">
     <form id="login-form" class="card login-card">
-      <h1>🛒 سیستم مدیریت سوپرمارکت</h1>
+      <img class="login-logo" src="/icons/logo.svg" alt="لوگوی سامانه" />
+      <h1>سیستم مدیریت سوپرمارکت</h1>
       <p class="muted">مدیریت کالا · انبارداری هوشمند · صندوق فروشگاهی</p>
       <label>نام کاربری</label>
       <input id="login-username" autocomplete="username" autofocus />
@@ -27,7 +29,9 @@
   <!-- App -->
   <div id="app-view" class="app hidden">
     <aside class="sidebar">
-      <div class="brand">🛒 <span>سوپرمارکت</span></div>
+      <div class="brand">
+        <img class="brand-logo" src="/icons/logo.svg" alt="لوگو" />
+        <span>سوپرمارکت</span></div>
       <nav id="nav"></nav>
       <div class="sidebar-footer">
         <div id="whoami" class="muted"></div>
@@ -40,6 +44,19 @@
         <div id="topbar-actions"></div>
       </header>
       <section id="view" class="view"></section>
+      <!-- Status bar (§21): network, date/time, and live system state -->
+      <footer id="statusbar" class="statusbar">
+        <span class="sb-item"><i id="sb-net-dot" class="sb-dot"></i><span id="sb-net">—</span></span>
+        <span class="sb-sep"></span>
+        <span class="sb-item" id="sb-date">—</span>
+        <span class="sb-item sb-clock" id="sb-clock">—:—</span>
+        <span class="sb-grow"></span>
+        <span class="sb-item" id="sb-store"></span>
+        <span class="sb-item" id="sb-user"></span>
+        <span class="sb-item" id="sb-db" title="وضعیت پایگاه‌داده">DB</span>
+        <span class="sb-item" id="sb-printer" title="وضعیت چاپگر">🖨</span>
+        <button class="sb-theme" id="sb-theme" title="تغییر پوسته">◐</button>
+      </footer>
     </main>
   </div>
 

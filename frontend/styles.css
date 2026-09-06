@@ -1,4 +1,4 @@
-:root {
+:root, [data-theme="dark"] {
   --bg: #0f1420;
   --bg2: #171e2e;
   --card: #1c2437;
@@ -11,7 +11,28 @@
   --red: #ef4444;
   --amber: #f59e0b;
   --orange: #f97316;
+  --shadow: 0 8px 24px rgba(0,0,0,.35);
 }
+
+/* Light theme (§23). Same variable contract, so no component needs to know
+   which theme is active — switching is a single attribute on <html>. */
+[data-theme="light"] {
+  --bg: #f4f6fb;
+  --bg2: #ffffff;
+  --card: #ffffff;
+  --border: #d8deea;
+  --text: #161d2b;
+  --muted: #5d6982;
+  --primary: #2563eb;
+  --primary-h: #1d4ed8;
+  --green: #15803d;
+  --red: #dc2626;
+  --amber: #b45309;
+  --orange: #c2410c;
+  --shadow: 0 6px 18px rgba(16,26,48,.10);
+}
+html { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -159,3 +180,146 @@ body.kiosk .view { padding: 10px; height: 100vh; }
   .pos-main { grid-template-columns: 1fr; }
   .pos-actions { grid-template-columns: 1fr; }
 }
+
+/* ---------- Phase-7: search suggestions, diagnostics, marketing ---------- */
+.pos-suggest {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  margin-top: 6px; max-height: 300px; overflow-y: auto;
+}
+.pos-suggest .sug {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: right;
+  padding: 10px 12px; background: transparent; border: 0; border-bottom: 1px solid var(--border);
+  color: var(--text); cursor: pointer; font-size: 13px;
+}
+.pos-suggest .sug:last-child { border-bottom: 0; }
+.pos-suggest .sug:hover, .pos-suggest .sug:focus { background: var(--card); outline: none; }
+.sug-name { font-weight: 600; }
+.sug-meta { font-size: 11px; color: var(--muted); }
+.sug-meta em { color: var(--amber); font-style: normal; }
+.sug-empty { padding: 12px; text-align: center; }
+.unit-tag { font-size: 10px; color: var(--muted); margin-inline-start: 4px; }
+
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.card-head h3 { margin: 0; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.toolbar input, .toolbar select { margin: 0; }
+.table-wrap { overflow-x: auto; }
+.empty { text-align: center; padding: 18px; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0 10px 0 0; }
+
+/* diagnostics */
+.diag-summary { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+.diag-row { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg2); }
+.diag-head { display: flex; align-items: center; gap: 10px; }
+.diag-detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.diag-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.diag-steps .step { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--card); border: 1px solid var(--border); }
+.diag-steps .step.ok { color: var(--green); }
+.diag-steps .step.bad { color: var(--red); }
+code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+/* ===========================================================================
+ * Status bar (§21) — always-visible system state at the bottom of the shell.
+ * ========================================================================= */
+.main { display: flex; flex-direction: column; min-height: 0; }
+.view { flex: 1; min-height: 0; }
+.statusbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-top: 1px solid var(--border);
+  background: var(--bg2); color: var(--muted);
+  font-size: 12px; font-variant-numeric: tabular-nums; flex: 0 0 auto;
+}
+.sb-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sb-grow { flex: 1; }
+.sb-sep { width: 1px; height: 14px; background: var(--border); }
+.sb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.sb-dot.on { background: var(--green); }
+.sb-clock { font-weight: 700; color: var(--text); }
+.sb-item.warn { color: var(--amber); }
+.sb-item.bad { color: var(--red); }
+.sb-item.ok { color: var(--green); }
+.sb-theme {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; width: 26px; height: 22px; cursor: pointer; font-size: 13px;
+}
+.sb-theme:hover { color: var(--text); border-color: var(--primary); }
+
+/* ledger + profile helpers */
+.ledger-amount.debit { color: var(--red); font-weight: 700; }
+.ledger-amount.credit { color: var(--green); font-weight: 700; }
+.balance-hero {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--card); margin-bottom: 12px;
+}
+.balance-hero b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.balance-hero.debt b { color: var(--red); }
+.balance-hero.clear b { color: var(--green); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.form-grid .full { grid-column: 1 / -1; }
+@media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } }
+.update-step {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
+  background: var(--card);
+}
+.update-step .st { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+.st.PASS { background: rgba(34,197,94,.15); color: var(--green); }
+.st.FAIL { background: rgba(239,68,68,.15); color: var(--red); }
+.st.SKIPPED { background: rgba(138,148,173,.15); color: var(--muted); }
+
+/* SVG icons in the sidebar (replaces emoji: font-independent, themable) */
+.ic { display: inline-block; flex: 0 0 auto; vertical-align: -0.2em; }
+.nav-item { display: flex; align-items: center; gap: 10px; text-align: start; }
+.nav-item .ic { color: var(--muted); }
+.nav-item.active .ic, .nav-item:hover .ic { color: inherit; }
+.brand { display: flex; align-items: center; gap: 8px; }
+
+/* Product image preview + list thumbnails (§21: always a locally stored file) */
+.img-preview { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.img-preview img { width: 96px; height: 96px; object-fit: contain;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+.img-meta { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.thumb { width: 40px; height: 40px; object-fit: contain;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+.thumb-empty { display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 12px; }
+#p-resolve-status.ok { color: var(--green); }
+#p-resolve-status.err { color: var(--red); }
+
+/* Product-detail modal: the batch table carries ten price/date columns, so it
+   needs far more room than a confirmation dialog. Capped at the viewport so it
+   stays usable on a POS monitor and tablet. */
+/* Raise the 560px cap that .modal imposes on its parent container. */
+.modal:has(> .modal-wide) { max-width: min(1180px, 94vw); }
+.modal-wide { width: 100%; }
+.modal-wide table { width: 100%; font-size: 13px; }
+.modal-wide th, .modal-wide td { white-space: nowrap; padding: 7px 9px; }
+.modal-wide h4 { margin: 14px 0 6px; font-size: 14px; opacity: .85; }
+
+/* ---- v1.0.0 brand (§49) --------------------------------------------------- */
+.login-logo { width: 64px; height: 64px; display: block; margin: 0 auto 12px;
+  filter: drop-shadow(0 4px 14px rgba(14,165,233,.35)); }
+.brand-logo { width: 26px; height: 26px; border-radius: 7px; }
+.about-head { display: flex; align-items: center; gap: 14px; }
+.about-logo { width: 56px; height: 56px; border-radius: 12px; flex: none; }
+
+/* ---- v1.0.0 dashboard §23: receivables / SMS / system status --------------- */
+.dash-block { margin-top: 14px; }
+.dash-block h3 { margin: 0 0 10px; font-size: 14px; opacity: .9; }
+.mini-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
+.mini-stat b { font-size: 16px; }
+.mini-stat span { color: var(--muted); font-size: 12px; }
+.sys-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 600; }
+.sys-pill.ok { background: rgba(34,197,94,.14); color: var(--green); }
+.sys-pill.warn { background: rgba(245,158,11,.16); color: var(--yellow); }
+.hw-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+
+/* ---- v1.0.0 settings category tabs (§36) ----------------------------------- */
+.set-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.set-tab { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border);
+  background: transparent; color: var(--text); cursor: pointer; font-size: 13px; }
+.set-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.set-panel .kv-row td { padding: 8px 6px; }

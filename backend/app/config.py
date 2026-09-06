@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from . import __version__
+
 _BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
 
 
@@ -17,7 +19,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     APP_NAME: str = "Supermarket System"
-    APP_VERSION: str = "0.1.0"
+    #: Single source of truth is ``app.__version__``; keeping a second literal
+    #: here is how /health ends up advertising a stale version.
+    APP_VERSION: str = __version__
     ENVIRONMENT: str = "development"  # development | production
 
     # Database — SQLite is the default (ACID, single-file, offline-first).
@@ -38,6 +42,13 @@ class Settings(BaseSettings):
 
     # External resolvers — optional. Enabled only when a source is configured.
     EXTERNAL_TIMEOUT_SECONDS: float = 8.0
+
+    # Server binding (used by the launcher and reported by diagnostics/LAN check)
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    # Local media storage for downloaded product images (§21 — never hotlink)
+    MEDIA_DIR: str = str(_BASE_DIR / "data" / "media")
 
     @property
     def cors_origin_list(self) -> list[str]:

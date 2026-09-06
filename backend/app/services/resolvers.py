@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 from sqlalchemy import select
@@ -232,86 +233,196 @@ _IMAGE_SIGNATURES = {
     b"RIFF": "WEBP",  # + bytes 8..11 == WEBP
 }
 MIN_IMAGE_BYTES = 1024
+MIN_IMAGE_EDGE = 64  # px — reject thumbnails/broken placeholders (§46)
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-def validate_image_url(url: str, *, client: httpx.Client | None = None) -> dict:
-    """Download (bounded) and validate format/accessibility/corruption-signature.
-
-    Honest scope: this validates accessibility, size bounds, content-type and
-    magic-byte signature. Pixel-resolution checks need Pillow and are planned
-    for the hardware/UI phase — documented, not claimed.
-    """
+def _fetch_image(url: str, *, client: httpx.Client | None = None) -> tuple[dict, bytes | None]:
+    """Download (bounded) + validate. Returns (report, bytes)."""
     own = client is None
     c = client or httpx.Client(timeout=settings.EXTERNAL_TIMEOUT_SECONDS, follow_redirects=True)
     try:
         with c.stream("GET", url, timeout=settings.EXTERNAL_TIMEOUT_SECONDS) as resp:
             if resp.status_code != 200:
-                return {"ok": False, "reason": f"HTTP_{resp.status_code}"}
+                return {"ok": False, "reason": f"HTTP_{resp.status_code}"}, None
             ctype = resp.headers.get("content-type", "")
             length = int(resp.headers.get("content-length") or 0)
             if length and (length < MIN_IMAGE_BYTES or length > MAX_IMAGE_BYTES):
-                return {"ok": False, "reason": "SIZE_OUT_OF_BOUNDS"}
+                return {"ok": False, "reason": "SIZE_OUT_OF_BOUNDS"}, None
             buf = b""
             for chunk in resp.iter_bytes(64 * 1024):
                 buf += chunk
                 if len(buf) > MAX_IMAGE_BYTES:
-                    return {"ok": False, "reason": "TOO_LARGE"}
+                    return {"ok": False, "reason": "TOO_LARGE"}, None
             if len(buf) < MIN_IMAGE_BYTES:
-                return {"ok": False, "reason": "TOO_SMALL"}
-            sig = buf[:8]
-            fmt = None
-            if sig.startswith(b"\xff\xd8\xff"):
-                fmt = "JPEG"
-            elif sig.startswith(b"\x89PNG\r\n\x1a\n"):
-                fmt = "PNG"
-            elif buf[:4] == b"RIFF" and buf[8:12] == b"WEBP":
-                fmt = "WEBP"
-            elif sig.startswith(b"GIF8"):
-                fmt = "GIF"
+                return {"ok": False, "reason": "TOO_SMALL"}, None
+            fmt = _sniff_format(buf)
             if fmt is None:
-                return {"ok": False, "reason": "NOT_AN_IMAGE"}
+                return {"ok": False, "reason": "NOT_AN_IMAGE"}, None
             if ctype and "image" not in ctype and "octet-stream" not in ctype:
-                return {"ok": False, "reason": "BAD_CONTENT_TYPE"}
-            return {"ok": True, "format": fmt, "bytes": len(buf)}
+                return {"ok": False, "reason": "BAD_CONTENT_TYPE"}, None
+            dims = _image_dimensions(buf, fmt)
+            report = {"ok": True, "format": fmt, "bytes": len(buf)}
+            if dims:
+                report["width"], report["height"] = dims
+                if dims[0] < MIN_IMAGE_EDGE or dims[1] < MIN_IMAGE_EDGE:
+                    report["ok"] = False
+                    report["reason"] = "LOW_RESOLUTION"
+                    return report, None
+            return report, buf
     except httpx.TimeoutException:
-        return {"ok": False, "reason": "TIMEOUT"}
+        return {"ok": False, "reason": "TIMEOUT"}, None
     except httpx.HTTPError as exc:
-        return {"ok": False, "reason": f"HTTP_ERROR:{type(exc).__name__}"}
+        return {"ok": False, "reason": f"HTTP_ERROR:{type(exc).__name__}"}, None
     finally:
         if own:
             c.close()
 
 
+def _sniff_format(buf: bytes) -> str | None:
+    sig = buf[:12]
+    if sig.startswith(b"\xff\xd8\xff"):
+        return "JPEG"
+    if sig.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "PNG"
+    if buf[:4] == b"RIFF" and buf[8:12] == b"WEBP":
+        return "WEBP"
+    if sig.startswith(b"GIF8"):
+        return "GIF"
+    return None
+
+
+def _image_dimensions(buf: bytes, fmt: str) -> tuple[int, int] | None:
+    """Pure-stdlib dimension reader (no Pillow dependency)."""
+    import struct
+
+    try:
+        if fmt == "PNG":
+            w, h = struct.unpack(">II", buf[16:24])
+            return int(w), int(h)
+        if fmt == "GIF":
+            w, h = struct.unpack("<HH", buf[6:10])
+            return int(w), int(h)
+        if fmt == "WEBP":
+            if buf[12:16] == b"VP8X":
+                w = int.from_bytes(buf[24:27], "little") + 1
+                h = int.from_bytes(buf[27:30], "little") + 1
+                return w, h
+            if buf[12:16] == b"VP8 ":
+                w = int.from_bytes(buf[26:28], "little") & 0x3FFF
+                h = int.from_bytes(buf[28:30], "little") & 0x3FFF
+                return w, h
+            return None
+        if fmt == "JPEG":
+            i = 2
+            while i < len(buf) - 9:
+                if buf[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = buf[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                              0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    h, w = struct.unpack(">HH", buf[i + 5:i + 9])
+                    return int(w), int(h)
+                seg_len = int.from_bytes(buf[i + 2:i + 4], "big")
+                if seg_len <= 0:
+                    return None
+                i += 2 + seg_len
+    except (struct.error, IndexError, ValueError):
+        return None
+    return None
+
+
+def store_image_locally(barcode: str, buf: bytes, fmt: str) -> str:
+    """Persist the image bytes under MEDIA_DIR and return the RELATIVE path.
+
+    Images are always stored locally (§21) — the master record never depends on
+    a third-party URL staying alive.
+    """
+    import hashlib
+
+    ext = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp", "GIF": "gif"}[fmt]
+    digest = hashlib.sha256(buf).hexdigest()[:16]
+    safe_barcode = "".join(ch for ch in barcode if ch.isalnum())[:32] or "unknown"
+    rel = f"products/{safe_barcode}-{digest}.{ext}"
+    dest = Path(settings.MEDIA_DIR) / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        dest.write_bytes(buf)
+    return rel
+
+
+def validate_image_url(url: str, *, client: httpx.Client | None = None) -> dict:
+    """Backward-compatible validation-only entry point (no bytes returned)."""
+    report, _ = _fetch_image(url, client=client)
+    return report
+
+
 def resolve_image(db: Session, barcode: str, product_id: int | None = None,
                   *, client: httpx.Client | None = None) -> dict:
-    """Collect image candidates from PRODUCT/IMAGE sources, validate, keep best."""
+    """Collect image candidates, validate, DOWNLOAD and store the best locally.
+
+    §21: an external URL is never used as the product image. The bytes are
+    fetched, format/size/resolution validated, written under MEDIA_DIR and only
+    the local relative path becomes the product reference. A missing image never
+    blocks product creation — the caller just gets ``best=None``.
+    """
     candidates: list[dict] = []
     sources = _active_sources(db, "IMAGE") + _active_sources(db, "PRODUCT")
     seen_urls: set[str] = set()
+    best_asset: ImageAsset | None = None
+    best_pixels = -1
+
     for source in sources:
         provider = _instantiate(source)
         try:
             lookup = provider.lookup(barcode, client=client)
-        except ProviderError:
+        except ProviderError as exc:
+            candidates.append({"url": None, "source": source.code,
+                               "validation": {"ok": False, "reason": exc.kind}})
             continue
         url = lookup.image_url
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            v = validate_image_url(url, client=client)
-            entry = {"url": url, "source": source.code, "validation": v}
-            candidates.append(entry)
-            if v.get("ok"):
-                db.add(ImageAsset(
-                    product_id=product_id, barcode=barcode, source_id=source.id,
-                    url=url, format=v.get("format"), confidence="MEDIUM",
-                    is_primary=False, status="VALIDATED", created_at=datetime.utcnow(),
-                ))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        report, buf = _fetch_image(url, client=client)
+        entry = {"url": url, "source": source.code, "validation": report}
+        candidates.append(entry)
+        if not (report.get("ok") and buf):
+            continue
+        try:
+            rel_path = store_image_locally(barcode, buf, report["format"])
+        except (OSError, KeyError) as exc:
+            entry["validation"] = {"ok": False, "reason": f"STORE_FAILED:{exc}"}
+            continue
+        entry["local_path"] = rel_path
+        asset = ImageAsset(
+            product_id=product_id, barcode=barcode, source_id=source.id,
+            url=url, local_path=rel_path, format=report.get("format"),
+            width=report.get("width"), height=report.get("height"),
+            confidence="MEDIUM", is_primary=False, status="STORED",
+            created_at=datetime.utcnow(),
+        )
+        db.add(asset)
+        pixels = (report.get("width") or 0) * (report.get("height") or 0)
+        if pixels > best_pixels:
+            best_pixels, best_asset = pixels, asset
+
+    if best_asset is not None:
+        best_asset.is_primary = True
+        best_asset.confidence = "HIGH"
     db.flush()
+
     valid = [c for c in candidates if c["validation"].get("ok")]
-    best = valid[0] if valid else None
-    return {"candidates": candidates, "valid_count": len(valid),
-            "best": best["url"] if best else None}
+    return {
+        "candidates": candidates,
+        "valid_count": len(valid),
+        "best": best_asset.url if best_asset else None,
+        "best_local_path": best_asset.local_path if best_asset else None,
+        "stored": bool(best_asset),
+        "note": ("تصویر دانلود و به‌صورت محلی ذخیره شد" if best_asset
+                 else "تصویر معتبری یافت نشد — ثبت کالا متوقف نمی‌شود"),
+    }
 
 
 # --- Market price resolution (§15) ---------------------------------------------

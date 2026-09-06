@@ -81,9 +81,26 @@ def _sync_alembic() -> None:
 
     log = logging.getLogger("supermarket.db")
     try:
-        backend_dir = Path(__file__).resolve().parent.parent
-        cfg = AlembicConfig(str(backend_dir / "alembic.ini"))
+        # In a frozen build the source tree is gone; the migrations are
+        # bundled next to the executable instead. Check both layouts so an
+        # installed shop can still upgrade its schema on a later release.
+        import sys
+
+        roots = [Path(__file__).resolve().parent.parent]
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            roots = [exe_dir, exe_dir / "lib", Path(getattr(sys, "_MEIPASS", exe_dir))] + roots
+        for root in roots:
+            if (root / "alembic" / "env.py").exists():
+                backend_dir = root
+                break
+        else:
+            raise RuntimeError(
+                f"alembic tree not found (looked in: {[str(r) for r in roots]})")
+        ini = backend_dir / "alembic.ini"
+        cfg = AlembicConfig(str(ini) if ini.exists() else None)
         cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
         if not inspect(engine).has_table("alembic_version"):
             command.stamp(cfg, "head")
         else:

@@ -1,7 +1,7 @@
 {
-  "name": "سامانه سوپرمارکت — انبارگردانی موبایل",
-  "short_name": "انبارگردانی",
-  "description": "Supermarket Smart Inventory — mobile stocktaking with camera barcode scanning and offline queue",
+  "name": "سامانه سوپرمارکت — موبایل",
+  "short_name": "سوپرمارکت",
+  "description": "Supermarket Smart System — mobile POS, inventory, stocktaking with camera barcode scanning and offline queue",
   "start_url": "/mobile/",
   "scope": "/",
   "display": "standalone",

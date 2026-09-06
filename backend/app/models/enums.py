@@ -46,8 +46,21 @@ class InvoiceStatus(str, Enum):
 class PaymentMethod(str, Enum):
     CASH = "CASH"
     CARD = "CARD"
+    #: credit extended to a registered customer's account (§34), not cash in
+    ACCOUNT = "ACCOUNT"
     MIXED = "MIXED"
     OTHER = "OTHER"
+
+
+class LedgerEntryType(str, Enum):
+    """Customer account movements (§32). Sign is derived, never passed in."""
+
+    CREDIT_SALE = "CREDIT_SALE"
+    PAYMENT = "PAYMENT"
+    RETURN_REFUND = "RETURN_REFUND"
+    ADJUSTMENT_DEBIT = "ADJUSTMENT_DEBIT"
+    ADJUSTMENT_CREDIT = "ADJUSTMENT_CREDIT"
+    OPENING_BALANCE = "OPENING_BALANCE"
 
 
 class PrintStatus(str, Enum):

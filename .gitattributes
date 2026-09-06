@@ -1,0 +1,22 @@
+# Normalise text files, but PIN Windows-native line endings where they matter.
+#
+# A .bat or .ps1 checked out with bare LF endings can mis-parse on Windows
+# (labels, multi-line constructs, and `goto` targets are the usual casualties),
+# which would make the setup builder fail for reasons that look like nothing at
+# all. These files must always land as CRLF regardless of the cloning platform.
+* text=auto
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.iss  text eol=crlf
+
+# Shell scripts must stay LF or they will not run on Linux/macOS.
+*.sh   text eol=lf
+
+# Binary assets: never touch.
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.pdf  binary
+*.db   binary

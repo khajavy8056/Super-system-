@@ -45,3 +45,8 @@ installer/standalone/build/
 installer/windows/dist/
 installer/output/
 scripts/stublibs/
+
+# Frozen build output (published as a Release asset, not committed)
+installer/standalone/build/
+installer/windows/dist/
+installer/output/

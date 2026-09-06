@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models import ExternalSource, ProductResolverResult, User
 from ..security import get_current_user, require_permission
 from ..services import catalog, resolvers
+from ..services.audit import write_audit
 from ..services.barcode import validate as validate_barcode
 from ..services.catalog import CatalogError
 
@@ -188,7 +189,9 @@ class ApplyIn(BaseModel):
     model: str | None = None
     description: str | None = None
     image_url: str | None = None
-    min_stock_alert: int = 0
+    #: Optional on purpose. A sparse external source that omits this must not
+    #: reset an existing product's reorder threshold to zero (§31).
+    min_stock_alert: int | None = None
     review_ids: list[int] = Field(default_factory=list)
 
 
@@ -203,22 +206,36 @@ def apply_resolved(body: ApplyIn, db: Session = Depends(get_db),
     brand_id = _resolve_simple(db, "Brand", body.brand)
     category_id = _resolve_simple(db, "Category", body.category)
     unit_id = _resolve_simple(db, "Unit", body.unit)
-    try:
-        product = catalog.create_product(
-            db, barcode=body.barcode, name=body.name, user=user,
-            sku=body.sku, brand_id=brand_id, category_id=category_id, unit_id=unit_id,
-            model=body.model, description=body.description, image_url=body.image_url,
-            min_stock_alert=body.min_stock_alert,
+    # §31 — re-resolving a barcode we already stock must UPDATE that product,
+    # never create a second one and never fail. The barcode is the identity
+    # (§32), so an existing row is by definition the same product; refusing
+    # with 409 left the operator unable to enrich a sparse record.
+    existing = catalog.get_product_by_barcode(db, body.barcode)
+    created = existing is None
+    if existing is not None:
+        product = catalog.update_product(
+            db, existing, user=user, name=body.name, sku=body.sku,
+            brand_id=brand_id, category_id=category_id, unit_id=unit_id,
+            model=body.model, description=body.description,
+            image_url=body.image_url, min_stock_alert=body.min_stock_alert,
         )
-    except CatalogError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    else:
+        try:
+            product = catalog.create_product(
+                db, barcode=body.barcode, name=body.name, user=user,
+                sku=body.sku, brand_id=brand_id, category_id=category_id, unit_id=unit_id,
+                model=body.model, description=body.description, image_url=body.image_url,
+                min_stock_alert=body.min_stock_alert or 0,
+            )
+        except CatalogError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     for rid in body.review_ids:
         row = db.get(ProductResolverResult, rid)
         if row and row.barcode == body.barcode:
             row.status = "APPROVED"
             row.product_id = product.id
     db.commit()
-    return {"product": resolvers._product_dict(product)}
+    return {"product": resolvers._product_dict(product), "created": created}
 
 
 def _resolve_simple(db: Session, model_name: str, value: str | None) -> int | None:
@@ -232,3 +249,80 @@ def _resolve_simple(db: Session, model_name: str, value: str | None) -> int | No
         db.add(row)
         db.flush()
     return row.id
+
+
+# ---------------------------------------------------------------------------
+# One-shot scan-to-draft (§9-§11, §21)
+# ---------------------------------------------------------------------------
+class ScanDraftIn(BaseModel):
+    #: Also attempt image download. Off for a fast text-only lookup.
+    with_image: bool = True
+
+
+@router.post("/scan")
+def scan_to_draft(barcode: str, body: ScanDraftIn | None = None,
+                  db: Session = Depends(get_db),
+                  _: User = Depends(require_permission("products.view"))):
+    """Everything the 'add product by scanning' screen needs, in one call.
+
+    Returns a *draft* — never a saved product. External data always requires
+    human confirmation (§52), so the caller gets suggested field values, the
+    per-field source and confidence, and a locally-stored image path. The
+    operator reviews and presses save.
+
+    A failure to reach any source is reported, not hidden: the draft simply
+    comes back with whatever was found (possibly nothing) and ``need_manual``
+    set, so product creation is never blocked by a dead network (§40).
+    """
+    result = resolvers.resolve_barcode(db, barcode)
+
+    # §43 — every external catalogue hit is recorded with what it returned and
+    # which sources answered. Without this, "the scan found nothing" is
+    # indistinguishable from "the scan was never tried", and a provider that
+    # silently stopped working is invisible until someone complains.
+    write_audit(db, action="BARCODE_LOOKUP", user_id=None,
+                entity_type="Barcode", reference=barcode,
+                after={"origin": result.get("origin"),
+                       "sources_tried": [s.get("source") for s in (result.get("sources") or [])],
+                       "fields": list((result.get("merged") or {}).keys()),
+                       "need_manual": bool(result.get("need_manual"))})
+
+    if result.get("origin") == "invalid":
+        db.commit()
+        return {**result, "draft": None, "image": None}
+
+    # Already known locally / previously approved: hand back the real product.
+    if result.get("origin") in ("local", "cache"):
+        db.commit()
+        return {**result, "draft": None, "image": None,
+                "message": "این بارکد قبلاً در سامانه ثبت شده است"}
+
+    merged = result.get("merged") or {}
+    draft = {field: info.get("chosen") for field, info in merged.items()
+             if info.get("chosen")}
+
+    image = None
+    if (body is None or body.with_image) and draft is not None:
+        try:
+            image = resolvers.resolve_image(db, barcode)
+        except Exception as exc:  # never let image trouble block the draft
+            image = {"stored": False, "best_local_path": None,
+                     "note": f"دریافت تصویر ناموفق بود: {type(exc).__name__}"}
+
+    db.commit()
+
+    if image and image.get("best_local_path"):
+        draft["image_url"] = image["best_local_path"]
+
+    filled = [k for k in ("name", "brand", "category", "unit", "description")
+              if draft.get(k)]
+    return {
+        **result,
+        "draft": draft,
+        "image": image,
+        "filled_fields": filled,
+        "coverage": {
+            "fields_found": len(filled),
+            "image_found": bool(image and image.get("stored")),
+        },
+    }

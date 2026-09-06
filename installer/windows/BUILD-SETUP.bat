@@ -6,12 +6,17 @@ REM  Keeps the whole repository intact: this file must stay inside
 REM  installer\windows\ of the FULL repository (build.ps1 checks that for you).
 REM
 REM  What it does: runs build.ps1 which
-REM    1. verifies the repository is complete,
-REM    2. finds Python (or tells you exactly how to install it),
+REM    1. verifies the repository is complete (11 critical files),
+REM    2. finds Python 3.11+ (or tells you exactly how to install it),
 REM    3. builds dist\SupermarketSystem.exe with PyInstaller,
-REM    4. builds installer\output\SupermarketSystem-Setup-0.4.0.exe with Inno
-REM       Setup (if Inno Setup 6 is installed; otherwise the portable exe is
-REM       still produced and works on its own).
+REM    4. always publishes installer\output\SupermarketSystem-<ver>-portable.exe,
+REM    5. builds installer\output\SupermarketSystem-Setup-<ver>.exe with Inno
+REM       Setup 6 when it is installed.
+REM
+REM  This is the RECOMMENDED entry point. It is deliberately console-only: no
+REM  WPF dependency and no hidden window, so when something fails you can read
+REM  the reason on the screen instead of watching nothing happen. If you prefer
+REM  a progress bar, run BUILD-SETUP-GUI.bat in this same folder.
 REM
 REM  This file is ASCII-only on purpose (the legacy console code page cannot
 REM  render Persian). All Persian documentation: installer\windows\README.md

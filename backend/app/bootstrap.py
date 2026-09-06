@@ -15,7 +15,9 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "pos.tax_rate": ("0", "Tax rate in percent applied at checkout", False),
     "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID", False),
     "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID", False),
-    "pos.currency": ("IRR", "Display currency code", False),
+    "pos.currency": ("IRT", "Base currency: IRT (تومان) | IRR (ریال). Amounts are STORED in this unit.", False),
+    "pos.coupon_enabled": ("true", "Enable coupon entry at the POS", False),
+    "pos.print_after_checkout": ("true", "Automatically print the receipt after checkout", False),
     "pos.allow_negative_stock": ("false", "Allow negative stock (requires permission + audit)", False),
     "pos.kiosk_shortcut": ("Ctrl+Shift+L", "POS kiosk/lock mode keyboard shortcut", False),
     "expiry.block_sale": ("true", "Block sale of expired batches", False),
@@ -30,16 +32,47 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "sms.api_key": ("", "SMS provider API key (kavenegar)", True),
     "sms.sender": ("", "Sender line number (melipayamak)", False),
     "sms.file_path": ("data/sms_out.log", "Output file for the 'file' provider (dev/test)", False),
+    "sms.template.debt_reminder": (
+        "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر.",
+        "Debt reminder SMS template. Placeholders: {customer} {store} {amount} {currency}",
+        False),
     "sms.max_retries": ("5", "Max delivery attempts before FAILED", False),
     "sms.worker_interval_seconds": ("10", "Background dispatch interval (seconds)", False),
     "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),
     "backup.keep": ("10", "Number of backup files to retain (rotation)", False),
     "printer.header": ("", "Receipt header text", False),
     "printer.footer": ("", "Receipt footer text", False),
+    "sync.worker_interval_seconds": ("15", "Offline sync queue drain interval (seconds)", False),
+    "stocktake.require_approval": ("true", "Stock adjustments need manager approval", False),
+    # --- store profile (§25) — printed on receipts and shown in the UI ---
+    "store.name": ("فروشگاه من", "Store name (receipt header, UI title)", False),
+    "store.legal_name": ("", "Registered legal name", False),
+    "store.phone": ("", "Store phone number", False),
+    "store.mobile": ("", "Store mobile number", False),
+    "store.address": ("", "Store address (printed on the receipt)", False),
+    "store.city": ("", "City", False),
+    "store.postal_code": ("", "Postal code", False),
+    "store.tax_id": ("", "Tax / economic ID", False),
+    "store.logo_path": ("", "Relative path of the store logo under MEDIA_DIR", False),
+    "store.receipt_note": ("از خرید شما سپاسگزاریم", "Footer note on the receipt", False),
+    # --- time & calendar (§22) ---
+    "time.timezone": ("Asia/Tehran", "IANA timezone for display and reports", False),
+    "time.calendar": ("jalali", "Display calendar: jalali | gregorian", False),
+    "time.ntp_enabled": ("true", "Check trusted network time at startup", False),
+    "time.ntp_servers": ("pool.ntp.org,time.google.com",
+                         "Comma-separated NTP servers (trusted time source)", False),
+    "time.max_drift_seconds": ("120",
+                               "Warn when local clock drifts more than this from NTP", False),
+    # --- appearance (§23) ---
+    "ui.theme": ("auto", "Theme: auto | light | dark", False),
+    "ui.theme_light_at": ("07:00", "Local time to switch to the light theme", False),
+    "ui.theme_dark_at": ("19:00", "Local time to switch to the dark theme", False),
 }
 
 
 def bootstrap(db: Session) -> None:
+    from .services.units import ensure_units
+
     # 1. Permissions
     existing = {p.code for p in db.execute(select(Permission)).scalars()}
     for code, desc in PERMISSIONS.items():
@@ -79,4 +112,65 @@ def bootstrap(db: Session) -> None:
         if key not in current_keys:
             db.add(SystemSetting(key=key, value=value, description=desc, is_secret=is_secret))
 
+    # 5. Default measurement units (§25 — piece / kg / gram / liter ...)
+    ensure_units(db)
+
+    # 6. Default product-resolver sources (§9-§11)
+    #
+    # Without at least one registered source the whole multi-source resolver is
+    # dead code on a fresh install: scanning an unknown barcode returned
+    # origin="none" with an empty `sources` list, so "add product by scan"
+    # silently degraded to fully manual entry. Providers existed; nothing was
+    # ever wired to them.
+    #
+    # OpenFoodFacts is the one source we can ship enabled by default and still
+    # respect the licensing rule: the data is community-owned and published
+    # under the Open Database License (ODbL), the API is public and keyless,
+    # and it explicitly permits reuse with attribution. Commercial Iranian
+    # catalogues (Holoo and friends) are deliberately NOT shipped — copying
+    # them is exactly what the brief forbids. A shop that holds its own licence
+    # for such a service can add it at runtime as a `custom_http` source
+    # without any code change.
+    ensure_default_sources(db)
+
     db.commit()
+
+
+#: Sources registered on first boot. Only openly-licensed, keyless services.
+DEFAULT_SOURCES: list[dict] = [
+    {
+        "code": "openfoodfacts",
+        "name": "OpenFoodFacts (ODbL, public, keyless)",
+        "source_type": "PRODUCT",
+        "priority": 10,
+        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
+        "is_active": True,
+    },
+    {
+        # Same upstream, registered separately so the IMAGE pipeline has a
+        # source of its own and can be disabled independently of name/brand
+        # lookups (a shop may want text but not pictures, or vice versa).
+        "code": "openfoodfacts_img",
+        "name": "OpenFoodFacts Images (ODbL)",
+        "source_type": "IMAGE",
+        "priority": 10,
+        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
+        "is_active": True,
+    },
+]
+
+
+def ensure_default_sources(db: Session) -> None:
+    """Register the built-in resolver sources (idempotent).
+
+    Existing rows are never modified: if an operator disabled or re-pointed a
+    source, that decision must survive a restart.
+    """
+    from .models import ExternalSource
+
+    existing = {s.code for s in db.execute(select(ExternalSource)).scalars()}
+    for spec in DEFAULT_SOURCES:
+        if spec["code"] in existing:
+            continue
+        db.add(ExternalSource(**spec))
+    db.flush()

@@ -170,6 +170,118 @@
           }
         ],
         "wait_ms": 800
+      },
+      {
+        "name": "32-admin-customers",
+        "steps": [
+          {
+            "js": "(async()=>{go('customers');for(let i=0;i<60;i++){if(document.querySelector('#cu-table tbody tr'))return 'ok';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "33-admin-customer-ledger",
+        "steps": [
+          {
+            "js": "(async()=>{go('customers');await new Promise(r=>setTimeout(r,1800));const rows=[...document.querySelectorAll('#cu-table tbody tr')];const row=rows.find(r=>/54,000|\\d,\\d{3}/.test(r.children[2].textContent))||rows[4];const b=[...row.querySelectorAll('button')].find(x=>x.textContent.includes('حساب دفتری'));b.click();})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "34-admin-settings-store",
+        "steps": [
+          {
+            "js": "closeModal();go('settings')"
+          },
+          {
+            "wait_ms": 3500
+          },
+          {
+            "js": "closeModal();window.scrollTo(0,0)"
+          },
+          {
+            "wait_ms": 600
+          }
+        ],
+        "wait_ms": 1500,
+        "pdf": true,
+        "full_height": false
+      },
+      {
+        "name": "35-admin-settings-update-about",
+        "steps": [
+          {
+            "js": "(()=>{const t=[...document.querySelectorAll('h3,h4')].find(x=>/درباره|به‌?روزرسانی/.test(x.textContent));if(t)t.scrollIntoView({block:'start'});})()"
+          },
+          {
+            "wait_ms": 1200
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true,
+        "full_height": false
+      },
+      {
+        "name": "36-admin-light-theme",
+        "steps": [
+          {
+            "js": "(async()=>{await applyTheme('light');window.scrollTo(0,0);go('dashboard');await new Promise(r=>setTimeout(r,1500));return 'ok';})()"
+          },
+          {
+            "wait_ms": 4000
+          }
+        ],
+        "wait_ms": 1200,
+        "pdf": true
+      },
+      {
+        "name": "37-admin-pos-account-tender",
+        "steps": [
+          {
+            "js": "(async()=>{await applyTheme('dark');go('pos');await new Promise(r=>setTimeout(r,1200));const r=await api('/pos/search?q='+encodeURIComponent('شیر'));const it=r.items[0],b=it.batches[0];posState.cart.push({product_id:it.product_id,product_name:it.name,batch_id:b.batch_id,batch_number:b.batch_number,quantity:2,unit_id:it.unit_id,available:b.current_qty,unit_sell_price:b.sell_price,unit_buy_price:b.buy_price,discount:0});posState.customer={id:1,name:'حسن نوری',balance:54000};renderPosCart();await new Promise(r=>setTimeout(r,400));posCheckoutModal();await new Promise(r=>setTimeout(r,400));const sel=document.querySelector('#pay-method');sel.value='ACCOUNT';sel.dispatchEvent(new Event('change',{bubbles:true}));})()"
+          },
+          {
+            "wait_ms": 5000
+          }
+        ],
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "38-admin-scan-autofill",
+        "wait_ms": 800,
+        "full_height": false,
+        "steps": [
+          {
+            "js": "(async()=>{closeModal();go('products');await new Promise(r=>setTimeout(r,1500));$('#p-barcode').value='3017620422003';$('#p-lookup').click();})()"
+          },
+          {
+            "wait_ms": 6000
+          }
+        ]
+      },
+      {
+        "name": "39-admin-scan-no-data",
+        "wait_ms": 800,
+        "full_height": false,
+        "steps": [
+          {
+            "js": "(async()=>{go('products');await new Promise(r=>setTimeout(r,1500));$('#p-barcode').value='6260101010016';$('#p-lookup').click();})()"
+          },
+          {
+            "wait_ms": 8000
+          }
+        ]
       }
     ]
   },
@@ -180,11 +292,11 @@
       420,
       860
     ],
-    "settle_ms": 1500,
+    "settle_ms": 1200,
     "shots": [
       {
         "name": "18-mobile-login",
-        "wait_ms": 500
+        "wait_ms": 600
       }
     ]
   },
@@ -195,38 +307,219 @@
       420,
       860
     ],
-    "settle_ms": 1000,
+    "settle_ms": 1200,
     "steps": [
       {
-        "js": "(async()=>{if(document.querySelector('.session-item'))return 'already';document.querySelector('#l-user').value='stocker';document.querySelector('#l-pass').value='stocker123';document.querySelector('#l-go').click();for(let i=0;i<60;i++){if(document.querySelector('.session-item'))return 'sessions';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+        "js": "(async()=>{if(document.querySelector('.tabbar'))return 'already';document.querySelector('#l-user').value='admin';document.querySelector('#l-pass').value='admin123';document.querySelector('#l-go').click();for(let i=0;i<80;i++){if(document.querySelector('.tabbar'))return 'home';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
       },
       {
-        "wait_ms": 800
+        "wait_ms": 900
       }
     ],
     "shots": [
       {
-        "name": "19-mobile-sessions",
-        "wait_ms": 600
+        "name": "19-mobile-home",
+        "wait_ms": 900,
+        "pdf": true
       },
       {
-        "name": "20-mobile-count",
+        "name": "20-mobile-pos-search",
         "steps": [
           {
-            "js": "(async()=>{openSession(1);for(let i=0;i<60;i++){if(document.querySelector('#real-qty'))return 'item';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+            "js": "(async()=>{goTab('pos');await new Promise(r=>setTimeout(r,500));const i=document.querySelector('#m-search');i.value='شیر';i.dispatchEvent(new Event('input',{bubbles:true}));for(let k=0;k<60;k++){if(document.querySelector('.result-row'))return 'hits';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "21-mobile-pos-qty",
+        "steps": [
+          {
+            "js": "(async()=>{document.querySelector('.result-row').click();for(let k=0;k<50;k++){if(document.querySelector('#m-sheet'))return 'sheet';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
           }
         ],
         "wait_ms": 600,
         "pdf": true
       },
       {
-        "name": "21-mobile-counted",
+        "name": "22-mobile-pos-cart",
         "steps": [
           {
-            "js": "(async()=>{document.querySelector('#real-qty').value='12';await new Promise(r=>setTimeout(r,300));window.saveAndNext();for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,150));}return 'next';})()"
+            "js": "(async()=>{const s=document.querySelector('#m-sheet');if(s){const b=s.querySelector('.batch-pick')||s.querySelector('.btn-green');b.click();}for(let k=0;k<50;k++){if(document.querySelector('#m-sheet .big-input')){document.querySelector('#m-sheet .btn-green').click();}if(document.querySelector('.cart-line'))return 'cart';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
           }
         ],
-        "wait_ms": 1200
+        "wait_ms": 800,
+        "pdf": true
+      },
+      {
+        "name": "23-mobile-pos-pay",
+        "steps": [
+          {
+            "js": "(async()=>{mCheckout();for(let k=0;k<40;k++){if(document.querySelector('#m-phone'))return 'pay';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600,
+        "pdf": true
+      },
+      {
+        "name": "24-mobile-inventory",
+        "steps": [
+          {
+            "js": "(async()=>{closeSheet();goTab('inventory');for(let k=0;k<60;k++){if(document.querySelector('.stock-row'))return 'stock';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "25-mobile-stock-in",
+        "steps": [
+          {
+            "js": "(async()=>{showStockIn();for(let k=0;k<40;k++){if(document.querySelector('#si-barcode'))return 'form';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600
+      },
+      {
+        "name": "26-mobile-sessions",
+        "steps": [
+          {
+            "js": "(async()=>{goTab('stocktake');for(let k=0;k<60;k++){if(document.querySelector('.session-item'))return 'sessions';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "27-mobile-count",
+        "steps": [
+          {
+            "js": "(async()=>{const s=document.querySelector('.session-item');if(s)s.click();for(let k=0;k<60;k++){if(document.querySelector('#real-qty'))return 'item';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "28-mobile-counted",
+        "steps": [
+          {
+            "js": "(async()=>{const q=document.querySelector('#real-qty');if(q){q.value='12';await new Promise(r=>setTimeout(r,300));window.saveAndNext();}await new Promise(r=>setTimeout(r,2500));return 'next';})()"
+          }
+        ],
+        "wait_ms": 900
+      },
+      {
+        "name": "29-mobile-more",
+        "steps": [
+          {
+            "js": "(async()=>{goTab('more');for(let k=0;k<40;k++){if(document.querySelector('.menu-item'))return 'more';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600,
+        "pdf": true
+      },
+      {
+        "name": "30-mobile-reports",
+        "steps": [
+          {
+            "js": "(async()=>{showReportsM();for(let k=0;k<60;k++){if(document.querySelector('#rp .kpi'))return 'rp';await new Promise(r=>setTimeout(r,200));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 700,
+        "pdf": true
+      },
+      {
+        "name": "31-mobile-sync",
+        "steps": [
+          {
+            "js": "(async()=>{showSync();for(let k=0;k<40;k++){if(document.body.innerHTML.includes('همگام'))return 'sync';await new Promise(r=>setTimeout(r,150));}return 'none';})()"
+          }
+        ],
+        "wait_ms": 600
+      }
+    ]
+  },
+  {
+    "name": "phase11",
+    "url": "http://127.0.0.1:8000/",
+    "viewport": [
+      1440,
+      980
+    ],
+    "settle_ms": 1200,
+    "steps": [
+      {
+        "js": "(async()=>{if(document.querySelector('.session-item')||document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'already';document.querySelector('#login-username').value='admin';document.querySelector('#login-password').value='admin123';document.querySelector('#login-form').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));for(let i=0;i<60;i++){if(document.querySelector('#app-view:not(.hidden)')&&!document.querySelector('#app-view.hidden'))return 'app-visible';await new Promise(r=>setTimeout(r,200));}return 'timeout';})()"
+      },
+      {
+        "wait_ms": 1500
+      }
+    ],
+    "shots": [
+      {
+        "name": "40-product-batch-detail",
+        "steps": [
+          {
+            "js": "closeModal(); go('products');"
+          },
+          {
+            "wait_ms": 1500
+          },
+          {
+            "js": "window.showProductDetail(1)"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "JSON.stringify({modal:!document.querySelector('#modal').classList.contains('hidden'), rows:document.querySelectorAll('#pd-body tbody tr').length})"
+          }
+        ],
+        "wait_ms": 600,
+        "full_height": false
+      }
+    ]
+  },
+  {
+    "name": "phase11m",
+    "url": "http://127.0.0.1:8000/mobile/",
+    "viewport": [
+      420,
+      860
+    ],
+    "settle_ms": 1200,
+    "steps": [
+      {
+        "js": "(async()=>{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'username=admin&password=admin123'});const j=await r.json();localStorage.setItem('m_token',j.access_token);location.reload();return 'logged-in';})()"
+      },
+      {
+        "wait_ms": 2500
+      }
+    ],
+    "shots": [
+      {
+        "name": "41-mobile-product-batches",
+        "steps": [
+          {
+            "js": "showProducts()"
+          },
+          {
+            "wait_ms": 1500
+          },
+          {
+            "js": "window.showProductBatches(1)"
+          },
+          {
+            "wait_ms": 1200
+          },
+          {
+            "js": "JSON.stringify({sheet:!!document.querySelector('#m-sheet'),rows:document.querySelectorAll('#m-sheet .stock-row').length})"
+          }
+        ],
+        "wait_ms": 500,
+        "full_height": false
       }
     ]
   }

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 from .base import TimestampMixin
-from .pricing import MONEY
+from .pricing import MONEY, QTY
 
 
 class Invoice(TimestampMixin, Base):
@@ -48,7 +48,7 @@ class InvoiceItem(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
 
-    qty: Mapped[int] = mapped_column(Integer, default=1)
+    qty: Mapped[Decimal] = mapped_column(QTY, default=1)
 
     unit_buy_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
     unit_consumer_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
@@ -78,15 +78,74 @@ class Payment(TimestampMixin, Base):
 
 
 class Customer(TimestampMixin, Base):
+    """A registered customer (§30, §42).
+
+    A "walk-in" (مشتری آزاد) is represented by ``customer_id IS NULL`` on the
+    invoice — NOT by a magic row here. Only registered customers may hold a
+    credit account, which is what §34 requires.
+
+    ``credit_limit = 0`` means "no ceiling configured"; a positive value caps
+    how much debt the customer may accumulate on account.
+    """
+
     __tablename__ = "customers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    #: credit account enabled for this customer (§30)
+    credit_enabled: Mapped[bool] = mapped_column(default=True)
+    #: 0 = unlimited; otherwise max outstanding debt allowed on account
+    credit_limit: Mapped[Decimal] = mapped_column(MONEY, default=0)
+
     is_active: Mapped[bool] = mapped_column(default=True)
 
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="customer")
+    ledger_entries: Mapped[list["CustomerLedgerEntry"]] = relationship(
+        back_populates="customer")
+
+
+class CustomerLedgerEntry(TimestampMixin, Base):
+    """Append-only double-entry-style ledger for a customer account (§32).
+
+    Design rules, learned from the stock ledger:
+
+    - **Append-only.** A mistake is corrected with a reversing entry, never by
+      editing or deleting history. This is what makes the balance auditable.
+    - **Signed amounts.** ``amount > 0`` increases what the customer OWES
+      (a debit: a credit sale). ``amount < 0`` reduces it (a credit: a
+      payment/settlement). The balance is therefore a plain SUM — it cannot
+      drift out of step with its own history the way a cached column can.
+    - ``balance_after`` is stored for fast statements and as a tamper check:
+      recomputing SUM(amount) must reproduce it.
+    """
+
+    __tablename__ = "customer_ledger_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), index=True)
+
+    #: CREDIT_SALE | PAYMENT | ADJUSTMENT | RETURN_REFUND | OPENING_BALANCE
+    entry_type: Mapped[str] = mapped_column(String(24), index=True)
+    amount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    balance_after: Mapped[Decimal] = mapped_column(MONEY, default=0)
+
+    invoice_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invoices.id"), nullable=True, index=True)
+    #: CASH | CARD | TRANSFER | CHEQUE ... (only meaningful for PAYMENT)
+    method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+
+    customer: Mapped["Customer"] = relationship(back_populates="ledger_entries")
 
 
 class Return(TimestampMixin, Base):
@@ -96,7 +155,7 @@ class Return(TimestampMixin, Base):
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), index=True)
     invoice_item_id: Mapped[int] = mapped_column(ForeignKey("invoice_items.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
-    qty: Mapped[int] = mapped_column(Integer, default=1)
+    qty: Mapped[Decimal] = mapped_column(QTY, default=1)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="COMPLETED")
     refund_amount: Mapped[Decimal] = mapped_column(MONEY, default=0)

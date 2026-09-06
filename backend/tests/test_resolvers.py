@@ -70,12 +70,18 @@ def transport(handler) -> httpx.Client:
 
 @pytest.fixture(scope="module", autouse=True)
 def clean_sources():
-    """Isolation: no external sources may leak in from other test modules."""
+    """Isolation: no external sources may leak in from other test modules.
+
+    Deactivate rather than delete. Bootstrap now registers default sources on
+    first boot, and once any resolver result / market price references one, a
+    hard DELETE trips the FK. Only `_active_sources` matters for isolation, so
+    flipping is_active is both sufficient and safe.
+    """
     from app.database import init_db
     init_db()  # tables exist even when this module runs first
     s = SessionLocal()
     for src in s.execute(select(ExternalSource)).scalars():
-        s.delete(src)
+        src.is_active = False
     s.commit()
     s.close()
     yield
@@ -314,9 +320,20 @@ def test_13_duplicate_product(client, H, db):
         out = resolvers.resolve_barcode(db, BC_LOCAL, client=c)
     assert out["origin"] == "local"
     assert out["product"]["name"] == "Local Milk"
-    # apply() for an existing barcode is refused
+    # §31 (changed in v0.3.0): apply() for an existing barcode UPDATES that
+    # product instead of being refused with 409. The barcode is the identity
+    # (§32), so a second resolve is by definition the same product — refusing
+    # left the operator unable to enrich a sparse record from another source.
+    before = client.get("/api/products?limit=1000", headers=H).json()["items"]
+    n_before = len([p for p in before if p["barcode"] == BC_LOCAL])
+
     r = client.post("/api/barcode/apply", headers=H, json={"barcode": BC_LOCAL, "name": "Dup"})
-    assert r.status_code == 409
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["created"] is False
+
+    after = client.get("/api/products?limit=1000", headers=H).json()["items"]
+    assert len([p for p in after if p["barcode"] == BC_LOCAL]) == n_before == 1, \
+        "resolver apply must never create a duplicate product"
 
 
 # --- Source management API (BUG-008) ---------------------------------------------------

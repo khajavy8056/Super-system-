@@ -116,6 +116,60 @@ PROVIDERS = {
 }
 
 
+# --- Enqueue / single dispatch ---------------------------------------------------
+
+def queue_sms(db: Session, *, phone: str, text: str,
+              reference_type: str | None = None, reference_id: int | None = None) -> SmsMessage:
+    """Persist a message as PENDING. The worker delivers it (offline-safe)."""
+    msg = SmsMessage(phone=phone.strip(), text=text.strip(), status="PENDING",
+                     reference_type=reference_type, reference_id=reference_id)
+    db.add(msg)
+    db.flush()
+    return msg
+
+
+def _audit(db: Session, action: str, msg: "SmsMessage", provider: str,
+           error: str | None = None) -> None:
+    """Write the §43 SMS_SENT / SMS_FAILED audit row.
+
+    Auditing must never be the reason a message fails to send, so a broken
+    audit write is swallowed after being logged — the SMS state is the primary
+    record and it is already committed by the caller.
+    """
+    try:
+        from .audit import write_audit
+
+        write_audit(db, action=action, entity_type="SmsMessage", entity_id=msg.id,
+                    reference=msg.phone,
+                    after={"provider": provider, "status": msg.status,
+                           "retry_count": msg.retry_count, "error": error})
+    except Exception:  # pragma: no cover - defensive
+        logging.getLogger("supermarket.sms").exception("audit write failed for %s", action)
+
+
+def dispatch_one(db: Session, sms_id: int) -> str:
+    """Send a single message now; raises SmsProviderError so the sync queue
+    can apply its backoff policy."""
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None:
+        raise SmsProviderError("NOT_FOUND", f"sms {sms_id}")
+    if msg.status == "SENT":
+        return "ALREADY_SENT"
+    provider_code = get_setting(db, "sms.provider", "").strip()
+    sender = PROVIDERS.get(provider_code)
+    if sender is None:
+        raise SmsProviderError("CONFIG_MISSING", f"provider={provider_code or 'none'}")
+    response = sender(db, msg.phone, msg.text)
+    msg.status = "SENT"
+    msg.sent_at = datetime.utcnow()
+    msg.provider_response = response
+    msg.error_message = None
+    # §43 — SMS_SENT belongs in the audit trail, not only in the message row.
+    _audit(db, "SMS_SENT", msg, provider_code)
+    db.flush()
+    return response
+
+
 # --- Dispatcher ----------------------------------------------------------------
 
 def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
@@ -151,12 +205,18 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
             msg.provider_response = response
             msg.error_message = None
             summary["sent"] += 1
+            _audit(db, "SMS_SENT", msg, provider_code)
         except SmsProviderError as exc:
             msg.retry_count = (msg.retry_count or 0) + 1
             msg.error_message = f"{exc.kind}: {exc.detail}"[:500]
             if msg.retry_count >= max_retries:
                 msg.status = "FAILED"
                 summary["failed"] += 1
+                # Only the terminal failure is audited: a message that is still
+                # going to be retried has not failed yet, and logging every
+                # attempt would bury the audit log in noise.
+                _audit(db, "SMS_FAILED", msg, provider_code,
+                       error=f"{exc.kind}: {exc.detail}")
             else:
                 msg.status = "RETRYING"
                 summary["retrying"] += 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,9 +22,11 @@ from .routers import (
     auth,
     batches,
     customers,
+    diagnostics,
     hardware,
     inventory,
     invoices,
+    marketing,
     pos,
     pricing,
     products,
@@ -44,15 +47,52 @@ if not logger.handlers:  # avoid duplicate handlers under test reloads
     logger.addHandler(_h)
 
 
+# --- offline sync worker ------------------------------------------------------
+_sync_stop = threading.Event()
+_sync_thread: threading.Thread | None = None
+
+
+def _start_sync_worker(session_factory) -> None:
+    global _sync_thread
+    if _sync_thread and _sync_thread.is_alive():
+        return
+    _sync_stop.clear()
+
+    def run():
+        from .services import sync as sync_svc
+
+        while not _sync_stop.is_set():
+            try:
+                db = session_factory()
+                try:
+                    sync_svc.run_once(db)
+                finally:
+                    db.close()
+            except Exception:  # the queue worker must never die
+                logging.getLogger("supermarket.sync").exception("sync worker tick failed")
+            _sync_stop.wait(15)
+
+    _sync_thread = threading.Thread(target=run, name="sync-worker", daemon=True)
+    _sync_thread.start()
+
+
+def _stop_sync_worker() -> None:
+    _sync_stop.set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .database import SessionLocal
     from .services import sms as sms_svc
 
+    from .services import sync as sync_svc
+
     init_db()
     sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
+    _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
     yield
     sms_svc.stop_worker()
+    _stop_sync_worker()
 
 
 app = FastAPI(
@@ -72,24 +112,57 @@ app.add_middleware(
 
 API = "/api"
 for r in (
-    auth.router, products.router, batches.router, customers.router,
+    auth.router, products.router, products.unit_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
+    marketing.router, diagnostics.router,
 ):
     app.include_router(r, prefix=API)
 
 # system router is intentionally unprefixed for /health
 app.include_router(system.router)
+# ...but the update endpoints belong on the normal authenticated API surface
+app.include_router(system.update_router, prefix="/api")
 
 
 # --- Error handling (BUG-020): users never see raw stack/SQL traces ----------
+def _audit_api_error(request: Request, code: str, status: int, error_id: str,
+                     exc: Exception) -> None:
+    """§43 — API_ERROR must land in the audit trail, not only in the log file.
+
+    The operator needs to correlate "the system misbehaved at 14:20" with a
+    record inside the app; a stderr line on a shop PC is gone at the next
+    reboot. This opens its own short-lived session because the request-scoped
+    one may be the thing that is broken. Any failure here is swallowed: a
+    broken audit writer must never replace a 500 with a second, worse error.
+    """
+    try:
+        from .database import SessionLocal
+        from .services.audit import write_audit
+
+        db = SessionLocal()
+        try:
+            write_audit(
+                db, action="API_ERROR", entity_type="Request",
+                reference=f"{request.method} {request.url.path}",
+                after={"code": code, "status": status, "error_id": error_id,
+                       "exception": type(exc).__name__, "detail": str(exc)[:500]},
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("could not write API_ERROR audit entry")
+
+
 def _error_response(exc: Exception, request: Request, code: str, status: int) -> JSONResponse:
     error_id = uuid.uuid4().hex[:12]
     logger.error(
         "ErrorID=%s %s %s -> %s: %s",
         error_id, request.method, request.url.path, type(exc).__name__, exc,
     )
+    _audit_api_error(request, code, status, error_id, exc)
     message = {
         500: "خطای داخلی سرور. لطفاً عملیات را تکرار کنید و در صورت تکرار، کد خطا را به پشتیبانی گزارش دهید.",
         503: "سرویس به‌طور موقت در دسترس نیست. لطفاً بعداً تلاش کنید.",
@@ -140,7 +213,27 @@ def _find_frontend_dir() -> Path | None:
     return None
 
 
+# Locally stored product images (§21) are served from the same origin so the
+# panel and the PWA never depend on a third-party URL.
+_MEDIA_DIR = Path(settings.MEDIA_DIR)
+_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
 _FRONTEND_DIR = _find_frontend_dir()
 if _FRONTEND_DIR is not None:
     from fastapi.staticfiles import StaticFiles
+
+    app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
+    # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
+    _MOBILE_DIR = _FRONTEND_DIR / "mobile"
+    if _MOBILE_DIR.exists():
+        # A phone on the shop Wi-Fi is typed by hand: "192.168.1.5:8000/m".
+        # A bare mount only answers "/m/" and 404s on "/m", which reads as
+        # "the app is broken" to a staff member. Redirect the slashless form.
+        from fastapi.responses import RedirectResponse
+
+        @app.get("/m", include_in_schema=False)
+        def _mobile_root():
+            return RedirectResponse(url="/m/", status_code=307)
+
+        app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

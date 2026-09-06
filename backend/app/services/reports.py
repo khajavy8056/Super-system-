@@ -146,6 +146,148 @@ def dashboard(db: Session) -> dict:
         "expiry": expiry_buckets,
         "pricing": {"price_conflicts": price_conflicts[:50],
                     "price_conflict_count": len(price_conflicts)},
+        # §23 — the four blocks the operator actually watches all day were
+        # missing from the dashboard payload: what customers owe, what is still
+        # waiting to be settled, whether SMS is flowing, and whether the system
+        # itself is healthy.
+        "receivables": _receivables(db),
+        "sms": _sms_status(db),
+        "system": _system_status(db),
+    }
+
+
+# --- §23 dashboard blocks ----------------------------------------------------
+
+def _receivables(db: Session) -> dict:
+    """Customer debt + unsettled invoices.
+
+    Two different numbers, deliberately kept apart:
+
+    * ``customer_debt`` — the running balance of every customer ledger. This is
+      the money the shop is owed on account (§30–35).
+    * ``pending_amount`` — invoices that left the counter neither PAID nor VOID.
+      A credit sale that was never posted to an account, or an interrupted
+      payment, lands here; it must be visible or it simply disappears.
+    """
+    from . import ledger as ledger_svc
+
+    debt_rows = ledger_svc.debtors(db, 0)
+    total_debt = sum((Decimal(str(d["balance"])) for d in debt_rows), ZERO)
+
+    pending_rows = db.execute(
+        select(Invoice).where(
+            Invoice.status.not_in(["PAID", "VOID", "REFUNDED", "PARTIALLY_REFUNDED"])
+        ).order_by(Invoice.created_at.desc()).limit(500)
+    ).scalars().all()
+    pending_amount = sum((Decimal(i.total_amount) for i in pending_rows), ZERO)
+
+    return {
+        "customer_debt": float(total_debt),
+        "debtor_count": len(debt_rows),
+        "top_debtors": [
+            {"customer_id": d["customer_id"], "name": d["name"],
+             "phone": d.get("phone"), "balance": float(Decimal(str(d["balance"])))}
+            for d in debt_rows[:5]
+        ],
+        "pending_amount": float(pending_amount),
+        "pending_count": len(pending_rows),
+        "pending_invoices": [
+            {"invoice_id": i.id, "invoice_number": i.invoice_number,
+             "total": float(Decimal(i.total_amount)), "status": i.status,
+             "payment_method": i.payment_method,
+             "created_at": i.created_at.isoformat() if i.created_at else None}
+            for i in pending_rows[:10]
+        ],
+    }
+
+
+def _sms_status(db: Session) -> dict:
+    from ..models import SmsMessage
+    from . import sms as sms_svc
+
+    rows = db.execute(
+        select(SmsMessage.status, func.count(SmsMessage.id))
+        .group_by(SmsMessage.status)
+    ).all()
+    by_status = {s: int(n) for s, n in rows}
+    last = db.execute(
+        select(SmsMessage).order_by(SmsMessage.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    provider = sms_svc.get_setting(db, "sms.provider", "").strip()
+    return {
+        "provider": provider or None,
+        "configured": bool(provider),
+        "by_status": by_status,
+        "pending": by_status.get("PENDING", 0) + by_status.get("RETRYING", 0),
+        "sent": by_status.get("SENT", 0),
+        "failed": by_status.get("FAILED", 0),
+        "total": sum(by_status.values()),
+        "last_at": last.created_at.isoformat() if last and last.created_at else None,
+        "last_status": last.status if last else None,
+        "last_error": (last.error_message or None) if last else None,
+    }
+
+
+def _system_status(db: Session) -> dict:
+    """Health snapshot for the dashboard's status strip.
+
+    Everything here is cheap and local — the dashboard is polled, so it must
+    never be the thing that makes a network call or blocks on hardware.
+    """
+    import shutil
+    from pathlib import Path
+
+    from .. import __version__
+    from ..config import settings
+    from ..models import DiagnosticRun, HardwareDevice, SyncJob
+
+    hw_rows = db.execute(select(HardwareDevice)).scalars().all()
+    hardware = {h.device_type: h.status for h in hw_rows}
+
+    last_diag = db.execute(
+        select(DiagnosticRun).order_by(DiagnosticRun.id.desc()).limit(1)
+    ).scalar_one_or_none()
+
+    queued = int(db.execute(
+        select(func.count(SyncJob.id)).where(SyncJob.status.in_(["PENDING", "RUNNING"]))
+    ).scalar_one())
+    failed_jobs = int(db.execute(
+        select(func.count(SyncJob.id)).where(SyncJob.status == "FAILED")
+    ).scalar_one())
+
+    free_gb = None
+    try:
+        free_gb = round(shutil.disk_usage(str(Path(settings.MEDIA_DIR))).free / 1e9, 1)
+    except OSError:
+        pass
+
+    engine_name = db.get_bind().dialect.name
+    issues = []
+    if hardware.get("PRINTER") == "DISCONNECTED":
+        issues.append("پرینتر متصل نیست")
+    if failed_jobs:
+        issues.append(f"{failed_jobs} کار همگام‌سازی ناموفق")
+    if last_diag and last_diag.failed:
+        issues.append(f"{last_diag.failed} خطا در آخرین تست اتصالات")
+    if free_gb is not None and free_gb < 1:
+        issues.append("فضای دیسک کمتر از ۱ گیگابایت")
+
+    return {
+        "version": __version__,
+        "environment": settings.ENVIRONMENT,
+        "database": engine_name,
+        "hardware": hardware,
+        "sync_queued": queued,
+        "sync_failed": failed_jobs,
+        "disk_free_gb": free_gb,
+        "last_diagnostics": {
+            "run_id": last_diag.id,
+            "started_at": last_diag.started_at.isoformat() if last_diag.started_at else None,
+            "total": last_diag.total, "passed": last_diag.passed,
+            "failed": last_diag.failed, "skipped": last_diag.skipped,
+        } if last_diag else None,
+        "status": "WARNING" if issues else "OK",
+        "issues": issues,
     }
 
 

@@ -63,3 +63,52 @@ Base URL: `http://localhost:8000/api` — مستندات تعاملی: `/docs`
 
 ## کدهای خطا (بخش 102)
 `PRODUCT_NOT_FOUND`, `BATCH_NOT_FOUND`, `INSUFFICIENT_STOCK`, `BATCH_EXPIRED`, `PRICE_NOT_AVAILABLE`, `PRINTER_OFFLINE`, `SMS_PROVIDER_ERROR`, `EXTERNAL_API_TIMEOUT`, `DATABASE_ERROR`
+
+## Phase 11 — product identity, per-batch pricing (v0.3.0)
+
+### `GET /api/products/{id}/detail`
+One product identity plus **every** batch that ever belonged to it.
+
+```json
+{
+  "product": { "id": 1, "barcode": "INT-000001", "has_own_barcode": false },
+  "total_stock": 35.5,
+  "active_batches":   [ { "batch_number": "B-20260905-000002", "buy_price": 105000, "supplier_price": 107000, "sell_price": 140000, "discount": 0, "tax": 9450 } ],
+  "depleted_batches": [ ],
+  "batch_count": 2
+}
+```
+
+Depleted batches are returned, not hidden: they are the purchase-price history
+and deleting them would erase the margin record (§5).
+
+### `POST /api/products/check-duplicate`
+Advisory duplicate warning (§33). Never blocks and never auto-merges — barcode
+equality is the only hard identity rule (§32).
+
+Request `{"name": "...", "barcode": "...", "brand_id": 1}` →
+`{"exact_barcode_match": {...}|null, "possible_duplicates": [{"product_id":1,"confidence":0.9,"reason":"نام یکسان"}], "has_warning": true}`
+
+Name comparison folds Arabic/Persian variants (ي→ی، ك→ک، آ→ا) and
+Eastern-Arabic digits, so «آب معدني» and «اب معدنی» match.
+
+### `GET|POST /api/products/brands`, `GET|POST /api/products/categories`
+Idempotent taxonomy CRUD — re-posting an existing name returns that row.
+Required for §18 brand search.
+
+### `POST /api/batches/receive` — new optional fields
+`supplier_price`, `discount`, `tax`. All per batch; never written to Product.
+
+### `POST /api/barcode/apply` — behaviour change (§31)
+An existing barcode is now **updated** instead of rejected with 409. The
+response carries `"created": true|false`. Omitted/blank fields never overwrite
+existing local data, and omitting `min_stock_alert` no longer resets it.
+
+### `GET /api/pos/search`
+Now also matches **brand name** in addition to barcode, product name, SKU and
+model (§18).
+
+### §16 internal barcodes
+`POST /api/products` accepts a product with no `barcode`. The server mints
+`INT-000001` via an atomic counter and sets `has_own_barcode: false`, marking
+the code as meaningless to external catalogues.
