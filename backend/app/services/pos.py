@@ -379,6 +379,7 @@ def checkout(
     customer_id: int | None = None,
     tax_rate: Decimal | None = None,
     coupon_code: str | None = None,
+    invoice_discount: Decimal | None = None,
 ) -> Invoice:
     """Atomic checkout (blueprint §18–21). Caller wraps in try/except + commit/rollback.
 
@@ -394,6 +395,14 @@ def checkout(
     discount = sum((i.discount for i in resolved), ZERO)
     if discount > gross:
         raise PosError("INVALID_DISCOUNT", "Total discount exceeds cart amount")
+
+    # §12 — invoice-level discount, applied after line discounts, before coupon.
+    inv_disc = Decimal(str(invoice_discount)) if invoice_discount else ZERO
+    if inv_disc < 0:
+        raise PosError("INVALID_DISCOUNT", "Invoice discount cannot be negative")
+    if inv_disc > gross - discount:
+        raise PosError("INVALID_DISCOUNT", "Invoice discount exceeds cart amount")
+    discount += inv_disc
 
     # Coupon is evaluated against the post-line-discount amount, then consumed
     # inside this same transaction (§37–38) so a failed sale never burns it.
@@ -444,6 +453,7 @@ def checkout(
         customer_id=customer_id,
         subtotal=gross,  # gross of lines (pre-discount)
         discount=discount,
+        invoice_discount=inv_disc,
         tax=tax,
         total_amount=total,
         payment_method=_payment_method(payments),

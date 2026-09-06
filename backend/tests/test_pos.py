@@ -54,6 +54,10 @@ def test_void_restocks(client, auth_headers, two_batches, milk):
     inv = _checkout(client, auth_headers, [
         {"product_id": milk["id"], "batch_id": two_batches["a"]["id"], "quantity": 2}], 120000).json()
     r = client.post(f"/api/invoices/{inv['invoice_id']}/void", headers=auth_headers, json={"reason": "test"})
+    # §209: a PAID invoice cannot be voided without re-typing the admin password
+    assert r.status_code == 401
+    r = client.post(f"/api/invoices/{inv['invoice_id']}/void", headers=auth_headers,
+                    json={"reason": "test", "admin_password": "admin123"})
     assert r.status_code == 200
     assert r.json()["status"] == "VOID"
     b = client.get(f"/api/batches/{two_batches['a']['id']}", headers=auth_headers).json()

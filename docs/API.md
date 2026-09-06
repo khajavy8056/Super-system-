@@ -112,3 +112,30 @@ model (§18).
 `POST /api/products` accepts a product with no `barcode`. The server mints
 `INT-000001` via an atomic counter and sets `has_own_barcode: false`, marking
 the code as meaningless to external catalogues.
+
+
+## افزوده‌های v1.1.0
+
+### انبارها و انتقال (§109, §130, §131)
+| Method | Path | مجوز | توضیح |
+|---|---|---|---|
+| GET | `/api/warehouses` | inventory.view | فهرست انبارها + محل‌ها + موجودی/ارزش هر انبار (انبار پیش‌فرض خودکار ساخته می‌شود) |
+| POST | `/api/warehouses` | inventory.adjust | `{name, code?, address?, is_default?}` |
+| PATCH | `/api/warehouses/{id}` | inventory.adjust | ویرایش / غیرفعال‌سازی |
+| POST | `/api/warehouses/{id}/locations` | inventory.adjust | `{name, code?}` محل نگهداری |
+| POST | `/api/warehouses/transfer` | inventory.adjust | `{batch_id, quantity, to_warehouse_id, to_location_id?, reason?}` → جفت حرکت `TRANSFER_OUT/IN` |
+
+### POS
+- `POST /api/pos/checkout` و `POST /api/pos/cart/validate`: فیلد جدید `invoice_discount` (مبلغ، §12). پاسخ checkout شامل `invoice_discount` و `drawer: {ok, message}` (§19) است.
+- `POST /api/invoices/{id}/void`: برای فاکتور `PAID` فیلد `admin_password` الزامی است (§209؛ قابل غیرفعال‌سازی با `security.require_admin_for_void_paid=false`). خطا: `401 ADMIN_PASSWORD_REQUIRED`.
+
+### پیامک
+| Method | Path | توضیح |
+|---|---|---|
+| GET | `/api/sms/templates` | الگوهای قابل ویرایش و placeholderها (§166) |
+| POST | `/api/sms/{id}/retry` | بازگرداندن پیامک FAILED به صف (§171) |
+| POST | `/api/sms/test-connection` | تست اتصال سرویس (§177) |
+| POST | `/api/sms/daily-report` | پیامک گزارش مدیریت به `sms.admin_phone` (§175) |
+
+### دسته‌بندی
+- `POST /api/products/categories` فیلد `parent_id?` (§79)؛ `GET` فیلدهای `parent_id`, `parent_name`, `path`.

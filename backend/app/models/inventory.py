@@ -112,3 +112,29 @@ class StocktakeItem(Base):
     stocktake: Mapped["Stocktake"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship()
     batch: Mapped["ProductBatch | None"] = relationship()
+
+
+class Warehouse(TimestampMixin, Base):
+    """A physical store / warehouse (§130). ``is_default`` marks the sales floor
+    that receiving lands in when no warehouse is chosen."""
+
+    __tablename__ = "warehouses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class StorageLocation(TimestampMixin, Base):
+    """Shelf / bin / cold-room inside a warehouse (§131)."""
+
+    __tablename__ = "storage_locations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)

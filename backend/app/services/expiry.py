@@ -81,5 +81,17 @@ def expiry_scan(db: Session) -> dict:
             bucket = {"EXPIRING_TODAY": "expiring_today", "EXPIRING_3_DAYS": "expiring_3",
                       "EXPIRING_7_DAYS": "expiring_7", "EXPIRING_30_DAYS": "expiring_30"}[status]
             result[bucket] += 1
+
+    # §112/§176 — low-stock pass: dashboard notification + optional manager SMS.
+    try:
+        from .reports import low_stock_report
+        from . import sms as sms_svc
+        low = low_stock_report(db)
+        result["low_stock"] = len(low)
+        if low:
+            msg = sms_svc.queue_low_stock_alert(db, rows=low)
+            result["low_stock_sms_id"] = msg.id if msg else None
+    except Exception as exc:  # the scan must never fail because of alerting
+        result["low_stock_error"] = type(exc).__name__
     db.flush()
     return result

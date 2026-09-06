@@ -46,6 +46,7 @@ def _out(b: ProductBatch) -> dict:
         "expiry_date": str(b.expiry_date) if b.expiry_date else None,
         "received_at": b.received_at.isoformat() if b.received_at else None,
         "status": b.status, "note": b.note,
+        "warehouse_id": b.warehouse_id, "location_id": b.location_id,
     }
 
 

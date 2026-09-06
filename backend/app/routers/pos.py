@@ -29,6 +29,7 @@ class CartIn(BaseModel):
     tax_rate: Decimal | None = None
     coupon_code: str | None = None
     customer_id: int | None = None
+    invoice_discount: Decimal | None = Field(default=None, ge=0)
 
 
 class PaymentIn(BaseModel):
@@ -44,6 +45,10 @@ class CheckoutIn(BaseModel):
     customer_name: str | None = None
     tax_rate: Decimal | None = None
     coupon_code: str | None = None
+    #: §12 whole-invoice discount (absolute amount in base currency)
+    invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: §19 pulse the cash drawer after a successful cash sale
+    open_drawer: bool = False
 
 
 # --- Kiosk / lock mode (§7) ---------------------------------------------------
@@ -108,6 +113,14 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
                                                    batch_id=i.batch_id, discount=i.discount)
                                            for i in body.items])
         totals = _totals(items)
+        if body.invoice_discount:
+            inv_disc = Decimal(str(body.invoice_discount))
+            if inv_disc > Decimal(str(totals["subtotal"])):
+                raise HTTPException(status_code=422, detail={"code": "INVALID_DISCOUNT",
+                                    "message": "تخفیف فاکتور از مبلغ سبد بیشتر است"})
+            totals["invoice_discount"] = float(inv_disc)
+            totals["discount"] = float(Decimal(str(totals["discount"])) + inv_disc)
+            totals["subtotal"] = float(Decimal(str(totals["subtotal"])) - inv_disc)
         coupon = None
         if body.coupon_code:
             from ..services import coupons as coupon_svc
@@ -159,6 +172,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             customer_id=customer_id,
             tax_rate=body.tax_rate,
             coupon_code=body.coupon_code,
+            invoice_discount=body.invoice_discount,
         )
 
         # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
@@ -174,13 +188,18 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             from ..services import sms as sms_svc
             from ..services import sync as sync_svc
 
-            lines = [f"فاکتور {invoice.invoice_number}",
-                     f"مبلغ: {invoice.total_amount:,.0f}"]
+            # §172/§162 — invoice SMS from the shop-editable pattern (§166);
+            # the next-purchase coupon rides along in the same message.
+            coupon_line = ""
             if issued:
-                lines.append(f"کد تخفیف خرید بعدی: {issued.code}")
+                coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
-                    lines.append(f"تا {issued.valid_until.date()}")
-            msg = sms_svc.queue_sms(db, phone=customer.phone, text="\n".join(lines),
+                    coupon_line += f" (تا {issued.valid_until.date()})"
+            text = sms_svc.render_template(
+                db, "invoice", invoice=invoice.invoice_number,
+                amount=f"{invoice.total_amount:,.0f}", coupon_line=coupon_line,
+                **sms_svc._store_ctx(db))
+            msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)
             sync_svc.enqueue(db, job_type="SMS", payload={"sms_id": msg.id},
@@ -188,6 +207,12 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
                              idempotency_key=f"sms:invoice:{invoice.id}", user_id=user.id)
 
         out = _invoice_out(invoice)
+        # §19 — cash drawer opens on cash tenders (never blocks the sale)
+        out["drawer"] = None
+        if body.open_drawer or any(str(p.method).upper() == "CASH" for p in body.payments):
+            from ..services import hardware as hw_svc
+            ok, msg = hw_svc.open_cash_drawer(db)
+            out["drawer"] = {"ok": ok, "message": msg}
         out["coupon_code"] = body.coupon_code
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
@@ -231,6 +256,7 @@ def _invoice_out(inv) -> dict:
         "invoice_number": inv.invoice_number,
         "subtotal": float(inv.subtotal),
         "discount": float(inv.discount),
+        "invoice_discount": float(getattr(inv, "invoice_discount", 0) or 0),
         "tax": float(inv.tax),
         "total_amount": float(inv.total_amount),
         "payment_method": inv.payment_method,

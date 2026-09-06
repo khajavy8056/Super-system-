@@ -4,7 +4,8 @@ from .base import SoftDeleteMixin, TimestampMixin
 from .catalog import Brand, Category, Product, Unit
 from .enums import *  # noqa: F401,F403
 from .external import ExternalSource, ImageAsset, MarketPrice, ProductResolverResult
-from .inventory import ProductBatch, StockMovement, Stocktake, StocktakeItem
+from .inventory import (ProductBatch, StockMovement, Stocktake, StocktakeItem,
+                        StorageLocation, Warehouse)
 from .marketing import Campaign, Coupon, CouponRedemption
 from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
@@ -29,6 +30,8 @@ __all__ = [
     "StockMovement",
     "Stocktake",
     "StocktakeItem",
+    "Warehouse",
+    "StorageLocation",
     "Invoice",
     "InvoiceItem",
     "Payment",

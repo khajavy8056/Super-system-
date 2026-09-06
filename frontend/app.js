@@ -336,7 +336,7 @@ function systemCard(title, sys) {
   );
 }
 
-const posState = { cart: [], customer: null, coupon: null, couponInfo: null };
+const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0 };
 
 function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
 
@@ -371,8 +371,9 @@ function renderPosCart() {
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
     <div class="row"><span class="muted">جمع</span><span>${money(gross)}</span></div>
     ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
+    ${invDisc ? `<div class="row"><span class="muted">تخفیف فاکتور <a href="#" onclick="posState.invoiceDiscount=0;renderPosCart();return false;" class="muted">✕</a></span><span class="err">−${money(invDisc)}</span></div>` : ""}
     ${coupon ? `<div class="row"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
-    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - coupon)}</span></div>
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>
     ${showCost ? `<div class="row"><span class="muted">سود تخمینی</span><span class="ok">${money(profit)}</span></div>` : ""}`;
   const cpEl = $("#pos-coupon-state");
   if (cpEl) {
@@ -504,7 +505,7 @@ RENDER.pos = async () => {
   $("#pos-customer-btn").addEventListener("click", () => posCustomerModal());
   $("#pos-coupon-btn").addEventListener("click", () => posCouponModal());
   $("#pos-clear-btn").addEventListener("click", () => {
-    posState.cart = []; posState.coupon = null; posState.couponInfo = null; renderPosCart();
+    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; renderPosCart();
   });
   $("#pos-kiosk-btn").addEventListener("click", () => (state.kiosk ? exitKioskPrompt() : enterKiosk()));
   posClock();
@@ -692,7 +693,7 @@ function posDiscountModal() {
     `<option value="${idx}">${esc(it.product_name)} (${money(posGross(it))})</option>`).join("");
   openModal(`<h3>تخفیف</h3>
     <label>اعمال روی</label>
-    <select id="disc-target"><option value="-1">کل سبد</option>${options}</select>
+    <select id="disc-target"><option value="-2">تخفیف روی فاکتور (یک‌جا)</option><option value="-1">کل سبد (تقسیم روی خط‌ها)</option>${options}</select>
     <label>مبلغ تخفیف (ریال)</label>
     <input id="disc-amount" type="number" min="0" value="0" />
     <button id="disc-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال</button>`);
@@ -700,6 +701,12 @@ function posDiscountModal() {
     const target = parseInt($("#disc-target").value, 10);
     const amount = Number($("#disc-amount").value || 0);
     if (amount <= 0) { toast("مبلغ نامعتبر", "err"); return; }
+    if (target === -2) {
+      const net = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+      if (amount > net) { toast("تخفیف از جمع سبد بیشتر است", "err"); return; }
+      posState.invoiceDiscount = amount;
+      closeModal(); renderPosCart(); return;
+    }
     if (target >= 0) {
       const it = posState.cart[target];
       if (amount > posGross(it)) { toast("تخفیف از مبلغ خط بیشتر است", "err"); return; }
@@ -747,7 +754,7 @@ function posCheckoutModal() {
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
-  const total = gross - disc - coupon;
+  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon;
   openModal(`<h3>پرداخت</h3>
     ${coupon ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
     <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
@@ -807,10 +814,13 @@ async function doCheckout(total) {
                                            quantity: i.quantity, discount: i.discount || 0 })),
         payments,
         customer_id: posState.customer ? posState.customer.id : null,
+        invoice_discount: posState.invoiceDiscount || 0,
         coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
     });
-    posState.cart = []; posState.customer = null;
+    posState.cart = []; posState.customer = null; posState.invoiceDiscount = 0;
     posState.coupon = null; posState.couponInfo = null;
+    if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
+      toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
     toast(inv.payment_status === "ON_ACCOUNT"
       ? `ثبت شد (نسیه): ${inv.invoice_number}`
@@ -916,7 +926,7 @@ RENDER.products = async () => {
     <div class="form-row" style="margin-top:8px">
       <div><label>نام کالا</label><input id="p-name" /></div>
       <div><label>برند</label><input id="p-brand" /></div>
-      <div><label>دسته</label><input id="p-category" /></div>
+      <div><label>دسته (زیردسته با «/»: لبنیات / پنیر)</label><input id="p-category" list="p-category-list" /><datalist id="p-category-list"></datalist></div>
       <div><label>حداقل موجودی هشدار</label><input id="p-min" type="number" value="5" /></div>
     </div>
     <div id="p-image-box" class="hidden" style="margin-top:10px">
@@ -931,6 +941,12 @@ RENDER.products = async () => {
     <button id="p-add" class="btn btn-primary" style="margin-top:12px">ثبت کالا</button>
   </div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+
+  // §78/§79 — existing categories (with parent path) as suggestions
+  api("/products/categories").then((cats) => {
+    const dl = $("#p-category-list"); if (!dl) return;
+    dl.innerHTML = cats.map((c) => `<option value="${esc(c.path || c.name)}"></option>`).join("");
+  }).catch(() => {});
 
   const setImage = (path) => {
     $("#p-image-url").value = path || "";
@@ -1016,9 +1032,17 @@ RENDER.products = async () => {
       const brand = brandName
         ? await api("/products/brands", { method: "POST", body: JSON.stringify({ name: brandName }) })
         : null;
-      const category = catName
-        ? await api("/products/categories", { method: "POST", body: JSON.stringify({ name: catName }) })
-        : null;
+      // §78/§79 — "والد / فرزند" creates (or reuses) the parent, then the child.
+      let category = null;
+      if (catName) {
+        const parts = catName.split("/").map((x) => x.trim()).filter(Boolean);
+        let parentId = null;
+        for (const part of parts) {
+          category = await api("/products/categories", { method: "POST",
+            body: JSON.stringify({ name: part, parent_id: parentId }) });
+          parentId = category.id;
+        }
+      }
 
       // §33 — warn before creating a probable duplicate. Advisory: the
       // operator may confirm, because two real products can share a name.
@@ -1182,6 +1206,7 @@ RENDER.inventory = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="grid grid-2">
     <div class="card"><h3>موجودی کالاها</h3><table id="i-table"></table></div>
+    <div class="card" id="wh-card"><h3>انبارها و محل نگهداری</h3><div id="wh-body" class="muted">…</div></div>
     <div class="card">
       <h3>انبارگردانی</h3>
       <div class="form-row"><div><label>نام</label><input id="st-name" value="انبارگردانی دوره‌ای" /></div></div>
@@ -1206,6 +1231,7 @@ RENDER.inventory = async () => {
       window._stDetail(st.id);
     } catch (e) { toast(e.message, "err"); }
   });
+  await renderWarehousesCard();
   const list = await api("/inventory/stocktakes");
   $("#st-list").innerHTML = list.map((s) =>
     `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
@@ -1275,16 +1301,81 @@ RENDER.invoices = async () => {
         if (p.ok && typeof p.message === "string") openModal(`<pre class="receipt">${p.message}</pre>`);
         else toast(p.message, p.ok ? "ok" : "err");
       } }),
-      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: async () => {
-        if (!confirm("فاکتور ابطال شود؟")) return;
-        try { await api(`/invoices/${i.id}/void`, { method: "POST", body: JSON.stringify({}) }); RENDER.invoices(); } catch (e) { toast(e.message, "err"); }
-      } }))));
+      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) }))));
   const t = $("#inv-table");
   t.innerHTML = "";
   t.append(el("thead", {}, el("tr", {}, el("th", { text: "شماره" }), el("th", { text: "مبلغ" }),
     el("th", { text: "پرداخت" }), el("th", { text: "وضعیت" }), el("th", { text: "تاریخ" }), el("th", {}))),
     el("tbody", {}, ...rows));
 };
+
+/* §109/§130/§131 — warehouses, storage locations, transfers */
+async function renderWarehousesCard() {
+  const box = $("#wh-body"); if (!box) return;
+  let list = [];
+  try { list = await api("/warehouses"); } catch (e) { box.textContent = e.message; return; }
+  box.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>انبار</th><th>کد</th><th>موجودی</th><th>ارزش</th><th>محل‌ها</th><th></th></tr></thead>
+      <tbody>${list.map((w) => `<tr>
+        <td>${esc(w.name)} ${w.is_default ? '<span class="badge badge-green">پیش‌فرض</span>' : ""}</td>
+        <td class="muted">${esc(w.code || "—")}</td><td>${w.total_qty}</td><td>${money(w.stock_value)}</td>
+        <td class="muted">${w.locations.map((l) => esc(l.name)).join("، ") || "—"}</td>
+        <td><button class="btn btn-sm" onclick="addLocationModal(${w.id})">+ محل</button></td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="toolbar" style="margin-top:10px">
+      <button class="btn btn-sm" id="wh-add">+ انبار جدید</button>
+      <button class="btn btn-sm btn-primary" id="wh-transfer">انتقال موجودی بین انبارها</button>
+    </div>`;
+  $("#wh-add").addEventListener("click", () => {
+    openModal(`<h3>انبار جدید</h3><label>نام</label><input id="wh-name" /><label>کد</label><input id="wh-code" />
+      <label>آدرس</label><input id="wh-addr" /><button id="wh-save" class="btn btn-primary btn-block" style="margin-top:12px">ذخیره</button>`);
+    $("#wh-save").addEventListener("click", async () => {
+      try { await api("/warehouses", { method: "POST", body: JSON.stringify({ name: $("#wh-name").value, code: $("#wh-code").value || null, address: $("#wh-addr").value || null }) });
+        closeModal(); toast("انبار ثبت شد"); renderWarehousesCard(); } catch (e) { toast(e.message, "err"); }
+    });
+  });
+  $("#wh-transfer").addEventListener("click", async () => {
+    const batches = (await api("/batches")).filter((b) => b.current_qty > 0);
+    const stock = await api("/inventory/stock");
+    const pname = Object.fromEntries(stock.map((p) => [p.product_id, p.name]));
+    openModal(`<h3>انتقال موجودی</h3>
+      <label>Batch مبدأ</label><select id="tr-batch">${batches.map((b) => `<option value="${b.id}">${esc(pname[b.product_id] || b.product_id)} — ${b.batch_number} (${b.current_qty}) [انبار ${b.warehouse_id || "پیش‌فرض"}]</option>`).join("")}</select>
+      <label>تعداد</label><input id="tr-qty" type="number" min="0" step="any" />
+      <label>انبار مقصد</label><select id="tr-wh">${list.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join("")}</select>
+      <label>علت</label><input id="tr-reason" />
+      <button id="tr-go" class="btn btn-primary btn-block" style="margin-top:12px">ثبت انتقال</button>`);
+    $("#tr-go").addEventListener("click", async () => {
+      try { const r = await api("/warehouses/transfer", { method: "POST", body: JSON.stringify({ batch_id: Number($("#tr-batch").value), quantity: Number($("#tr-qty").value), to_warehouse_id: Number($("#tr-wh").value), reason: $("#tr-reason").value || null }) });
+        closeModal(); toast(`انتقال ثبت شد (Batch مقصد #${r.dest_batch_id})`); RENDER.inventory(); } catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+window.addLocationModal = (wid) => {
+  openModal(`<h3>محل نگهداری جدید</h3><label>نام (قفسه / یخچال / سردخانه)</label><input id="loc-name" /><label>کد</label><input id="loc-code" />
+    <button id="loc-save" class="btn btn-primary btn-block" style="margin-top:12px">ذخیره</button>`);
+  $("#loc-save").addEventListener("click", async () => {
+    try { await api(`/warehouses/${wid}/locations`, { method: "POST", body: JSON.stringify({ name: $("#loc-name").value, code: $("#loc-code").value || null }) });
+      closeModal(); toast("محل ثبت شد"); renderWarehousesCard(); } catch (e) { toast(e.message, "err"); }
+  });
+};
+
+/* §14/§209 — void needs a reason and, for PAID invoices, the admin password */
+function voidInvoiceModal(i) {
+  openModal(`<h3>ابطال فاکتور ${esc(i.invoice_number)}</h3>
+    <p class="muted">کالاها به همان Batch برمی‌گردند و سند معکوس ثبت می‌شود.</p>
+    <label>علت ابطال</label><input id="void-reason" autocomplete="off" />
+    ${i.status === "PAID" ? `<label>رمز عبور مدیر (تأیید عملیات حساس)</label><input id="void-pass" type="password" autocomplete="current-password" />` : ""}
+    <button id="void-go" class="btn btn-danger btn-block" style="margin-top:14px">ابطال فاکتور</button>`);
+  $("#void-go").addEventListener("click", async () => {
+    const body = { reason: $("#void-reason").value.trim() || null };
+    const pass = $("#void-pass"); if (pass) body.admin_password = pass.value;
+    try {
+      await api(`/invoices/${i.id}/void`, { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast("فاکتور ابطال شد"); RENDER.invoices();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
 
 /* ---------- reports (§49) ---------- */
 const REPORT_TABS = [
@@ -1491,16 +1582,28 @@ RENDER.users = async () => {
    It is now grouped into Persian categories with a tab bar, so an operator
    changing the receipt footer never has to scroll past SMS credentials. */
 const SET_CATEGORIES = [
-  { id: "store",  label: "فروشگاه",        icon: "box",  prefixes: ["store."], panel: "store" },
-  { id: "pos",    label: "صندوق (POS)",    icon: "pos",  prefixes: ["pos."] },
-  { id: "inv",    label: "انبار و انقضا",  icon: "warehouse", prefixes: ["stocktake.", "expiry."] },
-  { id: "barcode",label: "بارکد و اسکنر",  icon: "inbox", prefixes: ["barcode."] },
-  { id: "print",  label: "چاپگر",          icon: "printer", prefixes: ["printer."] },
-  { id: "sms",    label: "پیامک",          icon: "user", prefixes: ["sms."] },
-  { id: "general",label: "عمومی و زمان",   icon: "gear", prefixes: ["time.", "sync.", "backup."], panel: "general" },
-  { id: "theme",  label: "ظاهر",           icon: "chart", prefixes: ["ui."], panel: "theme" },
-  { id: "update", label: "به‌روزرسانی",    icon: "shield", prefixes: [], panel: "update" },
-  { id: "about",  label: "درباره",         icon: "gear", prefixes: [], panel: "about" },
+  { id: "store",    label: "پروفایل فروشگاه", prefixes: ["store."], panel: "store" },
+  { id: "general",  label: "عمومی و زمان",    prefixes: ["time.", "sync."], panel: "general" },
+  { id: "pos",      label: "صندوق (POS)",     prefixes: ["pos."], exclude: ["pos.currency"] },
+  { id: "currency", label: "واحد پول (تومان/ریال)", prefixes: ["pos.currency"] },
+  { id: "inv",      label: "انبار",           prefixes: ["stocktake.", "inventory."] },
+  { id: "expiry",   label: "تاریخ انقضا",     prefixes: ["expiry."] },
+  { id: "products", label: "محصولات",         prefixes: ["products."] },
+  { id: "barcode",  label: "بارکد و اسکنر",   prefixes: ["barcode."] },
+  { id: "pricing",  label: "قیمت‌گذاری",      prefixes: ["pricing."] },
+  { id: "customers",label: "مشتریان",         prefixes: ["customers."] },
+  { id: "ledger",   label: "حساب دفتری",      prefixes: ["ledger."] },
+  { id: "campaign", label: "جشنواره و تخفیف", prefixes: ["marketing."] },
+  { id: "sms",      label: "پیامک",           prefixes: ["sms."], exclude: ["sms.template."], panel: "sms" },
+  { id: "smstpl",   label: "الگوهای پیامک",   prefixes: ["sms.template."] },
+  { id: "print",    label: "پرینتر حرارتی",   prefixes: ["printer."], exclude: ["printer.drawer."] },
+  { id: "drawer",   label: "کشوی پول",        prefixes: ["printer.drawer."] },
+  { id: "network",  label: "شبکه",            prefixes: ["network."] },
+  { id: "security", label: "امنیت",           prefixes: ["security."] },
+  { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."] },
+  { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
+  { id: "update",   label: "به‌روزرسانی",     prefixes: [], panel: "update" },
+  { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
 RENDER.settings = async () => {
@@ -1568,8 +1671,38 @@ async function renderSettingsPanel(cat, allRows) {
     return;
   }
 
+  if (cat.panel === "sms") {
+    const tools = el("div", { class: "card" });
+    tools.innerHTML = `<h3>ابزار پیامک</h3>
+      <div class="toolbar">
+        <button class="btn btn-sm" id="sms-test">تست اتصال سرویس پیامک</button>
+        <button class="btn btn-sm" id="sms-report">ارسال پیامک گزارش مدیریت</button>
+        <button class="btn btn-sm" id="sms-dispatch">پردازش صف ارسال</button>
+      </div>
+      <div id="sms-tool-result" class="muted" style="margin-top:8px"></div>
+      <h4 style="margin-top:14px">صف / تاریخچه ارسال</h4>
+      <div class="table-wrap"><table id="sms-log"></table></div>`;
+    body.append(tools);
+    const res = $("#sms-tool-result");
+    $("#sms-test").addEventListener("click", async () => {
+      try { const r = await api("/sms/test-connection", { method: "POST" });
+        res.innerHTML = `<span class="badge badge-${r.status === "PASS" ? "green" : r.status === "FAIL" ? "red" : "amber"}">${r.status}</span> ${esc(r.detail || "")}`; }
+      catch (e) { res.textContent = e.message; }
+    });
+    $("#sms-report").addEventListener("click", async () => {
+      try { const r = await api("/sms/daily-report", { method: "POST" }); toast("پیامک گزارش در صف قرار گرفت"); res.innerHTML = `<pre class="receipt">${esc(r.text)}</pre>`; renderSmsLog(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    $("#sms-dispatch").addEventListener("click", async () => {
+      try { const r = await api("/sms/dispatch", { method: "POST" }); res.textContent = `ارسال‌شده: ${r.sent} · در انتظار تلاش مجدد: ${r.retrying} · ناموفق: ${r.failed ?? 0}`; renderSmsLog(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    await renderSmsLog();
+  }
+
   // raw-key category: show the grouped key/value table for this prefix set.
-  const rows = allRows.filter((r) => cat.prefixes.some((px) => r.key.startsWith(px)));
+  const rows = allRows.filter((r) => cat.prefixes.some((px) => r.key.startsWith(px))
+    && !(cat.exclude || []).some((px) => r.key.startsWith(px)));
   const card = el("div", { class: "card" });
   card.append(el("h3", { text: cat.label }));
   if (!rows.length) { card.append(el("p", { class: "muted", text: "تنظیمی در این دسته نیست." })); body.append(card); return; }
@@ -1627,6 +1760,22 @@ async function renderStoreProfile() {
     } catch (e) { toast(e.message, "err"); }
   });
 }
+
+async function renderSmsLog() {
+  const t = $("#sms-log"); if (!t) return;
+  const rows = await api("/sms").catch(() => []);
+  const badge = (st) => st === "SENT" ? "green" : st === "FAILED" ? "red" : "amber";
+  t.innerHTML = `<thead><tr><th>شماره</th><th>متن</th><th>وضعیت</th><th>تلاش</th><th>خطا</th><th></th></tr></thead>
+    <tbody>${rows.length ? rows.map((m) => `<tr><td>${esc(m.phone)}</td><td class="muted" style="max-width:280px;white-space:pre-wrap">${esc(m.text)}</td>
+      <td><span class="badge badge-${badge(m.status)}">${m.status}</span></td><td>${m.retry_count}</td>
+      <td class="muted">${esc(m.error_message || "")}</td>
+      <td>${m.status === "FAILED" ? `<button class="btn btn-sm" onclick="smsRetry(${m.id})">تلاش مجدد</button>` : ""}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">پیامکی ثبت نشده است</td></tr>`}</tbody>`;
+}
+window.smsRetry = async (id) => {
+  try { await api(`/sms/${id}/retry`, { method: "POST" }); toast("در صف قرار گرفت"); renderSmsLog(); }
+  catch (e) { toast(e.message, "err"); }
+};
 
 async function renderThemeBox() {
   const t = await api("/settings/theme").catch(() => null);

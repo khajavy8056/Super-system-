@@ -82,14 +82,6 @@ def by_barcode(barcode: str, db: Session = Depends(get_db), _: User = Depends(re
     return _out(p)
 
 
-@router.get("/{product_id}")
-def get_product(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("products.view"))):
-    p = db.get(Product, product_id)
-    if not p or p.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
-    return _out(p)
-
-
 # --- Brands & Categories -----------------------------------------------------
 # Products carry brand_id/category_id, but until now there was no way to create
 # one, so those columns could only ever be null. §18 needs brand search to have
@@ -99,6 +91,8 @@ def get_product(product_id: int, db: Session = Depends(get_db), _: User = Depend
 
 class TaxonomyIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    #: §79 — sub-category: id of the parent category (categories only)
+    parent_id: int | None = None
 
 
 @router.get("/brands")
@@ -139,7 +133,11 @@ def list_categories(q: str | None = Query(default=None), db: Session = Depends(g
     if q:
         stmt = stmt.where(Category.name.ilike(f"%{q}%"))
     rows = db.execute(stmt.order_by(Category.name.asc())).scalars().all()
-    return [{"id": c.id, "name": c.name} for c in rows]
+    names = {c.id: c.name for c in rows}
+    return [{"id": c.id, "name": c.name, "parent_id": c.parent_id,
+             "parent_name": names.get(c.parent_id) if c.parent_id else None,
+             "path": (f"{names.get(c.parent_id)} / {c.name}" if c.parent_id and names.get(c.parent_id) else c.name)}
+            for c in rows]
 
 
 @router.post("/categories", status_code=201)
@@ -147,16 +145,31 @@ def create_category(body: TaxonomyIn, db: Session = Depends(get_db),
                     user: User = Depends(require_permission("products.manage"))):
     from ..models import Category
     name = body.name.strip()
+    if body.parent_id is not None and db.get(Category, body.parent_id) is None:
+        raise HTTPException(status_code=404, detail="PARENT_CATEGORY_NOT_FOUND")
     existing = db.execute(
-        select(Category).where(func.lower(Category.name) == name.lower())
+        select(Category).where(func.lower(Category.name) == name.lower(),
+                               Category.parent_id.is_(body.parent_id) if body.parent_id is None
+                               else Category.parent_id == body.parent_id)
     ).scalar_one_or_none()
     if existing:
-        return {"id": existing.id, "name": existing.name}
-    c = Category(name=name)
+        return {"id": existing.id, "name": existing.name, "parent_id": existing.parent_id}
+    c = Category(name=name, parent_id=body.parent_id)
     db.add(c)
     db.commit()
     db.refresh(c)
-    return {"id": c.id, "name": c.name}
+    return {"id": c.id, "name": c.name, "parent_id": c.parent_id}
+
+
+# NOTE: declared AFTER the static /brands and /categories routes; FastAPI matches
+# in declaration order and '/{product_id}' used to swallow them (BUG: 422 on GET
+# /products/categories).
+@router.get("/{product_id}")
+def get_product(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("products.view"))):
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+    return _out(p)
 
 
 class DuplicateCheckIn(BaseModel):

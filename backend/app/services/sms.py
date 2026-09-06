@@ -254,3 +254,101 @@ def start_worker(session_factory) -> None:
 
 def stop_worker() -> None:
     _stop.set()
+
+
+# --- §166 templates / §173–§176 typed messages / §171 manual retry -----------
+
+TEMPLATE_KEYS = {
+    "invoice": ("sms.template.invoice",
+                "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم"),
+    "debt_reminder": ("sms.template.debt_reminder",
+                      "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر."),
+    "coupon": ("sms.template.coupon",
+               "{store} | کد تخفیف شما: {code} | تا {until} معتبر است"),
+    "low_stock": ("sms.template.low_stock",
+                  "{store} | هشدار انبار: {count} کالا زیر حداقل موجودی است: {items}"),
+    "daily_report": ("sms.template.daily_report",
+                     "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}"),
+}
+
+
+def render_template(db: Session, kind: str, **values) -> str:
+    """Fill the shop-editable template for ``kind`` (§166). Unknown placeholders
+    are left untouched so a typo in a template never crashes a sale."""
+    key, default = TEMPLATE_KEYS[kind]
+    tpl = get_setting(db, key, default) or default
+
+    class _Safe(dict):
+        def __missing__(self, k):  # pragma: no cover - defensive
+            return "{" + k + "}"
+    return tpl.format_map(_Safe(values))
+
+
+def _store_ctx(db: Session) -> dict:
+    cur = get_setting(db, "pos.currency", "IRT")
+    return {"store": get_setting(db, "store.name", "فروشگاه"),
+            "currency": "ریال" if cur == "IRR" else "تومان"}
+
+
+def _fmt(n) -> str:
+    try:
+        return f"{float(n):,.0f}"
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def admin_phone(db: Session) -> str:
+    return (get_setting(db, "sms.admin_phone", "") or get_setting(db, "store.mobile", "")).strip()
+
+
+def queue_low_stock_alert(db: Session, *, rows: list[dict]) -> "SmsMessage | None":
+    """§176 — SMS the manager when items fall below their minimum."""
+    if get_setting(db, "sms.low_stock_alert", "false").lower() != "true":
+        return None
+    phone = admin_phone(db)
+    if not phone or not rows:
+        return None
+    names = "، ".join(str(r.get("name")) for r in rows[:5])
+    if len(rows) > 5:
+        names += f" و {len(rows) - 5} مورد دیگر"
+    text = render_template(db, "low_stock", count=len(rows), items=names, **_store_ctx(db))
+    return queue_sms(db, phone=phone, text=text, reference_type="LowStock", reference_id=None)
+
+
+def queue_daily_report(db: Session) -> "SmsMessage | None":
+    """§175 — management summary SMS (dashboard numbers) to the admin phone."""
+    from .reports import dashboard as _dashboard
+
+    phone = admin_phone(db)
+    if not phone:
+        raise SmsProviderError("CONFIG_MISSING", "sms.admin_phone (یا store.mobile) تنظیم نشده است")
+    from datetime import date as _date
+    d = _dashboard(db)
+    sales = d.get("sales", {}) or {}
+    text = render_template(
+        db, "daily_report",
+        date=_date.today().isoformat(),
+        invoices=sales.get("invoice_count_today", 0),
+        sales=_fmt(sales.get("today", 0)), profit=_fmt((d.get("profit") or {}).get("today", 0)),
+        debt=_fmt((d.get("receivables") or {}).get("customer_debt", 0)), **_store_ctx(db))
+    return queue_sms(db, phone=phone, text=text, reference_type="DailyReport", reference_id=None)
+
+
+def retry_message(db: Session, sms_id: int) -> "SmsMessage":
+    """§171 — put a FAILED message back in the queue (manual retry)."""
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None:
+        raise SmsProviderError("NOT_FOUND", "پیامک یافت نشد")
+    if msg.status == "SENT":
+        raise SmsProviderError("ALREADY_SENT", "این پیامک قبلاً ارسال شده است")
+    msg.status = "PENDING"
+    msg.retry_count = 0
+    msg.error_message = None
+    db.flush()
+    return msg
+
+
+def test_connection(db: Session) -> dict:
+    """§177 — provider connectivity test. Never sends a real SMS to a customer."""
+    from .diagnostics import check_sms
+    return check_sms(db)

@@ -37,6 +37,7 @@ from .routers import (
     sms,
     system,
     users,
+    warehouses,
 )
 
 logger = logging.getLogger("supermarket.errors")
@@ -116,7 +117,7 @@ for r in (
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
-    marketing.router, diagnostics.router,
+    marketing.router, diagnostics.router, warehouses.router,
 ):
     app.include_router(r, prefix=API)
 

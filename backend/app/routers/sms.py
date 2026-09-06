@@ -54,3 +54,53 @@ def list_sms(db: Session = Depends(get_db), _: User = Depends(require_permission
          "sent_at": m.sent_at.isoformat() if m.sent_at else None}
         for m in rows
     ]
+
+
+@router.post("/{sms_id}/retry")
+def retry(sms_id: int, db: Session = Depends(get_db),
+          user: User = Depends(require_permission("settings.manage"))):
+    """§171 — re-queue a FAILED message; the worker/dispatch delivers it."""
+    from fastapi import HTTPException
+    try:
+        msg = sms_svc.retry_message(db, sms_id)
+    except sms_svc.SmsProviderError as e:
+        raise HTTPException(status_code=409 if e.kind == "ALREADY_SENT" else 404,
+                            detail={"code": e.kind, "message": e.detail})
+    write_audit(db, action="SMS_RETRY_REQUESTED", user_id=user.id, entity_type="SmsMessage",
+                entity_id=msg.id)
+    db.commit()
+    return {"id": msg.id, "status": msg.status}
+
+
+@router.post("/test-connection")
+def test_connection(db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("settings.manage"))):
+    """§177 — provider connectivity check (no customer SMS is sent)."""
+    return sms_svc.test_connection(db)
+
+
+@router.post("/daily-report", status_code=201)
+def daily_report(db: Session = Depends(get_db),
+                 user: User = Depends(require_permission("reports.view"))):
+    """§175 — queue the management summary SMS to the admin phone."""
+    from fastapi import HTTPException
+    try:
+        msg = sms_svc.queue_daily_report(db)
+    except sms_svc.SmsProviderError as e:
+        raise HTTPException(status_code=422, detail={"code": e.kind, "message": e.detail})
+    write_audit(db, action="SMS_QUEUED", user_id=user.id, entity_type="SmsMessage", entity_id=msg.id,
+                after={"kind": "daily_report"})
+    db.commit()
+    return {"id": msg.id, "status": msg.status, "text": msg.text}
+
+
+@router.get("/templates")
+def templates(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    """§166 — the editable SMS patterns and their placeholders."""
+    out = []
+    for kind, (key, default) in sms_svc.TEMPLATE_KEYS.items():
+        import re as _re
+        out.append({"kind": kind, "key": key, "default": default,
+                    "value": sms_svc.get_setting(db, key, default),
+                    "placeholders": sorted(set(_re.findall(r"{(\w+)}", default)))})
+    return out

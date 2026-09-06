@@ -24,6 +24,9 @@ class Invoice(TimestampMixin, Base):
 
     subtotal: Mapped[Decimal] = mapped_column(MONEY, default=0)
     discount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: §12 — whole-invoice discount (part of ``discount``; kept separately so
+    #: the receipt can show "تخفیف فاکتور" apart from line/coupon discounts).
+    invoice_discount: Mapped[Decimal] = mapped_column(MONEY, default=0)
     tax: Mapped[Decimal] = mapped_column(MONEY, default=0)
     total_amount: Mapped[Decimal] = mapped_column(MONEY, default=0)
 

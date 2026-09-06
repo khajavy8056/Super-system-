@@ -337,3 +337,86 @@ def cancel_stocktake(db: Session, *, stocktake_id: int, user: User | None = None
                 entity_type="Stocktake", entity_id=st.id, reference=reason)
     db.flush()
     return st
+
+
+# --- §109 / §130 / §131: warehouses, locations, transfers ---------------------
+
+def transfer_batch(db: Session, *, batch: ProductBatch, qty, to_warehouse_id: int,
+                   to_location_id: int | None = None, user: User | None = None,
+                   reason: str | None = None) -> ProductBatch:
+    """Move ``qty`` of a batch to another warehouse.
+
+    Stock never teleports: the source batch is reduced with TRANSFER_OUT and a
+    NEW batch (same cost/prices/expiry — costing basis is preserved) is created
+    in the destination with TRANSFER_IN. Both movements share ``reference_id``
+    so the pair is auditable.
+    """
+    from ..models import Warehouse
+
+    qty = to_qty(qty)
+    if qty <= 0:
+        raise InventoryError("Transfer quantity must be positive")
+    if to_qty(batch.current_qty) < qty:
+        raise InventoryError("Insufficient stock to transfer")
+    if (batch.warehouse_id or 0) == to_warehouse_id and (batch.location_id or None) == to_location_id:
+        raise InventoryError("Source and destination are the same")
+    dest = db.get(Warehouse, to_warehouse_id)
+    if dest is None or not dest.is_active:
+        raise InventoryError("Destination warehouse not found")
+
+    # Full move keeps the same batch row (identity preserved); partial splits.
+    if to_qty(batch.current_qty) == qty:
+        add_movement(db, product_id=batch.product_id, batch_id=batch.id,
+                     movement_type="TRANSFER_OUT", quantity=-qty,
+                     reference_type="Warehouse", reference_id=batch.warehouse_id,
+                     unit_cost=batch.buy_price, note=reason, user=user)
+        batch.warehouse_id = to_warehouse_id
+        batch.location_id = to_location_id
+        add_movement(db, product_id=batch.product_id, batch_id=batch.id,
+                     movement_type="TRANSFER_IN", quantity=qty,
+                     reference_type="Warehouse", reference_id=to_warehouse_id,
+                     unit_cost=batch.buy_price, note=reason, user=user)
+        new_batch = batch
+    else:
+        batch.current_qty = to_qty(batch.current_qty) - qty
+        add_movement(db, product_id=batch.product_id, batch_id=batch.id,
+                     movement_type="TRANSFER_OUT", quantity=-qty,
+                     reference_type="Warehouse", reference_id=to_warehouse_id,
+                     unit_cost=batch.buy_price, note=reason, user=user)
+        new_batch = ProductBatch(
+            product_id=batch.product_id, batch_number=f"{batch.batch_number}-T{to_warehouse_id}",
+            quantity_received=qty, current_qty=qty,
+            buy_price=batch.buy_price, supplier_price=batch.supplier_price,
+            consumer_price=batch.consumer_price, sell_price=batch.sell_price,
+            discount=batch.discount, tax=batch.tax,
+            production_date=batch.production_date, expiry_date=batch.expiry_date,
+            received_at=batch.received_at, status="ACTIVE",
+            warehouse_id=to_warehouse_id, location_id=to_location_id,
+            note=f"transfer from batch {batch.id}",
+        )
+        db.add(new_batch)
+        db.flush()
+        add_movement(db, product_id=batch.product_id, batch_id=new_batch.id,
+                     movement_type="TRANSFER_IN", quantity=qty,
+                     reference_type="ProductBatch", reference_id=batch.id,
+                     unit_cost=batch.buy_price, note=reason, user=user)
+    write_audit(db, action="STOCK_TRANSFERRED", user_id=user.id if user else None,
+                entity_type="ProductBatch", entity_id=batch.id,
+                after={"qty": float(qty), "to_warehouse_id": to_warehouse_id,
+                       "to_location_id": to_location_id, "new_batch_id": new_batch.id},
+                reference=reason)
+    return new_batch
+
+
+def ensure_default_warehouse(db: Session):
+    from ..models import Warehouse
+    w = db.execute(select(Warehouse).where(Warehouse.is_default.is_(True))).scalar_one_or_none()
+    if w is None:
+        w = db.execute(select(Warehouse).order_by(Warehouse.id)).scalars().first()
+        if w is None:
+            w = Warehouse(name="انبار اصلی", code="MAIN", is_default=True, is_active=True)
+            db.add(w)
+        else:
+            w.is_default = True
+        db.flush()
+    return w

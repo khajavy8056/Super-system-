@@ -36,9 +36,43 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
         "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر.",
         "Debt reminder SMS template. Placeholders: {customer} {store} {amount} {currency}",
         False),
+    "sms.template.invoice": (
+        "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم",
+        "Invoice SMS template. Placeholders: {store} {invoice} {amount} {currency} {coupon_line}", False),
+    "sms.template.coupon": (
+        "{store} | کد تخفیف شما: {code} | تا {until} معتبر است",
+        "Coupon SMS template. Placeholders: {store} {code} {until}", False),
+    "sms.template.low_stock": (
+        "{store} | هشدار انبار: {count} کالا زیر حداقل موجودی است: {items}",
+        "Low-stock alert SMS template. Placeholders: {store} {count} {items}", False),
+    "sms.template.daily_report": (
+        "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}",
+        "Management report SMS template. Placeholders: {store} {date} {invoices} {sales} {profit} {debt} {currency}", False),
+    "sms.admin_phone": ("", "Manager mobile for alerts / daily report (falls back to store.mobile)", False),
+    "sms.low_stock_alert": ("false", "Send a low-stock alert SMS to the manager after the expiry/stock scan", False),
+    "sms.send_invoice": ("true", "Send an invoice SMS to registered customers after checkout", False),
     "sms.max_retries": ("5", "Max delivery attempts before FAILED", False),
     "sms.worker_interval_seconds": ("10", "Background dispatch interval (seconds)", False),
     "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),
+    "printer.cut": ("true", "Send a paper-cut command after each receipt (ESC/POS)", False),
+    "printer.drawer.enabled": ("true", "Pulse the cash drawer on cash sales", False),
+    "printer.drawer.pin": ("2", "Cash drawer kick pin (2 or 5)", False),
+    # --- inventory / products (§217–§218) ---
+    "inventory.default_min_stock": ("5", "Default minimum stock for new products", False),
+    "inventory.low_stock_alert": ("true", "Show low-stock alerts on the dashboard", False),
+    "products.autofill_requires_confirm": ("true", "Auto-fill data must be confirmed by a human before saving", False),
+    "pricing.default_margin_percent": ("20", "Default margin used to suggest a sell price", False),
+    "pricing.round_to": ("1000", "Round suggested sell prices to this step", False),
+    # --- customers / ledger (§221–§222) ---
+    "customers.default_credit_limit": ("0", "Default credit limit for new customers (0 = unlimited)", False),
+    "ledger.block_over_limit": ("true", "Block a credit sale that would exceed the customer's limit", False),
+    # --- marketing (§223–§224) ---
+    "marketing.coupon_prefix": ("SM", "Prefix for generated coupon codes", False),
+    "marketing.max_discount_percent": ("50", "Ceiling for percent coupons created in the UI", False),
+    # --- network / security (§228–§229) ---
+    "network.lan_port": ("8000", "Port the local server listens on for LAN / mobile clients", False),
+    "security.session_minutes": ("720", "Session lifetime in minutes", False),
+    "security.require_admin_for_void_paid": ("true", "Voiding a PAID invoice requires admin password confirmation", False),
     "backup.keep": ("10", "Number of backup files to retain (rotation)", False),
     "printer.header": ("", "Receipt header text", False),
     "printer.footer": ("", "Receipt footer text", False),
