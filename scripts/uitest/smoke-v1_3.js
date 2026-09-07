@@ -33,7 +33,7 @@ const BASE = "http://127.0.0.1:8000"; const FE = path.join(__dirname, "..", ".."
   // receiving view
   await window.go("batches"); await sleep(500);
   check(!!$("#b-barcode") && !!$("#b-suggest"), "receiving: barcode box + suggestion host");
-  check(!$("#b-supplier"), "receiving: supplier price box removed");
+  check($("#b-supplier") && $("#b-supplier").tagName === "SELECT", "receiving: supplier is a dropdown (v1.4 accounting)");
   check($("#b-expiry") && $("#b-expiry").type === "hidden" && !!$(".jdate"), "receiving: expiry is Jalali field");
   check(($("#view").textContent || "").includes("۱۴۰۵/۱۰/۲۵"), "recent batches show Jalali expiry (2027-01-15 -> ۱۴۰۵/۱۰/۲۵)");
   const bi = $(".jdate"); bi.value = "1405/01/01"; bi.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -54,7 +54,7 @@ const BASE = "http://127.0.0.1:8000"; const FE = path.join(__dirname, "..", ".."
   const inp = $(".st-input"); inp.value = String(Number(inp.dataset.sys) + 1); inp.dispatchEvent(new window.Event("input", { bubbles: true }));
   check($(`[data-diff="${inp.dataset.item}"]`).textContent.includes("+1"), "live difference shows +1");
   $("#st-save").click(); await sleep(900);
-  check(!errors.length, "no JS errors after save & next");
+  if (errors.length) console.log("JS ERRORS:", errors); check(!errors.length, "no JS errors after save & next");
   // alarms visible on dashboard + inventory
   await window.go("dashboard"); await sleep(900);
   check(!!$("#dash-alarms .alarm"), "dashboard shows stocktake alarm strip");

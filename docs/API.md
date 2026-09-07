@@ -163,3 +163,32 @@ the code as meaningless to external catalogues.
 
 ### پیامک (§164–165)
 - `POST /api/sms/test-connection` برای ملی‌پیامک اعتبار واقعی (`GetCredit`) را برمی‌گرداند؛ حالت‌های `sms.melipayamak_mode=line|pattern`.
+
+## افزوده‌های v1.4.0 — حسابداری (`/api/accounting/*`)
+
+مجوزها: `accounting.view` (خواندن)، `accounting.post` (ثبت سند/هزینه/چک/پرداخت)، `accounting.close` (بستن دوره). صندوق‌دار با `pos.sell` فقط شیفت خودش را باز/بسته می‌کند. خطاها با بدنهٔ `{code, message}`: `UNBALANCED`/`NOT_POSTABLE` → 422؛ `PERIOD_CLOSED`/`ALREADY_REVERSED`/`SESSION_OPEN`/`INVALID_STATE` → 409.
+
+| متد | مسیر | شرح |
+|---|---|---|
+| GET | `/overview` | KPIها: صندوق، بانک، کارت‌خوان، طلب از مشتریان، بدهی به تأمین‌کنندگان، ارزش دفتری موجودی، `month` (درآمد/بهای تمام‌شده/هزینه/سود خالص/حاشیه)، چک‌ها |
+| GET/POST/PATCH | `/accounts`, `/accounts/{id}` | کدینگ حساب‌ها (کد، نام، نوع، والد، فعال) |
+| GET/POST | `/journal` | فهرست/ثبت سند دستی؛ بدنه `{date, description, lines:[{account_code|account_id, debit, credit, description, party_type, party_id}]}`؛ جمع بدهکار = بستانکار |
+| GET | `/journal/{id}` | سند با ردیف‌ها |
+| POST | `/journal/{id}/reverse` | سند برگشت (معکوس) |
+| GET | `/trial-balance?as_of` | تراز آزمایشی |
+| GET | `/ledger/{account_id}?start&end` | دفتر کل حساب با ماندهٔ جاری |
+| GET | `/income-statement?start&end` | صورت سود و زیان: `revenue`, `cogs`, `gross_profit`, `gross_margin_pct`, `expenses`, `net_profit` |
+| GET | `/balance-sheet?as_of` | ترازنامه (دارایی/بدهی/سرمایه + سود انباشته) |
+| GET / POST | `/periods`, `/periods/{id}/close` | دوره‌های مالی و بستن دوره |
+| GET/POST | `/expense-categories`, `/expenses` | دسته‌های هزینه و ثبت هزینه (`paid_from`: CASH/BANK/CARD) |
+| GET/POST | `/suppliers`, `/suppliers/{id}/pay` | تأمین‌کنندگان و پرداخت بدهی |
+| GET/POST | `/cheques`, `/cheques/{id}/clear`, `/cheques/{id}/bounce` | چک‌های دریافتی/پرداختی |
+| GET/POST | `/cash-sessions`, `/cash-sessions/current`, `/cash-sessions/open`, `/cash-sessions/{id}/close` | شیفت صندوق (موجودی اولیه، فروش نقدی، شمارش پایانی، مغایرت) |
+
+### ثبت خودکار
+- **فروش POS** (`POST /api/pos/checkout`): Dr 1101 صندوق / 1102 بانک / 1103 کارت‌خوان / 1201 حساب‌های دریافتنی (طرف = مشتری) — Cr 4101 فروش کالا (+ Cr 2201 مالیات)؛ و Dr 5101 بهای تمام‌شده / Cr 1301 موجودی کالا (FIFO بچ).
+- **ورود کالا** (`POST /api/batches/receive` با `supplier_id`, `paid_from`): Dr 1301 موجودی / Cr 2101 حساب‌های پرداختنی (یا 1101/1102/1103 هنگام پرداخت نقدی).
+
+### سایر افزوده‌های v1.4.0
+- `GET /api/reports/dashboard` → فیلدهای جدید `top_products[]` (`share_pct`, `qty`, `profit`), `trend[]` (۷ روز: فروش/سود), `accounting` (خلاصهٔ overview).
+- `GET /api/hardware/scanner/discover` — فهرست بارکدخوان‌های USB (HID/سریال) با پیشنهاد درایور؛ `POST /api/hardware/scanner/detect` `{intervals_ms:[]}` — تشخیص ویج اسکنر از الگوی تایپ.

@@ -87,3 +87,10 @@ ESC p m 60 120     پالس کشو (اگر فروش نقدی و drawer.enabled)
 `backend/tests/test_v1_1_features.py` — `test_escpos_tcp_receipt_cut_and_drawer`,
 `test_escpos_unreachable_printer_is_reported`, `test_visual_rtl_and_columns`,
 `test_store_logo_upload_serves_and_reaches_receipt`; `tests/test_phase3.py` (سینک فایل).
+
+## ۸. بارکدخوان (v1.4.0)
+
+- **HID (صفحه‌کلیدی)**: بدون درایور کار می‌کند. برنامه از الگوی تایپ (فاصلهٔ بین کاراکترها < ۳۰ms و پایان با Enter) اسکن را از تایپ دستی تشخیص می‌دهد (`scanWedge` در `app.js`؛ `POST /api/hardware/scanner/detect`) و آیکون اسکنر کنار فیلدهای بارکد سبز می‌شود. اسکن در هر صفحه‌ای (POS، ورود کالا، کالاها) به فیلد بارکد همان صفحه هدایت می‌شود.
+- **شناسایی خودکار USB**: `GET /api/hardware/scanner/discover` (`services/hardware.py::discover_scanners`) در ویندوز از WMI/PnP (`Win32_PnPEntity` با VID/PID سازندگان شناخته‌شده: Honeywell, Zebra/Symbol, Datalogic, Newland, Mindeo, Netum, …) و در لینوکس از `/sys/bus/usb` و `/dev/input/by-id` می‌خواند. خروجی: نام، VID/PID، نوع اتصال (HID/سریال)، و لینک درایور سازنده برای مدل‌های سریال (COM).
+- **دوربین**: فقط در PWA موبایل (`frontend/mobile/`) با `BarcodeDetector`/getUserMedia؛ در دسکتاپ از دوربین استفاده نمی‌شود.
+- **مسیرهای خطا**: نبود دسترسی WMI/`/sys` → فهرست خالی با پیام فارسی «بارکدخوانی پیدا نشد؛ اگر HID است بدون درایور کار می‌کند».

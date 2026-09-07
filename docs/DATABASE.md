@@ -103,6 +103,18 @@
 
 **`role_permissions`** — `role_id`, `permission_id`
 
+### حسابداری (v1.4.0، migration `e1f2a3b4c5d6`)
+| جدول | شرح |
+|---|---|
+| `acc_accounts` | کدینگ حساب‌ها: `code` یکتا، `name`, `type` (ASSET/LIABILITY/EQUITY/REVENUE/EXPENSE), `parent_id`, `is_system`, `is_active` |
+| `acc_fiscal_periods` | دورهٔ مالی: `start_date`, `end_date`, `status` (OPEN/CLOSED), `closed_by`, `closed_at` |
+| `acc_journal_entries` | سرسند: `number`, `entry_date`, `description`, `source_type` (MANUAL/SALE/PURCHASE/EXPENSE/CHEQUE/SUPPLIER_PAYMENT/CASH_SESSION/REVERSAL), `source_id`, `reversed_by_id`, `created_by` |
+| `acc_journal_lines` | ردیف سند: `entry_id`, `account_id`, `debit`, `credit`, `party_type`, `party_id`, `description` — قید: در هر سند Σبدهکار = Σبستانکار |
+| `acc_suppliers` | تأمین‌کننده: نام، تلفن، کد اقتصادی، آدرس |
+| `acc_expense_categories` / `acc_expenses` | دستهٔ هزینه (به حساب 61xx متصل) و هزینه‌ها (`paid_from`, `entry_id`) |
+| `acc_cheques` | چک: `direction` (RECEIVED/ISSUED), `number`, `bank_name`, `amount`, `due_date`, `status` (PENDING/CLEARED/BOUNCED), طرف حساب، اسناد صدور/وصول |
+| `acc_cash_sessions` | شیفت صندوق: `opened_by`, `opening_float`, `expected_cash`, `counted_cash`, `difference`, `status` |
+
 ## قواعد کلیدی
 
 * `stock_movements.movement_type ∈ {IN, SALE_OUT, RETURN_IN, WASTE, ADJUSTMENT, TRANSFER}`؛ موجودی هر Batch = جمع حرکات (بدون ویرایش مستقیم).

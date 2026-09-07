@@ -1,4 +1,4 @@
-# چک‌لیست ۳۵۰ قابلیت — وضعیت واقعی در نسخهٔ 1.2.0
+# چک‌لیست ۳۵۰ قابلیت — وضعیت واقعی در نسخهٔ 1.4.0
 
 > قانون صداقت (§57): «انجام‌شده» یعنی کد + اجرا + آزمون + نتیجهٔ مورد انتظار.
 > هر جا آزمون واقعی در این محیط ممکن نبوده، صریحاً **NOT VERIFIED** نوشته شده است.
@@ -95,7 +95,7 @@
 
 | # | قابلیت | وضعیت | شواهد |
 |---|---|---|---|
-| 132 | داشبورد | ✅ | `GET /reports/dashboard` (۱۲ بلوک §23) |
+| 132 | داشبورد | ✅ **v1.4 بازطراحی** | `GET /reports/dashboard` (۱۲ بلوک §23 + `top_products`/`trend`/`accounting`)؛ UI نئون: گیج، حلقه‌های سهم فروش، نمودار SVG روند؛ اسکرین‌شات `v14-01`; smoke `smoke-v1_4.js` |
 | 133–140 | فروش روزانه/هفتگی/ماهانه (شمسی)، سود، موجودی، ارزش، کم‌موجود، نزدیک انقضا، منقضی | ✅ **v1.2** | `/reports/sales?group=daily|weekly|monthly|product`, `/profit`, `/inventory`, `/low-stock`, `/expiry`; T: `test_sales_report_monthly_jalali_buckets` |
 | 141–143 | خرید، ورود و خروج، Batchها | ✅ | `/reports/purchase-cost`, `/movements`, `/batches` |
 | 144–146 | مشتریان، بدهی، حساب‌های دفتری | ✅ | `/customers/debtors`, `/customers/{id}/ledger`, بلوک `receivables` |
@@ -126,6 +126,7 @@
 
 | # | قابلیت | وضعیت | شواهد |
 |---|---|---|---|
+| 178+ (v1.4) | بارکدخوان: شناسایی خودکار USB، تشخیص ویج، آیکون وضعیت | ✅ **v1.4** (device NOT VERIFIED) | `/hardware/scanner/discover`, `/hardware/scanner/detect`; T: `test_v1_4_dashboard_scanner.py`; `docs/HARDWARE.md §8` |
 | 178–182 | پرینتر حرارتی، ESC/POS، عرض کاغذ، Cutter، کشو | ✅ **v1.2** (device NOT VERIFIED) | `printer.paper_width_mm`→۳۲/۴۲/۴۸ ستون، `printer.cut`→`GS V`, `printer.drawer.*`→`ESC p`; T: `test_visual_rtl_and_columns`, شبیه‌ساز 9100; `docs/HARDWARE.md` |
 | 183–185 | تنظیمات و تست اتصال سخت‌افزار/سرویس‌ها | ✅ | `/hardware/health`, `/hardware/test/*`, `/diagnostics/run` |
 | 186–195 | مرکز عیب‌یابی، چک‌لیست، API، قیمت، تصویر، پیامک، دیتابیس، شبکه، لاگ تست، خطاهای اتصال | ✅ | `services/diagnostics.py` (۱۱+ بررسی، `DiagnosticRun` ذخیره می‌شود); T: `test_phase8_diagnostics.py` |
@@ -202,3 +203,13 @@
 چاپگر/کشو/اسکنر فیزیکی، ارسال زندهٔ پیامک، دانلود از OpenFoodFacts/GitHub،
 ساخت و نصب Setup.exe روی ویندوز، ساخت APK اندروید (بدون SDK)، آپلود asset به Release از این sandbox.
 برای هرکدام مسیر اثبات آماده است: workflowهای CI (`scripts/activate-ci.sh`)، شبیه‌سازهای آزمون، و `docs/HARDWARE.md`/`SMS.md`/`UPDATE.md`.
+
+## افزوده‌های فراتر از ۳۵۰ مورد (v1.4.0 — درخواست کاربر)
+| # | قابلیت | وضعیت | شواهد |
+|---|---|---|---|
+| A1 | حسابداری دوطرفه: کدینگ، سند متوازن، برگشت سند، دوره و بستن | ✅ | `services/accounting.py`; T: `test_v1_4_accounting.py` (۱۱ آزمون) |
+| A2 | ثبت خودکار سند از فروش (درآمد + COGS) و خرید (پرداختنی/نقدی) | ✅ | T: `test_sale_posts_balanced_entries`, `test_purchase_*` |
+| A3 | دفتر کل، تراز آزمایشی، سود و زیان، ترازنامه | ✅ | API + UI زبانه‌ها؛ اسکرین‌شات `v14-05` |
+| A4 | هزینه‌ها، تأمین‌کنندگان و پرداخت، چک دریافتی/پرداختی، شیفت صندوق | ✅ | API + UI؛ اسکرین‌شات `v14-06` |
+| A5 | رابط حسابداری ۱۱ زبانه‌ای فارسی + دسترسی سریع ثبت هزینه از داشبورد | ✅ | `frontend/accounting.js`; smoke `smoke-v1_4.js` (همهٔ زبانه‌ها بدون خطا) |
+| A6 | POS با طراحی مرجع کاربر (کارت‌های سبد، دکمه‌های بزرگ) | ✅ | اسکرین‌شات `v14-02`; smoke: افزودن/افزایش/حذف/پاک‌کردن سبد |
