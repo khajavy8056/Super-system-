@@ -365,7 +365,7 @@ window.mPick = (productId) => {
           <button class="batch-pick" onclick="mPickBatch(${productId}, ${b.batch_id})">
             <b>${money(b.sell_price)}</b>
             <span class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-              ${b.expiry_date ? "· انقضا " + esc(b.expiry_date) : ""}</span>
+              ${b.expiry_date ? "· انقضا " + (window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)) : ""}</span>
             ${b.is_recommended ? `<span class="badge badge-green">پیشنهاد سیستم</span>` : ""}
           </button>`).join("")}
         <button class="btn" onclick="closeSheet()">انصراف</button>
@@ -513,10 +513,11 @@ async function showStockIn() {
         <label>مقدار</label><input id="si-qty" inputmode="decimal" value="1" />
         <label>قیمت خرید</label><input id="si-buy" inputmode="numeric" />
         <label>قیمت فروش</label><input id="si-sell" inputmode="numeric" />
-        <label>تاریخ انقضا</label><input id="si-exp" type="date" />
+        <label>تاریخ انقضا (شمسی)</label><input id="si-exp" type="date" />
         <button class="btn btn-green" style="margin-top:12px" onclick="doStockIn()">ثبت ورود</button>
       </div>
     </div>` + tabbar();
+  if (window.Jalali) Jalali.attachAll($("#app"));
   $("#si-barcode").addEventListener("change", async () => {
     try {
       const p = await api(`/products/barcode/${encodeURIComponent($("#si-barcode").value.trim())}`);
@@ -587,7 +588,7 @@ window.showProductBatches = async (productId) => {
     const row = (b, dim) => `<div class="stock-row" style="${dim ? "opacity:.6" : ""}">
       <div><b>${esc(b.batch_number)}</b>
         <div class="muted">خرید ${money(b.buy_price)} · فروش ${money(b.sell_price)}
-          ${b.expiry_date ? " · انقضا " + esc(b.expiry_date) : ""}</div></div>
+          ${b.expiry_date ? " · انقضا " + (window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)) : ""}</div></div>
       <div><b>${qtyFmt(b.current_qty)}</b></div></div>`;
     closeSheet();
     $("#app").insertAdjacentHTML("beforeend", `
@@ -999,7 +1000,7 @@ window.showProductSheet = (item) => {
         <div class="batch-info">
           <div><b>${money(b.sell_price)}</b> <span class="muted">مصرف‌کننده ${money(b.consumer_price)}</span></div>
           <div class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-            ${b.expiry_date ? `· انقضا ${esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
+            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
         </div>`).join("") || `<p class="muted">بچ فعالی ندارد</p>`}
       ${item.price_count > 1 ? `<p class="amber">این کالا ${item.price_count} قیمت فعال دارد.</p>` : ""}
       <button class="btn" onclick="closeSheet()">بستن</button>

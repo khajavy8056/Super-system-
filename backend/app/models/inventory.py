@@ -90,6 +90,10 @@ class Stocktake(TimestampMixin, Base):
     warehouse_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: last item the operator was on — lets a phone resume mid-session (§14)
     cursor_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: v1.3: planned date — drives the "stocktake starts in N days" alarm
+    scheduled_for: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: v1.3: free-text reminder shown with the alarm
+    reminder_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     items: Mapped[list["StocktakeItem"]] = relationship(back_populates="stocktake")
 

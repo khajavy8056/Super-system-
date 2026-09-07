@@ -525,6 +525,7 @@ def stocktake_report(db: Session) -> list[dict]:
     sts = db.execute(select(Stocktake).order_by(Stocktake.created_at.desc())).scalars().all()
     return [
         {"id": st.id, "name": st.name, "status": st.status,
+         "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
          "started_at": st.started_at.isoformat() if st.started_at else None,
          "completed_at": st.completed_at.isoformat() if st.completed_at else None,
          "items": len(st.items)}

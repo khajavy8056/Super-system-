@@ -19,6 +19,7 @@ const BASE = "http://127.0.0.1:8000";
     headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "username=admin&password=admin123" });
   window.localStorage.setItem("token", (await login.json()).access_token);
 
+  window.eval(fs.readFileSync("" + require("path").join(__dirname, "..", "..", "frontend") + "/jalali.js", "utf8"));
   window.eval(fs.readFileSync("" + require("path").join(__dirname, "..", "..", "frontend") + "/app.js", "utf8"));
   await new Promise((r) => setTimeout(r, 800));
 

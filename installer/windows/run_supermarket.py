@@ -147,6 +147,50 @@ def find_app_mode_browser():
     return None
 
 
+def open_native_window(url: str, base: Path, log, on_closed):
+    """v1.3 — real desktop window (no browser). Uses pywebview on top of the
+    Microsoft Edge WebView2 runtime that ships with Windows 10/11, so the user
+    sees ONE application window with our icon/title, no address bar, no tabs,
+    no browser chrome. Returns True when the window was shown (the call blocks
+    until the window closes, then ``on_closed`` runs); False when pywebview or
+    WebView2 is unavailable so the caller can fall back."""
+    if os.environ.get("SUPERMARKET_BROWSER_MODE", "").strip().lower() in ("system", "edge-app"):
+        return False
+    try:
+        import webview  # pywebview
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pywebview not available (%s); falling back", exc)
+        return False
+    try:
+        # WebView2 keeps its profile here (cookies = login session, zoom, etc.)
+        profile = base / "webview2"
+        profile.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
+        win = webview.create_window(
+            "سیستم مدیریت سوپرمارکت", url,
+            width=1440, height=900, min_size=(1024, 640),
+            text_select=True, zoomable=True, confirm_close=False,
+        )
+        try:
+            win.events.closed += on_closed
+        except Exception:  # noqa: BLE001 - older pywebview
+            pass
+        icon = backend_dir().parent / "installer" / "windows" / "icon.ico"
+        if not icon.exists():
+            icon = Path(getattr(sys, "_MEIPASS", ".")) / "icon.ico"
+        kwargs = {"private_mode": False, "storage_path": str(profile), "debug": False}
+        if sys.platform == "win32":
+            kwargs["gui"] = "edgechromium"
+        if icon.exists():
+            kwargs["icon"] = str(icon)
+        log.info("opening native WebView2 window")
+        webview.start(**kwargs)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.error("native window failed (%s); falling back to app-mode browser", exc)
+        return False
+
+
 def open_window(url: str, base: Path, log):
     """Open the panel in a dedicated window; fall back to the default browser.
 
@@ -281,7 +325,9 @@ def main() -> None:
     running = _single_instance_port(base)
     if running:
         log.info("instance already running on port %s; opening window only", running)
-        open_window(f"http://127.0.0.1:{running}", base, log)
+        u = f"http://127.0.0.1:{running}"
+        if not open_native_window(u, base, log, lambda *_: None):
+            open_window(u, base, log)
         return
 
     import uvicorn
@@ -316,6 +362,14 @@ def main() -> None:
     window = None
     if wait_healthy(port):
         log.info("healthy, opening the application window")
+        closed = {"flag": False}
+        if open_native_window(url, base, log, lambda *_: closed.__setitem__("flag", True)):
+            log.info("native window closed; shutting down")
+            try:
+                (base / "server.port").unlink()
+            except OSError:
+                pass
+            return
         window = open_window(url, base, log)
     else:
         detail = f"{type(server_error['exc']).__name__}: {server_error['exc']}" if server_error else "سرور در ۳۰ ثانیه آماده نشد."

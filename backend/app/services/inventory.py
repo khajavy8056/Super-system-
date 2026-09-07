@@ -106,7 +106,8 @@ def record_waste(db: Session, *, batch: ProductBatch, qty, user: User | None = N
 
 def create_stocktake(db: Session, *, name: str, area: str | None = None, user: User | None = None,
                      product_ids: list[int] | None = None, batch_ids: list[int] | None = None,
-                     include_zero: bool = True, warehouse_id: int | None = None) -> Stocktake:
+                     include_zero: bool = True, warehouse_id: int | None = None,
+                     scheduled_for=None, reminder_note: str | None = None) -> Stocktake:
     """Snapshot batches for counting (§19).
 
     ``include_zero=True`` also snapshots batches the system believes are empty —
@@ -114,7 +115,8 @@ def create_stocktake(db: Session, *, name: str, area: str | None = None, user: U
     stocktake must be able to discover (BUG-018).
     """
     st = Stocktake(name=name, status="DRAFT", area=area, started_at=datetime.utcnow(),
-                   warehouse_id=warehouse_id, created_by=user.id if user else None)
+                   warehouse_id=warehouse_id, created_by=user.id if user else None,
+                   scheduled_for=scheduled_for, reminder_note=reminder_note)
     db.add(st)
     db.flush()
 
@@ -177,6 +179,8 @@ def stocktake_progress(db: Session, stocktake_id: int) -> dict:
     return {
         "id": st.id, "name": st.name, "status": st.status,
         "warehouse_id": st.warehouse_id, "area": st.area,
+        "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
+        "reminder_note": st.reminder_note,
         "total": total, "counted": len(counted), "remaining": len(pending),
         "percent": round(100 * len(counted) / total, 1) if total else 0.0,
         "position": position,
@@ -420,3 +424,29 @@ def ensure_default_warehouse(db: Session):
             w.is_default = True
         db.flush()
     return w
+
+
+def upcoming_stocktakes(db: Session, *, horizon_days: int = 14) -> list[dict]:
+    """Planned / open stocktakes for the alarm banner (v1.3).
+
+    ``days_left`` is negative when the planned date has passed and the count
+    still has not been finished — that is the loudest alarm state.
+    """
+    from datetime import date as _date
+
+    today = _date.today()
+    rows = db.execute(
+        select(Stocktake).where(Stocktake.status.in_(["DRAFT", "IN_PROGRESS"]))
+        .order_by(Stocktake.scheduled_for.asc().nulls_last(), Stocktake.id.desc())
+    ).scalars().all()
+    out = []
+    for st in rows:
+        days_left = (st.scheduled_for - today).days if st.scheduled_for else None
+        if days_left is not None and days_left > horizon_days:
+            continue
+        prog = stocktake_progress(db, st.id)
+        level = "info"
+        if days_left is not None:
+            level = "overdue" if days_left < 0 else "today" if days_left == 0 else "soon" if days_left <= 3 else "info"
+        out.append({**prog, "days_left": days_left, "level": level})
+    return out

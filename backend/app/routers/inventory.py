@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,9 @@ class StocktakeIn(BaseModel):
     product_ids: list[int] | None = None
     batch_ids: list[int] | None = None
     include_zero: bool = True  # snapshot believed-empty batches too (BUG-018)
+    #: v1.3 — ISO date (Gregorian) the count is planned for; UI enters Jalali
+    scheduled_for: date | None = None
+    reminder_note: str | None = None
 
 
 class CountIn(BaseModel):
@@ -110,9 +114,11 @@ def create_stocktake(body: StocktakeIn, db: Session = Depends(get_db),
                      user: User = Depends(require_permission("inventory.stocktake"))):
     st = inv.create_stocktake(db, name=body.name, area=body.area, user=user,
                               product_ids=body.product_ids, batch_ids=body.batch_ids,
-                              include_zero=body.include_zero, warehouse_id=body.warehouse_id)
+                              include_zero=body.include_zero, warehouse_id=body.warehouse_id,
+                              scheduled_for=body.scheduled_for, reminder_note=body.reminder_note)
     db.commit()
     return {"id": st.id, "name": st.name, "status": st.status,
+            "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
                        "system_qty": float(i.system_qty)} for i in st.items]}
 
@@ -131,11 +137,31 @@ def get_stocktake(stocktake_id: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="STOCKTAKE_NOT_FOUND")
     pids = [i.product_id for i in st.items]
     products = {p.id: p for p in db.execute(select(Product).where(Product.id.in_(pids))).scalars()} if pids else {}
+    bids = [i.batch_id for i in st.items if i.batch_id]
+    batches = {b.id: b for b in db.execute(select(ProductBatch).where(ProductBatch.id.in_(bids))).scalars()} if bids else {}
+    from ..models import StorageLocation, Warehouse
+    locs = {l.id: l for l in db.execute(select(StorageLocation)).scalars()}
+    whs = {w.id: w for w in db.execute(select(Warehouse)).scalars()}
+
+    def _place(b):
+        if not b:
+            return None
+        loc = locs.get(b.location_id) if b.location_id else None
+        wh = whs.get(b.warehouse_id) if b.warehouse_id else None
+        parts = [x for x in [(wh.name if wh else None), (loc.name if loc else None)] if x]
+        return " / ".join(parts) if parts else None
+
     return {"id": st.id, "name": st.name, "status": st.status, "area": st.area,
+            "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
+            "reminder_note": st.reminder_note,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
                        "product_name": (products.get(i.product_id).name if products.get(i.product_id) else f"#{i.product_id}"),
                        "barcode": (products.get(i.product_id).barcode if products.get(i.product_id) else None),
                        "image_url": (products.get(i.product_id).image_url if products.get(i.product_id) else None),
+                       "unit_id": (products.get(i.product_id).unit_id if products.get(i.product_id) else None),
+                       "batch_number": (batches[i.batch_id].batch_number if i.batch_id in batches else None),
+                       "expiry_date": (str(batches[i.batch_id].expiry_date) if i.batch_id in batches and batches[i.batch_id].expiry_date else None),
+                       "location": _place(batches.get(i.batch_id)) if i.batch_id else None,
                        "system_qty": float(i.system_qty),
                        "physical_qty": float(i.physical_qty) if i.physical_qty is not None else None,
                        "difference": float(i.difference), "status": i.status,
@@ -305,6 +331,14 @@ def stocktake_items(stocktake_id: int, status: str | None = None,
         })
     return {"items": out, "next_cursor": page[-1].id if len(page) == limit else None,
             "progress": inv.stocktake_progress(db, stocktake_id)}
+
+
+@router.get("/stocktakes-upcoming")
+def upcoming_stocktakes(horizon_days: int = Query(default=14, ge=0, le=365),
+                        db: Session = Depends(get_db),
+                        _: User = Depends(get_current_user)):
+    """v1.3 alarm feed: planned/open stocktakes with days_left + level."""
+    return inv.upcoming_stocktakes(db, horizon_days=horizon_days)
 
 
 @router.get("/stocktake-sessions/active")

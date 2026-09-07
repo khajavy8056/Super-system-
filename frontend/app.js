@@ -28,6 +28,9 @@ const qty = (n) => {
   return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(3)));
 };
 
+/* v1.3: Jalali helpers live in jalali.js (loaded before this file). Guard so a
+ * stale service-worker shell that lacks it degrades to ISO dates, not a crash. */
+window.Jalali = window.Jalali || { attachAll() {}, attach(i) { return i; }, fromIso: (x) => (x || ""), toIso: (x) => x, todayIso: () => new Date().toISOString().slice(0, 10) };
 function toast(msg, kind = "ok") {
   const el = $("#toast");
   el.textContent = msg;
@@ -207,6 +210,7 @@ async function go(view) {
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
     await RENDER[view]();
+    Jalali.attachAll(viewEl);
   } catch (err) {
     viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${err.message}</p></div>`;
   }
@@ -219,6 +223,7 @@ RENDER.dashboard = async () => {
   const d = await api("/reports/dashboard");
   const v = $("#view");
   v.innerHTML = "";
+  v.append(el("div", { id: "dash-alarms" }));
   v.append(
     el("div", { class: "grid grid-4" },
       statCard("فروش امروز", money(d.sales.today), `${d.sales.invoice_count_today} فاکتور`),
@@ -238,6 +243,7 @@ RENDER.dashboard = async () => {
       systemCard("سلامت سیستم", d.system),
     ),
   );
+  renderStocktakeAlarms("#dash-alarms");
 };
 
 function statCard(label, value, sub) {
@@ -350,7 +356,7 @@ function renderPosCart() {
     const showCost = can("pricing.view_cost");
     const rows = posState.cart.map((it, idx) => `
       <tr>
-        <td>${esc(it.product_name)}<div class="muted" style="font-size:11px">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + esc(it.expiry_date) : ""}</div></td>
+        <td>${esc(it.product_name)}<div class="muted" style="font-size:11px">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + Jalali.fromIso(it.expiry_date) : ""}</div></td>
         <td class="qty"><button class="btn btn-sm" onclick="posQty(${idx},1)">+</button>
           <input inputmode="decimal" value="${qty(it.quantity)}" onchange="posQty(${idx},0,this.value)" />
           <button class="btn btn-sm" onclick="posQty(${idx},-1)">−</button>
@@ -531,7 +537,7 @@ function showSuggest(items) {
   box.innerHTML = items.map((i) => `
     <button class="sug" data-id="${i.product_id}" tabindex="0">
       <span class="sug-name">${esc(i.name)}</span>
-      <span class="sug-meta">${esc(i.barcode)} · موجودی ${qty(i.available_qty)}${i.unit ? " " + esc(i.unit.symbol || "") : ""}
+      <span class="sug-meta">${esc(i.barcode)} · موجودی ${qty(i.available_qty)}${i.unit ? " " + esc(i.unit.name || "") : ""}
         ${i.price_count > 1 ? ` · <em>${i.price_count} قیمت</em>` : ""}</span>
     </button>`).join("");
   box.classList.remove("hidden");
@@ -572,7 +578,7 @@ function posBatchChooser(product, opts) {
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">موجودی: ${qty(o.current_qty)}${o.expiry_date ? " · انقضا: " + esc(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+      <div class="b-meta">موجودی: ${qty(o.current_qty)}${o.expiry_date ? " · انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
     </div>`).join("");
   openModal(`<h3>${esc(product.name)} — انتخاب قیمت / بچ</h3>${rows}
     <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ بچ واقعی قفسه را شما انتخاب می‌کنید.</p>`);
@@ -605,7 +611,7 @@ async function posAddByBarcode(barcode) {
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + esc(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
     </div>`).join("");
   openModal(`<h3>${esc(p.name)} — انتخاب قیمت / Batch</h3>${rows}
     <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ Batch واقعی قفسه را شما انتخاب می‌کنید.</p>`);
@@ -1163,17 +1169,16 @@ window.showProductDetail = async function showProductDetail(productId) {
         el("td", { text: b.batch_number }),
         el("td", { text: b.current_qty + " / " + b.quantity_received }),
         el("td", { text: money(b.buy_price) }),
-        el("td", { text: money(b.supplier_price) }),
         el("td", { text: money(b.sell_price) }),
         el("td", { text: money(b.consumer_price) }),
         el("td", { text: b.discount ? money(b.discount) : "—" }),
         el("td", { text: b.tax ? money(b.tax) : "—" }),
-        el("td", { text: b.expiry_date || "—" }),
-        el("td", { text: (b.received_at || "").slice(0, 10) })));
+        el("td", { text: b.expiry_date ? Jalali.fromIso(b.expiry_date) : "—" }),
+        el("td", { text: faDateTime(b.received_at, false) })));
       const t = el("table", {});
       t.append(el("thead", {}, el("tr", {},
         el("th", { text: "شماره بچ" }), el("th", { text: "موجودی/دریافتی" }),
-        el("th", { text: "خرید" }), el("th", { text: "تأمین‌کننده" }),
+        el("th", { text: "خرید" }),
         el("th", { text: "فروش" }), el("th", { text: "مصرف‌کننده" }),
         el("th", { text: "تخفیف" }), el("th", { text: "مالیات" }),
         el("th", { text: "انقضا" }), el("th", { text: "تاریخ ورود" }))),
@@ -1203,131 +1208,326 @@ window.showProductDetail = async function showProductDetail(productId) {
 };
 
 /* ---------- batches (receiving) ---------- */
+/* v1.3: one purchase price + one consumer price + sell price. The separate
+ * "supplier price" box was a duplicate of the purchase price and is gone from
+ * the UI (the column stays nullable in the DB for old rows). The barcode box
+ * shows live matches (name + picture) while typing, so a half-typed barcode
+ * or a product name is enough to pick the right item. */
 RENDER.batches = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card" style="margin-bottom:14px">
-    <h3>ورود کالا (ایجاد Batch جدید)</h3>
-    <div class="form-row">
-      <div><label>بارکد</label><input id="b-barcode" placeholder="اسکن بارکد" /></div>
-      <div><label>تعداد</label><input id="b-qty" type="number" value="1" /></div>
-      <div><label>قیمت خرید</label><input id="b-buy" type="number" /></div>
-      <div><label>قیمت تأمین‌کننده</label><input id="b-supplier" type="number" /></div>
-      <div><label>قیمت مصرف‌کننده</label><input id="b-consumer" type="number" /></div>
-      <div><label>قیمت فروش</label><input id="b-sell" type="number" /></div>
-      <div><label>تخفیف بچ</label><input id="b-discount" type="number" /></div>
-      <div><label>مالیات بچ</label><input id="b-tax" type="number" /></div>
-      <div><label>تاریخ انقضا</label><input id="b-expiry" type="date" /></div>
+    <div class="card-head"><h3>ورود کالا (ایجاد بچ جدید)</h3><span class="muted">قیمت‌ها و تاریخ انقضا به هر بچ تعلق دارد، نه به کالا</span></div>
+    <div class="recv-grid">
+      <div class="recv-barcode">
+        <label>بارکد یا نام کالا</label>
+        <input id="b-barcode" class="scan-input" placeholder="اسکن یا تایپ کنید…" autocomplete="off" />
+        <div id="b-suggest" class="pos-suggest hidden"></div>
+        <div id="b-picked" class="recv-picked hidden"></div>
+      </div>
+      <div><label>تعداد</label><input id="b-qty" type="number" value="1" min="0" step="any" /></div>
+      <div><label>قیمت خرید (تومان)</label><input id="b-buy" type="number" min="0" /></div>
+      <div><label>قیمت مصرف‌کننده</label><input id="b-consumer" type="number" min="0" /></div>
+      <div><label>قیمت فروش</label><input id="b-sell" type="number" min="0" /></div>
+      <div><label>تخفیف بچ</label><input id="b-discount" type="number" min="0" /></div>
+      <div><label>مالیات بچ</label><input id="b-tax" type="number" min="0" /></div>
+      <div><label>تاریخ انقضا (شمسی)</label><input id="b-expiry" type="date" /></div>
+      <div><label>شماره بچ (اختیاری)</label><input id="b-number" placeholder="خودکار" /></div>
     </div>
-    <button id="b-receive" class="btn btn-primary" style="margin-top:12px">ثبت ورود</button>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button id="b-receive" class="btn btn-primary">ثبت ورود</button>
+      <span id="b-status" class="muted"></span>
+    </div>
   </div>
-  <div class="card"><h3>Batch های اخیر</h3><table id="b-table"></table></div>`;
+  <div class="card"><div class="card-head"><h3>بچ‌های اخیر</h3></div><div class="table-wrap"><table id="b-table"></table></div></div>`;
+  Jalali.attachAll(v);
+
+  let picked = null;
+  const bBox = $("#b-suggest"), bPicked = $("#b-picked"), bInput = $("#b-barcode");
+  const hideB = () => { bBox.classList.add("hidden"); bBox.innerHTML = ""; };
+  const pick = (item) => {
+    picked = item; hideB();
+    bInput.value = item.barcode || "";
+    bPicked.classList.remove("hidden");
+    bPicked.innerHTML = `${item.image_url ? `<img class="thumb" src="${esc(item.image_url)}" alt="" />` : `<span class="thumb thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></span>`}
+      <div><b>${esc(item.name)}</b><div class="muted">${esc(item.barcode || "")}${item.unit ? " · " + esc(item.unit.name || "") : ""} · موجودی فعلی ${qty(item.available_qty ?? 0)}</div></div>
+      <button class="btn btn-sm btn-ghost" id="b-unpick">تغییر</button>`;
+    $("#b-unpick").onclick = () => { picked = null; bPicked.classList.add("hidden"); bInput.value = ""; bInput.focus(); };
+    // pre-fill prices from the latest batch so a repeat purchase is two keystrokes
+    const last = (item.batches || [])[0];
+    if (last) { if (!$("#b-sell").value) $("#b-sell").value = last.sell_price ?? ""; if (!$("#b-consumer").value) $("#b-consumer").value = last.consumer_price ?? ""; }
+    $("#b-qty").focus(); $("#b-qty").select();
+  };
+  const search = debounce(async () => {
+    const term = bInput.value.trim();
+    if (term.length < 2) { hideB(); return; }
+    try {
+      const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`);
+      if (!r.items.length) { bBox.innerHTML = `<div class="sug-empty muted">کالایی با این بارکد/نام نیست — از «کالاها» ثبتش کنید.</div>`; bBox.classList.remove("hidden"); return; }
+      bBox.innerHTML = r.items.map((i) => `
+        <button class="sug sug-img" data-id="${i.product_id}" type="button">
+          ${i.image_url ? `<img class="thumb" src="${esc(i.image_url)}" alt="" />` : `<span class="thumb thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></span>`}
+          <span><span class="sug-name">${esc(i.name)}</span>
+          <span class="sug-meta">${esc(i.barcode)} · موجودی ${qty(i.available_qty)}${i.unit ? " " + esc(i.unit.name || "") : ""}</span></span>
+        </button>`).join("");
+      bBox.classList.remove("hidden");
+      bBox.querySelectorAll(".sug").forEach((n) => n.addEventListener("click", () => pick(r.items.find((x) => String(x.product_id) === n.dataset.id))));
+    } catch (e) { hideB(); }
+  }, 180);
+  bInput.addEventListener("input", () => { picked = null; bPicked.classList.add("hidden"); search(); });
+  bInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Escape") hideB();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = bBox.querySelector(".sug");
+      if (first && !bBox.classList.contains("hidden")) { first.click(); return; }
+      const term = bInput.value.trim();
+      if (!term) return;
+      try { const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`); const ex = r.items.find((i) => i.exact) || (r.items.length === 1 ? r.items[0] : null); if (ex) pick(ex); else search(); } catch (_) {}
+    }
+  });
+
   $("#b-receive").addEventListener("click", async () => {
     try {
-      const body = { barcode: $("#b-barcode").value.trim(), quantity_received: Number($("#b-qty").value),
+      const body = { quantity_received: Number($("#b-qty").value),
         buy_price: Number($("#b-buy").value), consumer_price: Number($("#b-consumer").value || 0) || null,
         sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null,
-        supplier_price: Number($("#b-supplier").value || 0) || null,
         discount: Number($("#b-discount").value || 0) || null,
-        tax: Number($("#b-tax").value || 0) || null };
+        tax: Number($("#b-tax").value || 0) || null,
+        batch_number: $("#b-number").value.trim() || null };
+      if (picked) body.product_id = picked.product_id; else body.barcode = bInput.value.trim();
+      if (!body.product_id && !body.barcode) throw new Error("ابتدا کالا را انتخاب یا بارکد را وارد کنید");
+      if (!(body.quantity_received > 0)) throw new Error("تعداد باید بزرگ‌تر از صفر باشد");
       await api("/batches/receive", { method: "POST", body: JSON.stringify(body) });
       toast("ورود کالا ثبت شد");
       RENDER.batches();
     } catch (e) { toast(e.message, "err"); }
   });
   const batches = await api("/batches");
+  const names = {};
+  try { const pr = await api("/products?limit=1000"); pr.items.forEach((p) => { names[p.id] = p; }); } catch (_) {}
   const rows = batches.slice(0, 50).map((b) => el("tr", {},
-    el("td", { text: b.batch_number }), el("td", { text: b.buy_price && fmt(b.buy_price) }),
-    el("td", { text: fmt(b.sell_price) }), el("td", { text: b.current_qty }),
-    el("td", { text: b.expiry_date || "—" }),
-    el("td", {}, el("span", { class: "badge " + (b.status === "ACTIVE" ? "badge-green" : "badge-gray"), text: b.status }))));
+    el("td", {}, el("b", { text: (names[b.product_id] || {}).name || ("#" + b.product_id) }), el("div", { class: "muted", text: b.batch_number })),
+    el("td", { text: b.buy_price && fmt(b.buy_price) }),
+    el("td", { text: fmt(b.sell_price) }), el("td", { text: qty(b.current_qty) }),
+    el("td", { text: b.expiry_date ? Jalali.fromIso(b.expiry_date) : "—" }),
+    el("td", { text: faDateTime(b.received_at, false) }),
+    el("td", {}, el("span", { class: "badge " + (b.status === "ACTIVE" ? "badge-green" : "badge-gray"), text: STATUS_FA[b.status] || b.status }))));
   const tbl = $("#b-table");
   tbl.innerHTML = "";
   tbl.append(el("thead", {}, el("tr", {},
-    el("th", { text: "شماره Batch" }), el("th", { text: "خرید" }), el("th", { text: "فروش" }),
-    el("th", { text: "موجودی" }), el("th", { text: "انقضا" }), el("th", { text: "وضعیت" }))),
+    el("th", { text: "کالا / بچ" }), el("th", { text: "خرید" }), el("th", { text: "فروش" }),
+    el("th", { text: "موجودی" }), el("th", { text: "انقضا" }), el("th", { text: "ورود" }), el("th", { text: "وضعیت" }))),
     el("tbody", {}, ...rows));
 };
+
+const STATUS_FA = { ACTIVE: "فعال", SOLD_OUT: "تمام‌شده", EXPIRED: "منقضی", BLOCKED: "مسدود", DRAFT: "پیش‌نویس", IN_PROGRESS: "در حال شمارش",
+  PENDING_APPROVAL: "در انتظار تأیید", ADJUSTED: "اعمال‌شده", COMPLETED: "تکمیل", CANCELLED: "لغو" };
 
 /* ---------- inventory + stocktaking ---------- */
 RENDER.inventory = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="grid grid-2">
-    <div class="card"><h3>موجودی کالاها</h3><table id="i-table"></table></div>
+  v.innerHTML = `
+  <div id="st-alarms"></div>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-head"><h3>موجودی کالاها</h3><input id="i-q" placeholder="جستجو…" style="max-width:220px" /></div><div class="table-wrap"><table id="i-table"></table></div></div>
     <div class="card" id="wh-card"><h3>انبارها و محل نگهداری</h3><div id="wh-body" class="muted">…</div></div>
-    <div class="card">
-      <h3>انبارگردانی</h3>
-      <div class="form-row"><div><label>نام</label><input id="st-name" value="انبارگردانی دوره‌ای" /></div></div>
-      <button id="st-create" class="btn btn-primary" style="margin-top:12px">ایجاد انبارگردانی</button>
-      <div id="st-list" style="margin-top:14px"></div>
+    <div class="card st-plan">
+      <div class="card-head"><h3>برنامه‌ریزی انبارگردانی</h3><span class="muted">یک جلسهٔ شمارش با هشدار زمان‌بندی‌شده</span></div>
+      <div class="form-grid">
+        <div><label>نام جلسه</label><input id="st-name" value="انبارگردانی دوره‌ای" /></div>
+        <div><label>تاریخ شروع (شمسی)</label><input id="st-date" type="date" /></div>
+        <div><label>انبار</label><select id="st-wh"><option value="">همهٔ انبارها</option></select></div>
+        <div><label>یادآوری</label><input id="st-note" placeholder="مثلاً: قفسه‌های یخچالی اول" /></div>
+      </div>
+      <label class="inline" style="margin-top:8px"><input type="checkbox" id="st-zero" checked /> بچ‌های با موجودی صفر هم شمرده شوند</label>
+      <button id="st-create" class="btn btn-primary btn-block" style="margin-top:12px">ایجاد جلسهٔ انبارگردانی</button>
     </div>
+    <div class="card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
   </div>`;
+  Jalali.attachAll(v);
+
   const stock = await api("/inventory/stock");
-  const rows = stock.map((s) => el("tr", {},
-    el("td", { text: s.name }), el("td", { text: s.barcode }), el("td", { text: s.total_stock }),
-    el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
-      text: s.total_stock <= s.min_stock_alert ? "کم‌موجود" : "عادی" }))));
-  const t = $("#i-table");
-  t.innerHTML = "";
-  t.append(el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "بارکد" }),
-    el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  const drawStock = (q) => {
+    const list = q ? stock.filter((s) => (s.name || "").includes(q) || (s.barcode || "").includes(q)) : stock;
+    const rows = list.slice(0, 300).map((s) => el("tr", {},
+      el("td", { text: s.name }), el("td", { class: "ltr", text: s.barcode }), el("td", { text: qty(s.total_stock) }),
+      el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
+        text: s.total_stock <= s.min_stock_alert ? "کم‌موجود" : "عادی" }))));
+    const t = $("#i-table");
+    t.innerHTML = "";
+    t.append(el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "بارکد" }),
+      el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  };
+  drawStock("");
+  $("#i-q").addEventListener("input", (e) => drawStock(e.target.value.trim()));
+
+  try {
+    const whs = await api("/warehouses");
+    (whs.items || whs).forEach((w) => $("#st-wh").append(el("option", { value: w.id, text: w.name })));
+  } catch (_) {}
 
   $("#st-create").addEventListener("click", async () => {
     try {
-      const st = await api("/inventory/stocktakes", { method: "POST", body: JSON.stringify({ name: $("#st-name").value }) });
-      toast("انبارگردانی ایجاد شد");
-      window._stDetail(st.id);
+      const body = { name: $("#st-name").value.trim() || "انبارگردانی", include_zero: $("#st-zero").checked,
+        scheduled_for: $("#st-date").value || null, reminder_note: $("#st-note").value.trim() || null,
+        warehouse_id: Number($("#st-wh").value) || null };
+      const st = await api("/inventory/stocktakes", { method: "POST", body: JSON.stringify(body) });
+      toast(body.scheduled_for ? "جلسه ایجاد شد و هشدار زمان‌بندی فعال است" : "جلسهٔ انبارگردانی ایجاد شد");
+      if (!body.scheduled_for || body.scheduled_for <= Jalali.todayIso()) window._stWizard(st.id); else RENDER.inventory();
     } catch (e) { toast(e.message, "err"); }
   });
   await renderWarehousesCard();
+  await renderStocktakeAlarms();
   const list = await api("/inventory/stocktakes");
-  $("#st-list").innerHTML = list.map((s) =>
-    `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span>${s.name}</span><span class="badge badge-${s.status === "COMPLETED" ? "green" : "blue"}">${s.status}</span>
-      <button class="btn btn-sm" onclick="window._stDetail(${s.id})">مشاهده</button></div>`).join("");
+  const box = $("#st-list");
+  if (!list.length) box.innerHTML = `<p class="muted empty">هنوز جلسه‌ای ثبت نشده است.</p>`;
+  box.innerHTML = list.slice(0, 30).map((s) => {
+    const open = s.status === "DRAFT" || s.status === "IN_PROGRESS";
+    const cls = s.status === "ADJUSTED" || s.status === "COMPLETED" ? "green" : s.status === "CANCELLED" ? "gray" : s.status === "PENDING_APPROVAL" ? "amber" : "blue";
+    return `<div class="st-row">
+      <div><b>${esc(s.name)}</b><div class="muted">${s.scheduled_for ? "زمان‌بندی: " + Jalali.fromIso(s.scheduled_for) + " · " : ""}${s.items} قلم${s.completed_at ? " · پایان " + faDateTime(s.completed_at, false) : ""}</div></div>
+      <span class="badge badge-${cls}">${STATUS_FA[s.status] || s.status}</span>
+      <button class="btn btn-sm ${open ? "btn-primary" : ""}" onclick="window._stWizard(${s.id})">${open ? "شروع / ادامهٔ شمارش" : "مشاهده"}</button>
+    </div>`; }).join("");
 };
 
-window._stDetail = async (id) => {
+/* Alarm strip: planned/overdue/open stocktakes (v1.3). Also mounted on the
+ * dashboard so the reminder is seen wherever the day starts. */
+async function renderStocktakeAlarms(targetSel = "#st-alarms") {
+  const host = $(targetSel);
+  if (!host) return;
+  let list = [];
+  try { list = await api("/inventory/stocktakes-upcoming?horizon_days=14"); } catch (_) { return; }
+  const alarms = list.filter((a) => a.days_left !== null || a.status === "IN_PROGRESS");
+  if (!alarms.length) { host.innerHTML = ""; return; }
+  host.innerHTML = alarms.map((a) => {
+    const lvl = a.level === "overdue" ? "bad" : a.level === "today" ? "warn" : a.level === "soon" ? "soon" : "info";
+    const when = a.days_left === null ? "" : a.days_left < 0 ? `${Math.abs(a.days_left)} روز از موعد گذشته` : a.days_left === 0 ? "امروز" : `${a.days_left} روز دیگر`;
+    const prog = a.total ? ` · پیشرفت ${a.counted}/${a.total}` : "";
+    return `<div class="alarm ${lvl}">
+      <span class="alarm-ic">${a.level === "overdue" ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>' : '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M8 15h3"/></svg>'}</span>
+      <div class="alarm-body"><b>انبارگردانی «${esc(a.name)}»</b> ${when ? "— " + when : ""}${prog}
+        ${a.reminder_note ? `<div class="muted">${esc(a.reminder_note)}</div>` : ""}</div>
+      <button class="btn btn-sm btn-primary" onclick="window._stWizard(${a.id})">${a.status === "IN_PROGRESS" ? "ادامه" : "شروع"}</button>
+    </div>`; }).join("");
+}
+
+/* ====== Stocktake wizard: one product per screen, picture + place + batches,
+ * big count box, Enter = save & next. Runs full-screen inside the view. ===== */
+window._stWizard = async (id) => {
+  state.view = "inventory";
+  const v = $("#view");
   const st = await api(`/inventory/stocktakes/${id}`);
-  const prog = await api(`/inventory/stocktakes/${id}/progress`);
-  const rows = st.items.map((i) => `
-    <tr>
-      <td>${i.product_id}</td><td>${i.batch_id || "—"}</td><td>${i.system_qty}</td>
-      <td><input type="number" id="count-${i.id}" value="${i.physical_qty ?? i.system_qty}" /></td>
-      <td>${i.difference ?? 0}</td>
-      <td><button class="btn btn-sm" onclick="window._count(${i.id})">ثبت</button></td>
-    </tr>`).join("");
-  const pct = prog.total ? Math.round((prog.counted / prog.total) * 100) : 0;
-  let actions = "";
-  if (st.status === "PENDING_APPROVAL")
-    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._approve(${id})">تأیید مدیر و اعمال تطبیق</button>`;
-  else if (st.status !== "ADJUSTED" && st.status !== "CANCELLED")
-    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._complete(${id})">پایان شمارش (ارسال برای تأیید)</button>`;
-  openModal(`<h3>${esc(st.name)}</h3>
-    <p class="muted">وضعیت: ${st.status} | پیشرفت: ${prog.counted}/${prog.total} (${pct}%) — با بستن پنجره، شمارش‌ها ذخیره می‌ماند و بعداً قابل ادامه است.</p>
-    <table><thead><tr><th>کالا</th><th>Batch</th><th>سیستم</th><th>فیزیکی</th><th>اختلاف</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table>
-    ${actions}`);
+  if (st.status === "DRAFT") { try { await api(`/inventory/stocktakes/${id}/start`, { method: "POST" }); st.status = "IN_PROGRESS"; } catch (_) {} }
+  const items = st.items;
+  // group batch rows by product so the operator sees "this product has N batches"
+  const groups = [];
+  const byPid = new Map();
+  items.forEach((it) => {
+    if (!byPid.has(it.product_id)) { byPid.set(it.product_id, { product_id: it.product_id, name: it.product_name, barcode: it.barcode, image_url: it.image_url, rows: [] }); groups.push(byPid.get(it.product_id)); }
+    byPid.get(it.product_id).rows.push(it);
+  });
+  const readOnly = !(st.status === "IN_PROGRESS" || st.status === "DRAFT");
+  let idx = Math.max(0, groups.findIndex((g) => g.rows.some((r) => r.status === "PENDING")));
+  if (readOnly) idx = 0;
+  $("#view-title").textContent = "انبارگردانی — " + st.name;
+
+  const draw = () => {
+    const total = items.length, done = items.filter((r) => r.status !== "PENDING").length;
+    const pct = total ? Math.round(done * 100 / total) : 0;
+    const g = groups[idx];
+    if (!g) {
+      v.innerHTML = `<div class="card st-done"><h2>آیتمی برای شمارش نیست</h2>
+        <button class="btn" onclick="RENDER.inventory()">بازگشت</button></div>`; return;
+    }
+    const rows = g.rows.map((r, i) => `
+      <div class="st-batch ${r.status !== "PENDING" ? "counted" : ""}" data-i="${i}">
+        <div class="st-batch-head">
+          <div><b>بچ ${esc(r.batch_number || ("#" + r.batch_id))}</b>
+            <span class="muted">${r.expiry_date ? " · انقضا " + Jalali.fromIso(r.expiry_date) : ""}${r.location ? " · " + esc(r.location) : ""}</span></div>
+          ${r.status !== "PENDING" ? `<span class="badge ${r.difference ? "badge-amber" : "badge-green"}">${r.difference ? "اختلاف " + fmtSigned(r.difference) : "مطابق"}</span>` : `<span class="badge badge-blue">در انتظار</span>`}
+        </div>
+        <div class="st-qty">
+          <div class="st-sys"><span class="muted">موجودی سیستم</span><b>${qty(r.system_qty)}</b></div>
+          <div class="st-real"><span class="muted">شمارش واقعی</span>
+            <input class="st-input" type="number" inputmode="decimal" min="0" step="any" data-item="${r.id}" data-sys="${r.system_qty}"
+              value="${r.physical_qty ?? ""}" placeholder="؟" ${readOnly ? "disabled" : ""} /></div>
+          <div class="st-diff muted" data-diff="${r.id}">${r.physical_qty != null ? fmtSigned(r.difference) : ""}</div>
+        </div>
+      </div>`).join("");
+    v.innerHTML = `
+      <div class="st-wiz">
+        <div class="st-top">
+          <button class="btn btn-ghost" onclick="RENDER.inventory()">‹ خروج (پیشرفت ذخیره می‌شود)</button>
+          <div class="st-progress"><div class="progress"><div style="width:${pct}%"></div></div>
+            <span>${fa(done)} از ${fa(total)} قلم · ${fa(pct)}٪</span></div>
+          <span class="badge badge-${readOnly ? "gray" : "blue"}">${STATUS_FA[st.status] || st.status}</span>
+        </div>
+        <div class="st-card">
+          <div class="st-media">${g.image_url ? `<img src="${esc(g.image_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'st-noimg',textContent:'بدون تصویر'}))" />` : `<div class="st-noimg"><svg class="st-noimg-ic" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg>بدون تصویر</div>`}</div>
+          <div class="st-info">
+            <div class="st-kicker">کالای ${fa(idx + 1)} از ${fa(groups.length)}</div>
+            <h2>${esc(g.name)}</h2>
+            <div class="muted ltr">${esc(g.barcode || "")}</div>
+            <div class="st-meta">${g.rows.length > 1 ? `<span class="badge badge-blue">${fa(g.rows.length)} بچ</span>` : ""}
+              ${g.rows[0]?.location ? `<span class="badge badge-gray">محل: ${esc(g.rows[0].location)}</span>` : ""}</div>
+            <div class="st-batches">${rows}</div>
+          </div>
+        </div>
+        <div class="st-nav">
+          <button class="btn" id="st-prev" ${idx === 0 ? "disabled" : ""}>‹ قبلی</button>
+          <input id="st-jump" placeholder="اسکن بارکد برای پرش" class="ltr" />
+          ${readOnly ? `<button class="btn" id="st-next">بعدی ›</button>` : `<button class="btn btn-primary" id="st-save">ذخیره و بعدی ⏎</button>`}
+          ${!readOnly ? `<button class="btn btn-danger" id="st-finish">پایان شمارش</button>` : ""}
+          ${st.status === "PENDING_APPROVAL" ? `<button class="btn btn-primary" id="st-approve">تأیید مدیر و اعمال</button>` : ""}
+        </div>
+      </div>`;
+    const inputs = [...v.querySelectorAll(".st-input")];
+    inputs.forEach((inp) => {
+      inp.addEventListener("input", () => { const d = v.querySelector(`[data-diff="${inp.dataset.item}"]`); const val = inp.value === "" ? null : Number(inp.value); d.textContent = val === null ? "" : fmtSigned(val - Number(inp.dataset.sys)); d.className = "st-diff " + (val === null ? "muted" : (val - Number(inp.dataset.sys)) ? "warn" : "ok"); });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); const k = inputs.indexOf(inp); if (k < inputs.length - 1) { inputs[k + 1].focus(); inputs[k + 1].select(); } else $("#st-save")?.click(); }
+      });
+    });
+    const first = inputs.find((i) => i.value === "") || inputs[0];
+    if (first && !readOnly) { first.focus(); first.select(); }
+    $("#st-prev").onclick = () => { if (idx > 0) { idx--; draw(); } };
+    $("#st-next") && ($("#st-next").onclick = () => { if (idx < groups.length - 1) { idx++; draw(); } });
+    $("#st-jump").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const bc = e.target.value.trim(); e.target.value = "";
+      const k = groups.findIndex((gg) => gg.barcode === bc || (gg.name || "").includes(bc));
+      if (k >= 0) { idx = k; draw(); } else toast("کالایی با این بارکد در این جلسه نیست", "err");
+    });
+    $("#st-save") && ($("#st-save").onclick = async () => {
+      const counts = inputs.filter((i) => i.value !== "").map((i) => ({ item_id: Number(i.dataset.item), physical_qty: Number(i.value) }));
+      if (!counts.length) { toast("حداقل یک شمارش وارد کنید", "err"); return; }
+      try {
+        const r = await api("/inventory/stocktakes/count/bulk", { method: "POST", body: JSON.stringify({ counts }) });
+        counts.forEach((c) => { const it = items.find((x) => x.id === c.item_id); it.physical_qty = c.physical_qty; it.difference = c.physical_qty - it.system_qty; it.status = "COUNTED"; });
+        const nextIdx = groups.findIndex((gg, i) => i > idx && gg.rows.some((rr) => rr.status === "PENDING"));
+        if (nextIdx >= 0) { idx = nextIdx; draw(); }
+        else if (items.every((x) => x.status !== "PENDING")) { draw(); toast("همهٔ اقلام شمرده شد — می‌توانید «پایان شمارش» را بزنید"); }
+        else { idx = Math.max(0, groups.findIndex((gg) => gg.rows.some((rr) => rr.status === "PENDING"))); draw(); }
+      } catch (e) { toast(e.message, "err"); }
+    });
+    $("#st-finish") && ($("#st-finish").onclick = async () => {
+      const pending = items.filter((x) => x.status === "PENDING").length;
+      if (pending && !confirm(`${pending} قلم هنوز شمرده نشده. شمارش پایان یابد؟`)) return;
+      try { await api(`/inventory/stocktakes/${id}/complete`, { method: "POST" }); toast("شمارش پایان یافت؛ در انتظار تأیید مدیر"); RENDER.inventory(); } catch (e) { toast(e.message, "err"); }
+    });
+    $("#st-approve") && ($("#st-approve").onclick = () => window._approve(id));
+  };
+  draw();
 };
+window._stDetail = window._stWizard;
+function fa(n) { return String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]); }
+function fmtSigned(n) { const x = Number(n) || 0; return (x > 0 ? "+" : "") + qty(x); }
 
 window._approve = async (id) => {
   try {
     await api(`/inventory/stocktakes/${id}/approve`, { method: "POST" });
     closeModal(); toast("تأیید مدیر انجام و موجودی تطبیق شد");
-    RENDER.inventory();
-  } catch (e) { toast(e.message, "err"); }
-};
-
-window._count = async (itemId) => {
-  try {
-    await api("/inventory/stocktakes/count", { method: "POST", body: JSON.stringify({ item_id: itemId, physical_qty: Number(document.getElementById(`count-${itemId}`).value) }) });
-    toast("شمارش ثبت شد");
-  } catch (e) { toast(e.message, "err"); }
-};
-
-window._complete = async (id) => {
-  try {
-    await api(`/inventory/stocktakes/${id}/complete`, { method: "POST" });
-    closeModal(); toast("شمارش پایان یافت؛ در انتظار تأیید مدیر");
     RENDER.inventory();
   } catch (e) { toast(e.message, "err"); }
 };
@@ -1443,13 +1643,14 @@ RENDER.reports = async () => {
   const today = new Date().toISOString().slice(0, 10);
   v.innerHTML = `
     <div class="card" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <input type="date" id="rep-start" value="${today}" style="max-width:170px" />
+      <input type="date" id="rep-start" value="${today}" style="max-width:190px" />
       <span class="muted">تا</span>
       <input type="date" id="rep-end" value="${today}" style="max-width:170px" />
       <button id="rep-refresh" class="btn btn-primary" style="max-width:120px">بروزرسانی</button>
     </div>
     <div id="rep-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
     <div id="rep-out"></div>`;
+  Jalali.attachAll(v);
   $("#rep-refresh").addEventListener("click", () => runReport(state.repTab || "daily"));
   const tabs = $("#rep-tabs");
   REPORT_TABS.forEach(([key, label, perm]) => {
@@ -1547,7 +1748,7 @@ async function runReport(tab) {
           el("h3", {}, el("span", { class: "badge " + cls, text: label }), ` ${items.length} مورد`),
           el("table", {}, el("tbody", {}, ...items.slice(0, 30).map((i) => el("tr", {},
             el("td", { text: i.product_name }), el("td", { text: i.qty + " عدد" }),
-            el("td", { text: "انقضا: " + i.expiry }), el("td", { text: money(i.value) }))))));
+            el("td", { text: "انقضا: " + Jalali.fromIso(i.expiry) }), el("td", { text: money(i.value) }))))));
       });
       out.append(...cards);
     } else if (tab === "adjustments") {
@@ -2201,6 +2402,7 @@ function couponModal() {
       <div><label>اعتبار تا</label><input id="cp-until" type="date" /></div>
     </div>
     <button id="cp-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کوپن</button>`);
+  Jalali.attachAll($("#modal"));
   $("#cp-save").addEventListener("click", async () => {
     const until = $("#cp-until").value;
     try {

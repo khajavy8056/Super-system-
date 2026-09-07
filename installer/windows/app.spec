@@ -26,6 +26,8 @@ a = Analysis(
         (str(ROOT / "backend" / "alembic.ini"), "."),
         # §80–82 bundled zero-stock starter catalog (read at runtime via __file__).
         (str(ROOT / "backend" / "app" / "data"), "app/data"),
+        # v1.3 native window icon (WebView2 window title bar / taskbar)
+        (str(ROOT / "installer" / "windows" / "icon.ico"), "."),
     ],
     hiddenimports=[
         "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
@@ -42,12 +44,26 @@ a = Analysis(
         "sqlalchemy.dialects.sqlite",
         # starlette imports the multipart parser lazily on first form POST
         "multipart", "python_multipart",
+        # v1.3 native desktop window (pywebview on WebView2). pythonnet/clr
+        # is loaded dynamically by pywebview's edgechromium backend.
+        "webview", "webview.platforms.edgechromium", "webview.platforms.winforms",
+        "clr", "clr_loader", "pythonnet", "bottle", "proxy_tools",
     ],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
 )
+
+# pywebview ships the WebView2 loader DLLs as package data; make sure they
+# travel with the exe (PyInstaller's hook usually does this, belt-and-braces).
+try:
+    from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+    a.datas += collect_data_files("webview")
+    a.binaries += collect_dynamic_libs("webview")
+    a.datas += collect_data_files("clr_loader")
+except Exception:
+    pass
 
 pyz = PYZ(a.pure)
 

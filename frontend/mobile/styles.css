@@ -266,3 +266,18 @@ input:focus { outline: 2px solid var(--primary); }
 /* qty group reads − 1 + in RTL, with delete separated at the far end */
 .cl-qty { flex-direction: row-reverse; }
 .cl-qty .qbtn.del { margin-inline-start: 8px; }
+
+/* v1.3 Jalali date field (shared picker styles) */
+.jdate-wrap { position: relative; display: flex; align-items: center; }
+.jdate-wrap .jdate { padding-inline-end: 38px; text-align: center; direction: ltr; }
+.jdate-btn { position: absolute; inset-inline-end: 6px; background: transparent; border: 0; cursor: pointer; font-size: 16px; padding: 4px; }
+.jdate-overlay { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+.jdate-pop { background: var(--card, #1c2437); border: 1px solid var(--border, #2a3550); border-radius: 16px; padding: 14px; width: 300px; }
+.jdate-head { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+.jdate-head button { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; width: 32px; height: 32px; }
+.jdate-head select { flex: 1; } .jdate-head .jdate-y { width: 80px; text-align: center; }
+.jdate-dows, .jdate-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.jdate-dows span { color: var(--muted); font-size: 11px; padding: 4px 0; }
+.jdate-grid .jd { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; height: 36px; font-family: inherit; }
+.jdate-grid .jd.sel { background: var(--green); color: #04140a; border: 0; }
+.jdate-foot { display: flex; justify-content: space-between; margin-top: 10px; }
