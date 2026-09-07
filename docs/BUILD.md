@@ -41,7 +41,7 @@ installer/
 - `installer\output\SupermarketSystem-0.4.0-portable.exe` (همیشه — بدون نیاز به Inno)
 - `installer\output\SupermarketSystem-Setup-0.4.0.exe` (اگر Inno Setup 6 نصب باشد)
 
-مراحل build.ps1: (1) venv + نصب `requirements.txt` و pyinstaller،
+مراحل build.ps1: (1) venv + نصب `requirements.txt` و pyinstaller (با retry، آینه‌های جایگزین و پوشهٔ wheel آفلاین `installer\windows\wheels\`)، سپس نصب اختیاری `requirements-desktop.txt` (pywebview؛ در صورت شکست فقط هشدار)،
 (2) `pyinstaller --clean app.spec` → onefile با frontend و icon،
 (3) `ISCC setup.iss` → Setup.exe با Start-Menu/Desktop shortcut،
 حذف امن (دیتای کاربر دست‌نخورده) و اجرای پس از نصب.

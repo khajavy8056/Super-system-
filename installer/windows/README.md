@@ -47,6 +47,8 @@
 | `Python not found` | پایتون نصب نیست یا در PATH نیست | python.org → نصب با تیک «Add python.exe to PATH» → دوباره اجرا |
 | پنجره بسته می‌شود و چیزی نمی‌بینید | اجرای مستقیم ps1 بدون کنسول | از `BUILD-SETUP.bat` اجرا کنید (خودش کنسول را نگه می‌دارد) |
 | `Inno Setup 6 not found` | Inno نصب نیست | لازم نیست! Portable ساخته شده؛ برای Setup.exe آن را نصب کنید و دوباره بیلد بگیرید |
+| `Could not find a version that satisfies the requirement pywebview` / `Read timed out ... pypi.org` (v1.4.0) | اینترنت به pypi.org نمی‌رسد (تحریم/فیلتر/کندی) و pywebview فقط از آنجا نصب می‌شد | **از v1.4.1 رفع شد:** pywebview اختیاری است (`backend\requirements-desktop.txt`)؛ سازنده با timeout ۶۰ ثانیه و ۸ تلاش، سپس با آینه‌های جایگزین (runflare, iranrepo, tuna, aliyun) تلاش می‌کند؛ اگر باز هم نشد **ساخت ادامه می‌یابد** و برنامه در پنجرهٔ Edge (app-mode) باز می‌شود. برای پنجرهٔ بومی به‌صورت آفلاین: فایل‌های wheel (`pywebview`, `pythonnet`, `clr_loader`, `bottle`, `proxy_tools`, `typing_extensions`, `cffi`, `pycparser`) را در `installer\windows\wheels\` بگذارید |
+| `Read timed out` روی بسته‌های اصلی (fastapi و…) | همان مشکل شبکه | VPN/DNS دیگر، یا یک بار روی سیستمی با اینترنت: `pip download -r backend\requirements.txt pyinstaller -d installer\windows\wheels` و پوشه را کنار مخزن کپی کنید؛ سازنده خودکار از آن استفاده می‌کند |
 | SmartScreen هنگام اجرای exe | فایل امضای دیجیتال ندارد (عادی است) | More info → Run anyway |
 | آنتی‌ویروس exe را می‌گیرد | PyInstaller onefile گاهی false-positive می‌دهد | استثنا گذاشتن یا استفاده از نسخهٔ portable در پوشهٔ خود پروژه |
 

@@ -3,6 +3,18 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [1.4.1] - 2026-09-08 (رفع شکست ساخت نصب‌کننده: `No matching distribution found for pywebview`)
+
+### Fixed
+- **BUILD-SETUP.bat با خطای `Could not find a version that satisfies the requirement pywebview<6.0,>=5.0` / `Read timed out ... pypi.org` متوقف می‌شد** (گزارش کاربر با اسکرین‌شات). ریشه: pywebview در `requirements.txt` اصلی و اجباری بود و روی شبکه‌ای که به pypi.org نمی‌رسد، pip بعد از ۵ تلاش ۱۵ ثانیه‌ای شکست می‌خورد و کل ساخت با کد 1 می‌ایستاد.
+  - pywebview/pythonnet به `backend/requirements-desktop.txt` (**اختیاری**) منتقل شدند؛ لانچر بدون آن‌ها به پنجرهٔ Edge app-mode می‌رود (رفتار موجود، اکنون با آزمون `test_launcher_falls_back_when_pywebview_missing`).
+  - سازندهٔ ویندوز (`builder-lib.ps1`): هر فراخوانی pip با `--timeout 60 --retries 8`؛ در صورت شکست، تلاش خودکار با آینه‌های جایگزین (runflare، iranrepo، tuna، aliyun)؛ پشتیبانی از پوشهٔ wheel آفلاین `installer\windows\wheels\` (`--find-links`); نصب وابستگی‌های اختیاری پنجرهٔ بومی داخل try/catch با هشدار فارسی — **ساخت دیگر به‌خاطر pywebview متوقف نمی‌شود**.
+  - CI ویندوز: نصب `requirements-desktop.txt` به‌صورت best-effort.
+  - `installer/windows/README.md`: دو ردیف عیب‌یابی جدید (pywebview / Read timed out + راهکار آفلاین).
+
+### Changed
+- نسخه → 1.4.1؛ ۲۹۷ آزمون (`tests/test_v1_4_1_optional_desktop_deps.py` جدید).
+
 ## [1.4.0] - 2026-09-08 (حسابداری دوطرفه، داشبورد و صندوق نئون، شناسایی خودکار بارکدخوان)
 
 ### Added

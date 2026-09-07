@@ -515,16 +515,71 @@ $Steps = @(
         }
         $Script:VenvPy = Join-Path $venv 'Scripts\python.exe'
 
-        & $Report 'به‌روزرسانی pip ...'
-        Invoke-Native -FilePath $Script:VenvPy -Report $Report `
-            -Arguments @('-m', 'pip', 'install', '--upgrade', 'pip', '--disable-pip-version-check')
-
-        & $Report 'نصب وابستگی‌های برنامه (ممکن است چند دقیقه طول بکشد) ...'
-        Invoke-Native -FilePath $Script:VenvPy -Report $Report -Arguments @(
-            '-m', 'pip', 'install', '--disable-pip-version-check',
-            '-r', (Join-Path $RepoRoot 'backend\requirements.txt'), 'pyinstaller'
+        # v1.4.1: pip is the #1 point of failure on restricted networks
+        # (pypi.org read timeouts). Every pip call therefore (a) waits longer
+        # and retries more, (b) may use an offline wheel folder
+        # installer\windows\wheels\ (drop *.whl files there), and (c) falls
+        # back to alternative PyPI mirrors when the default index times out.
+        $wheels = Join-Path $ScriptDir 'wheels'
+        $pipCommon = @('-m', 'pip', 'install', '--disable-pip-version-check', '--timeout', '60', '--retries', '8')
+        if (Test-Path $wheels) {
+            $pipCommon += @('--find-links', $wheels)
+            & $Report "پوشهٔ wheel آفلاین پیدا شد: $wheels"
+        }
+        $mirrors = @(
+            $null,                                            # default index (pypi.org)
+            'https://mirror-pypi.runflare.com/simple',
+            'https://pypi.iranrepo.ir/simple',
+            'https://pypi.tuna.tsinghua.edu.cn/simple',
+            'https://mirrors.aliyun.com/pypi/simple'
         )
-        & $Report 'همه وابستگی‌ها نصب شدند.'
+        $pipTry = {
+            param([string[]]$Pkgs, [string]$Label)
+            $lastErr = $null
+            foreach ($m in $mirrors) {
+                $pipArgs = @($pipCommon)
+                if ($m) {
+                    $mirrorHost = ([uri]$m).Host
+                    $pipArgs += @('--index-url', $m, '--trusted-host', $mirrorHost)
+                    & $Report ("تلاش با آینهٔ جایگزین: " + $mirrorHost)
+                }
+                $pipArgs += $Pkgs
+                try {
+                    Invoke-Native -FilePath $Script:VenvPy -Report $Report -Arguments $pipArgs | Out-Null
+                    return $true
+                } catch {
+                    $lastErr = $_
+                    $via = if ($m) { $m } else { 'pypi.org' }
+                    Write-Log ("pip ({0}) failed via {1}: {2}" -f $Label, $via, $_.Exception.Message) 'WARN'
+                }
+            }
+            if ($lastErr) { throw $lastErr }
+            return $false
+        }
+
+        & $Report 'به‌روزرسانی pip ...'
+        try { & $pipTry @('--upgrade', 'pip') 'pip upgrade' | Out-Null }
+        catch { Write-Log "pip self-upgrade skipped: $($_.Exception.Message)" 'WARN'; & $Report 'به‌روزرسانی pip ممکن نشد؛ با نسخهٔ موجود ادامه می‌دهیم.' }
+
+        & $Report 'نصب وابستگی‌های اصلی برنامه (ممکن است چند دقیقه طول بکشد) ...'
+        & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements.txt'), 'pyinstaller') 'core requirements' | Out-Null
+        & $Report 'وابستگی‌های اصلی نصب شدند.'
+
+        # Optional native-window deps (pywebview/pythonnet). Best effort: the
+        # launcher opens an Edge app-mode window when they are missing.
+        $Script:NativeWindow = $false
+        & $Report 'نصب وابستگی‌های اختیاری پنجرهٔ بومی (pywebview) ...'
+        try {
+            & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements-desktop.txt')) 'desktop (optional)' | Out-Null
+            $Script:NativeWindow = $true
+            & $Report 'پنجرهٔ بومی WebView2 فعال شد.'
+        } catch {
+            Write-Log "Optional desktop deps NOT installed: $($_.Exception.Message)" 'WARN'
+            & $Report ('هشدار: pywebview دانلود نشد (اینترنت/pypi در دسترس نبود). ساخت ادامه می‌یابد؛ ' +
+                       'برنامه در پنجرهٔ Edge (app-mode) باز می‌شود. برای پنجرهٔ بومی، فایل‌های wheel را در ' +
+                       'installer\windows\wheels قرار دهید و دوباره بسازید.')
+        }
+        & $Report 'مرحلهٔ وابستگی‌ها کامل شد.'
     }}
 
     @{ Name = 'یافتن یا نصب Inno Setup'; Action = {
