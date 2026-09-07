@@ -86,8 +86,10 @@
       input.addEventListener("input", sync); input.addEventListener("blur", function () { if (hidden.value) input.value = J.fromIso(hidden.value); });
       btn.addEventListener("click", function () { J.openPicker(hidden.value || J.todayIso(), function (isoPicked) { hidden.value = isoPicked; input.value = J.fromIso(isoPicked); input.classList.remove("bad"); hidden.dispatchEvent(new Event("change", { bubbles: true })); }); });
       Object.defineProperty(hidden, "jalaliInput", { value: input });
+      hidden.setIso = function (isoNew) { hidden.value = isoNew || ""; input.value = isoNew ? J.fromIso(isoNew) : ""; input.classList.remove("bad"); };
       return hidden;
     },
+    setValue: function (el, iso) { if (!el) return; if (el.setIso) el.setIso(iso); else el.value = iso || ""; },
     attachAll: function (root) { (root || document).querySelectorAll('input[type="date"]').forEach(J.attach); },
     openPicker: function (iso, onPick) {
       var m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);

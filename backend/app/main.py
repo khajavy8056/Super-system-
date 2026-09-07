@@ -18,6 +18,7 @@ from . import __version__
 from .config import settings
 from .database import init_db
 from .routers import (
+    accounting,
     audit,
     auth,
     batches,
@@ -117,7 +118,7 @@ for r in (
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
-    marketing.router, diagnostics.router, warehouses.router,
+    marketing.router, diagnostics.router, warehouses.router, accounting.router,
 ):
     app.include_router(r, prefix=API)
 

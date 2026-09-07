@@ -240,6 +240,8 @@ def receive_batch(
     supplier_price: Decimal | None = None,
     discount: Decimal | None = None,
     tax: Decimal | None = None,
+    paid_from: str | None = None,
+    supplier_id: int | None = None,
 ) -> ProductBatch:
     """Register receiving: always creates a NEW batch + PURCHASE_IN movement.
 
@@ -326,6 +328,8 @@ def receive_batch(
     if price_change_warning:
         notify(db, type="PRICE_CHANGE", title="Buy price changed", body=price_change_warning,
                severity="WARNING", reference_type="ProductBatch", reference_id=batch.id)
+    from . import accounting as acc_svc
+    acc_svc.post_purchase(db, batch, user=user, paid_from=paid_from or "PAYABLE", supplier_id=supplier_id)
     return batch
 
 

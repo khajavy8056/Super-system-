@@ -157,6 +157,12 @@ const ICONS = {
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
   stethoscope: '<path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M6 3H4M14 3h2"/><path d="M10 13v2a5 5 0 0 0 10 0v-1"/><circle cx="20" cy="12" r="2"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  barcode: '<path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/><path d="M12 5v14" stroke-width="2.6"/>',
+  scanner: '<path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3"/><path d="M7 12h10"/>',
+  ledger: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
+  cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 9h.01M18 15h.01"/>',
+  cheque: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h6M7 14h10"/>',
+  trend: '<path d="M3 17l5-6 4 4 6-8"/><path d="M14 7h4v4"/>',
   cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.6 11h10L21 7H6"/>',
 };
 
@@ -175,6 +181,7 @@ const NAV = [
   ["customers", "مشتریان", "pos.sell", "user"],
   ["marketing", "جشنواره و کوپن", "reports.view", "gift"],
   ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["accounting", "حسابداری", "accounting.view", "ledger"],
   ["hardware", "سخت‌افزار", "settings.manage", "printer"],
   ["users", "کاربران", "users.manage", "users"],
   ["settings", "تنظیمات", "settings.manage", "gear"],
@@ -222,29 +229,107 @@ const RENDER = {};
 RENDER.dashboard = async () => {
   const d = await api("/reports/dashboard");
   const v = $("#view");
-  v.innerHTML = "";
-  v.append(el("div", { id: "dash-alarms" }));
-  v.append(
-    el("div", { class: "grid grid-4" },
-      statCard("فروش امروز", money(d.sales.today), `${d.sales.invoice_count_today} فاکتور`),
-      statCard("فروش دیروز", money(d.sales.yesterday), ""),
-      statCard("فروش ماه", money(d.sales.month), `میانگین فاکتور: ${money(d.sales.avg_invoice_today)}`),
-      statCard("سود امروز", money(d.profit.today), `سود ماه: ${money(d.profit.month)}`),
-      statCard("ارزش موجودی", money(d.inventory.value), `${d.inventory.product_count} کالا`),
-      statCard("کم‌موجودی", d.inventory.low_stock_count, `${d.inventory.no_stock_count} بدون موجودی`),
-    ),
-    el("div", { class: "grid grid-2", style: "margin-top:14px" },
-      expiryCard("انقضا", d.expiry),
-      priceCard("تعارض قیمت (قدیم/جدید)", d.pricing),
-    ),
-    el("div", { class: "grid grid-3 dash-block" },
-      receivCard("مطالبات و بدهی", d.receivables),
-      smsCard("وضعیت پیامک", d.sms),
-      systemCard("سلامت سیستم", d.system),
-    ),
-  );
+  const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
+  const delta = d.sales.yesterday ? Math.round((d.sales.today - d.sales.yesterday) / d.sales.yesterday * 100) : (d.sales.today ? 100 : 0);
+  const monthTarget = Math.max(d.sales.month, d.sales.today * 30, 1);
+  const gaugePct = Math.min(100, Math.round(d.sales.today / (monthTarget / 30) * 100)) || 0;
+  const acc = d.accounting || {};
+  v.innerHTML = `
+    <div id="dash-alarms"></div>
+    <div class="dash">
+      <section class="dcard dcard-gauge">
+        <h3>${icon("trend", 18)} فروش امروز</h3>
+        <div class="gauge" style="--p:${gaugePct}">
+          <svg viewBox="0 0 120 120"><defs><linearGradient id="gg" x1="0" x2="1"><stop offset="0" stop-color="#3dd6c4"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs>
+            <circle class="gauge-bg" cx="60" cy="60" r="50"/><circle class="gauge-fg" cx="60" cy="60" r="50" pathLength="100"/></svg>
+          <div class="gauge-c"><b>${fmt(d.sales.today)}</b><span>${esc(state.currency.label)}</span></div>
+        </div>
+        <div class="gauge-foot"><span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪ نسبت به دیروز</span><span class="muted">${fa(d.sales.invoice_count_today)} فاکتور · میانگین ${money(d.sales.avg_invoice_today)}</span></div>
+      </section>
+
+      <section class="dcard dcard-top">
+        <h3>${icon("box", 18)} پرفروش‌ترین کالاها <span class="muted">۳۰ روز</span></h3>
+        <div class="toplist">${(d.top_products || []).map((t, i) => `
+          <div class="topitem">
+            <div class="ring ring-sm" style="--p:${t.share_pct};--c:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"><span>${fa(Math.round(t.share_pct))}٪</span></div>
+            <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش · سود ${money(t.profit)}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
+            ${t.image_url ? `<img class="thumb" src="${esc(t.image_url)}" alt="" />` : `<span class="thumb thumb-empty">${icon("box", 20)}</span>`}
+          </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
+      </section>
+
+      <section class="dcard dcard-low">
+        <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
+        <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
+          ${d.inventory.no_stock_count ? `<div class="lowrow err"><span>بدون موجودی</span><b>${fa(d.inventory.no_stock_count)}</b></div>` : ""}</div>
+      </section>
+
+      <section class="dcard dcard-trend">
+        <h3>${icon("chart", 18)} روند فروش و سود <span class="muted">۷ روز اخیر</span></h3>
+        ${trendChart(d.trend || [])}
+      </section>
+
+      <section class="dcard dcard-recent">
+        <h3>${icon("invoice", 18)} تراکنش‌های اخیر</h3>
+        <table class="recent"><tbody>${(d.recent_invoices || []).map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
+      </section>
+
+      <section class="dcard dcard-quick">
+        <h3>${icon("gear", 18)} اقدام سریع</h3>
+        <div class="quick-grid">
+          ${can("products.manage") ? `<button class="qa qa-green" onclick="go('products')">${icon("box", 20)}<span>افزودن کالای جدید</span></button>` : ""}
+          ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("inbox", 20)}<span>ورود کالا</span></button>` : ""}
+          ${can("accounting.post") ? `<button class="qa qa-violet" onclick="AccountingUI.expenseModal()">${icon("cash", 20)}<span>ثبت هزینه</span></button>` : ""}
+          ${can("pos.sell") ? `<button class="qa qa-amber" onclick="go('pos')">${icon("pos", 20)}<span>صندوق فروش</span></button>` : ""}
+        </div>
+      </section>
+
+      <section class="dcard dcard-acc">
+        <h3>${icon("ledger", 18)} وضعیت مالی</h3>
+        <div class="acc-mini">
+          <div><span class="muted">صندوق</span><b>${money(acc.cash)}</b></div>
+          <div><span class="muted">بانک + کارت‌خوان</span><b>${money((acc.bank || 0) + (acc.card || 0))}</b></div>
+          <div><span class="muted">طلب از مشتریان</span><b class="amber">${money(acc.receivables)}</b></div>
+          <div><span class="muted">بدهی به تأمین‌کنندگان</span><b class="err">${money(acc.payables)}</b></div>
+          <div class="span2"><span class="muted">سود خالص این ماه</span><b class="${(acc.month_net_profit || 0) >= 0 ? "ok" : "err"}">${money(acc.month_net_profit)}</b></div>
+        </div>
+        ${acc.cheques_due ? `<div class="muted" style="margin-top:8px">${fa(acc.cheques_due)} چک در جریان</div>` : ""}
+      </section>
+
+      <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
+      <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
+      <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
+      <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
+      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
+    </div>`;
   renderStocktakeAlarms("#dash-alarms");
 };
+
+/* Smooth SVG area chart: sales + profit for the last N days. */
+function trendChart(rows) {
+  if (!rows.length) return `<div class="muted">داده‌ای نیست</div>`;
+  const W = 640, H = 200, P = 28, PL = 62;
+  const max = Math.max(1, ...rows.map((r) => r.sales));
+  const x = (i) => PL + (i * (W - PL - P)) / Math.max(1, rows.length - 1);
+  const y = (v) => H - P - (v / max) * (H - 2 * P);
+  const path = (key) => {
+    const pts = rows.map((r, i) => [x(i), y(r[key])]);
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+      const cx = (x0 + x1) / 2;
+      d += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+    }
+    return d;
+  };
+  const area = `${path("sales")} L ${x(rows.length - 1)} ${H - P} L ${x(0)} ${H - P} Z`;
+  const grid = [0, .25, .5, .75, 1].map((f) => `<line x1="${PL}" x2="${W - P}" y1="${y(max * f)}" y2="${y(max * f)}"/><text x="${PL - 8}" y="${y(max * f) + 4}" text-anchor="end">${fmt(max * f)}</text>`).join("");
+  const labels = rows.map((r, i) => `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${r.label}</text>`).join("");
+  const dots = rows.map((r, i) => `<circle cx="${x(i)}" cy="${y(r.sales)}" r="3.5"><title>${r.label}: ${fmt(r.sales)}</title></circle>`).join("");
+  return `<svg class="trend" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="ta" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3dd6c4" stop-opacity=".45"/><stop offset="1" stop-color="#3dd6c4" stop-opacity="0"/></linearGradient></defs>
+    <g class="grid">${grid}</g><path class="area" d="${area}"/><path class="line sales" d="${path("sales")}"/><path class="line profit" d="${path("profit")}"/><g class="dots">${dots}</g><g class="labels">${labels}</g></svg>
+    <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span><span><i style="background:#7c5cff"></i>سود</span></div>`;
+}
 
 function statCard(label, value, sub) {
   return el("div", { class: "card stat" },
@@ -350,22 +435,21 @@ function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
 function renderPosCart() {
   const tbl = $("#pos-cart-table");
   if (!tbl) return;
+  const cnt = $("#pos-cart-count"); if (cnt) cnt.textContent = `تعداد کل کالاها: ${posState.cart.reduce((a, it) => a + Number(it.quantity), 0)}`;
   if (!posState.cart.length) {
-    tbl.innerHTML = `<tbody><tr><td class="muted" style="padding:24px;text-align:center">سبد خالی است — بارکد را اسکن کنید</td></tr></tbody>`;
+    tbl.innerHTML = `<div class="cart-empty">${icon("barcode", 48)}<b>سبد خالی است</b><span class="muted">بارکد را اسکن کنید یا نام کالا را جستجو کنید</span></div>`;
   } else {
-    const showCost = can("pricing.view_cost");
-    const rows = posState.cart.map((it, idx) => `
-      <tr>
-        <td>${esc(it.product_name)}<div class="muted" style="font-size:11px">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + Jalali.fromIso(it.expiry_date) : ""}</div></td>
-        <td class="qty"><button class="btn btn-sm" onclick="posQty(${idx},1)">+</button>
-          <input inputmode="decimal" value="${qty(it.quantity)}" onchange="posQty(${idx},0,this.value)" />
-          <button class="btn btn-sm" onclick="posQty(${idx},-1)">−</button>
-          ${it.unit_symbol ? `<span class="unit-tag">${esc(it.unit_symbol)}</span>` : ""}</td>
-        <td>${money(it.unit_sell_price)}</td>
-        <td>${it.discount ? "<div class=\"muted\" style=\"font-size:11px\">−" + money(it.discount) + "</div>" : ""}${money(posGross(it) - (it.discount || 0))}</td>
-        <td><button class="btn btn-sm btn-danger" onclick="posRemove(${idx})">✕</button></td>
-      </tr>`).join("");
-    tbl.innerHTML = `<thead><tr><th>کالا</th><th>تعداد</th><th>فی</th><th>جمع</th><th></th></tr></thead><tbody>${rows}</tbody>`;
+    tbl.innerHTML = posState.cart.map((it, idx) => `
+      <div class="citem">
+        ${it.image_url ? `<img class="cimg" src="${esc(it.image_url)}" alt="" />` : `<span class="cimg cimg-empty">${icon("box", 22)}</span>`}
+        <div class="cinfo">
+          <b>${esc(it.product_name)}</b>
+          <span class="muted">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + Jalali.fromIso(it.expiry_date) : ""}</span>
+          <span class="cmeta"><span>${qty(it.quantity)}${it.unit_symbol ? " " + esc(it.unit_symbol) : ""}</span><span class="sep">|</span><span>قیمت ${money(it.unit_sell_price)}</span>${it.discount ? `<span class="sep">|</span><span class="err">تخفیف −${money(it.discount)}</span>` : ""}</span>
+        </div>
+        <div class="cqty"><button class="qbtn" onclick="posQty(${idx},1)">+</button><input inputmode="decimal" value="${qty(it.quantity)}" onchange="posQty(${idx},0,this.value)" /><button class="qbtn" onclick="posQty(${idx},-1)">−</button></div>
+        <div class="ctotal"><b>${money(posGross(it) - (it.discount || 0))}</b><button class="cdel" onclick="posRemove(${idx})" title="حذف">✕</button></div>
+      </div>`).join("");
   }
   // totals
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
@@ -461,30 +545,33 @@ RENDER.pos = async () => {
   $("#view").innerHTML = `
     <div class="pos-screen" id="pos-screen">
       <div class="pos-header">
-        <div class="pos-store">🏪 ${esc(cfg.store_name)}</div>
+        <div class="pos-store">${icon("cart", 20)} ${esc(cfg.store_name)}</div>
         <div class="pos-register">صندوق: ${esc(state.user ? state.user.full_name || state.user.username : "")}</div>
         <div class="pos-clock" id="pos-clock"></div>
-        <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "🔓 خروج کیوسک" : "🔒 قفل (میان‌بر)"}</button>
+        <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "خروج از قفل" : "قفل صندوق (میان‌بر)"}</button>
       </div>
       <div class="pos-main">
-        <div class="pos-cart"><table class="pos-cart-table" id="pos-cart-table"></table></div>
+        <div class="pos-cart">
+          <div class="pos-cart-head"><h3>سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
+          <div class="pos-cart-list" id="pos-cart-table"></div>
+          <div id="pos-receipt"></div>
+        </div>
         <div class="pos-side">
-          <input id="pos-scan" class="pos-scan" placeholder="＝ اسکن بارکد یا جستجوی نام کالا…" autocomplete="off" autofocus />
+          <div class="scan-field pos-scan-wrap">${icon("barcode", 22)}<input id="pos-scan" class="pos-scan scan-input" placeholder="اسکن بارکد یا جستجوی نام کالا…" autocomplete="off" autofocus /><span class="scan-state" id="pos-scan-state" title="بارکدخوان">${icon("scanner", 18)}</span></div>
           <div id="pos-suggest" class="pos-suggest hidden"></div>
           <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
           <div id="pos-customer" class="pos-customer"></div>
           <div id="pos-coupon-state" class="pos-customer"></div>
           <div id="pos-totals" class="pos-totals"></div>
           <div class="pos-actions">
-            <button class="pos-btn pos-btn-pay" id="pos-pay">پرداخت (F2)</button>
-            <button class="pos-btn" id="pos-discount-btn">تخفیف (F4)</button>
-            <button class="pos-btn" id="pos-customer-btn">مشتری (F8)</button>
-            <button class="pos-btn" id="pos-coupon-btn">کوپن (F9)</button>
-            <button class="pos-btn pos-btn-danger" id="pos-clear-btn">خالی کردن (Esc)</button>
+            <button class="pos-btn pos-btn-pay" id="pos-pay">${icon("cash", 22)} پرداخت <span class="kbd">F2</span></button>
+            <button class="pos-btn pos-btn-blue" id="pos-customer-btn">${icon("user", 18)} مشتری <span class="kbd">F8</span></button>
+            <button class="pos-btn pos-btn-violet" id="pos-coupon-btn">${icon("gift", 18)} کوپن <span class="kbd">F9</span></button>
+            <button class="pos-btn pos-btn-amber" id="pos-discount-btn">تخفیف <span class="kbd">F4</span></button>
+            <button class="pos-btn pos-btn-danger" id="pos-clear-btn">لغو کردن <span class="kbd">Esc</span></button>
           </div>
         </div>
       </div>
-      <div id="pos-receipt"></div>
     </div>`;
   $("#pos-scan").addEventListener("keydown", async (e) => {
     if (e.key === "ArrowDown") {
@@ -562,7 +649,7 @@ async function posAddByTerm(term) {
 
 async function posAddResolved(item) {
   if (!item) return;
-  const product = { id: item.product_id, name: item.name, unit_id: item.unit ? unitIdByName(item.unit.name) : null };
+  const product = { id: item.product_id, name: item.name, image_url: item.image_url, unit_id: item.unit ? unitIdByName(item.unit.name) : null };
   const opts = item.batches || [];
   if (!opts.length) { toast("موجودی قابل فروش ندارد", "err"); return; }
   if (opts.length === 1) { posAskQuantity(product, opts[0]); return; }
@@ -627,8 +714,8 @@ function posPushCart(p, batch, amount) {
   const existing = posState.cart.find((i) => i.product_id === p.id && i.batch_id === batch.batch_id);
   if (existing) existing.quantity = parseFloat((Number(existing.quantity) + Number(amount)).toFixed(3));
   else posState.cart.push({ product_id: p.id, product_name: p.name, batch_id: batch.batch_id,
-    batch_number: batch.batch_number, quantity: Number(amount),
-    unit_id: p.unit_id, unit_symbol: u ? u.symbol : null,
+    batch_number: batch.batch_number, quantity: Number(amount), image_url: p.image_url || null,
+    unit_id: p.unit_id, unit_symbol: u ? u.name : null,
     available: batch.current_qty,
     unit_sell_price: batch.sell_price,
     unit_buy_price: batch.buy_price, expiry_date: batch.expiry_date, discount: 0 });
@@ -928,6 +1015,69 @@ document.addEventListener("keydown", (e) => {
 
 setInterval(() => { if (state.view === "pos") posClock(); }, 1000);
 
+/* =====================================================================
+ * §178–§190 — Global barcode-scanner wedge.
+ * A hardware scanner types a burst of characters (<30 ms apart) and ends
+ * with Enter. We capture that burst ANYWHERE in the app, recognise it as a
+ * scan (not typing), and route it to the field that owns barcodes on the
+ * current screen — or jump to the POS if the screen has none. Typing in a
+ * normal input is never affected because human inter-key gaps are ~100 ms+.
+ * ===================================================================== */
+const SCAN_TARGETS = { pos: "#pos-scan", batches: "#b-barcode", products: "#p-barcode", inventory: "#i-search" };
+const scanWedge = { buf: "", last: 0, timer: null, gaps: [] };
+function scanDeliver(code) {
+  const sel = SCAN_TARGETS[state.view];
+  const input = sel && document.querySelector(sel);
+  const modalOpen = !$("#modal").classList.contains("hidden");
+  if (modalOpen) {
+    const mi = document.querySelector("#modal input.scan-input, #modal input[data-scan]");
+    if (mi) { mi.value = code; mi.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return; }
+  }
+  if (input) {
+    input.value = code;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flashScan(input);
+  } else if (can("pos.sell")) {
+    go("pos").then(() => { const i = $("#pos-scan"); if (i) { i.value = code; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); flashScan(i); } });
+  }
+  api("/hardware/scanner/detect", { method: "POST", body: JSON.stringify({ intervals_ms: scanWedge.gaps.slice(-12) }) }).catch(() => {});
+}
+function flashScan(input) {
+  const w = input.closest(".scan-field") || input;
+  w.classList.add("scan-hit");
+  setTimeout(() => w.classList.remove("scan-hit"), 600);
+}
+document.addEventListener("keydown", (e) => {
+  if (!state.user) return;
+  const now = performance.now();
+  const gap = now - scanWedge.last;
+  const active = document.activeElement;
+  const tag = ((active && active.tagName) || "").toLowerCase();
+  const inScanField = active && (active.matches(SCAN_TARGETS[state.view] || "#none") || active.classList.contains("scan-input"));
+  if (e.key === "Enter") {
+    if (scanWedge.buf.length >= 4 && gap < 60 && scanWedge.gaps.length >= 3 && Math.max(...scanWedge.gaps) < 45) {
+      const code = scanWedge.buf;
+      scanWedge.buf = ""; scanWedge.gaps = [];
+      if (!inScanField) { e.preventDefault(); e.stopPropagation(); scanDeliver(code); }
+      else { flashScan(active); }
+      return;
+    }
+    scanWedge.buf = ""; scanWedge.gaps = [];
+    return;
+  }
+  if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (gap > 60) { scanWedge.buf = ""; scanWedge.gaps = []; } else if (scanWedge.buf) scanWedge.gaps.push(gap);
+  scanWedge.buf += e.key;
+  scanWedge.last = now;
+  clearTimeout(scanWedge.timer);
+  scanWedge.timer = setTimeout(() => { scanWedge.buf = ""; scanWedge.gaps = []; }, 400);
+  // Burst typed while focus is NOT in an input: swallow so it does not leak into the page.
+  if (tag !== "input" && tag !== "textarea" && tag !== "select" && scanWedge.buf.length >= 3 && Math.max(...scanWedge.gaps) < 45) {
+    e.preventDefault();
+  }
+}, true);
+
 /* ---------- products ---------- */
 RENDER.products = async () => {
   const v = $("#view");
@@ -938,7 +1088,7 @@ RENDER.products = async () => {
       نیازمند تأیید شما هستند.</p>
     <div class="form-row">
       <div><label>بارکد</label>
-        <input id="p-barcode" placeholder="اسکن یا تایپ بارکد" autocomplete="off" /></div>
+        <div class="scan-field">${icon("barcode", 20)}<input id="p-barcode" class="scan-input" placeholder="اسکن یا تایپ بارکد" autocomplete="off" /></div></div>
       <div style="align-self:end">
         <button id="p-lookup" class="btn btn-ghost">بازیابی خودکار اطلاعات</button></div>
     </div>
@@ -1220,7 +1370,7 @@ RENDER.batches = async () => {
     <div class="recv-grid">
       <div class="recv-barcode">
         <label>بارکد یا نام کالا</label>
-        <input id="b-barcode" class="scan-input" placeholder="اسکن یا تایپ کنید…" autocomplete="off" />
+        <div class="scan-field">${icon("barcode", 20)}<input id="b-barcode" class="scan-input" placeholder="اسکن یا تایپ کنید…" autocomplete="off" /></div>
         <div id="b-suggest" class="pos-suggest hidden"></div>
         <div id="b-picked" class="recv-picked hidden"></div>
       </div>
@@ -1232,6 +1382,8 @@ RENDER.batches = async () => {
       <div><label>مالیات بچ</label><input id="b-tax" type="number" min="0" /></div>
       <div><label>تاریخ انقضا (شمسی)</label><input id="b-expiry" type="date" /></div>
       <div><label>شماره بچ (اختیاری)</label><input id="b-number" placeholder="خودکار" /></div>
+      <div><label>تأمین‌کننده</label><select id="b-supplier"><option value="">— بدون تأمین‌کننده</option></select></div>
+      <div><label>نحوهٔ پرداخت خرید</label><select id="b-paid"><option value="PAYABLE">نسیه (بدهی به تأمین‌کننده)</option><option value="CASH">نقد از صندوق</option><option value="BANK">بانک</option><option value="CARD">کارت</option></select></div>
     </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
       <button id="b-receive" class="btn btn-primary">ثبت ورود</button>
@@ -1286,6 +1438,9 @@ RENDER.batches = async () => {
     }
   });
 
+  if (can("accounting.view")) api("/accounting/suppliers").then((sups) => {
+    const sel = $("#b-supplier"); if (sel) sups.forEach((x) => sel.insertAdjacentHTML("beforeend", `<option value="${x.id}">${esc(x.name)}</option>`));
+  }).catch(() => {});
   $("#b-receive").addEventListener("click", async () => {
     try {
       const body = { quantity_received: Number($("#b-qty").value),
@@ -1293,7 +1448,8 @@ RENDER.batches = async () => {
         sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null,
         discount: Number($("#b-discount").value || 0) || null,
         tax: Number($("#b-tax").value || 0) || null,
-        batch_number: $("#b-number").value.trim() || null };
+        batch_number: $("#b-number").value.trim() || null,
+        paid_from: $("#b-paid").value, supplier_id: $("#b-supplier").value ? Number($("#b-supplier").value) : null };
       if (picked) body.product_id = picked.product_id; else body.barcode = bInput.value.trim();
       if (!body.product_id && !body.barcode) throw new Error("ابتدا کالا را انتخاب یا بارکد را وارد کنید");
       if (!(body.quantity_received > 0)) throw new Error("تعداد باید بزرگ‌تر از صفر باشد");
@@ -1783,7 +1939,12 @@ async function runReport(tab) {
 /* ---------- hardware ---------- */
 RENDER.hardware = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="grid grid-2">
+  v.innerHTML = `<div class="card scanner-card" style="margin-bottom:14px">
+    <div class="card-head"><h3>${icon("scanner", 20)} بارکدخوان</h3><button id="h-scan-discover" class="btn">جستجوی خودکار بارکدخوان</button></div>
+    <div id="h-scanners" class="muted">برای شناسایی خودکار بارکدخوان‌های USB روی «جستجوی خودکار» بزنید. بارکدخوان‌های صفحه‌کلیدی (HID) بدون درایور کار می‌کنند؛ برای مدل‌های سریال، لینک درایور سازنده نمایش داده می‌شود.</div>
+    <div class="scan-test"><label>تست اسکن — همین‌جا یک بارکد بزنید</label><div class="scan-field">${icon("barcode", 20)}<input id="h-scan-test" class="scan-input" placeholder="منتظر اسکن…" autocomplete="off" /></div><div id="h-scan-result" class="muted"></div></div>
+  </div>
+  <div class="grid grid-2">
     <div class="card"><h3>وضعیت سخت‌افزار</h3><div id="h-status"></div></div>
     <div class="card"><h3>ثبت دستگاه</h3>
       <div class="form-row">
@@ -1799,15 +1960,50 @@ RENDER.hardware = async () => {
       </div>
     </div>
   </div>`;
-  const health = await api("/hardware/health");
   const HW_FA = { CONNECTED: "متصل", DISCONNECTED: "قطع", UNKNOWN: "نامشخص", NOT_CONFIGURED: "پیکربندی‌نشده", ERROR: "خطا" };
   const hwBadge = (st) => `<span class="badge badge-${st === "CONNECTED" ? "green" : "red"}">${esc(HW_FA[st] || st)}</span>`;
-  $("#h-status").innerHTML = `<p>پرینتر: ${hwBadge(health.printer)}</p>
-    <p>اسکنر: ${hwBadge(health.scanner)}</p>
+  RENDER.hardware.refreshHealth = async () => {
+    const health = await api("/hardware/health");
+    const node = $("#h-status");
+    if (node) node.innerHTML = `<p>پرینتر: ${hwBadge(health.printer)}</p>
+    <p>بارکدخوان: ${hwBadge(health.scanner)}</p>
     <p>کشوی پول: ${hwBadge(health.cash_drawer)}</p>`;
+  };
+  await RENDER.hardware.refreshHealth();
   $("#h-add").addEventListener("click", async () => {
     try { await api("/hardware", { method: "POST", body: JSON.stringify({ device_type: $("#h-type").value, name: $("#h-name").value, connection: $("#h-conn").value || null }) });
       toast("ثبت شد"); RENDER.hardware(); } catch (e) { toast(e.message, "err"); }
+  });
+  $("#h-scan-discover").addEventListener("click", async () => {
+    const box = $("#h-scanners");
+    box.innerHTML = `<span class="muted">در حال جستجو…</span>`;
+    try {
+      const r = await api("/hardware/scanner/discover");
+      if (!r.scanners.length) { box.innerHTML = `<div class="alarm info"><span class="alarm-ic">${icon("scanner", 22)}</span><div class="alarm-body">${esc(r.message)}</div></div>`; return; }
+      box.innerHTML = r.scanners.map((d) => `<div class="alarm ${d.ready ? "ok" : "soon"}"><span class="alarm-ic">${icon("scanner", 22)}</span>
+        <div class="alarm-body"><b>${esc(d.name)}</b> ${d.vendor ? `<span class="muted">· ${esc(d.vendor)}</span>` : ""}
+          <div class="muted">${esc(d.note)}${d.vid != null ? ` · VID ${d.vid.toString(16).padStart(4, "0")} PID ${(d.pid || 0).toString(16).padStart(4, "0")}` : ""}</div>
+          ${d.driver_url ? `<a href="${esc(d.driver_url)}" target="_blank" rel="noopener">دانلود درایور سازنده</a>` : ""}</div>
+        <span class="badge ${d.ready ? "badge-green" : "badge-amber"}">${d.ready ? "آماده" : "نیاز به بررسی"}</span></div>`).join("")
+        + (r.registered ? `<div class="muted" style="margin-top:6px">ثبت شد: ${esc(r.registered.name)} (${esc(r.registered.status)})</div>` : "");
+      RENDER.hardware.refreshHealth && RENDER.hardware.refreshHealth();
+    } catch (e) { box.innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+  });
+  const scanTimes = [];
+  $("#h-scan-test").addEventListener("keydown", async (e) => {
+    const now = performance.now();
+    if (e.key.length === 1) scanTimes.push(now);
+    if (e.key !== "Enter") return;
+    const gaps = scanTimes.slice(1).map((t, i) => t - scanTimes[i]);
+    const code = e.target.value.trim(); e.target.value = ""; scanTimes.length = 0;
+    if (!code) return;
+    try {
+      const r = await api("/hardware/scanner/detect", { method: "POST", body: JSON.stringify({ intervals_ms: gaps }) });
+      $("#h-scan-result").innerHTML = r.is_scanner
+        ? `<span class="ok">✓ بارکدخوان شناسایی شد — کد <span class="ltr">${esc(code)}</span> (${gaps.length} کاراکتر، بیشینهٔ فاصله ${Math.round(Math.max(0, ...gaps))} ms)</span>`
+        : `<span class="muted">ورودی به‌صورت تایپ دستی تشخیص داده شد (فاصلهٔ کلیدها ${Math.round(Math.max(0, ...gaps))} ms). با بارکدخوان اسکن کنید.</span>`;
+      if (r.is_scanner) { await api("/hardware/scanner/discover").catch(() => {}); RENDER.hardware.refreshHealth && RENDER.hardware.refreshHealth(); }
+    } catch (err) { $("#h-scan-result").textContent = err.message; }
   });
   $("#h-test-print").addEventListener("click", async () => { const r = await api("/hardware/test/print", { method: "POST" }); toast(r.message, r.ok ? "ok" : "err"); });
   $("#h-test-drawer").addEventListener("click", async () => { const r = await api("/hardware/test/drawer", { method: "POST" }); toast(r.message, r.ok ? "ok" : "err"); });

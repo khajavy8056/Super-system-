@@ -189,6 +189,9 @@ def settle(
         note=note,
         user_id=user_id,
     )
+    from . import accounting as acc_svc
+    acc_svc.post_settlement(db, customer_id=customer_id, amount=abs(entry.amount), method=method,
+                            entry_id=entry.id, user_id=user_id)
     return {
         "entry_id": entry.id,
         "paid": abs(entry.amount),

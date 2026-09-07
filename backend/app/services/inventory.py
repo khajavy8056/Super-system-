@@ -78,12 +78,16 @@ def adjust_batch(
         batch.status = "ACTIVE"
     elif new_current_qty == 0 and batch.status == "ACTIVE":
         batch.status = "SOLD_OUT"
-    add_movement(
+    mv = add_movement(
         db, product_id=batch.product_id, batch_id=batch.id,
         movement_type=movement_type, quantity=delta,
         reference_type="ProductBatch", reference_id=batch.id,
         unit_cost=batch.buy_price, note=reason, user=user,
     )
+    if delta != 0 and mv is not None and getattr(mv, "id", None):
+        from . import accounting as acc_svc
+        acc_svc.post_stock_adjustment(db, batch=batch, delta_qty=delta, movement_id=mv.id,
+                                      movement_type=movement_type, user=user)
     write_audit(
         db, action="STOCK_ADJUSTED", user_id=user.id if user else None,
         entity_type="ProductBatch", entity_id=batch.id,

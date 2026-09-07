@@ -174,6 +174,10 @@ def bootstrap(db: Session) -> None:
     # without any code change.
     ensure_default_sources(db)
 
+    # 7. Chart of accounts + current Jalali fiscal year (v1.4 double-entry)
+    from .services.accounting import ensure_chart
+    ensure_chart(db)
+
     db.commit()
 
 

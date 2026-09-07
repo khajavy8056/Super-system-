@@ -1,5 +1,7 @@
 """Aggregate all models so ``Base.metadata`` is fully populated."""
-from . import catalog, external, inventory, marketing, sales, sync, system, user  # noqa: F401
+from . import accounting, catalog, external, inventory, marketing, sales, sync, system, user  # noqa: F401
+from .accounting import (Account, CashSession, Cheque, Expense, ExpenseCategory,
+                         FiscalPeriod, JournalEntry, JournalLine, Supplier)
 from .base import SoftDeleteMixin, TimestampMixin
 from .catalog import Brand, Category, Product, Unit
 from .enums import *  # noqa: F401,F403
@@ -16,6 +18,8 @@ from .user import Permission, Role, User
 
 __all__ = [
     "Base",
+    "Account", "CashSession", "Cheque", "Expense", "ExpenseCategory", "FiscalPeriod",
+    "JournalEntry", "JournalLine", "Supplier",
     "TimestampMixin",
     "SoftDeleteMixin",
     "User",

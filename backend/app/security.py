@@ -49,6 +49,9 @@ PERMISSIONS: dict[str, str] = {
     "customers.ledger": "View customer account statements",
     "customers.settle": "Record payments / settle customer debt",
     "reports.view": "View reports & dashboard",
+    "accounting.view": "View ledgers, journal and financial statements",
+    "accounting.post": "Post manual journal entries, expenses, cheques",
+    "accounting.close": "Close fiscal periods / cash sessions",
     "settings.manage": "Manage system settings",
     "users.manage": "Manage users & roles",
     "audit.view": "View audit logs",
@@ -63,6 +66,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
         "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
         "customers.manage", "customers.ledger", "customers.settle",
         "reports.view", "settings.manage", "audit.view",
+        "accounting.view", "accounting.post", "accounting.close",
     ],
     "Cashier": [
         "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",

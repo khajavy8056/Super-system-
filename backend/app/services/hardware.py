@@ -304,3 +304,111 @@ def probe_scanner(db: Session, device: HardwareDevice) -> tuple[bool, str]:
     return True, (f"HID keyboard-wedge scanner registered; timing detection active "
                   f"(threshold {threshold} ms). A physical scan is required for "
                   f"end-to-end confirmation.")
+
+
+# --- §178–§190 barcode scanner auto-detection ---------------------------------
+# Known scanner vendors (USB VID). HID keyboard-wedge scanners need NO driver —
+# Windows binds the generic HID keyboard class; serial/CDC models need the
+# vendor's virtual COM driver, which we point to but never silently install.
+SCANNER_VENDORS = {
+    0x05e0: ("Zebra / Symbol / Motorola", "https://www.zebra.com/us/en/support-downloads/software/drivers/usb-cdc-driver.html"),
+    0x0c2e: ("Honeywell / Metrologic", "https://support.honeywellaidc.com/s/article/Where-can-I-find-the-Honeywell-Scanning-Mobility-USB-Serial-Driver"),
+    0x1eab: ("Fujian Newland", None),
+    0x0536: ("Hand Held Products (Honeywell)", None),
+    0x1a86: ("QinHeng CH340 (USB-serial scanner)", "http://www.wch-ic.com/downloads/CH341SER_EXE.html"),
+    0x04b4: ("Cypress (generic scanner MCU)", None),
+    0x1d5b: ("Datalogic", "https://www.datalogic.com/eng/support-services/downloads/downloads-ad-134.html"),
+    0x05f9: ("PSC / Datalogic", None),
+    0x0483: ("STMicro (generic scanner MCU)", None),
+    0x23d0: ("Netum", None),
+    0x2dd6: ("Sunmi", None),
+    0x1f3a: ("Allwinner (Android POS)", None),
+    0x27dd: ("Mindeo", None),
+    0x0581: ("Opticon", None),
+    0x28e9: ("GD32 (generic scanner MCU)", None),
+    0x0e6a: ("Megawin (generic scanner MCU)", None),
+    0x1eaf: ("YHD / generic 2D scanner", None),
+    0x1c10: ("Generic HID scanner", None),
+}
+_SCANNER_WORDS = ("scanner", "barcode", "bar code", "imager", "symbol", "honeywell", "zebra", "datalogic",
+                  "newland", "netum", "mindeo", "opticon", "youjie", "sunmi", "hid keyboard device")
+
+
+def _enumerate_usb() -> list[dict]:
+    """Best-effort USB device list on Windows (PowerShell/WMI), Linux (sysfs), else empty."""
+    import platform
+    import subprocess
+    devices: list[dict] = []
+    system = platform.system()
+    try:
+        if system == "Windows":
+            ps = ("Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB*' -or $_.InstanceId -like 'HID*' } "
+                  "| Select-Object FriendlyName, InstanceId, Class, Status | ConvertTo-Json -Compress")
+            out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                                 capture_output=True, text=True, timeout=12).stdout.strip()
+            import json
+            data = json.loads(out) if out else []
+            if isinstance(data, dict):
+                data = [data]
+            for d in data:
+                inst = str(d.get("InstanceId") or "")
+                vid = pid = None
+                import re
+                m = re.search(r"VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})", inst)
+                if m:
+                    vid, pid = int(m.group(1), 16), int(m.group(2), 16)
+                devices.append({"name": d.get("FriendlyName") or "", "instance": inst, "class": d.get("Class") or "",
+                                "status": d.get("Status") or "", "vid": vid, "pid": pid})
+        elif system == "Linux":
+            from pathlib import Path
+            for dev in Path("/sys/bus/usb/devices").glob("*"):
+                try:
+                    vid = int((dev / "idVendor").read_text().strip(), 16)
+                    pid = int((dev / "idProduct").read_text().strip(), 16)
+                except (OSError, ValueError):
+                    continue
+                name = ""
+                for f in ("product", "manufacturer"):
+                    try:
+                        name = ((dev / f).read_text().strip() + " " + name).strip()
+                    except OSError:
+                        pass
+                cls = ""
+                if any(p.name.endswith(":1.0") and (p / "bInterfaceClass").exists()
+                       and (p / "bInterfaceClass").read_text().strip() == "03" for p in dev.glob("*:*")):
+                    cls = "HIDClass"
+                devices.append({"name": name, "instance": dev.name, "class": cls, "status": "OK", "vid": vid, "pid": pid})
+    except Exception:  # noqa: BLE001 — enumeration is advisory
+        pass
+    return devices
+
+
+def detect_scanners() -> dict:
+    """Find attached barcode scanners and say how they connect + whether a driver is needed."""
+    found = []
+    for d in _enumerate_usb():
+        vid = d.get("vid")
+        name_l = (d.get("name") or "").lower()
+        vendor = SCANNER_VENDORS.get(vid) if vid is not None else None
+        by_name = any(w in name_l for w in _SCANNER_WORDS)
+        if not vendor and not by_name:
+            continue
+        is_hid = "hid" in (d.get("class") or "").lower() or "hid" in d.get("instance", "").lower()
+        is_serial = "port" in (d.get("class") or "").lower() or "com" in name_l
+        mode = "HID_KEYBOARD" if is_hid else ("SERIAL" if is_serial else "UNKNOWN")
+        found.append({
+            "name": d.get("name") or (vendor[0] if vendor else "Barcode scanner"),
+            "vendor": vendor[0] if vendor else None, "vid": vid, "pid": d.get("pid"),
+            "mode": mode, "status": d.get("status"),
+            "driver_required": mode == "SERIAL",
+            "driver_url": vendor[1] if vendor and mode == "SERIAL" else None,
+            "ready": mode == "HID_KEYBOARD" and (d.get("status") in ("OK", "", None)),
+            "note": ("آمادهٔ استفاده — بارکدخوان صفحه‌کلیدی (HID) نیاز به درایور ندارد" if mode == "HID_KEYBOARD"
+                     else "حالت سریال/COM — درایور مجازی COM سازنده لازم است" if mode == "SERIAL"
+                     else "نوع اتصال نامشخص؛ یک بارکد اسکن کنید تا تشخیص زمانی فعال شود"),
+        })
+    return {"scanners": found, "count": len(found),
+            "camera_hint": "روی موبایل/تبلت از دوربین (PWA) استفاده کنید",
+            "message": ("بارکدخوانی پیدا نشد؛ اگر متصل است، در صفحهٔ صندوق یک بارکد اسکن کنید — "
+                        "تشخیص زمانی به‌طور خودکار آن را می‌شناسد" if not found
+                        else f"{len(found)} بارکدخوان شناسایی شد")}

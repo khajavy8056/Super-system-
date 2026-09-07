@@ -153,7 +153,66 @@ def dashboard(db: Session) -> dict:
         "receivables": _receivables(db),
         "sms": _sms_status(db),
         "system": _system_status(db),
+        # v1.4 — visual dashboard blocks
+        "trend": _sales_trend(db, days=7),
+        "top_products": _top_products(db, t0 - timedelta(days=29), t1, limit=5),
+        "recent_invoices": _recent_invoices(db, limit=6),
+        "accounting": _accounting_block(db),
     }
+
+
+def _sales_trend(db: Session, days: int = 7) -> list[dict]:
+    """Per-day sales & profit for the last N days (today included), Jalali label."""
+    from .timeservice import to_jalali
+    out = []
+    today = date.today()
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        s0, e1 = _day_range(d)
+        cnt, total = _sales_agg(db, s0, e1)
+        prof = _profit_agg(db, s0, e1)
+        jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+        out.append({"date": str(d), "label": f"{jm:02d}/{jd:02d}", "weekday": d.weekday(),
+                    "sales": float(total), "profit": float(prof), "invoices": cnt})
+    return out
+
+
+def _top_products(db: Session, start: datetime, end: datetime, limit: int = 5) -> list[dict]:
+    rows = db.execute(
+        select(Product.id, Product.name, Product.image_url,
+               func.coalesce(func.sum(InvoiceItem.qty), 0),
+               func.coalesce(func.sum(InvoiceItem.subtotal), 0),
+               func.coalesce(func.sum(InvoiceItem.profit), 0))
+        .select_from(InvoiceItem)
+        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+        .join(Product, InvoiceItem.product_id == Product.id)
+        .where(_paid_filter(start, end))
+        .group_by(Product.id, Product.name, Product.image_url)
+        .order_by(func.sum(InvoiceItem.subtotal).desc()).limit(limit)).all()
+    total = sum((Decimal(r[4]) for r in rows), ZERO) or Decimal(1)
+    return [{"product_id": r[0], "name": r[1], "image_url": r[2], "qty": float(r[3]),
+             "revenue": float(Decimal(r[4])), "profit": float(Decimal(r[5])),
+             "share_pct": float((Decimal(r[4]) / total * 100).quantize(Decimal("0.1")))} for r in rows]
+
+
+def _recent_invoices(db: Session, limit: int = 6) -> list[dict]:
+    rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit)).scalars().all()
+    return [{"invoice_id": i.id, "invoice_number": i.invoice_number, "total": float(i.total_amount),
+             "status": i.status, "payment_method": i.payment_method,
+             "created_at": i.created_at.isoformat() if i.created_at else None} for i in rows]
+
+
+def _accounting_block(db: Session) -> dict:
+    try:
+        from . import accounting as acc
+        ov = acc.overview(db)
+        return {"cash": ov["cash"], "bank": ov["bank"], "card": ov["card"], "receivables": ov["receivables"],
+                "payables": ov["payables"], "month_net_profit": ov["month"]["net_profit"],
+                "month_expenses": ov["month"]["expenses"],
+                "cheques_due": ov["cheques"]["received_count"] + ov["cheques"]["issued_count"]}
+    except Exception:  # noqa: BLE001 — dashboard must never fail because of a ledger hiccup
+        return {"cash": 0, "bank": 0, "card": 0, "receivables": 0, "payables": 0,
+                "month_net_profit": 0, "month_expenses": 0, "cheques_due": 0}
 
 
 # --- §23 dashboard blocks ----------------------------------------------------

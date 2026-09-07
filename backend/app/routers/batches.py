@@ -32,6 +32,9 @@ class ReceiveIn(BaseModel):
     supplier_price: Decimal | None = None
     discount: Decimal | None = None
     tax: Decimal | None = None
+    # v1.4 accounting: how the purchase was paid (PAYABLE=نسیه از تأمین‌کننده | CASH | BANK | CARD)
+    paid_from: str | None = None
+    supplier_id: int | None = None
 
 
 def _out(b: ProductBatch) -> dict:
@@ -86,7 +89,7 @@ def receive(body: ReceiveIn, db: Session = Depends(get_db),
             expiry_date=body.expiry_date, batch_number=body.batch_number,
             received_at=datetime.utcnow(), user=user, note=body.note,
             supplier_price=body.supplier_price, discount=body.discount,
-            tax=body.tax,
+            tax=body.tax, paid_from=body.paid_from, supplier_id=body.supplier_id,
         )
         db.commit()
         return _out(batch)

@@ -89,6 +89,30 @@ def test_drawer(db: Session = Depends(get_db), _: User = Depends(require_permiss
     return {"ok": ok, "message": msg}
 
 
+@router.get("/scanner/discover")
+def scanner_discover(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """Enumerate attached USB/HID barcode scanners and auto-register the first ready one."""
+    result = hw.detect_scanners()
+    registered = None
+    if result["scanners"]:
+        best = next((s for s in result["scanners"] if s["ready"]), result["scanners"][0])
+        existing = db.execute(select(HardwareDevice).where(HardwareDevice.device_type == "BARCODE_SCANNER")).scalars().first()
+        if existing is None:
+            existing = HardwareDevice(device_type="BARCODE_SCANNER", name=best["name"], vendor=best.get("vendor"),
+                                      model=f"VID {best['vid']:04X} PID {best['pid']:04X}" if best.get("vid") is not None else None,
+                                      connection="HID" if best["mode"] == "HID_KEYBOARD" else best["mode"],
+                                      status="CONNECTED" if best["ready"] else "UNKNOWN", is_enabled=True)
+            db.add(existing)
+        else:
+            existing.name = best["name"]
+            existing.vendor = best.get("vendor")
+            existing.status = "CONNECTED" if best["ready"] else existing.status
+        db.commit()
+        registered = {"id": existing.id, "name": existing.name, "status": existing.status}
+    result["registered"] = registered
+    return result
+
+
 @router.post("/scanner/detect")
 def scanner_detect(body: ScanDetectIn, _: User = Depends(require_permission("settings.manage"))):
     return {"is_scanner": hw.detect_scanner(body.intervals_ms, body.threshold_ms)}

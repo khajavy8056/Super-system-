@@ -531,6 +531,11 @@ def checkout(
                "coupon": coupon_info["code"] if coupon_info else None},
     )
     invoice.applied_coupon_code = coupon_info["code"] if coupon_info else None  # transient
+    # v1.4 — double-entry posting in the SAME transaction (rolls back with the sale)
+    from . import accounting as acc_svc
+    db.flush()
+    db.refresh(invoice)
+    acc_svc.post_sale(db, invoice, user=user)
     return invoice
 
 
@@ -562,6 +567,8 @@ def void_invoice(db: Session, *, invoice: Invoice, user: User | None = None, rea
                 ))
     invoice.status = "VOID"
     invoice.payment_status = "VOID"
+    from . import accounting as acc_svc
+    acc_svc.post_sale_void(db, invoice, user=user, reason=reason)
     write_audit(
         db, action="SALE_VOIDED", user_id=user.id if user else None,
         entity_type="Invoice", entity_id=invoice.id, reference=reason,
@@ -639,6 +646,8 @@ def process_return(
         returned_qty_for_item(db, i.id) >= to_qty(i.qty) for i in all_items
     )
     invoice.status = "REFUNDED" if fully_returned else "PARTIALLY_REFUNDED"
+    from . import accounting as acc_svc
+    acc_svc.post_sale_return(db, ret, invoice_item, invoice, user=user)
 
     write_audit(
         db, action="SALE_REFUNDED", user_id=user.id if user else None,
