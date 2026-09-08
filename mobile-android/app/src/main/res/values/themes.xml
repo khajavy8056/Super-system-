@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Supermarket" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <style name="Theme.Supermarket" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">#0f1420</item>
+        <item name="android:navigationBarColor">#0f1420</item>
         <item name="android:windowBackground">#0f1420</item>
-        <item name="colorPrimary">#3b82f6</item>
-        <item name="colorAccent">#3b82f6</item>
+        <item name="android:colorPrimary">#37b8aa</item>
+        <item name="android:colorAccent">#37b8aa</item>
     </style>
 </resources>

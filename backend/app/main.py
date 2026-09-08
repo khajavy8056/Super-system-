@@ -111,7 +111,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    # v1.6: the Android shell serves the mobile app from its private origin
+    # https://app.local and calls this server over the LAN; browsers on LAN
+    # terminals use http://<lan-ip>:<port> which is same-origin anyway.
+    allow_origins=list(dict.fromkeys(settings.cors_origin_list + ["https://app.local"])),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

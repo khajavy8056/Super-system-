@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0f1420" />
+  <title>اتصال به فروشگاه</title>
+  <link rel="stylesheet" href="/mobile/styles.css" />
+  <style>
+    .setup { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px; gap: 14px; text-align: center; }
+    .setup img.logo { width: 92px; height: 92px; border-radius: 24px; background: rgba(255,255,255,.06); padding: 12px; }
+    .setup h1 { font-size: 20px; margin: 0; }
+    .setup .card { width: 100%; max-width: 420px; text-align: right; }
+    .qr-wrap { position: relative; width: 100%; aspect-ratio: 1; background: #000; border-radius: 16px; overflow: hidden; }
+    .qr-wrap video { width: 100%; height: 100%; object-fit: cover; }
+    .qr-frame { position: absolute; inset: 14%; border: 3px solid #37b8aa; border-radius: 14px; box-shadow: 0 0 0 999px rgba(0,0,0,.35); }
+    .steps { margin: 0; padding: 0 18px 0 0; color: var(--muted); font-size: 13px; line-height: 1.9; }
+    .foot { color: var(--muted); font-size: 12px; margin-top: 12px; }
+    input.ltr { direction: ltr; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="setup">
+    <img class="logo" src="/icons/logo.svg" alt="" />
+    <h1>سوپرمارکت خواجوی — موبایل</h1>
+    <p class="muted" style="margin:0">برای اولین بار، گوشی را به رایانهٔ فروشگاه وصل کنید.</p>
+
+    <div class="card">
+      <h2>۱) اسکن کد اتصال</h2>
+      <ol class="steps">
+        <li>در برنامهٔ ویندوز: تنظیمات → «موبایل (اندروید)»</li>
+        <li>گوشی را به همان Wi‑Fi وصل کنید</li>
+        <li>کد QR روی صفحهٔ رایانه را اسکن کنید</li>
+      </ol>
+      <div class="qr-wrap" id="qr-wrap" style="margin-top:10px">
+        <video id="qr-video" playsinline muted></video>
+        <div class="qr-frame"></div>
+      </div>
+      <div id="qr-status" class="muted" style="margin-top:8px">در انتظار دوربین…</div>
+      <button class="btn" id="qr-start" style="margin-top:8px">روشن کردن دوربین</button>
+    </div>
+
+    <div class="card">
+      <h2>۲) یا وارد کردن دستی</h2>
+      <label>آدرس سرور در شبکهٔ داخلی</label>
+      <input id="m-url" class="ltr" placeholder="http://192.168.1.10:8000" inputmode="url" autocomplete="off" />
+      <label>کد اتصال (متن زیر QR) — اختیاری</label>
+      <input id="m-code" class="ltr" placeholder="SMKT:…" autocomplete="off" />
+      <button class="btn btn-primary" id="m-go" style="margin-top:10px">آزمایش و اتصال</button>
+      <div id="m-status" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="foot">نسخهٔ <span id="ver">—</span> · طراحی و توسعه توسط خواجوی</div>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    const $ = (s) => document.querySelector(s);
+    const A = window.SupermarketAndroid;
+    if (A) $("#ver").textContent = A.version();
+    function decodePayload(text) {
+      if (!text || !text.startsWith("SMKT:")) return null;
+      try {
+        const b64 = text.slice(5).replace(/-/g, "+").replace(/_/g, "/");
+        const json = decodeURIComponent(escape(atob(b64 + "=".repeat((4 - b64.length % 4) % 4))));
+        return JSON.parse(json);
+      } catch (_) { return null; }
+    }
+    async function probe(base) {
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 4000);
+      try {
+        const r = await fetch(base + "/health", { signal: c.signal });
+        const j = await r.json();
+        return r.ok && /Supermarket/i.test(j.app || "");
+      } catch (_) { return false; } finally { clearTimeout(t); }
+    }
+    async function connect(payload, statusEl) {
+      const urls = (payload.urls && payload.urls.length ? payload.urls : [payload.url]).filter(Boolean);
+      for (const u of urls) {
+        statusEl.textContent = "در حال آزمایش " + u + " …";
+        if (await probe(u)) {
+          statusEl.textContent = "اتصال برقرار شد ✓";
+          localStorage.setItem("m_server", u);
+          if (payload.token) { localStorage.setItem("m_token", payload.token); localStorage.setItem("m_device", payload.device_id || ""); }
+          if (payload.store) localStorage.setItem("m_store", payload.store);
+          if (A) A.pair(u, payload.token || "", payload.store || "", payload.device_id || "");
+          else location.href = "/mobile/index.html";
+          return true;
+        }
+      }
+      statusEl.textContent = "اتصال برقرار نشد — Wi‑Fi گوشی و رایانه باید یکی باشد و برنامهٔ ویندوز باز باشد.";
+      return false;
+    }
+    // manual
+    $("#m-go").onclick = async () => {
+      const code = $("#m-code").value.trim(); const p = decodePayload(code);
+      let url = $("#m-url").value.trim();
+      if (!p && !url) { $("#m-status").textContent = "آدرس یا کد اتصال را وارد کنید"; return; }
+      if (url && !/^https?:\/\//.test(url)) url = "http://" + url;
+      await connect(p ? { ...p, urls: [url, ...(p.urls || [])].filter(Boolean) } : { url, urls: [url] }, $("#m-status"));
+    };
+    // camera QR
+    let stream = null, timer = null;
+    async function startCam() {
+      if (!("BarcodeDetector" in window)) { $("#qr-status").textContent = "این دستگاه اسکن QR داخلی ندارد؛ از ورود دستی استفاده کنید."; return; }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        const v = $("#qr-video"); v.srcObject = stream; await v.play();
+        const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+        $("#qr-status").textContent = "کد QR را جلوی دوربین بگیرید…";
+        timer = setInterval(async () => {
+          try {
+            const codes = await det.detect(v);
+            const hit = codes.map((c) => c.rawValue).find((t) => t && t.startsWith("SMKT:"));
+            if (hit) { clearInterval(timer); stream.getTracks().forEach((t) => t.stop()); const p = decodePayload(hit); if (p) await connect(p, $("#qr-status")); else $("#qr-status").textContent = "کد نامعتبر"; }
+          } catch (_) {}
+        }, 400);
+      } catch (e) { $("#qr-status").textContent = "دسترسی به دوربین داده نشد: " + e.message; }
+    }
+    $("#qr-start").onclick = startCam;
+    startCam();
+  })();
+  </script>
+</body>
+</html>

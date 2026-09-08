@@ -10,7 +10,14 @@
 "use strict";
 
 const $ = (s) => document.querySelector(s);
-const API = "/api";
+/* v1.6 — inside the Android shell the web app is served from https://app.local and
+ * talks to the shop PC at the paired address (Prefs/localStorage "m_server").
+ * In a browser tab (LAN PWA) it stays relative. */
+const NATIVE = window.SupermarketAndroid || null;
+const SERVER = (NATIVE && NATIVE.getServerUrl && NATIVE.getServerUrl()) || localStorage.getItem("m_server") || "";
+if (NATIVE && NATIVE.getDeviceToken && NATIVE.getDeviceToken() && !localStorage.getItem("m_token")) localStorage.setItem("m_token", NATIVE.getDeviceToken());
+const API = (SERVER ? SERVER : "") + "/api";
+const DEVICE_ID = (NATIVE && NATIVE.getDeviceId && NATIVE.getDeviceId()) || localStorage.getItem("m_device") || "";
 const state = {
   token: localStorage.getItem("m_token") || "",
   user: null,
@@ -113,7 +120,7 @@ function barcodeChecksumOk(bc) {
 
 /* ---------- IndexedDB (offline queue + session cache + conflicts) ---------- */
 const DB_NAME = "supermarket_mobile";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function idb() {
   return new Promise((resolve, reject) => {
@@ -123,6 +130,7 @@ function idb() {
       if (!db.objectStoreNames.contains("queue")) db.createObjectStore("queue", { keyPath: "id", autoIncrement: true });
       if (!db.objectStoreNames.contains("conflicts")) db.createObjectStore("conflicts", { keyPath: "id", autoIncrement: true });
       if (!db.objectStoreNames.contains("cache")) db.createObjectStore("cache", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("ops")) db.createObjectStore("ops", { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -147,6 +155,32 @@ const conflictAll = () => idbTx("conflicts", "readonly", (st) => st.getAll());
 const conflictDelete = (id) => idbTx("conflicts", "readwrite", (st) => st.delete(id));
 const cachePut = (key, value) => idbTx("cache", "readwrite", (st) => st.put({ key, value }));
 const cacheGet = (key) => idbTx("cache", "readonly", (st) => st.get(key));
+/* v1.6 — generic store-and-forward operation queue (sales, receipts, …) replayed via POST /api/mobile/sync */
+const opsAll = () => idbTx("ops", "readonly", (st) => st.getAll());
+const opsDelete = (id) => idbTx("ops", "readwrite", (st) => st.delete(id));
+async function opQueueAdd(type, payload, label) {
+  const id = "op" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  await idbTx("ops", "readwrite", (st) => st.add({ id, type, payload, label, created_at: new Date().toISOString() }));
+  updateSyncPill();
+  return id;
+}
+async function mobileSync(showToast) {
+  const ops = await opsAll();
+  let applied = 0, rejected = 0;
+  try {
+    const r = await api("/mobile/sync", { method: "POST", body: JSON.stringify({
+      device_id: DEVICE_ID || null, cursor: localStorage.getItem("m_cursor") || null,
+      push: ops.map((o) => ({ id: o.id, type: o.type, payload: o.payload, created_at: o.created_at })), pull: true }) });
+    for (const a of r.applied || []) {
+      if (a.status === "APPLIED" || a.status === "DUPLICATE") { await opsDelete(a.id); applied++; }
+      else { rejected++; await conflictAdd({ op_id: a.id, product_name: (ops.find((o) => o.id === a.id) || {}).label, server_message: a.error, at: new Date().toISOString(), kind: "op" }); await opsDelete(a.id); }
+    }
+    if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []); }
+    localStorage.setItem("m_cursor", r.cursor); localStorage.setItem("m_last_sync", new Date().toISOString());
+    if (showToast || applied || rejected) toast(`همگام‌سازی با رایانه: ${applied} ثبت شد${rejected ? ` · ${rejected} رد شد` : ""}`, rejected ? "err" : "ok");
+  } catch (e) { if (showToast) toast("رایانه در دسترس نیست: " + e.message, "err"); }
+  updateSyncPill();
+}
 
 /* ---------- online/offline ---------- */
 function refreshNet() {
@@ -228,6 +262,11 @@ async function loadConfig() {
   try { state.currency = await api("/settings/currency"); } catch (e) {}
   try { state.units = await api("/units"); } catch (e) { state.units = []; }
 }
+window.unpairDevice = () => {
+  if (!confirm("اتصال این گوشی به رایانه قطع شود؟ صف آفلاین حفظ می‌شود.")) return;
+  ["m_server", "m_token", "m_device", "m_store", "m_cursor"].forEach((k) => localStorage.removeItem(k));
+  if (NATIVE && NATIVE.unpair) NATIVE.unpair(); else location.href = "/mobile/setup.html";
+};
 window.logout = () => {
   localStorage.removeItem("m_token");
   state.token = ""; state.user = null;
@@ -237,8 +276,8 @@ window.logout = () => {
 async function updateSyncPill() {
   const el = $("#sync-pill");
   if (!el) return;
-  const [q, c] = await Promise.all([queueAll(), conflictAll()]);
-  el.innerHTML = `<i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"} · صف: ${q.length}${c.length ? ` · <span class="err">تعارض: ${c.length}</span>` : ""}`;
+  const [q, c, o] = await Promise.all([queueAll(), conflictAll(), opsAll().catch(() => [])]);
+  el.innerHTML = `<i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"} · صف: ${q.length + o.length}${c.length ? ` · <span class="err">تعارض: ${c.length}</span>` : ""}`;
   el.onclick = showSync;
   el.style.cursor = "pointer";
 }
@@ -456,18 +495,27 @@ window.mDoCheckout = async (total) => {
       payable = total - ev.discount;
     } catch (e) { toast(e.message, "err"); return; }
   }
-  try {
-    const inv = await api("/pos/checkout", { method: "POST", body: JSON.stringify({
+  const payload = {
       items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.qty })),
       payments: [{ method, amount: payable }],
       customer_phone: phone || null,
-      coupon_code: coupon || null })});
+      coupon_code: coupon || null };
+  try {
+    const inv = await api("/pos/checkout", { method: "POST", body: JSON.stringify(payload) });
     closeSheet();
     state.cart = [];
     toast(`ثبت شد: ${inv.invoice_number}`);
     if (inv.issued_coupon) toast(`کوپن خرید بعدی: ${inv.issued_coupon.code}`);
     showPos();
-  } catch (e) { toast(e.message, "err"); }
+  } catch (e) {
+    if (!e.status || e.status >= 500) {   // offline / PC unreachable → store-and-forward (v1.6)
+      await opQueueAdd("POS_CHECKOUT", payload, `فروش ${money(payable)} (${state.cart.length} قلم)`);
+      closeSheet(); state.cart = [];
+      toast("آفلاین: فروش ذخیره شد و هنگام اتصال به رایانه ثبت می‌شود");
+      showPos(); return;
+    }
+    toast(e.message, "err");
+  }
 };
 
 /* ---------- Inventory on the phone (§11) ---------- */
@@ -537,7 +585,15 @@ window.doStockIn = async () => {
       expiry_date: $("#si-exp").value || null })});
     toast(`بچ ${r.batch_number} ثبت شد`);
     showInventory();
-  } catch (e) { toast(e.message, "err"); }
+  } catch (e) {
+    if (!e.status || e.status >= 500) {
+      await opQueueAdd("STOCK_RECEIVE", { barcode: $("#si-barcode").value.trim(), quantity_received: parseFloat($("#si-qty").value),
+        buy_price: Number($("#si-buy").value || 0), sell_price: Number($("#si-sell").value || 0), expiry_date: $("#si-exp").value || null },
+        `ورود کالا ${$("#si-barcode").value.trim()}`);
+      toast("آفلاین: ورود کالا ذخیره شد و بعداً همگام می‌شود"); showInventory(); return;
+    }
+    toast(e.message, "err");
+  }
 };
 
 /* ---------- More: products, customers, coupons, reports, diagnostics ---------- */
@@ -663,8 +719,9 @@ window.showSettingsM = async () => {
       <div class="card">
         <h2>اتصال</h2>
         <p><i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"}</p>
-        <p class="muted">آدرس سرور: ${esc(location.origin)}</p>
+        <p class="muted">آدرس سرور: ${esc(SERVER || location.origin)}${NATIVE ? ` · نسخهٔ اپ ${esc(NATIVE.version())}` : ""}</p>
         <button class="btn" onclick="showSync()">وضعیت صف همگام‌سازی</button>
+        ${NATIVE || localStorage.getItem("m_server") ? `<button class="btn" style="margin-top:8px" onclick="unpairDevice()">قطع اتصال از این رایانه (اسکن مجدد)</button>` : ""}
       </div>
     </div>` + tabbar();
   updateSyncPill();
@@ -1009,6 +1066,7 @@ window.showProductSheet = (item) => {
 
 /* ---------- sync + conflicts (§26) ---------- */
 async function syncLoop() {
+  if (state.online) await mobileSync(false);   // v1.6: sales/receipts queued offline + pull changes from the PC
   const q = await queueAll();
   if (!q.length || !state.online) { updateSyncPill(); return; }
   let sent = 0, conflicted = 0;
@@ -1036,8 +1094,13 @@ async function syncLoop() {
 }
 
 window.showSync = async () => {
-  const [q, c] = await Promise.all([queueAll(), conflictAll()]);
-  const qRows = q.map((x) => `
+  const [q, c, ops] = await Promise.all([queueAll(), conflictAll(), opsAll().catch(() => [])]);
+  const oRows = ops.map((x) => `
+    <div class="card" style="margin-top:8px">
+      <b>${esc(x.label || x.type)}</b>
+      <div class="muted">${x.type === "POS_CHECKOUT" ? "فروش آفلاین" : x.type === "STOCK_RECEIVE" ? "ورود کالای آفلاین" : x.type} · ${new Date(x.created_at).toLocaleString("fa-IR")}</div>
+    </div>`).join("");
+  const qRows = oRows + q.map((x) => `
     <div class="card" style="margin-top:8px">
       <b>${esc(x.product_name || "آیتم " + x.item_id)}</b>
       <div class="muted">شمارش آفلاین: ${x.physical_qty} · ${new Date(x.saved_at).toLocaleString("fa-IR")}</div>
@@ -1056,9 +1119,10 @@ window.showSync = async () => {
     <div class="screen">
       <div class="card">
         <h2>همگام‌سازی</h2>
-        <p class="muted"><i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"} — صف ارسال: ${q.length} · تعارض‌ها: ${c.length}</p>
+        <p class="muted"><i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"} — صف ارسال: ${q.length + ops.length} · تعارض‌ها: ${c.length}</p>
+        <p class="muted">آخرین همگام‌سازی با رایانه: ${localStorage.getItem("m_last_sync") ? new Date(localStorage.getItem("m_last_sync")).toLocaleString("fa-IR") : "هنوز انجام نشده"}</p>
         ${qRows || '<p class="muted">صف خالی است.</p>'}
-        ${state.online && q.length ? '<button class="btn btn-primary" style="margin-top:10px" onclick="syncLoop()">همگام‌سازی کن</button>' : ""}
+        <button class="btn btn-primary" style="margin-top:10px" onclick="mobileSync(true).then(syncLoop)">همگام‌سازی با رایانه</button>
       </div>
       <div class="card">
         <h2>تعارض‌ها (نیازمند تصمیم انسانی)</h2>
@@ -1093,6 +1157,7 @@ window.resolveConflict = async (id, action) => {
 /* ---------- boot ---------- */
 (async function boot() {
   refreshNet();
+  if (NATIVE && !SERVER) { location.href = "/mobile/setup.html"; return; }
   if (!state.token) { showLogin(); return; }
   try {
     state.user = await api("/auth/me");

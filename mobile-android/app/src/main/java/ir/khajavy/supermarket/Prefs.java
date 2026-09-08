@@ -3,21 +3,25 @@ package ir.khajavy.supermarket;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** Persisted server address (§259: the phone talks to the shop server over the LAN). */
+/** Persisted pairing (§259): server address on the shop LAN + the device token minted by the PC. */
 public final class Prefs {
     private static final String FILE = "supermarket";
-    private static final String KEY_URL = "server_url";
 
     private Prefs() {}
 
-    public static String serverUrl(Context ctx) {
-        SharedPreferences p = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE);
-        return p.getString(KEY_URL, null);
+    private static SharedPreferences p(Context c) { return c.getSharedPreferences(FILE, Context.MODE_PRIVATE); }
+
+    public static String serverUrl(Context ctx) { return p(ctx).getString("server_url", null); }
+    public static String deviceToken(Context ctx) { return p(ctx).getString("device_token", null); }
+    public static String deviceId(Context ctx) { return p(ctx).getString("device_id", null); }
+    public static String storeName(Context ctx) { return p(ctx).getString("store_name", null); }
+
+    public static void save(Context ctx, String url, String token, String store, String deviceId) {
+        p(ctx).edit().putString("server_url", url).putString("device_token", token)
+                .putString("store_name", store).putString("device_id", deviceId).apply();
     }
 
-    public static void setServerUrl(Context ctx, String url) {
-        ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString(KEY_URL, url).apply();
-    }
+    public static void clear(Context ctx) { p(ctx).edit().clear().apply(); }
 
     /** Normalises user input: adds http://, strips trailing slashes. */
     public static String normalise(String raw) {

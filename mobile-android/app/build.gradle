@@ -1,7 +1,7 @@
 plugins { id("com.android.application") }
 
 // Version is read from the single source of truth: backend/app/__init__.py
-def appVersion = "1.5.1"
+def appVersion = "1.6.0"
 def initPy = new File(rootDir, "../backend/app/__init__.py")
 if (initPy.exists()) {
     def m = (initPy.text =~ /__version__\s*=\s*"([^"]+)"/)
@@ -9,6 +9,17 @@ if (initPy.exists()) {
 }
 def parts = appVersion.tokenize(".").collect { it.toInteger() }
 def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+
+// Version.java is generated (scripts/android/prepare.sh does the same for the SDK-less build)
+def genDir = new File(buildDir, "generated/version")
+tasks.register("genVersion") {
+    outputs.dir(genDir)
+    doLast {
+        def f = new File(genDir, "ir/khajavy/supermarket/Version.java"); f.parentFile.mkdirs()
+        f.text = "package ir.khajavy.supermarket;\npublic final class Version { public static final String NAME = \"" + appVersion + "\"; public static final int CODE = " + code + "; private Version() {} }\n"
+    }
+}
+preBuild.dependsOn("genVersion")
 
 android {
     namespace "ir.khajavy.supermarket"
@@ -20,6 +31,7 @@ android {
         versionCode code
         versionName appVersion
     }
+    sourceSets { main { java.srcDirs += genDir; assets.srcDirs += "src/main/assets" } }
     buildTypes {
         release {
             minifyEnabled false
@@ -38,18 +50,9 @@ android {
     }
     if (System.getenv("SUPERMARKET_KEYSTORE")) {
         buildTypes.release.signingConfig = signingConfigs.release
-    } else {
-        buildTypes.release.signingConfig = signingConfigs.debug
     }
-    buildFeatures { buildConfig true }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
 }
 
-dependencies {
-    implementation "androidx.appcompat:appcompat:1.7.0"
-    implementation "androidx.webkit:webkit:1.11.0"
-    implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
-}
+// No AndroidX on purpose: the app must compile against the bare android.jar (see mobile-android/README.md).
+dependencies {}
