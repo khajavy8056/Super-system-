@@ -153,7 +153,7 @@
 | 250–254 | Web Panel، Backend محلی، Local DB، Local-First، Offline | ✅ | FastAPI + SQLite + `sw.js` + صف آفلاین موبایل |
 | 255 | همگام‌سازی با سرور | 🔵 | `SyncJob` صف عمومی + `sync/run`; سرور مرکزی = فاز بعد (مطابق فهرست §260) |
 | 256 | PWA | ✅ | `manifest.webmanifest`, `sw.js`, آیکون‌ها |
-| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.7.0.apk`; جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
+| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.8.0.apk`; جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
 | 258–259 | اتصال موبایل به DB اصلی در LAN | ✅ | `bind 0.0.0.0`, `check_lan` در عیب‌یابی |
 | 260 | اتصال آینده از اینترنت | 🔵 | JWT + CORS پیکربندی‌پذیر (`CORS_ORIGINS`) |
 | 261–265 | انبارگردانی موبایل، دوربین، UI اختصاصی، ذخیرهٔ لحظه‌ای، ادامه | ✅ | `frontend/mobile/app.js`, `client_key` idempotent; T: `test_phase10_scan.py` |
@@ -230,3 +230,17 @@
 | M3 | QR جفت‌سازی در مرورگر (SVG، بدون Pillow) + رمزگشایی واقعی در آزمون | ✅ | `vendor-qrcode.js`; `smoke-v1_7.js`: jsQR → `SMKT:` → payload v2 |
 | M4 | صفحهٔ «اتصال گوشی» یک‌بار پس از اولین ورود | ✅ | `onboarding.js: pairingIntro`; smoke |
 | M5 | اندروید: مجوز موقعیت مکانی فقط هنگام نیاز | ✅ (کامپایل‌شده در APK 1.7.0؛ اجرا روی دستگاه NOT VERIFIED) | `MainActivity.java: onGeolocationPermissionsShowPrompt` |
+
+
+## افزوده‌های v1.8.0 (درخواست کاربر)
+
+| # | قابلیت | وضعیت | شواهد |
+|---|---|---|---|
+| N1 | اسکن سریع بارکد در اندروید | ✅ موتور (ZXing/BarcodeDetector) با EAN-13 واقعی تست شد؛ اجرا با دوربین دستگاه فیزیکی NOT VERIFIED | `mobile/app.js: window.scan`, `scripts/uitest/zxing-decode.js` (۰٫۷ ms/فریم) |
+| N2 | حذف سود از صندوق | ✅ | `smoke-v1_8.js` «no profit shown»؛ `docs/screenshots/v18-pos-1366x768.png` |
+| N3 | فاکتورهای نگه‌داشته قابل مشاهده/بازگردانی | ✅ | `renderHeldDock`; smoke: hold → listed with time → restore |
+| N4 | صندوق قفل به اندازهٔ مانیتور (بدون اسکرول) | ✅ در ۳ رزولوشن با Chromium اندازه‌گیری شد | `#view.view-pos{overflow:hidden}`; `v18-pos-1366x768.png`, `v18-pos-1920x1080.png` |
+| N5 | پاسخ پشتیبانی از داخل ربات با مسیریابی دقیق + پیوست | ✅ با رلهٔ شبیه‌سازی‌شده؛ روی ربات واقعی روبیکا NOT VERIFIED از این محیط (اینترنت مسدود) | `test_v1_7_support.py` (۷ آزمون)، `docs/SUPPORT.md` |
+| N6 | منطقهٔ زمانی پیش‌فرض تهران | ✅ (آزمون‌ها در ۲۱:۰۰ UTC = ۰۰:۳۰ تهران اجرا شدند و روز تهران را دیدند) | `timeservice.local_today`, `accounting._local_date` |
+| N7 | راهنمای گام‌به‌گام همهٔ بخش‌ها | ✅ ۱۶ بخش دسکتاپ + صفحات گوشی؛ ۹۶ بررسی در smoke | `frontend/tour.js`, `mobile/tour.js`, `v18-tour-dashboard.png` |
+| N8 | انتشار نسخهٔ جدید | ✅ tag `v1.8.0` + APK؛ Setup.exe ویندوز از CI (فعال‌سازی توسط مالک مخزن) | `releases/android/SupermarketMobile-1.8.0.apk(.sha256)` |
