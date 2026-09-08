@@ -306,3 +306,14 @@ textarea { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid va
 .tk-msg { max-width: 85%; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border, #ddd); line-height: 1.7; word-break: break-word; }
 .tk-msg.out { align-self: flex-start; }
 .tk-msg.in { align-self: flex-end; background: rgba(55,184,170,.14); }
+
+/* v1.8 mobile tour */
+.mt-layer { position: fixed; inset: 0; z-index: 9000; }
+.mt-layer.hidden { display: none; }
+.mt-hole { position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(10,16,28,.55), 0 0 0 3px var(--accent, #37b8aa); transition: all .25s; pointer-events: none; }
+.mt-card { position: fixed; left: 12px; right: 12px; background: var(--card, #fff); color: var(--text, #111); border-radius: 14px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,.3); line-height: 1.8; font-size: 14px; }
+.mt-head { display: flex; gap: 8px; align-items: center; } .mt-head b { flex: 1; }
+.mt-step { font-size: 11px; color: var(--muted); background: rgba(127,127,127,.15); padding: 0 8px; border-radius: 10px; }
+.mt-card p { margin: 4px 0 10px; }
+.mt-actions { display: flex; gap: 6px; } .mt-actions .btn { flex: 1; }
+.mt-btn { font-weight: 700; }

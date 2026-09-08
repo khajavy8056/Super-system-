@@ -26,7 +26,9 @@ const FE = path.join(__dirname, "..", "..", "frontend");
   window.localStorage.setItem("m_token", token);
   window.confirm = () => true;
   // both files are classic <script> tags in index.html → one shared global lexical scope; eval them together to mirror that
-  try { window.eval(fs.readFileSync(FE + "/mobile/app.js", "utf8") + "\n" + fs.readFileSync(FE + "/mobile/app-more.js", "utf8") + "\nwindow.__st = state;"); } catch (e) { errors.push("eval: " + e.message); }
+  window.HTMLElement.prototype.scrollIntoView = function () {};
+  try { window.eval(fs.readFileSync(FE + "/mobile/vendor/zxing.min.js", "utf8") + "\n" + fs.readFileSync(FE + "/mobile/app.js", "utf8") + "\n" + fs.readFileSync(FE + "/mobile/app-more.js", "utf8") + "\n" + fs.readFileSync(FE + "/mobile/tour.js", "utf8") + "\nwindow.__st = state;"); } catch (e) { errors.push("eval: " + e.message); }
+  window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
   window.prompt = () => "مشتری تست"; window.navigator.geolocation = { getCurrentPosition: (ok) => ok({ coords: { latitude: 35.7, longitude: 51.4, accuracy: 9 } }) };
   await new Promise((r) => setTimeout(r, 1500));
   const app = window.document.getElementById("app");
@@ -75,6 +77,27 @@ const FE = path.join(__dirname, "..", "..", "frontend");
   const tk = await (await fetch(BASE + "/api/support/tickets?limit=1", { headers: { Authorization: "Bearer " + token } })).json();
   console.log("ticket from phone:", tk[0] && tk[0].subject, tk[0] && tk[0].status, "geo:", tk[0] && tk[0].latitude, "device:", tk[0] && tk[0].device);
   if (!tk[0] || tk[0].subject !== "تست از گوشی" || tk[0].latitude !== 35.7 || tk[0].device !== "Android") errors.push("ticket not stored with geo/device");
+  // v1.8: ticket conversation screen, ZXing loaded for the camera scanner, tour auto + «?» button
+  await window.eval(`showTicketM(${tk[0].id})`); await new Promise((r) => setTimeout(r, 800));
+  const conv = app.textContent;
+  console.log("ticket conversation screen:", /پیام به پشتیبانی/.test(conv) && !!window.document.getElementById("tk-file") && !!window.document.getElementById("tk-poll"));
+  if (!/پیام به پشتیبانی/.test(conv) || !window.document.getElementById("tk-file")) errors.push("ticket conversation screen missing reply/attachment");
+  window.document.getElementById("tk-reply").value = "پیگیری از گوشی"; window.document.getElementById("tk-sendr").click(); await new Promise((r) => setTimeout(r, 1200));
+  const msgs = await (await fetch(BASE + `/api/support/tickets/${tk[0].id}/messages`, { headers: { Authorization: "Bearer " + token } })).json();
+  console.log("follow-up from phone stored:", msgs.messages.some((m) => m.text === "پیگیری از گوشی"));
+  if (!msgs.messages.some((m) => m.text === "پیگیری از گوشی")) errors.push("phone follow-up not stored");
+  console.log("ZXing engine available to scanner:", typeof window.ZXing === "object" && typeof window.ZXing.MultiFormatReader === "function", "| zxReader():", !!window.eval("zxReader()"));
+  if (!window.eval("zxReader()")) errors.push("zxReader() returned null");
+  window.localStorage.removeItem("m_tour_seen_admin"); await window.eval("goTab('pos')"); await new Promise((r) => setTimeout(r, 1000));
+  const tourAuto = window.document.getElementById("mt-layer") && !window.document.getElementById("mt-layer").classList.contains("hidden");
+  const tourBtn = !!window.document.querySelector(".topbar .mt-btn");
+  console.log("mobile tour auto on first visit:", tourAuto, "| ? button:", tourBtn, "| step:", tourAuto && window.document.querySelector("#mt-card b").textContent);
+  if (!tourAuto || !tourBtn) errors.push("mobile tour not shown");
+  window.MTour.end(); await window.eval("goTab('pos')"); await new Promise((r) => setTimeout(r, 900));
+  const again = !window.document.getElementById("mt-layer").classList.contains("hidden");
+  console.log("mobile tour suppressed on second visit:", !again); if (again) errors.push("tour re-ran");
+  window.document.querySelector(".topbar .mt-btn").click(); await new Promise((r) => setTimeout(r, 100));
+  console.log("mobile tour replay via ?:", !window.document.getElementById("mt-layer").classList.contains("hidden")); window.MTour.end();
   if (errors.length) { console.log("ERRORS:"); errors.forEach((e) => console.log(" -", e)); process.exit(1); }
   console.log("ANDROID SMOKE OK"); process.exit(0);
 })();

@@ -294,6 +294,7 @@ async function go(view) {
   try {
     await RENDER[view]();
     Jalali.attachAll(viewEl);
+    if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
     viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${err.message}</p></div>`;
   }
