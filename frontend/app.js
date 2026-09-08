@@ -2821,13 +2821,14 @@ RENDER.support = async () => {
   async function loadList() {
     try {
       const rows = await api("/support/tickets?limit=50");
+      if (!$("#sup-list")) return; // user already left the view
       $("#sup-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>شماره</th><th>نوع</th><th>موضوع</th><th>وضعیت</th><th>زمان</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr>
         <td class="ltr">${esc(t.number)}</td><td>${esc(t.type_label)}</td><td>${esc(t.subject)}</td>
         <td><span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></td>
         <td>${faDateTime(t.created_at)}</td>
         <td>${t.status === "FAILED" || t.status === "NEW" ? `<button class="btn btn-sm" onclick="supResend(${t.id})">ارسال دوباره</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<span class="muted">هنوز درخواستی ثبت نشده است.</span>`;
-    } catch (e) { $("#sup-list").textContent = e.message; }
+    } catch (e) { const el = $("#sup-list"); if (el) el.textContent = e.message; }
   }
   window.supResend = async (id) => { try { const t = await api(`/support/tickets/${id}/resend`, { method: "POST" }); toast(t.status === "SENT" ? "ارسال شد" : "هنوز ارسال نشد؛ بعداً دوباره تلاش می‌شود", t.status === "SENT" ? "ok" : "err"); loadList(); } catch (e) { toast(e.message, "err"); } };
   $("#sup-refresh").onclick = loadList;

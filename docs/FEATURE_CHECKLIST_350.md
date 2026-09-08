@@ -153,7 +153,7 @@
 | 250–254 | Web Panel، Backend محلی، Local DB، Local-First، Offline | ✅ | FastAPI + SQLite + `sw.js` + صف آفلاین موبایل |
 | 255 | همگام‌سازی با سرور | 🔵 | `SyncJob` صف عمومی + `sync/run`; سرور مرکزی = فاز بعد (مطابق فهرست §260) |
 | 256 | PWA | ✅ | `manifest.webmanifest`, `sw.js`, آیکون‌ها |
-| 257 | نسخهٔ Android | 🟡 **v1.2** (build NOT VERIFIED) | پروژهٔ بومی `mobile-android/` (WebView + دوربین + صفحهٔ اتصال LAN + بنر آفلاین، نسخه از `__init__.py`) + `installer/ci/release-android.yml`; PWA همچنان قابل نصب — Android SDK در این محیط نبود |
+| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.7.0.apk`; جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
 | 258–259 | اتصال موبایل به DB اصلی در LAN | ✅ | `bind 0.0.0.0`, `check_lan` در عیب‌یابی |
 | 260 | اتصال آینده از اینترنت | 🔵 | JWT + CORS پیکربندی‌پذیر (`CORS_ORIGINS`) |
 | 261–265 | انبارگردانی موبایل، دوربین، UI اختصاصی، ذخیرهٔ لحظه‌ای، ادامه | ✅ | `frontend/mobile/app.js`, `client_key` idempotent; T: `test_phase10_scan.py` |
@@ -217,3 +217,16 @@
 | L2 | ویزارد راه‌اندازی اولیهٔ گرافیکی با «رد کردن» هر مرحله، لایسنس و مدیر اجباری | ✅ | `frontend/onboarding.js`; اسکرین‌شات `v15-01..08` |
 | L3 | لودینگ نصب ۴۵ دقیقه (بار اول) / ۲ دقیقه (هر ورود) + بررسی لایسنس | ✅ | `loadingScreen()`; `setup.first_loading_done`; اسکرین‌شات `v15-09` |
 | L4 | نوتیفیکیشن پایین صفحه: ساعت/روز مانده به انقضای کالا + شمارش معکوس لایسنس | ✅ | `GET /api/setup/alerts`; اسکرین‌شات `v15-13` |
+
+## افزوده‌های v1.7.0 (درخواست کاربر)
+| # | قابلیت | وضعیت | شواهد |
+|---|---|---|---|
+| S1 | درخواست پشتیبانی داخل برنامه (۷ نوع، اولویت، شرح، تماس، موقعیت دقیق اختیاری، مشخصات دستگاه) — ویندوز و گوشی | ✅ (تحویل روی رلهٔ واقعی NOT VERIFIED) | `services/support.py`, `routers/support.py`; T: `test_v1_7_support.py` (۵); `smoke-v1_7.js`, `smoke-android.js`; `docs/SUPPORT.md` |
+| S2 | ذخیرهٔ محلی + صف ارسال با تلاش مجدد، «ارسال دوباره»، بستن؛ replay از صف آفلاین گوشی (`SUPPORT_TICKET`) | ✅ | T: `test_offline_support_ticket_op_is_replayed_by_mobile_sync` |
+| C1 | همگام‌سازی اینترنتی اختیاری Google Drive appDataFolder (Device Flow، پیش‌فرض خاموش، بدون هزینه) | ✅ (حساب واقعی NOT VERIFIED) | `services/cloud.py`, `routers/cloud.py`; T: `test_v1_7_cloud.py` (۳ با سرور شبیه‌سازی‌شده); پنل تنظیمات «همگام‌سازی ابری»; `docs/CLOUD_SYNC.md` |
+| C2 | گوشی هنگام عدم دسترسی به رایانه به ابر می‌رود (اعتبارنامه در QR v2) | ✅ | `mobile/app.js: cloudSync`, `setup.html` |
+| M1 | برابری کامل امکانات در گوشی — منوی «بیشتر» با ۲۴ صفحه | ✅ | `mobile/app-more.js`; `smoke-android.js`: `mobile screens rendered: 24/24` |
+| M2 | فاکتور معلق در صندوق گوشی (تا ۱۰) | ✅ | `mHold/mHeldBar`; smoke: `held listed: true` |
+| M3 | QR جفت‌سازی در مرورگر (SVG، بدون Pillow) + رمزگشایی واقعی در آزمون | ✅ | `vendor-qrcode.js`; `smoke-v1_7.js`: jsQR → `SMKT:` → payload v2 |
+| M4 | صفحهٔ «اتصال گوشی» یک‌بار پس از اولین ورود | ✅ | `onboarding.js: pairingIntro`; smoke |
+| M5 | اندروید: مجوز موقعیت مکانی فقط هنگام نیاز | ✅ (کامپایل‌شده در APK 1.7.0؛ اجرا روی دستگاه NOT VERIFIED) | `MainActivity.java: onGeolocationPermissionsShowPrompt` |
