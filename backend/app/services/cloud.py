@@ -327,6 +327,9 @@ def start_worker(session_factory, interval: int = 300) -> None:
     _stop.clear()
 
     def run():
+        # first tick after one interval: startup stays fast and the DB is never
+        # touched from a second thread while the app is still initialising
+        _stop.wait(interval)
         while not _stop.is_set():
             try:
                 db = session_factory()

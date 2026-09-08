@@ -76,6 +76,8 @@ def lan_addresses() -> list[str]:
                 ips.append(ip)
     except OSError:
         pass
+    # v1.7: drop APIPA / link-local (169.254.x.x) — never reachable from a phone
+    ips = [ip for ip in ips if not ip.startswith("169.254.")]
     return ips or ["127.0.0.1"]
 
 
@@ -202,6 +204,12 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
             body = customers_router.CustomerIn(**op.payload)
             res = customers_router.create_customer(body, db=db, _=user)  # type: ignore[arg-type]
             return {"id": op.id, "status": "APPLIED", "result": {"customer_id": getattr(res, "id", None)}}
+        if kind == "SUPPORT_TICKET":
+            # v1.7: a support request written on the phone while the PC was unreachable
+            from ..routers import support as support_router
+            body = support_router.TicketIn(**op.payload)
+            res = support_router.create_ticket(body, db=db, user=user)  # type: ignore[arg-type]
+            return {"id": op.id, "status": "APPLIED", "result": {"number": res.get("number") if isinstance(res, dict) else getattr(res, "number", None)}}
         return {"id": op.id, "status": "REJECTED", "error": f"نوع عملیات ناشناخته: {op.type}"}
     except HTTPException as exc:
         db.rollback()

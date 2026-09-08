@@ -379,10 +379,42 @@
     }, async (err) => {
       closeOverlay();
       if (err) { toast(err.message || "لایسنس نامعتبر", "err"); localStorage.removeItem("token"); location.reload(); return; }
+      const firstEver = sessionStorage.getItem("sm.first.pending") === "1";
       sessionStorage.setItem(LS_LOADED, localStorage.getItem("token") || "1"); sessionStorage.removeItem("sm.first.pending");
+      if (firstEver) { try { await pairingIntro(); } catch (_) {} }
       resolve();
     }));
   }
 
-  window.Onboarding = { gate, afterLogin, alertsStack, licensePanel, licenseScreen, closeOverlay, wizard };
+  /* ---------- v1.7: one-time "connect your phone" screen (right after the very first login) ---------- */
+  function pairingIntro() {
+    return new Promise((resolve) => {
+      const o = overlay("ob-pair");
+      o.innerHTML = `<div class="ob-card ob-anim" style="width:min(640px,100%)">
+        ${LOGO()}
+        <h1>${ico("phone", 26)} اتصال گوشی (اختیاری)</h1>
+        <p class="muted">نسخهٔ اندروید همین برنامه را روی گوشی نصب کنید و این کد را با آن اسکن کنید؛ گوشی و رایانه بدون اینترنت و روی همین وای‌فای همگام می‌شوند. هر زمان خواستید از «تنظیمات → موبایل» هم می‌توانید کد جدید بسازید.</p>
+        <div id="ob-pair-qr" style="display:flex;justify-content:center;margin:12px 0"><span class="muted">در حال ساخت کد…</span></div>
+        <div id="ob-pair-info" class="muted" style="font-size:12px;line-height:2"></div>
+        <div class="ob-actions" style="display:flex;gap:10px;justify-content:center;margin-top:16px">
+          <button class="btn btn-primary" id="ob-pair-done">ادامه</button>
+          <button class="btn" id="ob-pair-skip">بعداً از تنظیمات</button>
+        </div>
+      </div>`;
+      const done = () => { closeOverlay(); resolve(); };
+      q("#ob-pair-done").addEventListener("click", done); q("#ob-pair-skip").addEventListener("click", done);
+      (async () => {
+        try {
+          const r = await api("/mobile/pair/info");
+          let html = "";
+          if (window.qrcode) { const qq = window.qrcode(0, "M"); qq.addData(r.qr_text); qq.make(); html = `<div style="width:240px;height:240px;background:#fff;padding:6px;border-radius:12px">${qq.createSvgTag({ cellSize: 4, margin: 8, scalable: true }).replace("<svg", '<svg style="width:100%;height:100%"')}</div>`; }
+          else if (r.qr_png) html = `<img src="${r.qr_png}" alt="QR" style="width:240px;height:240px;border-radius:12px;background:#fff"/>`;
+          q("#ob-pair-qr").innerHTML = html || `<span class="error">ساخت کد ممکن نشد — از تنظیمات → موبایل استفاده کنید.</span>`;
+          q("#ob-pair-info").innerHTML = `آدرس رایانه در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}<br/>نسخهٔ وب موبایل (بدون نصب): <code class="ltr">${_esc(r.mobile_url)}</code>`;
+        } catch (e) { q("#ob-pair-qr").innerHTML = `<span class="muted">${_esc(e.message || "خطا")}</span>`; }
+      })();
+    });
+  }
+
+  window.Onboarding = { gate, afterLogin, alertsStack, licensePanel, licenseScreen, closeOverlay, wizard, pairingIntro };
 })();

@@ -45,6 +45,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const ctab = $$(".set-tab").find((b) => /ابر|پشتیبان‌گیری ابری/.test(b.textContent)); check(!!ctab, "settings has cloud tab"); ctab.click(); await sleep(900);
   check(/Google|گوگل/.test($("#set-body").textContent) && ($("#cl-id") || $("#cl-sync")), "cloud panel renders with connect button");
   check(!/undefined|NaN/.test($("#set-body").textContent), "cloud panel has no undefined/NaN");
+  // first-login pairing intro (shown once after the wizard): QR + continue closes it
+  const pp = window.Onboarding.pairingIntro(); await sleep(1200);
+  check(!!$("#ob-pair-qr svg"), "first-login pairing intro shows QR");
+  check(!/دقیقه/.test($("#ob-overlay").textContent), "no 'دقیقه' wording on overlay");
+  $("#ob-pair-done").click(); await pp; check($("#ob-overlay").classList.contains("hidden"), "pairing intro closes on continue");
   if (errors.length) { console.log("ERRORS:"); errors.forEach((e) => console.log(" - " + e)); process.exit(1); }
   console.log("V1.7 SMOKE OK"); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -89,3 +89,22 @@ def test_ticket_offline_is_queued_then_resent(client, auth_headers, monkeypatch)
 def test_bad_type_rejected(client, auth_headers):
     r = client.post("/api/support/tickets", headers=auth_headers, json={"type": "NOPE", "subject": "xxx"})
     assert r.status_code == 422
+
+
+def test_offline_support_ticket_op_is_replayed_by_mobile_sync(client, auth_headers):
+    """v1.7: a request written on the phone while the PC was unreachable arrives
+    through the LAN sync queue and is stored (and relayed) like a direct one."""
+    op = {"id": "tk-op-1", "type": "SUPPORT_TICKET",
+          "payload": {"type": "BUG", "priority": "HIGH", "subject": "چاپگر گوشی آفلاین", "description": "d",
+                      "device": "Android", "latitude": 35.7, "longitude": 51.4, "accuracy_m": 8}}
+    r = client.post("/api/mobile/sync", headers=auth_headers, json={"device_id": "devq", "push": [op], "pull": False})
+    assert r.status_code == 200, r.text
+    res = r.json()["applied"][0]
+    assert res["status"] == "APPLIED", res
+    assert res["result"]["number"]
+    # idempotent: same op id is not applied twice
+    r2 = client.post("/api/mobile/sync", headers=auth_headers, json={"device_id": "devq", "push": [op], "pull": False})
+    assert r2.json()["applied"][0]["status"] in ("APPLIED", "DUPLICATE")
+    lst = client.get("/api/support/tickets?limit=50", headers=auth_headers).json()
+    mine = [t for t in lst if t["subject"] == "چاپگر گوشی آفلاین"]
+    assert len(mine) == 1 and mine[0]["latitude"] == 35.7 and mine[0]["device"] == "Android"
