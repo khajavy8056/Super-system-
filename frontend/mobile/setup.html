@@ -49,6 +49,11 @@
       <button class="btn btn-primary" id="m-go" style="margin-top:10px">آزمایش و اتصال</button>
       <div id="m-status" class="muted" style="margin-top:8px"></div>
     </div>
+    <div class="card">
+      <h2>۳) یا شروع مستقل (بدون رایانه)</h2>
+      <p class="muted">برنامه به‌تنهایی روی گوشی کار می‌کند: تعریف کالا، ورود کالا، فروش با اسکن بارکد، مشتری‌ها. هر وقت رایانهٔ فروشگاه را نصب کردید، از «بیشتر ← تنظیمات دستگاه» متصل شوید تا همه‌چیز خودکار همگام شود.</p>
+      <button class="btn" id="m-standalone" style="margin-top:6px">شروع مستقل روی همین گوشی</button>
+    </div>
     <div class="foot">نسخهٔ <span id="ver">—</span> · طراحی و توسعه توسط خواجوی</div>
   </div>
   <script src="/mobile/vendor/zxing.min.js"></script>
@@ -101,6 +106,13 @@
       statusEl.textContent = "اتصال برقرار نشد — Wi‑Fi گوشی و رایانه باید یکی باشد و برنامهٔ ویندوز باز باشد.";
       return false;
     }
+    // standalone (v1.8.1): no server — the phone owns its data, sync starts whenever a PC is paired
+    $("#m-standalone").onclick = () => {
+      localStorage.setItem("m_standalone", "1");
+      localStorage.setItem("m_token", localStorage.getItem("m_token") || "standalone");
+      localStorage.setItem("m_server", "http://standalone.invalid");
+      if (A) A.pair("http://standalone.invalid", "standalone", "فروشگاه من", "standalone"); else location.href = "/mobile/index.html";
+    };
     // manual
     $("#m-go").onclick = async () => {
       const code = $("#m-code").value.trim(); const p = decodePayload(code);
@@ -112,6 +124,13 @@
     // camera QR
     let stream = null, timer = null;
     async function startCam() {
+      // v1.8.1: inside the Android app use the native Camera2+ZXing scanner
+      const N = window.SupermarketAndroid;
+      if (N && N.hasNativeScanner && N.hasNativeScanner()) {
+        window.__nativeScan = (code) => { if (code && code.startsWith("SMKT:")) { const p = decodePayload(code); if (p) connect(p, $("#qr-status")); else $("#qr-status").textContent = "کد QR معتبر نیست"; } else $("#qr-status").textContent = "این QR کد اتصال نیست؛ QR تنظیمات → موبایل را اسکن کنید"; };
+        window.__nativeScanCancel = () => { $("#qr-status").textContent = "اسکن لغو شد — دوباره «اسکن QR» را بزنید یا کد را دستی وارد کنید"; };
+        $("#qr-status").textContent = "دوربین باز می‌شود…"; N.scan("اسکن QR اتصال به رایانه"); return;
+      }
       // v1.7.1: native BarcodeDetector if it truly works, else ZXing on canvas — fast on every WebView
       let det = null;
       if ("BarcodeDetector" in window) { try { const sup = await window.BarcodeDetector.getSupportedFormats(); if (sup.includes("qr_code")) det = new window.BarcodeDetector({ formats: ["qr_code"] }); } catch (_) {} }

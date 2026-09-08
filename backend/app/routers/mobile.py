@@ -184,12 +184,40 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
     from ..security import has_permission
     kind = op.type.upper()
     need = {"POS_CHECKOUT": "pos.sell", "STOCK_RECEIVE": "batches.manage", "STOCKTAKE_COUNT": "inventory.stocktake",
-            "CUSTOMER_CREATE": "pos.sell"}.get(kind)
+            "CUSTOMER_CREATE": "pos.sell", "PRODUCT_CREATE": "products.manage"}.get(kind)
     if need and not has_permission(user, need):
         return {"id": op.id, "status": "REJECTED", "error": f"دسترسی لازم نیست: {need}"}
     try:
+        if kind == "PRODUCT_CREATE":
+            # v1.8.1: product defined on the phone while offline; same barcode already there → reuse (idempotent)
+            from ..routers import products as products_router
+            from ..services import catalog
+            bc = (op.payload.get("barcode") or "").strip()
+            existing = catalog.get_product_by_barcode(db, bc) if bc and not bc.startswith("INT-L") else None
+            if existing is not None:
+                return {"id": op.id, "status": "APPLIED", "result": {"product_id": existing.id, "reused": True}}
+            payload = dict(op.payload)
+            if bc.startswith("INT-L"):
+                payload["barcode"] = None  # phone-side temporary code → let the PC mint a real INT- code
+            body = products_router.ProductIn(**{k: v for k, v in payload.items() if k in products_router.ProductIn.model_fields})
+            res = products_router.create_product(body, db=db, user=user)  # type: ignore[arg-type]
+            return {"id": op.id, "status": "APPLIED", "result": {"product_id": res.get("id") if isinstance(res, dict) else getattr(res, "id", None)}}
         if kind == "POS_CHECKOUT":
-            body = pos_router.CheckoutIn(**op.payload)
+            # lines sold offline may carry only a barcode (product created on the phone) → resolve here
+            items = []
+            for it in op.payload.get("items", []):
+                it = dict(it)
+                if not it.get("product_id") and it.get("barcode"):
+                    from ..services import catalog
+                    prod = catalog.get_product_by_barcode(db, it["barcode"])
+                    if prod is None:
+                        return {"id": op.id, "status": "REJECTED", "error": f"کالای {it['barcode']} روی رایانه یافت نشد"}
+                    it["product_id"] = prod.id
+                it.pop("barcode", None)
+                if not it.get("batch_id"):
+                    it.pop("batch_id", None)
+                items.append(it)
+            body = pos_router.CheckoutIn(**{**op.payload, "items": items})
             res = pos_router.checkout(body, db=db, user=user)  # type: ignore[arg-type]
             return {"id": op.id, "status": "APPLIED", "result": {"invoice_number": getattr(res, "invoice_number", None) or (res.get("invoice_number") if isinstance(res, dict) else None)}}
         if kind == "STOCK_RECEIVE":

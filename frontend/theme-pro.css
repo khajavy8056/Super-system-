@@ -613,3 +613,10 @@ html, body { overflow: hidden; }
 .tour-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .tour-btn { margin-inline-start: 6px; }
 .tour-btn span { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent, #37b8aa); color: #fff; font-weight: 700; font-size: 12px; }
+
+/* v1.8.1 — POS search dropdown floats OVER the totals/buttons (does not push them down);
+   at least ~7 rows visible without hovering, scroll inside for more. */
+.pos-side { position: relative; overflow: visible; }
+.pos-side .pos-suggest { position: absolute; inset-inline: 0; top: 64px; z-index: 40; max-height: min(62vh, 520px);
+  overflow-y: auto; box-shadow: 0 18px 48px rgba(0,0,0,.45); border-radius: 14px; margin-top: 0; }
+.pos-side .pos-suggest .sug { padding: 11px 14px; font-size: 14px; }

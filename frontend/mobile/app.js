@@ -17,6 +17,7 @@ const NATIVE = window.SupermarketAndroid || null;
 const SERVER = (NATIVE && NATIVE.getServerUrl && NATIVE.getServerUrl()) || localStorage.getItem("m_server") || "";
 if (NATIVE && NATIVE.getDeviceToken && NATIVE.getDeviceToken() && !localStorage.getItem("m_token")) localStorage.setItem("m_token", NATIVE.getDeviceToken());
 const API = (SERVER ? SERVER : "") + "/api";
+const STANDALONE = /standalone\.invalid/.test(SERVER) || localStorage.getItem("m_standalone") === "1";
 const DEVICE_ID = (NATIVE && NATIVE.getDeviceId && NATIVE.getDeviceId()) || localStorage.getItem("m_device") || "";
 window.SM_MOBILE = { API, SERVER, DEVICE_ID, native: !!NATIVE };
 const state = {
@@ -169,9 +170,9 @@ const cacheGet = (key) => idbTx("cache", "readonly", (st) => st.get(key));
 /* v1.6 — generic store-and-forward operation queue (sales, receipts, …) replayed via POST /api/mobile/sync */
 const opsAll = () => idbTx("ops", "readonly", (st) => st.getAll());
 const opsDelete = (id) => idbTx("ops", "readwrite", (st) => st.delete(id));
-async function opQueueAdd(type, payload, label) {
+async function opQueueAdd(type, payload, label, local_no) {
   const id = "op" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  await idbTx("ops", "readwrite", (st) => st.add({ id, type, payload, label, created_at: new Date().toISOString() }));
+  await idbTx("ops", "readwrite", (st) => st.add({ id, type, payload, label, local_no: local_no || null, created_at: new Date().toISOString() }));
   updateSyncPill();
   return id;
 }
@@ -197,7 +198,7 @@ async function cloudSync(showToast) {
     if (ops.length) {
       const name = `ops-${DEVICE_ID || "phone"}-${Date.now()}.json`;
       const boundary = "smkt-b"; const meta = JSON.stringify({ name, parents: ["appDataFolder"] });
-      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ device_id: DEVICE_ID, token: state.token, push: ops.map((o) => ({ id: o.id, type: o.type, payload: o.payload, created_at: o.created_at })) })}\r\n--${boundary}--`;
+      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ device_id: DEVICE_ID, token: state.token, push: ops.map((o) => ({ id: o.id, type: o.type, payload: cleanLocalIds(o.payload), created_at: o.created_at })) })}\r\n--${boundary}--`;
       const up = await fetch(`${c.upload_url}/files?uploadType=multipart`, { method: "POST", headers: { ...H, "Content-Type": `multipart/related; boundary=${boundary}` }, body });
       if (!up.ok) throw new Error("ارسال به فضای ابری ناموفق بود");
       for (const o of ops) await opsDelete(o.id);
@@ -208,6 +209,7 @@ async function cloudSync(showToast) {
     if (f && f.modifiedTime !== localStorage.getItem("m_cloud_snap")) {
       const snap = await (await fetch(`${c.api_url}/files/${f.id}?alt=media`, { headers: H })).json();
       await cachePut("products", snap.products || []); await cachePut("batches", snap.batches || []); await cachePut("customers", snap.customers || []);
+      if (window.Local) await Local.applyPull(snap, true);
       localStorage.setItem("m_cloud_snap", f.modifiedTime); localStorage.setItem("m_cloud_pull", new Date().toISOString());
     }
     if (showToast) toast(`همگام‌سازی اینترنتی انجام شد${ops.length ? ` (${ops.length} عملیات ارسال شد)` : ""}`);
@@ -215,18 +217,28 @@ async function cloudSync(showToast) {
   } catch (e) { if (showToast) toast(e.message, "err"); return false; }
 }
 window.cloudSync = cloudSync;
+/* temporary negative ids (created offline) must not reach the PC — it matches by barcode instead */
+function cleanLocalIds(p) {
+  const c = JSON.parse(JSON.stringify(p || {}));
+  if (Array.isArray(c.items)) c.items = c.items.map((it) => ({ ...it, product_id: it.product_id < 0 ? undefined : it.product_id, batch_id: (it.batch_id || 0) < 0 ? undefined : it.batch_id, barcode: it.barcode || undefined }));
+  if (c.product_id < 0) delete c.product_id;
+  return c;
+}
+window.cleanLocalIds = cleanLocalIds;
 async function mobileSync(showToast) {
   const ops = await opsAll();
   let applied = 0, rejected = 0;
   try {
     const r = await api("/mobile/sync", { method: "POST", body: JSON.stringify({
       device_id: DEVICE_ID || null, cursor: localStorage.getItem("m_cursor") || null,
-      push: ops.map((o) => ({ id: o.id, type: o.type, payload: o.payload, created_at: o.created_at })), pull: true }) });
+      push: ops.map((o) => ({ id: o.id, type: o.type, payload: cleanLocalIds(o.payload), created_at: o.created_at })), pull: true }) });
     for (const a of r.applied || []) {
       if (a.status === "APPLIED" || a.status === "DUPLICATE") { await opsDelete(a.id); applied++; }
       else { rejected++; await conflictAdd({ op_id: a.id, product_name: (ops.find((o) => o.id === a.id) || {}).label, server_message: a.error, at: new Date().toISOString(), kind: "op" }); await opsDelete(a.id); }
     }
-    if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []); }
+    if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []);
+      if (window.Local) await Local.applyPull(r.pull, !localStorage.getItem("m_cursor")); }
+    for (const a of r.applied || []) { if (a.status === "APPLIED" && a.result && a.result.invoice_number && window.Local) { const o = ops.find((x) => x.id === a.id); if (o && o.local_no) await Local.markInvoiceSynced(o.local_no, a.result.invoice_number); } }
     localStorage.setItem("m_cursor", r.cursor); localStorage.setItem("m_last_sync", new Date().toISOString());
     if (showToast || applied || rejected) toast(`همگام‌سازی با رایانه: ${applied} ثبت شد${rejected ? ` · ${rejected} رد شد` : ""}`, rejected ? "err" : "ok");
   } catch (e) {
@@ -238,12 +250,25 @@ async function mobileSync(showToast) {
 }
 
 /* ---------- online/offline ---------- */
+/* "online" = the shop PC answers (not merely "the phone has internet").
+   A cheap /health probe every 20 s + on every network change keeps it honest. */
 function refreshNet() {
-  state.online = navigator.onLine;
+  state.online = navigator.onLine && state.serverUp !== false;
   const el = $("#net-dot");
   if (el) el.className = "net " + (state.online ? "online" : "");
 }
-window.addEventListener("online", () => { refreshNet(); syncLoop(); });
+async function probeServer() {
+  if (STANDALONE || !navigator.onLine) { state.serverUp = false; refreshNet(); return false; }
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), 3500);
+  try { const r = await fetch((SERVER || "") + "/health", { signal: c.signal, cache: "no-store" }); state.serverUp = r.ok; }
+  catch (_) { state.serverUp = false; } finally { clearTimeout(t); }
+  const was = state.online; refreshNet();
+  if (!was && state.online) syncLoop();
+  return state.online;
+}
+window.probeServer = probeServer;
+setInterval(probeServer, 20000);
+window.addEventListener("online", () => { probeServer(); });
 window.addEventListener("offline", refreshNet);
 
 /* ---------- screens ---------- */
@@ -314,13 +339,14 @@ window.goTab = (key) => {
 };
 
 async function loadConfig() {
-  try { state.currency = await api("/settings/currency"); } catch (e) {}
-  try { state.units = await api("/units"); } catch (e) { state.units = []; }
+  try { state.currency = await api("/settings/currency"); localStorage.setItem("m_currency", JSON.stringify(state.currency)); } catch (e) {}
+  try { state.units = await api("/units"); localStorage.setItem("m_units", JSON.stringify(state.units)); } catch (e) { state.units = JSON.parse(localStorage.getItem("m_units") || "[]"); }
+  if (state.user) localStorage.setItem("m_user", JSON.stringify(state.user));
   try { const t = await api("/settings/time"); if (t && t.timezone) localStorage.setItem("m_tz", t.timezone); } catch (e) {}
 }
 window.unpairDevice = () => {
-  if (!confirm("اتصال این گوشی به رایانه قطع شود؟ صف آفلاین حفظ می‌شود.")) return;
-  ["m_server", "m_token", "m_device", "m_store", "m_cursor"].forEach((k) => localStorage.removeItem(k));
+  if (!confirm(STANDALONE ? "برای اتصال به رایانهٔ فروشگاه به صفحهٔ اتصال می‌روید؛ داده‌های گوشی حفظ می‌شود." : "اتصال این گوشی به رایانه قطع شود؟ صف آفلاین حفظ می‌شود.")) return;
+  ["m_server", "m_token", "m_device", "m_store", "m_cursor", "m_standalone"].forEach((k) => localStorage.removeItem(k));
   if (NATIVE && NATIVE.unpair) NATIVE.unpair(); else location.href = "/mobile/setup.html";
 };
 window.logout = () => {
@@ -361,6 +387,7 @@ async function showHome() {
             <span class="progress-num">${resume.counted}/${resume.total}</span>
           </div>
         </button>` : ""}
+      ${!d && window.Local ? await localHomeCards() : ""}
       ${d ? `
       <div class="kpi-grid">
         <div class="kpi"><span class="k">فروش امروز</span><b>${money(d.sales.today)}</b>
@@ -374,7 +401,7 @@ async function showHome() {
       <div class="card">
         <h2>هشدار انقضا</h2>
         ${expiryRows(d.expiry)}
-      </div>` : `<div class="card"><p class="err">اتصال به سرور برقرار نیست — داده‌های محلی نمایش داده می‌شود.</p></div>`}
+      </div>` : ""}
       <div class="btn-row">
         <button class="btn" onclick="openScanForLookup()">${icon("camera", 18)} اسکن کالا</button>
         <button class="btn" onclick="goTab('pos')">${icon("pos", 18)} فروش سریع</button>
@@ -383,6 +410,16 @@ async function showHome() {
   updateSyncPill();
 }
 
+async function localHomeCards() {
+  const [c, t] = await Promise.all([Local.counts(), Local.todayStats()]);
+  const last = c.last_pull ? faDT(c.last_pull, true) : "هنوز همگام نشده";
+  return `<div class="card"><p class="muted">${NATIVE ? "رایانهٔ فروشگاه در دسترس نیست — برنامه با دادهٔ خودِ گوشی کار می‌کند و با اولین اتصال (وای‌فای یا اینترنت/ابر) همگام می‌شود." : "اتصال به سرور برقرار نیست — داده‌های محلی نمایش داده می‌شود."}</p></div>
+    <div class="kpi-grid">
+      <div class="kpi"><span class="k">فروش امروز (گوشی)</span><b>${money(t.total)}</b><span class="muted">${t.count} فاکتور${t.unsynced ? ` · ${t.unsynced} در انتظار همگام‌سازی` : ""}</span></div>
+      <div class="kpi"><span class="k">کالاهای محلی</span><b>${c.products}</b><span class="muted">${c.batches} بچ · ${c.customers} مشتری</span></div>
+      <div class="kpi"><span class="k">آخرین دریافت از رایانه</span><b style="font-size:13px">${last}</b></div>
+    </div>`;
+}
 function expiryRows(exp) {
   const map = [["EXPIRED", "منقضی‌شده", "badge-red"], ["EXPIRING_TODAY", "امروز", "badge-red"],
                ["EXPIRING_3_DAYS", "تا ۳ روز", "badge-amber"], ["EXPIRING_7_DAYS", "تا ۷ روز", "badge-amber"],
@@ -393,6 +430,40 @@ function expiryRows(exp) {
   }).join("");
   return rows;
 }
+
+/* v1.8.1 — register a product right from the phone (works offline: local id, replayed as PRODUCT_CREATE) */
+window.offerNewProduct = (barcode) => {
+  closeSheet();
+  const units = (state.units || []).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join("");
+  $("#app").insertAdjacentHTML("beforeend", `<div class="sheet" id="m-sheet"><div class="sheet-body">
+      <h2>کالای جدید</h2><p class="muted">این بارکد در فهرست نیست. همین‌جا تعریفش کنید؛ با اتصال به رایانه به فهرست اصلی اضافه می‌شود.</p>
+      <label>بارکد</label><input id="np-bc" class="ltr" value="${esc(barcode || "")}" />
+      <label>نام کالا *</label><input id="np-name" />
+      <label>واحد</label><select id="np-unit">${units || '<option value="">عدد</option>'}</select>
+      <label>قیمت فروش (اختیاری — با موجودی اولیه)</label><input id="np-sell" inputmode="numeric" />
+      <label>موجودی اولیه</label><input id="np-qty" inputmode="decimal" value="0" />
+      <button class="btn btn-green" onclick="createProductM()">ثبت کالا</button><button class="btn" onclick="closeSheet()">انصراف</button>
+    </div></div>`);
+};
+window.createProductM = async () => {
+  const f = { barcode: $("#np-bc").value.trim() || null, name: $("#np-name").value.trim(), unit_id: Number($("#np-unit").value) || null };
+  const sell = Number($("#np-sell").value || 0), qty = parseFloat($("#np-qty").value || "0");
+  if (f.name.length < 2) { toast("نام کالا را بنویسید", "err"); return; }
+  let p = null;
+  try { if (!state.online) throw Object.assign(new Error("offline"), { status: 0 }); p = await api("/products", { method: "POST", body: JSON.stringify(f) }); }
+  catch (e) {
+    if (e.status && e.status < 500) { toast(e.message, "err"); return; }
+    p = window.Local ? await Local.localProduct(f) : null;
+    await opQueueAdd("PRODUCT_CREATE", f, `کالای جدید ${f.name}`);
+  }
+  if (p && qty > 0) {
+    const b = { barcode: p.barcode, quantity_received: qty, buy_price: 0, sell_price: sell, consumer_price: sell };
+    try { if (!state.online || p.id < 0) throw Object.assign(new Error("offline"), { status: 0 }); await api("/batches/receive", { method: "POST", body: JSON.stringify(b) }); }
+    catch (e) { if (window.Local) await Local.localBatch(p.id, b); await opQueueAdd("STOCK_RECEIVE", b, `ورود کالا ${p.barcode}`); }
+  }
+  closeSheet(); toast(`کالا «${f.name}» ثبت شد${p && p.id < 0 ? " (آفلاین)" : ""}`);
+  if (state.view === "pos") showPos(); else if (state.view === "inventory") showInventory();
+};
 
 /* ---------- Mobile POS (§11): scan → cart → pay, one thumb ---------- */
 async function showPos() {
@@ -432,7 +503,7 @@ async function showPos() {
     const q = inp.value.trim();
     if (q.length < 2) { $("#m-results").innerHTML = ""; return; }
     try {
-      const r = await api(`/pos/search?q=${encodeURIComponent(q)}&limit=8`);
+      const r = await searchProducts(q, 8);
       $("#m-results").innerHTML = r.items.length ? r.items.map((i) => `
         <button class="result-row" onclick="mPick(${i.product_id})">
           <div class="rr-name">${esc(i.name)}</div>
@@ -445,6 +516,13 @@ async function showPos() {
   updateSyncPill();
 }
 
+/* v1.8.1 — catalogue lookups: the phone's own copy first (instant, offline); server when online and nothing local */
+async function searchProducts(q, limit) {
+  const local = window.Local ? await Local.search(q, limit).catch(() => []) : [];
+  if (local.length || !state.online) return { items: local };
+  try { return await api(`/pos/search?q=${encodeURIComponent(q)}&limit=${limit}`); } catch (e) { if (local.length) return { items: local }; throw e; }
+}
+window.searchProducts = searchProducts;
 const debounceM = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 window.mPick = (productId) => {
@@ -504,7 +582,7 @@ window.mConfirmQty = (productId, batchId) => {
 function mAdd(item, batch, qty) {
   const existing = state.cart.find((c) => c.batch_id === batch.batch_id);
   if (existing) existing.qty = parseFloat((existing.qty + qty).toFixed(3));
-  else state.cart.push({ product_id: item.product_id, batch_id: batch.batch_id,
+  else state.cart.push({ product_id: item.product_id, batch_id: batch.batch_id, barcode: item.barcode || null,
     name: item.name, sell: batch.sell_price, qty,
     symbol: item.unit ? item.unit.symbol : "",
     decimal: !!(item.unit && item.unit.allow_decimal),
@@ -554,7 +632,7 @@ window.mDoCheckout = async (total) => {
     } catch (e) { toast(e.message, "err"); return; }
   }
   const payload = {
-      items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.qty })),
+      items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.qty, barcode: i.barcode || undefined })),
       payments: [{ method, amount: payable }],
       customer_phone: phone || null,
       coupon_code: coupon || null };
@@ -566,10 +644,11 @@ window.mDoCheckout = async (total) => {
     if (inv.issued_coupon) toast(`کوپن خرید بعدی: ${inv.issued_coupon.code}`);
     showPos();
   } catch (e) {
-    if (!e.status || e.status >= 500) {   // offline / PC unreachable → store-and-forward (v1.6)
-      await opQueueAdd("POS_CHECKOUT", payload, `فروش ${money(payable)} (${state.cart.length} قلم)`);
+    if (!e.status || e.status >= 500) {   // offline / PC unreachable → apply locally + store-and-forward (v1.6/v1.8.1)
+      const local_no = window.Local ? await Local.localSale(payload, payable) : null;
+      await opQueueAdd("POS_CHECKOUT", payload, `فروش ${money(payable)} (${state.cart.length} قلم)`, local_no);
       closeSheet(); state.cart = [];
-      toast("آفلاین: فروش ذخیره شد و هنگام اتصال به رایانه ثبت می‌شود");
+      toast(`فروش ${local_no || ""} ثبت شد (آفلاین) — با اتصال به رایانه همگام می‌شود`);
       showPos(); return;
     }
     toast(e.message, "err");
@@ -593,7 +672,7 @@ async function showInventory() {
     </div>` + tabbar();
   const render = async (q) => {
     try {
-      const rows = await api("/inventory/stock");
+      let rows; try { if (!state.online) throw new Error("offline"); rows = await api("/inventory/stock"); } catch (_) { rows = window.Local ? await Local.stockRows() : []; if (!rows.length) throw _; }
       const filtered = q ? rows.filter((r) => r.name.includes(q) || (r.barcode || "").includes(q)) : rows;
       $("#inv-list").innerHTML = filtered.slice(0, 60).map((r) => `
         <div class="stock-row">
@@ -625,11 +704,12 @@ async function showStockIn() {
     </div>` + tabbar();
   if (window.Jalali) Jalali.attachAll($("#app"));
   $("#si-barcode").addEventListener("change", async () => {
-    try {
-      const p = await api(`/products/barcode/${encodeURIComponent($("#si-barcode").value.trim())}`);
-      $("#si-found").innerHTML = `<span class="ok-line">${icon("check", 14)} ${esc(p.name)}</span>`;
-      state._siProduct = p;
-    } catch (e) { $("#si-found").textContent = "کالا یافت نشد — ابتدا آن را ثبت کنید"; state._siProduct = null; }
+    const code = $("#si-barcode").value.trim();
+    let p = null;
+    try { if (state.online) p = await api(`/products/barcode/${encodeURIComponent(code)}`); } catch (_) { p = null; }
+    if (!p && window.Local) { const l = await Local.byBarcode(code); if (l) p = { id: l.product_id, name: l.name, barcode: l.barcode }; }
+    if (p) { $("#si-found").innerHTML = `<span class="ok-line">${icon("check", 14)} ${esc(p.name)}</span>`; state._siProduct = p; }
+    else { $("#si-found").innerHTML = `کالا یافت نشد — <a href="#" onclick="offerNewProduct('${esc(code)}');return false">ثبت کالای جدید</a>`; state._siProduct = null; }
   });
 }
 
@@ -645,10 +725,11 @@ window.doStockIn = async () => {
     showInventory();
   } catch (e) {
     if (!e.status || e.status >= 500) {
-      await opQueueAdd("STOCK_RECEIVE", { barcode: $("#si-barcode").value.trim(), quantity_received: parseFloat($("#si-qty").value),
-        buy_price: Number($("#si-buy").value || 0), sell_price: Number($("#si-sell").value || 0), expiry_date: $("#si-exp").value || null },
-        `ورود کالا ${$("#si-barcode").value.trim()}`);
-      toast("آفلاین: ورود کالا ذخیره شد و بعداً همگام می‌شود"); showInventory(); return;
+      const f = { barcode: $("#si-barcode").value.trim(), quantity_received: parseFloat($("#si-qty").value),
+        buy_price: Number($("#si-buy").value || 0), sell_price: Number($("#si-sell").value || 0), expiry_date: $("#si-exp").value || null };
+      if (window.Local && state._siProduct) await Local.localBatch(state._siProduct.id, f);
+      await opQueueAdd("STOCK_RECEIVE", f, `ورود کالا ${f.barcode}`);
+      toast("ورود کالا ثبت شد (آفلاین) — با اتصال به رایانه همگام می‌شود"); showInventory(); return;
     }
     toast(e.message, "err");
   }
@@ -685,7 +766,7 @@ async function listScreen(title, loader, rowFn, extra) {
 }
 
 window.showProducts = () => listScreen("کالاها",
-  async () => (await api("/products?limit=100")).items,
+  async () => { try { if (!state.online) throw new Error("offline"); return (await api("/products?limit=100")).items; } catch (e) { const l = window.Local ? await Local.products(200) : []; if (l.length) return l; throw e; } },
   // §5 on mobile — tapping a product opens its batch/price history, the same
   // truth the desktop shows. §16: an internal code is labelled as such so
   // staff do not expect an external lookup to resolve it.
@@ -779,7 +860,8 @@ window.showSettingsM = async () => {
         <p><i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"}</p>
         <p class="muted">آدرس سرور: ${esc(SERVER || location.origin)}${NATIVE ? ` · نسخهٔ اپ ${esc(NATIVE.version())}` : ""}</p>
         <button class="btn" onclick="showSync()">وضعیت صف همگام‌سازی</button>
-        ${NATIVE || localStorage.getItem("m_server") ? `<button class="btn" style="margin-top:8px" onclick="unpairDevice()">قطع اتصال از این رایانه (اسکن مجدد)</button>` : ""}
+        ${STANDALONE ? `<p class="muted">حالت مستقل: این گوشی هنوز به رایانهٔ فروشگاه متصل نیست؛ همهٔ داده‌ها روی خود گوشی است.</p><button class="btn btn-primary" style="margin-top:8px" onclick="unpairDevice()">اتصال به رایانهٔ فروشگاه (اسکن QR)</button>` :
+          NATIVE || localStorage.getItem("m_server") ? `<button class="btn" style="margin-top:8px" onclick="unpairDevice()">قطع اتصال از این رایانه (اسکن مجدد)</button>` : ""}
       </div>
     </div>` + tabbar();
   updateSyncPill();
@@ -1035,7 +1117,16 @@ function scanBeep() {
   try { const ac = new (window.AudioContext || window.webkitAudioContext)(); const o = ac.createOscillator(); const g = ac.createGain();
     o.frequency.value = 1760; g.gain.value = 0.08; o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.08); } catch (_) {}
 }
+/* v1.8.1 — inside the Android app: NATIVE Camera2 + ZXing scanner (ScanActivity), result via __nativeScan */
+window.__nativeScan = (code, fmt) => { const raw = String(code || "").trim(); if (!raw) return; state._lastScanFormat = fmt; onScanHit(raw); };
+window.__nativeScanCancel = () => { state._scanMode = null; };
 window.scan = async () => {
+  if (NATIVE && NATIVE.hasNativeScanner && NATIVE.hasNativeScanner()) {
+    try { NATIVE.scan(state._scanMode === "pos" ? "اسکن کالا برای فروش" : state._scanMode === "lookup" ? "جستجوی کالا" : "اسکن بارکد"); return; } catch (_) { /* fall through to WebView scanner */ }
+  }
+  return webScan();
+};
+async function webScan() {
   const overlay = $("#scanner");
   overlay.classList.remove("hidden");
   $("#scan-status").textContent = "دوربین را روی بارکد بگیرید…";
@@ -1102,7 +1193,7 @@ window.scan = async () => {
   } catch (e) {
     $("#scan-status").textContent = "دسترسی به دوربین ممکن نیست: " + (e && e.name === "NotAllowedError" ? "اجازهٔ دوربین داده نشده است" : (e.message || e));
   }
-};
+}
 function toLuminance(rgba, n) {
   const out = new Uint8ClampedArray(n);
   for (let i = 0, j = 0; j < n; i += 4, j++) out[j] = (rgba[i] * 77 + rgba[i + 1] * 151 + rgba[i + 2] * 28) >> 8;
@@ -1141,15 +1232,15 @@ function onScanHit(raw) {
   (async () => {
     try {
       if (mode === "pos") {
-        const r = await api(`/pos/search?q=${encodeURIComponent(raw)}&limit=5`);
-        if (!r.items.length) { toast("کالا یافت نشد: " + raw, "err"); return; }
+        const r = await searchProducts(raw, 5);
+        if (!r.items.length) { toast("کالا یافت نشد: " + raw, "err"); if (window.offerNewProduct) offerNewProduct(raw); return; }
         state._lastResults = r.items;
         mPick(r.items[0].product_id);
         return;
       }
       if (mode === "lookup") {
-        const r = await api(`/pos/search?q=${encodeURIComponent(raw)}&limit=1`);
-        if (!r.items.length) { toast("کالا یافت نشد: " + raw, "err"); return; }
+        const r = await searchProducts(raw, 1);
+        if (!r.items.length) { toast("کالا یافت نشد: " + raw, "err"); if (window.offerNewProduct) offerNewProduct(raw); return; }
         showProductSheet(r.items[0]);
         return;
       }
@@ -1284,7 +1375,7 @@ window.resolveConflict = async (id, action) => {
 
 /* ---------- boot ---------- */
 (async function boot() {
-  refreshNet();
+  await probeServer();
   if (NATIVE && !SERVER) { location.href = "/mobile/setup.html"; return; }
   if (!state.token) { showLogin(); return; }
   try {
@@ -1294,9 +1385,11 @@ window.resolveConflict = async (id, action) => {
     if (state.online) syncLoop();
   } catch (e) {
     if (e.status === 401) { localStorage.removeItem("m_token"); state.token = ""; showLogin(); }
-    else { // offline with a token: fall back to cached sessions
-      state.user = { full_name: "کاربر (آفلاین)" };
-      try { await showSessions(); } catch (_) { showLogin(); }
+    else { // offline with a token: the app keeps working on the phone's own data
+      try { state.user = JSON.parse(localStorage.getItem("m_user") || "null") || { full_name: "کاربر (آفلاین)", roles: ["ADMIN"], permissions: ["*"] }; } catch (_) { state.user = { full_name: "کاربر (آفلاین)" }; }
+      state.currency = JSON.parse(localStorage.getItem("m_currency") || "null") || state.currency;
+      state.units = JSON.parse(localStorage.getItem("m_units") || "[]");
+      try { await showHome(); } catch (_) { try { await showSessions(); } catch (__) { showLogin(); } }
     }
   }
 })();

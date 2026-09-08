@@ -44,6 +44,7 @@ import java.util.Map;
 public class MainActivity extends Activity {
     static final String ORIGIN = "https://app.local";
     private static final int REQ_CAMERA = 11;
+    private static final int REQ_SCAN = 31;
     private WebView web;
     private PermissionRequest pendingPermission;
     private static final int REQ_LOCATION = 2;
@@ -199,6 +200,30 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public void exitApp() { runOnUiThread(MainActivity.this::finishAffinity); }
+
+        /** v1.8.1: native Camera2+ZXing scanner; result arrives in JS via window.__nativeScan(code, format) (or __nativeScanCancel()). */
+        @JavascriptInterface public boolean hasNativeScanner() { return true; }
+        @JavascriptInterface public void scan(String title) {
+            runOnUiThread(() -> {
+                android.content.Intent i = new android.content.Intent(MainActivity.this, ScanActivity.class);
+                i.putExtra(ScanActivity.EXTRA_TITLE, title == null ? "" : title);
+                startActivityForResult(i, REQ_SCAN);
+            });
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int result, android.content.Intent data) {
+        super.onActivityResult(req, result, data);
+        if (req == REQ_SCAN && web != null) {
+            if (result == RESULT_OK && data != null && data.getStringExtra(ScanActivity.EXTRA_CODE) != null) {
+                String code = data.getStringExtra(ScanActivity.EXTRA_CODE).replace("\\", "\\\\").replace("'", "\\'");
+                String fmt = String.valueOf(data.getStringExtra(ScanActivity.EXTRA_FORMAT));
+                web.evaluateJavascript("window.__nativeScan && window.__nativeScan('" + code + "','" + fmt + "')", null);
+            } else {
+                web.evaluateJavascript("window.__nativeScanCancel && window.__nativeScanCancel()", null);
+            }
+        }
     }
 
     @Override

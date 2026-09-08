@@ -45,10 +45,11 @@ cat > "$W/gen/ir/khajavy/supermarket/Version.java" <<JAVA
 package ir.khajavy.supermarket;
 public final class Version { public static final String NAME = "$VER"; public static final int CODE = $CODE; private Version() {} }
 JAVA
-"$JAVA" -jar "$ECJ" -8 -nowarn -proc:none -cp "$ANDROID_JAR" -d "$W/classes" "$W/gen" "$APP/java"
+"$JAVA" -jar "$ECJ" -8 -nowarn -proc:none -cp "$ANDROID_JAR" -d "$W/classes" "$W/gen" "$APP/java" "$ROOT/mobile-android/third_party/zxing-core/com"   # + vendored ZXing core (Apache-2.0)
 
 echo "== 4/6 dex (d8)"
-"$JAVA" -cp "$D8JAR" com.android.tools.r8.D8 --release --lib "$ANDROID_JAR" --min-api 24 --output "$W/dex" $(find "$W/classes" -name '*.class')
+find "$W/classes" -name '*.class' > "$W/classes.txt"
+"$JAVA" -cp "$D8JAR" com.android.tools.r8.D8 --release --lib "$ANDROID_JAR" --min-api 24 --output "$W/dex" @"$W/classes.txt"
 
 echo "== 5/6 package + align"
 cp "$W/base.apk" "$W/unsigned.apk"

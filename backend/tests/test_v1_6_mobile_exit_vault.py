@@ -85,3 +85,31 @@ def test_mobile_sync_push_is_idempotent_and_pull_returns_changes(client, auth_he
     # unknown op type is rejected, not crashing
     r3 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [{"id": "x1", "type": "NOPE", "payload": {}}], "pull": False})
     assert r3.json()["applied"][0]["status"] == "REJECTED"
+
+
+def test_v181_offline_product_then_sale_by_barcode_replays(client, auth_headers):
+    """v1.8.1 standalone phone: a product defined offline (temporary INT-L code),
+    a stock receipt and a sale that references the line only by barcode all
+    replay on the PC in one sync — and replaying the same batch is idempotent."""
+    ops = [
+        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": "6261234567890", "name": "پفک آفلاین"}},
+        {"id": uuid.uuid4().hex, "type": "STOCK_RECEIVE", "payload": {"barcode": "6261234567890", "quantity_received": 10, "buy_price": 5000, "sell_price": 8000}},
+        {"id": uuid.uuid4().hex, "type": "POS_CHECKOUT", "payload": {
+            "items": [{"barcode": "6261234567890", "quantity": 2}],
+            "payments": [{"method": "CASH", "amount": 16000}]}},
+        # phone-minted temporary code → PC must mint a real INT- code, never store INT-L
+        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": "INT-L00001", "name": "کالای بدون بارکد"}},
+    ]
+    r = client.post("/api/mobile/sync", headers=auth_headers, json={"device_id": "ph1", "push": ops, "cursor": None})
+    assert r.status_code == 200, r.text
+    applied = r.json()["applied"]
+    assert [a["status"] for a in applied] == ["APPLIED"] * 4, applied
+    assert applied[2]["result"]["invoice_number"]
+    p = client.get("/api/products/barcode/6261234567890", headers=auth_headers).json()
+    assert p["name"] == "پفک آفلاین"
+    pid2 = applied[3]["result"]["product_id"]
+    p2 = client.get(f"/api/products/{pid2}", headers=auth_headers).json()
+    assert p2["barcode"].startswith("INT-") and not p2["barcode"].startswith("INT-L")
+    # second sync with the same PRODUCT_CREATE (different op id, same barcode) reuses, never duplicates
+    r2 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [{"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": ops[0]["payload"]}], "pull": False})
+    assert r2.json()["applied"][0]["result"].get("reused") is True
