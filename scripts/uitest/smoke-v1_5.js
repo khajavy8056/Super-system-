@@ -29,7 +29,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} }); window.navigator.serviceWorker = { register: async () => {} };
   window.requestAnimationFrame = (f) => setTimeout(f, 16); window.__NO_AUTOBOOT = true; window.print = () => {};
   window.sessionStorage.setItem("sm.loading.fast", "3");
-  window.eval(fs.readFileSync(FE + "/jalali.js", "utf8") + "\n;" + fs.readFileSync(FE + "/onboarding.js", "utf8") + "\n;" + fs.readFileSync(FE + "/app.js", "utf8"));
+  window.eval(fs.readFileSync(FE + "/jalali.js", "utf8") + "\n;" + fs.readFileSync(FE + "/sfx.js", "utf8") + "\n;" + fs.readFileSync(FE + "/onboarding.js", "utf8") + "\n;" + fs.readFileSync(FE + "/app.js", "utf8"));
   const $ = (s) => window.document.querySelector(s); const $$ = (s) => [...window.document.querySelectorAll(s)];
   await window.Onboarding.wizard(() => {}); await sleep(200);
   check(!!$(".ob-wiz") && $$("#ob-steplist li").length === 10, "wizard renders with 10 steps");
@@ -55,6 +55,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   window.localStorage.setItem("token", tok); window.sessionStorage.removeItem("sm.loading.session");
   const p = window.Onboarding.afterLogin(); await sleep(400);
   check(!!$(".ob-load") && !!$("#ob-phases") && $$("#ob-phases li").length >= 5, "loading screen with phases visible after login");
+  check(!/در حال نصب/.test($(".ob-load").textContent) && $$("#ob-phases li").length === 5, "post-login loading is the SHORT one (never the install screen)");
+  check(!/دقیقه/.test($(".ob-load").textContent), "no 'minutes' text on loading screen");
   await p; check(!$(".ob-load") || $("#ob-overlay").classList.contains("hidden"), "loading finishes and closes");
   // alerts stack
   window.Onboarding.alertsStack(); await sleep(800);
@@ -62,6 +64,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check($$("#ob-alerts .ob-alert").some((a) => /لایسنس/.test(a.textContent)), "licence countdown alert present");
   const x = $("#ob-alerts .ob-alert-x"); const n = $$("#ob-alerts .ob-alert").length; x.click(); await sleep(50);
   check($$("#ob-alerts .ob-alert").length === n - 1, "alert dismiss works");
+  check(window.Sfx && Array.isArray(window.Sfx.names) && window.Sfx.names.includes("success") && window.Sfx.play("success") === false, "sfx module loaded (no AudioContext in jsdom → play returns false, no throw)");
   // settings licence tab
   const card = window.document.createElement("div"); window.document.body.append(card);
   await window.Onboarding.licensePanel(card);

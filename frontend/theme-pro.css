@@ -455,3 +455,50 @@ table.recent tr { cursor: pointer; }
 @keyframes obPop { from { opacity: 0; transform: translateY(20px) scale(.95); } to { opacity: 1; transform: none; } }
 @media (max-width: 900px) { .ob-wiz { grid-template-columns: 1fr; } .ob-steps ol { flex-direction: row; flex-wrap: wrap; } .ob-steps li span { display: none; } }
 @media print { .ob-alerts, #ob-overlay { display: none !important; } }
+
+/* ===== v1.5.1 — calmer palette (less neon glare) ===== */
+:root, [data-theme="dark"] {
+  --teal: #37b8aa; --green: #34c47a; --red: #ef5a68; --amber: #f0ad4a; --violet: #8f78e8; --primary: #4a82ea; --accent: #7160e0;
+  --glow-teal: 0 4px 14px rgba(55,184,170,.18); --glow-violet: 0 4px 14px rgba(113,96,224,.18);
+  --glow-green: 0 4px 14px rgba(52,196,122,.18); --glow-red: 0 4px 14px rgba(239,90,104,.16); --glow-amber: 0 4px 14px rgba(240,173,74,.16);
+  --grad: linear-gradient(135deg, #4a82ea 0%, #7160e0 100%);
+  --grad-teal: linear-gradient(135deg, #37b8aa 0%, #4a82ea 100%);
+  --grad-green: linear-gradient(135deg, #22a85a 0%, #34c47a 100%);
+}
+.gauge-fg { filter: none; }
+.trend .line.sales { stroke: #37b8aa; filter: none; } .trend .line.profit { stroke: #8f78e8; filter: none; } .trend .dots circle { stroke: #37b8aa; }
+.pos-totals .grand { text-shadow: none; color: #34c47a; }
+.bar i { box-shadow: none; }
+.lowicon { box-shadow: none; }
+.citem:hover { box-shadow: 0 0 0 1px rgba(55,184,170,.25); }
+.qa, .pos-btn, .kpi-ic, .btn-primary { filter: saturate(.9); }
+.pos-btn-pay { color: #062712; }
+.ob-hero .ob-ico { filter: none; color: #37b8aa; }
+.ob-ring .fg { stroke: #37b8aa; filter: none; }
+.ob-hwid b, .ob-steps li.done, .ob-ok, .ob-phases li.done { color: #37b8aa; }
+.ob-ok { background: rgba(55,184,170,.14); }
+.ob-phases li.done i, .ob-choice-wide:has(input:checked)::before { background-color: #37b8aa; }
+.ob-choice:has(input:checked) { border-color: #37b8aa; background: rgba(55,184,170,.1); box-shadow: 0 0 0 2px rgba(55,184,170,.14); }
+.ob-progress i, .ob-badge { background: linear-gradient(90deg,#7160e0,#37b8aa); }
+.ob-log { color: rgba(55,184,170,.9); }
+.ob-overlay { background: radial-gradient(1100px 560px at 80% -10%, rgba(113,96,224,.22), transparent 60%), radial-gradient(900px 500px at 10% 110%, rgba(55,184,170,.14), transparent 60%), #0b0f1e; }
+.scan-field.scan-hit { box-shadow: 0 0 0 2px rgba(52,196,122,.25); }
+@keyframes scanhit { from { box-shadow: 0 0 0 4px rgba(52,196,122,.3); } to { box-shadow: 0 0 0 2px rgba(52,196,122,.15); } }
+
+/* v1.5.1 — light theme must win over later :root layers (fixes unreadable light mode) */
+html[data-theme="light"], [data-theme="light"] {
+  --bg: #eef1f8; --bg2: #ffffff; --card: rgba(255,255,255,.92); --border: rgba(30, 50, 110, .12);
+  --text: #131a2c; --muted: #5f6b86; --primary: #2f6fed; --accent: #6d4cf0; --teal: #12998b; --green: #178f4e; --red: #d93447; --amber: #b8730a; --violet: #6d4cf0;
+  --glow-teal: 0 6px 16px rgba(18,153,139,.16); --glow-violet: 0 6px 16px rgba(109,76,240,.16); --glow-green: 0 6px 16px rgba(23,143,78,.16);
+  --glow-red: 0 6px 16px rgba(217,52,71,.16); --glow-amber: 0 6px 16px rgba(184,115,10,.16);
+  --grad: linear-gradient(135deg, #2f6fed 0%, #6d4cf0 100%); --grad-teal: linear-gradient(135deg, #12998b 0%, #2f6fed 100%); --grad-green: linear-gradient(135deg, #178f4e 0%, #22a85a 100%);
+}
+[data-theme="light"] body, [data-theme="light"] .view, [data-theme="light"] .dcard, [data-theme="light"] .card { color: var(--text); }
+[data-theme="light"] .gauge-val, [data-theme="light"] .ring span, [data-theme="light"] .dcard h3, [data-theme="light"] .topitem b, [data-theme="light"] #view-title { color: var(--text); }
+[data-theme="light"] .trend .dots circle { fill: #fff; }
+[data-theme="light"] .ob-alert { background: #fff; }
+[data-theme="light"] .dcard-low { background: linear-gradient(135deg, rgba(217,52,71,.10), rgba(255,255,255,.95)); border-color: rgba(217,52,71,.3); }
+[data-theme="light"] .sidebar { background: linear-gradient(180deg, #121a2e, #0d1426); }
+.sidebar, .sidebar .brand, .sidebar .brand span, .sidebar .nav-item, .sidebar .sidebar-footer { color: #e8ecf8; }
+.sidebar .muted { color: #9aa6c6; }
+[data-theme="light"] .sidebar .nav-item:not(.active):hover { background: rgba(255,255,255,.08); }

@@ -52,7 +52,7 @@
       err.classList.add("hidden"); btn.disabled = true; btn.innerHTML = `<span class="ob-spin"></span> در حال بررسی آنلاین…`;
       try {
         const st = await pub("/setup/license/activate", { method: "POST", body: JSON.stringify({ key: inp.value.trim() }) });
-        btn.innerHTML = "✓ فعال شد";
+        btn.innerHTML = "✓ فعال شد"; if (window.Sfx) Sfx.play("success");
         setTimeout(() => onDone(st), 500);
       } catch (e) {
         err.textContent = e.message + (e.code === "NETWORK" ? " — اتصال اینترنت را بررسی کنید." : "");
@@ -124,6 +124,7 @@
       q("#ob-skip").style.display = st.noskip || st.id === "finish" || st.id === "welcome" ? "none" : "";
       q("#ob-next").textContent = st.id === "finish" ? "شروع نصب و ورود" : st.id === "welcome" ? "بزن بریم" : "بعدی";
       const b = q("#ob-pane-body"); b.className = "ob-pane-body"; void b.offsetWidth; b.classList.add("ob-slide");
+      if (window.Sfx) Sfx.play("step");
       b.innerHTML = PANES[st.id]();
       if (st.id === "license") wireLicensePane();
       if (st.id === "logo") wireLogoPane();
@@ -209,7 +210,7 @@
         <label>نام کاربری</label><input id="w-admin-user" class="ltr" autocomplete="off" placeholder="admin"/>
         <div class="form-row"><div><label>رمز عبور</label><input id="w-admin-pass" type="password" class="ltr" autocomplete="new-password"/></div><div><label>تکرار رمز عبور</label><input id="w-admin-pass2" type="password" class="ltr" autocomplete="new-password"/></div></div>`,
       finish: () => `<div class="ob-hero">${ico("check", 56)}<h1>همه‌چیز آماده است</h1>
-        <p>با زدن «شروع نصب و ورود»، تنظیمات ذخیره می‌شود و نصب اولیه (اتصال سرویس‌ها، آماده‌سازی پایگاه داده و بانک کالا) آغاز می‌شود. این مرحله فقط بار اول انجام می‌شود و ممکن است تا ۴۵ دقیقه طول بکشد.</p>
+        <p>با زدن «شروع نصب و ورود»، تنظیمات ذخیره می‌شود و نصب اولیه (اتصال سرویس‌ها، آماده‌سازی پایگاه داده و بانک کالا) آغاز می‌شود. این مرحله فقط بار اول انجام می‌شود و بسته به سیستم ممکن است زمان‌بر باشد؛ لطفاً رایانه را خاموش نکنید.</p>
         <div class="ob-kv"><div><span>فروشگاه</span><b>${_esc(d().store_name || "—")}</b></div><div><span>واحد پول</span><b>${d().currency === "IRR" ? "ریال" : "تومان"}</b></div><div><span>پوسته</span><b>${({ auto: "خودکار", light: "روشن", dark: "تیره" })[d().theme || "auto"]}</b></div><div><span>بانک کالا</span><b>${d().import_starter_catalog === false ? "خیر" : "بله"}</b></div><div><span>مدیر</span><b class="ltr">${_esc(d().admin_username || "admin")}</b></div></div></div>`,
     };
 
@@ -221,6 +222,7 @@
         err.classList.add("hidden"); btn.disabled = true; btn.innerHTML = `<span class="ob-spin"></span> در حال بررسی آنلاین…`;
         try {
           S.status.license = await pub("/setup/license/activate", { method: "POST", body: JSON.stringify({ key: inp.value.trim() }) });
+          if (window.Sfx) Sfx.play("success");
           show(w.step);
         } catch (e) { err.textContent = e.message; err.classList.remove("hidden"); btn.disabled = false; btn.textContent = "بررسی و فعال‌سازی"; }
       };
@@ -260,7 +262,7 @@
     o.innerHTML = `<div class="ob-load ob-anim">
       ${LOGO()}
       <h1>${first ? "در حال نصب و پیکربندی سامانه" : "در حال آماده‌سازی"}</h1>
-      <p class="muted" id="ob-load-sub">${first ? "این مرحله فقط بار اول انجام می‌شود. لطفاً رایانه را خاموش نکنید." : "چند لحظه صبر کنید…"}</p>
+      <p class="muted" id="ob-load-sub">${first ? "این مرحله فقط بار اول انجام می‌شود. لطفاً رایانه را خاموش نکنید." : "در حال بررسی لایسنس و آماده‌سازی…"}</p>
       <div class="ob-ring"><svg viewBox="0 0 120 120"><circle class="bg" cx="60" cy="60" r="52"/><circle class="fg" id="ob-ring-fg" cx="60" cy="60" r="52"/></svg><div class="ob-ring-txt"><b id="ob-pct">۰٪</b><span id="ob-eta"></span></div></div>
       <ul class="ob-phases" id="ob-phases">${phases.map((p, i) => `<li data-i="${i}"><i></i><span>${p[0]}</span><em></em></li>`).join("")}</ul>
       <div class="ob-log" id="ob-log"></div>
@@ -282,8 +284,7 @@
       const eased = p < 0.9 ? Math.pow(p, 0.85) * 0.92 : 0.92 + (p - 0.9) * 0.8;
       const pct = Math.min(100, Math.round(eased * 100));
       q("#ob-pct").textContent = _fa(pct) + "٪"; fg.style.strokeDashoffset = C * (1 - eased);
-      const remain = Math.max(0, total - el); const m = Math.floor(remain / 60000), s = Math.floor((remain % 60000) / 1000);
-      q("#ob-eta").textContent = remain > 0 ? `${_fa(m)}:${_fa(String(s).padStart(2, "0"))} باقی‌مانده` : "";
+      q("#ob-eta").textContent = p < 1 ? "لطفاً صبر کنید" : "";
       let ph = phases.findIndex((x) => eased < x[1]); if (ph < 0) ph = phases.length - 1;
       if (ph !== lastPhase) {
         document.querySelectorAll("#ob-phases li").forEach((li) => { const k = +li.dataset.i; li.className = k < ph ? "done" : k === ph ? "active" : ""; li.querySelector("em").textContent = k < ph ? "✓" : ""; });
@@ -291,7 +292,7 @@
       } else if (Math.random() < 0.04) {
         log(["اتصال برقرار شد", "بستهٔ داده دریافت شد", "جدول به‌روزرسانی شد", "ایندکس ساخته شد", "بررسی یکپارچگی: موفق", "پیکربندی اعمال شد"][Math.floor(Math.random() * 6)]);
       }
-      if (p >= 1 && workDone) { sessionStorage.removeItem(key); q("#ob-load-sub").textContent = "آماده شد"; setTimeout(() => onDone(workErr), 600); return; }
+      if (p >= 1 && workDone) { sessionStorage.removeItem(key); q("#ob-load-sub").textContent = "آماده شد"; if (window.Sfx) Sfx.play(first ? "install" : "ready"); setTimeout(() => onDone(workErr), 600); return; }
       requestAnimationFrame(() => setTimeout(tick, 250));
     };
     tick();
@@ -306,6 +307,9 @@
       if (!tok) { host.innerHTML = ""; return; }
       let a; try { a = await pub("/setup/alerts", { headers: { Authorization: "Bearer " + tok } }); } catch (_) { return; }
       const items = a.items.filter((i) => !dismissed.has(i.id)).slice(0, 5);
+      const prevIds = new Set([...host.querySelectorAll(".ob-alert")].map((x) => x.dataset.id));
+      if (window.Sfx && items.some((i) => !prevIds.has(i.id) && i.severity === "CRITICAL") && host._loaded) Sfx.play("alert");
+      host._loaded = true;
       host.innerHTML = items.map((i) => `<div class="ob-alert sev-${i.severity.toLowerCase()} ob-pop" data-id="${i.id}">
         <div class="ob-alert-ico">${i.kind === "LICENSE" ? ico("key", 20) : ico("box", 20)}</div>
         <div class="ob-alert-txt"><b>${_esc(i.title)}</b><span>${_esc(i.body)}</span></div>
@@ -348,7 +352,7 @@
       await new Promise((resolve) => wizard(async (r, body) => {
         // first-run heavy loading, then to login with the chosen credentials prefilled
         S.status.setup_done = true;
-        loadingScreen(S.status.loading_seconds || 45 * 60, true, async () => {
+        loadingScreen(S.status.install_loading_seconds || 45 * 60, true, async () => {
           // real work: apply theme, warm caches
           try { if (typeof applyTheme === "function") await applyTheme(); } catch (_) {}
         }, () => { closeOverlay(); sessionStorage.setItem("sm.first.pending", "1"); const u = q("#login-username"); if (u) u.value = body.admin_username || ""; resolve(); });
@@ -365,13 +369,13 @@
   // After a successful login: licence recheck (if due) + the per-login loading screen (2 min; 45 min the very first time).
   async function afterLogin() {
     if (sessionStorage.getItem(LS_LOADED) === localStorage.getItem("token")) return;
-    let st = S.status || (await pub("/setup/status").catch(() => null));
-    const first = st && !st.first_loading_done;
-    const seconds = first ? (st.loading_seconds || 45 * 60) : 120;
+    // v1.5.1: the long install screen is shown ONLY inside the setup wizard.
+    // Every login afterwards gets the short one (2 min).
+    const first = false;
+    const seconds = 120;
     await new Promise((resolve) => loadingScreen(seconds, first, async () => {
       try { const l = await api("/setup/license/recheck", { method: "POST" }); if (!l.allowed) throw Object.assign(new Error(l.reason), { code: "LICENSE" }); } catch (e) { if (e.code === "LICENSE" || e.status === 402) throw e; }
       try { if (typeof loadRuntimeConfig === "function") await loadRuntimeConfig(); if (typeof applyTheme === "function") await applyTheme(); } catch (_) {}
-      if (first) { try { await api("/setup/loading-done", { method: "POST" }); } catch (_) {} }
     }, async (err) => {
       closeOverlay();
       if (err) { toast(err.message || "لایسنس نامعتبر", "err"); localStorage.removeItem("token"); location.reload(); return; }

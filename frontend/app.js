@@ -32,6 +32,7 @@ const qty = (n) => {
  * stale service-worker shell that lacks it degrades to ISO dates, not a crash. */
 window.Jalali = window.Jalali || { attachAll() {}, attach(i) { return i; }, fromIso: (x) => (x || ""), toIso: (x) => x, todayIso: () => new Date().toISOString().slice(0, 10) };
 function toast(msg, kind = "ok") {
+  if (kind !== "ok" && window.Sfx) Sfx.play("error");
   const el = $("#toast");
   el.textContent = msg;
   el.className = "toast " + (kind === "ok" ? "ok" : "err");
@@ -126,6 +127,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     await applyTheme();
     startStatusBar();
     if (window.Onboarding) Onboarding.alertsStack();
+    if (window.Sfx) Sfx.play("login");
     if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -717,6 +719,7 @@ async function posAddByBarcode(barcode) {
 }
 
 function posPushCart(p, batch, amount) {
+  if (window.Sfx) Sfx.play("add");
   const u = unitById(p.unit_id);
   const existing = posState.cart.find((i) => i.product_id === p.id && i.batch_id === batch.batch_id);
   if (existing) existing.quantity = parseFloat((Number(existing.quantity) + Number(amount)).toFixed(3));
@@ -924,6 +927,7 @@ async function doCheckout(total) {
     if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
       toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
+    if (window.Sfx) Sfx.play("success");
     toast(inv.payment_status === "ON_ACCOUNT"
       ? `ثبت شد (نسیه): ${inv.invoice_number}`
       : `فروش ثبت شد: ${inv.invoice_number}`);
@@ -2191,6 +2195,24 @@ async function renderSettingsPanel(cat, allRows) {
     card.innerHTML = `<h3>ظاهر و پوسته</h3><div id="theme-box" class="muted">…</div>`;
     body.append(card);
     await renderThemeBox();
+    // v1.5.1 sound effects (per-device setting)
+    const sc = el("div", { class: "card", id: "sfx-card" });
+    const on = window.Sfx ? Sfx.enabled() : false;
+    sc.innerHTML = `<h3>صداها</h3><p class="muted">صدای کوتاه برای فروش موفق، افزودن کالا، خطا، ورود و هشدارها (فقط روی همین دستگاه ذخیره می‌شود).</p>
+      <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+        <label class="row" style="gap:6px"><input type="checkbox" id="sfx-on" ${on ? "checked" : ""}/> فعال</label>
+        <label class="row" style="gap:6px">بلندی <input type="range" id="sfx-vol" min="0" max="1" step="0.05" value="${window.Sfx ? Sfx.volume() : 0.5}" style="width:160px"/></label>
+        <button class="btn btn-sm" id="sfx-test-success">تست: فروش موفق</button>
+        <button class="btn btn-sm" id="sfx-test-add">تست: افزودن کالا</button>
+        <button class="btn btn-sm" id="sfx-test-alert">تست: هشدار</button>
+      </div>`;
+    body.append(sc);
+    $("#sfx-on").onchange = (e) => { Sfx.setEnabled(e.target.checked); if (e.target.checked) Sfx.play("ready"); };
+    $("#sfx-vol").oninput = (e) => { Sfx.setVolume(e.target.value); };
+    $("#sfx-vol").onchange = () => Sfx.play("add");
+    $("#sfx-test-success").onclick = () => Sfx.play("success");
+    $("#sfx-test-add").onclick = () => Sfx.play("add");
+    $("#sfx-test-alert").onclick = () => Sfx.play("alert");
     return;
   }
   if (cat.panel === "general") {

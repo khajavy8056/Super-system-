@@ -76,7 +76,9 @@ def status(db: Session = Depends(get_db)):
         "store_name": _get(db, "store.name"),
         "logo_path": _get(db, "store.logo_path"),
         # the UI shows the long "installing" loading only once, then a short one
-        "loading_seconds": 45 * 60 if _get(db, SETUP_KEYS["loading_done"]) != "1" else 2 * 60,
+        # wizard's one-time install screen vs. the per-login loading
+        "install_loading_seconds": 45 * 60,
+        "loading_seconds": 2 * 60,
     }
 
 
@@ -203,6 +205,9 @@ def complete(body: SetupIn, db: Session = Depends(get_db)):
 
     _set(db, SETUP_KEYS["done"], "1")
     _set(db, SETUP_KEYS["done_at"], datetime.utcnow().isoformat(timespec="seconds"))
+    # v1.5.1: the 45-minute "installing" screen belongs to the wizard only. Once
+    # setup is complete every later start uses the short (2 min) loading.
+    _set(db, SETUP_KEYS["loading_done"], "1")
     write_audit(db, action="SETUP_COMPLETED", entity_type="System",
                 after={"store": profile.get("name"), "currency": body.currency, "theme": body.theme,
                        "starter": bool(starter), "admin_renamed": bool(body.admin_username)})

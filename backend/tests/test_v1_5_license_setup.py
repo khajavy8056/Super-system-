@@ -123,7 +123,7 @@ def test_setup_wizard_complete_then_locked(client, monkeypatch, auth_headers):
             if row: row.value = ""
         db.commit()
     st = client.get("/api/setup/status").json()
-    assert st["setup_done"] is False and st["loading_seconds"] in (45 * 60, 120)
+    assert st["setup_done"] is False and st["loading_seconds"] == 120 and st["install_loading_seconds"] == 45 * 60
     # licence required before completing
     r = client.post("/api/setup/complete", json={"store_name": "فروشگاه آزمون"})
     assert r.status_code == 402
@@ -133,7 +133,9 @@ def test_setup_wizard_complete_then_locked(client, monkeypatch, auth_headers):
         "store_name": "فروشگاه آزمون", "currency": "IRT", "theme": "dark", "printer_width_mm": 80,
         "admin_username": "admin", "admin_password": "admin123", "admin_full_name": "مدیر"})
     assert r.status_code == 200, r.text
-    assert client.get("/api/setup/status").json()["setup_done"] is True
+    st2 = client.get("/api/setup/status").json()
+    assert st2["setup_done"] is True and st2["first_loading_done"] is True  # v1.5.1: install screen only once, inside the wizard
+    assert st2["loading_seconds"] == 120
     assert client.get("/api/settings/store-profile", headers=auth_headers).json()["name"] == "فروشگاه آزمون"
     # second completion refused
     assert client.post("/api/setup/complete", json={"store_name": "x"}).status_code == 409
@@ -143,7 +145,6 @@ def test_setup_wizard_complete_then_locked(client, monkeypatch, auth_headers):
     r = client.post("/api/setup/complete", json={"admin_username": "a", "admin_password": "123"})
     assert r.status_code == 422
     client.post("/api/setup/complete", json={"admin_username": "admin", "admin_password": "admin123"})
-    # loading-done flips the loading duration to 2 minutes
     assert client.post("/api/setup/loading-done", headers=auth_headers).status_code == 200
     assert client.get("/api/setup/status").json()["loading_seconds"] == 120
 
