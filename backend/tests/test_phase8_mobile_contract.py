@@ -175,7 +175,9 @@ def test_mobile_app_never_hardcodes_a_localhost_backend():
     """The phone is not the server: hardcoding localhost breaks LAN use (§27)."""
     src = MOBILE_JS.read_text(encoding="utf-8")
     assert "localhost" not in src and "127.0.0.1" not in src
-    assert 'const API = "/api"' in src, "mobile must use a relative API base"
+    # v1.6: relative in a browser tab, paired-server base inside the Android shell
+    assert 'const API = (SERVER ? SERVER : "") + "/api"' in src, "mobile must use a relative/paired API base"
+    assert 'window.SupermarketAndroid' in src and '"/mobile/sync"' in src
 
 
 def test_service_worker_never_caches_or_fakes_api_responses():

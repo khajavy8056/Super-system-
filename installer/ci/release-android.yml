@@ -19,26 +19,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: "8.7"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
 
-      - name: Build release APK
-        working-directory: mobile-android
-        run: gradle assembleRelease --no-daemon
+      # v1.6: SDK-less, reproducible pipeline (aapt2 + ecj + d8 + apksigner) —
+      # the exact one verified locally; no Gradle/Android Studio required.
+      - name: Fetch toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLS: ${{ runner.temp }}/atools
+        run: scripts/android/fetch-tools.sh
+
+      - name: Build + sign release APK
+        env:
+          TOOLS: ${{ runner.temp }}/atools
+          SUPERMARKET_KEYSTORE: ${{ runner.temp }}/release.jks
+          SUPERMARKET_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'supermarket' }}
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > "$SUPERMARKET_KEYSTORE"; fi
+          scripts/android/build-apk.sh "$PWD/dist"
 
       - name: Name and checksum the APK
         id: apk
         run: |
           v=$(sed -nE 's/__version__\s*=\s*"([^"]+)"/\1/p' backend/app/__init__.py)
-          src=$(ls mobile-android/app/build/outputs/apk/release/*.apk | head -1)
           out="SupermarketMobile-$v.apk"
-          cp "$src" "$out"
+          cp "dist/$out" "$out"
           sha256sum "$out" > "$out.sha256"
           echo "path=$out" >> "$GITHUB_OUTPUT"
 

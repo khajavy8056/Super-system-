@@ -305,6 +305,7 @@ def main() -> None:
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
+    os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ENVIRONMENT", "production")
 
@@ -348,7 +349,9 @@ def main() -> None:
             # formatters that call sys.stdout.isatty(); with the root logger
             # already configured to the file above, plain propagation is
             # exactly what we want.
-            uvicorn.run("app.main:app", host="127.0.0.1", port=port,
+            # v1.6: listen on all interfaces so the Android app can reach the
+            # shop PC over Wi-Fi (the pairing QR embeds the LAN address).
+            uvicorn.run("app.main:app", host=os.environ.get("SUPERMARKET_HOST", "0.0.0.0"), port=port,
                         log_level="warning", log_config=None)
         except BaseException as exc:  # noqa: BLE001
             server_error["exc"] = exc

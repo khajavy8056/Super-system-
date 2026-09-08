@@ -29,3 +29,40 @@ Central Database (SQLite تک‌ماشینه / قابل مهاجرت به Postgr
 | iOS Safari | BarcodeDetector پشتیبانی نمی‌شود → ورود دستی (مستند، بدون ادعا). |
 | Service Worker / نصب PWA روی دستگاه | پیاده‌شده؛ تست نصب روی گوشی واقعی انجام نشده. |
 | استراتژی کش SW | فقط پوسته اپ کش می‌شود؛ `/api` هرگز کش/جعل پاسخ نمی‌شود. |
+
+## نسخهٔ ۱.۶ — اپ اندروید (APK) و همگام‌سازی آفلاین با رایانهٔ فروشگاه
+
+### نصب
+1. فایل `SupermarketMobile-<نسخه>.apk` را از صفحهٔ Releases گیت‌هاب بگیرید (`.sha256` کنار آن).
+2. با هر نصب‌کنندهٔ APK (فایل‌منیجر اندروید، **Obtainium**، **F-Droid Basic**، **Aurora**) نصب کنید؛ «نصب از منابع ناشناس» را برای همان برنامه اجازه دهید. minSdk 24 (اندروید ۷+).
+3. بار اول صفحهٔ **اتصال** باز می‌شود: در ویندوز → تنظیمات → «موبایل (اندروید)» → QR را با دوربین گوشی اسکن کنید (یا آدرس `http://<IP رایانه>:8000` را دستی بزنید). گوشی و رایانه باید در یک Wi‑Fi باشند؛ اینترنت لازم نیست.
+4. بعد از اتصال، همان ورود/ویزارد/امکانات ویندوز با UI موبایلی (صندوق، انبار، بچ‌ها، انبارگردانی، مشتری‌ها، گزارش‌ها، تنظیمات).
+
+### معماری اپ
+```
+APK  (ir.khajavy.supermarket, framework-only WebView)
+ ├─ assets/www  ← frontend/mobile + fonts + icons (سرو از مبدأ خصوصی https://app.local)
+ ├─ JS bridge  window.SupermarketAndroid {getServerUrl, getDeviceToken, pair, unpair, version, exitApp}
+ └─ Prefs      آدرس سرور / توکن دستگاه / شناسهٔ دستگاه
+        ⇅ Wi‑Fi LAN (HTTP, CORS: https://app.local)
+Backend ویندوز  /api/mobile/{pair/info, pair/token, devices, sync}
+```
+
+### همگام‌سازی آفلاین (store-and-forward)
+- هر عملیاتی که رایانه در دسترس نباشد (فروش، ورود کالا، شمارش، ثبت مشتری) با یک شناسهٔ یکتا در IndexedDB (`ops`) ذخیره می‌شود؛ صندوق همچنان با کش کالاها کار می‌کند.
+- با هر بازگشت شبکه (و هر ۳۰ ثانیه) `POST /api/mobile/sync {device_id, push[], cursor, pull}` صف را می‌فرستد؛ سرور idempotent است (`APPLIED` / `DUPLICATE` / `REJECTED` با پیام) و تغییرات کالا/بچ/مشتری را برمی‌گرداند تا گوشی به‌روز شود.
+- ردشده‌ها به «تعارض‌ها» می‌روند؛ هیچ داده‌ای بی‌صدا حذف یا بازنویسی نمی‌شود. تنظیمات → «قطع اتصال از این رایانه» برای جفت‌سازی مجدد.
+
+### ساخت APK (بدون Android Studio/SDK)
+```bash
+scripts/android/fetch-tools.sh      # aapt2, ecj, d8, apksigner, android.jar, JRE  → /tmp/atools
+scripts/android/build-apk.sh        # → installer/output/SupermarketMobile-<ver>.apk (+ .sha256)
+```
+کلید امضا: `installer/output/supermarket-release.jks` (یا `SUPERMARKET_KEYSTORE*`) — برای به‌روزرسانی‌های بعدی همان کلید لازم است. `mobile-android/` همچنان با Gradle/AGP هم می‌سازد.
+
+### وضعیت صادقانه
+| مورد | وضعیت |
+|---|---|
+| ساخت و امضای APK | ✅ در CI/sandbox انجام و با `aapt2 dump badging` + `apksigner verify` تأیید شد |
+| پل اندروید + صف آفلاین → sync | ✅ `scripts/uitest/smoke-android.js` (شبیه‌سازی پوسته) + `test_v1_6_*` |
+| نصب/اجرا روی گوشی فیزیکی، دوربین QR | **تست‌نشده** در sandbox (دستگاه اندروید در دسترس نیست) |

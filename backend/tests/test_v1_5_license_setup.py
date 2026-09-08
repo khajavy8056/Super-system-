@@ -91,12 +91,22 @@ def test_recheck_every_24h_revokes_on_rejection_but_tolerates_network(client, mo
         assert st["status"] == "REVOKED" and st["allowed"] is False
 
 
-def test_offline_grace_expires_after_7_days(client, monkeypatch):
+def test_offline_allowed_until_known_expiry_then_locked(client, monkeypatch):
+    """v1.6: a licence with a known expiry keeps working offline until that date
+    (no 7-day cut-off); once the date passes the app locks completely."""
     from app.database import SessionLocal
     monkeypatch.setattr(lic, "fetch_remote", _remote(GOOD))
     assert client.post("/api/setup/license/activate", json={"key": "KEY-LGT1-XLWT-DN7D"}).status_code == 200
     with SessionLocal() as db:
-        lic._set(db, "checked_at", (datetime.utcnow() - timedelta(days=8)).isoformat()); db.commit()
+        lic._set(db, "checked_at", (datetime.utcnow() - timedelta(days=30)).isoformat()); db.commit()
+        st = lic.state(db)
+        assert st["allowed"] is True and st["offline_until"] == st["expires"]
+        # expiry in the past → locked
+        lic._set(db, "expires", (date.today() - timedelta(days=1)).isoformat()); db.commit()
+        st = lic.state(db)
+        assert st["allowed"] is False and "پایان رسیده" in st["reason"]
+        # no expiry known → classic 7-day grace still applies
+        lic._set(db, "expires", ""); db.commit()
         st = lic.state(db)
         assert st["allowed"] is False and "۷ روز" in st["reason"]
 

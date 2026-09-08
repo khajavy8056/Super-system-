@@ -18,6 +18,7 @@ const SERVER = (NATIVE && NATIVE.getServerUrl && NATIVE.getServerUrl()) || local
 if (NATIVE && NATIVE.getDeviceToken && NATIVE.getDeviceToken() && !localStorage.getItem("m_token")) localStorage.setItem("m_token", NATIVE.getDeviceToken());
 const API = (SERVER ? SERVER : "") + "/api";
 const DEVICE_ID = (NATIVE && NATIVE.getDeviceId && NATIVE.getDeviceId()) || localStorage.getItem("m_device") || "";
+window.SM_MOBILE = { API, SERVER, DEVICE_ID, native: !!NATIVE };
 const state = {
   token: localStorage.getItem("m_token") || "",
   user: null,
@@ -164,6 +165,7 @@ async function opQueueAdd(type, payload, label) {
   updateSyncPill();
   return id;
 }
+window.mobileSync = mobileSync; window.opQueueAdd = opQueueAdd; window.opsAll = opsAll; window.conflictAll = conflictAll;
 async function mobileSync(showToast) {
   const ops = await opsAll();
   let applied = 0, rejected = 0;
