@@ -584,10 +584,11 @@ html, body { overflow: hidden; }
 .nav-badge { position: absolute; inset-inline-end: 10px; top: 50%; transform: translateY(-50%); min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--red); color: #fff; font-size: 11px; font-style: normal; display: grid; place-items: center; }
 .nav-badge.hidden { display: none; }
 .sup-unread td { background: rgba(255,181,71,.08); font-weight: 700; }
-.sup-conv { width: min(720px, 92vw); }
+.modal:has(> .sup-conv) { max-width: min(760px, 94vw); }
+.sup-conv { width: 100%; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .sup-thread { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: rgba(127,127,127,.06); border-radius: 12px; }
-.sup-msg { max-width: 82%; padding: 8px 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--card); }
+.sup-msg { max-width: 82%; box-sizing: border-box; padding: 8px 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--card); }
 .sup-msg.out { align-self: flex-start; }
 .sup-msg.in { align-self: flex-end; background: rgba(55,184,170,.12); border-color: rgba(55,184,170,.4); }
 .sup-msg-head { font-size: 11px; color: var(--muted); margin-bottom: 4px; }

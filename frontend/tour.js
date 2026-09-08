@@ -153,12 +153,16 @@
         <button class="btn btn-sm btn-ghost" onclick="Tour.end()">رد کردن</button>
         <button class="btn btn-sm btn-primary" onclick="Tour.next()">${i === n - 1 ? "پایان" : "بعدی"}</button>
       </div>`;
-    // position: below the target if room, else above; clamp horizontally
+    // position: below → above → beside (for tall targets like the sidebar) → clamp
     card.style.visibility = "hidden"; card.style.display = "block";
-    const cw = card.offsetWidth, ch = card.offsetHeight;
-    let top = r.bottom + 12; if (top + ch > innerHeight - 8) top = Math.max(8, r.top - ch - 12);
-    if (top + ch > innerHeight - 8) top = Math.max(8, innerHeight - ch - 8);
-    let left = r.left + r.width / 2 - cw / 2; left = Math.max(8, Math.min(innerWidth - cw - 8, left));
+    const cw = card.offsetWidth, ch = card.offsetHeight, M = 12;
+    let top, left;
+    if (r.bottom + M + ch <= innerHeight - 8) { top = r.bottom + M; left = r.left + r.width / 2 - cw / 2; }
+    else if (r.top - M - ch >= 8) { top = r.top - M - ch; left = r.left + r.width / 2 - cw / 2; }
+    else if (r.left - M - cw >= 8) { left = r.left - M - cw; top = Math.max(8, Math.min(innerHeight - ch - 8, r.top + r.height / 2 - ch / 2)); }
+    else if (r.right + M + cw <= innerWidth - 8) { left = r.right + M; top = Math.max(8, Math.min(innerHeight - ch - 8, r.top + r.height / 2 - ch / 2)); }
+    else { top = Math.max(8, innerHeight - ch - 8); left = r.left + r.width / 2 - cw / 2; }
+    left = Math.max(8, Math.min(innerWidth - cw - 8, left));
     card.style.top = top + "px"; card.style.left = left + "px"; card.style.visibility = "visible";
   }
   function start(view, opts = {}) {

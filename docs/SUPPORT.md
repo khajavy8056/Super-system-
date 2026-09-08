@@ -30,3 +30,25 @@
 - `backend/tests/test_v1_7_support.py` (۵ تست؛ رله با `HTTPServer` محلی شبیه‌سازی می‌شود: ثبت، ارسال، شکست→FAILED→resend، بستن، replay از صف گوشی).
 - `scripts/uitest/smoke-v1_7.js`, `smoke-android.js`: فرم ویندوز و گوشی با موقعیت مکانی شبیه‌سازی‌شده.
 - تحویل روی کانال رلهٔ واقعی: **NOT VERIFIED** در سندباکس.
+
+## گفتگوی دوطرفه (v1.8)
+
+**پاسخ دادن از داخل ربات پشتیبانی** — هر تیکت با این سرآیند به صندوق پشتیبانی می‌رسد:
+
+```
+🎫 درخواست پشتیبانی جدید — TCK-000123@3F9A1C2B
+🆔 کد فروشگاه: سوپرمارکت رضا #3F9A1C2B   (برای پاسخ: روی همین پیام Reply بزنید یا پیام را با «TCK-000123@3F9A1C2B» شروع کنید)
+```
+
+`3F9A1C2B` شناسهٔ ۸ رقمی پایدار همان نصب است (SHA-1 از HWID). دو راه پاسخ:
+
+1. **Reply** روی پیام تیکت یا هر پیام بعدی همان رشته (برنامه `reply_to_message_id` را با `relay_ref` تیکت / `relay_message_id` پیام‌ها تطبیق می‌دهد).
+2. متن را با `TCK-000123@3F9A1C2B` شروع کنید (بدون Reply). پیشوند در برنامه حذف می‌شود.
+
+پیام‌هایی که به هیچ‌کدام نخورند یا شناسهٔ نصب دیگری داشته باشند **نادیده گرفته می‌شوند** (صدها فروشگاه یک صندوق مشترک دارند). فایل همراه پاسخ با `getFile` دانلود و در `media/support/` ذخیره می‌شود.
+
+**سمت فروشگاه**: مودال گفتگو (ویندوز: «مشاهده / پاسخ»، گوشی: 💬) پیام‌ها را زمان‌بندی‌شده نشان می‌دهد؛ پاسخ متنی و **یک پیوست تا ۵۰ مگابایت** (`requestSendFile` → آپلود → `sendFile` با `reply_to_message_id`) در همان رشته می‌رود. پیام‌های نرسیده در وضعیت «در انتظار ارسال مجدد» می‌مانند و poller (هر ۲۰ ثانیه) دوباره تلاش می‌کند. پاسخ جدید = اعلان `SUPPORT_REPLY` + نشان قرمز روی منو.
+
+API: `GET /api/support/tickets/{id}/messages` (خواندن = علامت خوانده‌شده)، `POST …/messages` (multipart `text`/`file`)، `POST /api/support/poll`، `GET /api/support/unread`.
+
+آزمون: `tests/test_v1_7_support.py::test_two_way_conversation_routes_replies_to_the_right_store` و `::test_store_reply_with_attachment_is_uploaded_and_threaded` (رلهٔ شبیه‌سازی‌شده با `requestSendFile/upload/sendFile/getFile/getUpdates`).
