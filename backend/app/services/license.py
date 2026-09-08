@@ -13,9 +13,13 @@ Rules (agreed with the owner):
   every start; it is re-validated online every 24 h (background thread + on
   every login "loading" screen).
 * A definite server verdict (INVALID / EXPIRED / MAX_DEVICES_REACHED / …)
-  revokes the cached activation. A *network* failure keeps the cached state
-  for an offline grace period (7 days) so a shop without internet keeps
-  working, then blocks with a clear Persian message.
+  revokes the cached activation. A *network* failure keeps the cached state:
+  v1.6 — the first successful activation told us the expiry date, so while the
+  server is unreachable the licence stays valid **until that date** (not a fixed
+  7-day window). Without a known expiry date the 7-day grace applies.
+* When the app locks (expired / revoked) the shop's data is preserved: the
+  database is archived into an AES-encrypted ZIP (``vault/``) — see
+  ``lock_vault``. Nothing is deleted.
 """
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ OFFLINE_GRACE_DAYS = 7
 TIMEOUT = 12.0
 
 KEYS = ("key", "status", "type", "owner", "expires", "message", "checked_at",
-        "activated_at", "hwid", "last_error", "server_url")
+        "activated_at", "hwid", "last_error", "server_url", "vault_at", "vault_path")
 
 
 class LicenseError(Exception):
@@ -220,7 +224,8 @@ def state(db: Session) -> dict:
             age = datetime.utcnow() - datetime.fromisoformat(checked)
         except ValueError:
             age = timedelta(days=999)
-        if age > timedelta(days=OFFLINE_GRACE_DAYS):
+        # v1.6: a known expiry date is the offline horizon; otherwise 7 days
+        if exp is None and age > timedelta(days=OFFLINE_GRACE_DAYS):
             allowed, reason = False, ("بیش از ۷ روز است که لایسنس به‌صورت آنلاین تأیید نشده؛ "
                                       "برای ادامه، دستگاه را به اینترنت متصل کنید.")
     masked = (key[:4].rstrip("-") + "-****-****-" + key[-4:]) if len(key) >= 8 else ""
@@ -240,7 +245,72 @@ def state(db: Session) -> dict:
         "key_masked": masked,
         "last_error": _get(db, "last_error") or None,
         "server": server_url(db),
+        "offline_until": exp.isoformat() if exp else None,   # v1.6: offline validity horizon
+        "vault_path": _get(db, "vault_path") or None,
     }
+
+
+# --- encrypted vault on lock (v1.6) -------------------------------------------------
+def vault_dir() -> Path:
+    from ..config import settings
+    p = settings.data_dir / "vault"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def vault_password() -> str:
+    """Derived from the per-install secret + HWID; never stored in clear."""
+    from ..config import settings
+    return hashlib.sha256(f"vault|{settings.SECRET_KEY}|{hwid()}".encode()).hexdigest()[:40]
+
+
+def lock_vault(db: Session, *, force: bool = False) -> dict | None:
+    """When the licence blocks the app, archive the SQLite database into an
+    AES-256 encrypted ZIP so the owner's data is preserved (and portable) while
+    the app is locked. At most one archive per day unless ``force``.
+    Returns {"path", "size"} or None when nothing was done."""
+    from ..config import settings
+    if not settings.DATABASE_URL.startswith("sqlite:///"):
+        return None
+    db_path = Path(settings.DATABASE_URL.split("///")[-1])
+    if not db_path.exists() or str(db_path) == ":memory:":
+        return None
+    last = _get(db, "vault_at")
+    if last and not force:
+        try:
+            if datetime.utcnow() - datetime.fromisoformat(last) < timedelta(days=1):
+                return None
+        except ValueError:
+            pass
+    import io
+    import json
+    import sqlite3
+    import pyzipper
+
+    buf = io.BytesIO()
+    src = sqlite3.connect(str(db_path))
+    tmp = vault_dir() / ".snapshot.db"
+    dst = sqlite3.connect(str(tmp))
+    with dst:
+        src.backup(dst)
+    src.close(); dst.close()
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out = vault_dir() / f"supermarket_locked_{stamp}.zip"
+    meta = {"created_at": datetime.utcnow().isoformat(timespec="seconds"), "hwid": hwid(),
+            "license_status": _get(db, "status"), "expires": _get(db, "expires"), "reason": state(db)["reason"]}
+    with pyzipper.AESZipFile(str(out), "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as z:
+        z.setpassword(vault_password().encode())
+        z.write(str(tmp), "supermarket.db")
+        z.writestr("vault.json", json.dumps(meta, ensure_ascii=False, indent=2))
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
+    _set(db, "vault_at", datetime.utcnow().isoformat(timespec="seconds"))
+    _set(db, "vault_path", str(out))
+    db.flush()
+    log.warning("licence lock: data archived to encrypted vault %s", out)
+    return {"path": str(out), "size": out.stat().st_size}
 
 
 def clear(db: Session) -> None:

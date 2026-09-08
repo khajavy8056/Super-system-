@@ -10,3 +10,5 @@ httpx>=0.27,<1.0
 python-multipart>=0.0.9,<1.0
 # v1.3 native desktop window (Windows): OPTIONAL — see requirements-desktop.txt.
 # The launcher falls back to an Edge app-mode window when pywebview is absent.
+pyzipper>=0.3,<1.0
+qrcode>=7.4,<9.0

@@ -6,7 +6,7 @@
  *   fail visibly. The mobile app queues writes locally in IndexedDB and syncs
  *   when the network returns (§25–26); the SW does not fake responses.
  */
-const CACHE = "supermarket-shell-v7";
+const CACHE = "supermarket-shell-v8";
 const SHELL = [
   "/", "/app.js", "/styles.css", "/theme-pro.css", "/jalali.js",
   "/accounting.js",

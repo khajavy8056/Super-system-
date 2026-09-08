@@ -32,7 +32,7 @@ const qty = (n) => {
  * stale service-worker shell that lacks it degrades to ISO dates, not a crash. */
 window.Jalali = window.Jalali || { attachAll() {}, attach(i) { return i; }, fromIso: (x) => (x || ""), toIso: (x) => x, todayIso: () => new Date().toISOString().slice(0, 10) };
 function toast(msg, kind = "ok") {
-  if (kind !== "ok" && window.Sfx) Sfx.play("error");
+  if (window.Sfx) Sfx.play(kind !== "ok" ? "error" : "note");
   const el = $("#toast");
   el.textContent = msg;
   el.className = "toast " + (kind === "ok" ? "ok" : "err");
@@ -127,7 +127,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     await applyTheme();
     startStatusBar();
     if (window.Onboarding) Onboarding.alertsStack();
-    if (window.Sfx) Sfx.play("login");
+    if (window.Sfx) Sfx.play("welcome");
     if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -135,11 +135,75 @@ $("#login-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#logout").addEventListener("click", () => {
+function doLogout() {
   localStorage.removeItem("token");
   state.token = ""; state.user = null;
   showLogin();
-});
+}
+$("#logout").addEventListener("click", () => exitPrompt());
+
+/* v1.6 — Exit button: "خروج از حساب" (back to login) or "بستن برنامه"
+ * (backup → save → close). The desktop launcher really exits the process
+ * (POST /system/shutdown); a browser tab shows the same loading and returns
+ * to the login screen when the backup is done. */
+function exitPrompt() {
+  openModal(`<h3>خروج</h3>
+    <p class="muted">قبل از بستن برنامه، یک نسخهٔ پشتیبان از اطلاعات گرفته می‌شود.</p>
+    <div class="grid grid-2" style="gap:10px;margin-top:12px">
+      <button class="btn" id="exit-logout">خروج از حساب کاربری</button>
+      <button class="btn btn-danger" id="exit-app">بستن برنامه (با پشتیبان‌گیری)</button>
+    </div>`);
+  $("#exit-logout").onclick = () => { closeModal(); doLogout(); };
+  $("#exit-app").onclick = () => { closeModal(); exitWithBackup(); };
+}
+window.exitPrompt = exitPrompt;
+
+async function exitWithBackup() {
+  const o = document.createElement("div");
+  o.className = "ob-overlay ob-exit"; o.id = "exit-overlay";
+  o.innerHTML = `<div class="ob-load ob-anim">
+      <img class="ob-logo" src="${(state.store && state.store.logo_path) || "/icons/logo.svg"}" alt="" />
+      <h1>در حال بستن برنامه</h1>
+      <p class="muted" id="exit-sub">ذخیرهٔ اطلاعات و تهیهٔ نسخهٔ پشتیبان…</p>
+      <div class="ob-ring"><svg viewBox="0 0 120 120"><circle class="bg" cx="60" cy="60" r="52"/><circle class="fg" id="exit-ring" cx="60" cy="60" r="52"/></svg><div class="ob-ring-txt"><b id="exit-pct">۰٪</b><span>لطفاً صبر کنید</span></div></div>
+      <ul class="ob-phases" id="exit-phases">${["ذخیرهٔ فاکتورهای باز", "پشتیبان‌گیری از پایگاه‌داده", "بستن اتصال‌ها", "خداحافظ"].map((t, i) => `<li data-i="${i}"><i></i><span>${t}</span><em></em></li>`).join("")}</ul>
+    </div>`;
+  document.body.append(o);
+  const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  const ring = $("#exit-ring"), C = 2 * Math.PI * 52; ring.style.strokeDasharray = C; ring.style.strokeDashoffset = C;
+  const setP = (p, ph) => { $("#exit-pct").textContent = fa(Math.round(p * 100)) + "٪"; ring.style.strokeDashoffset = C * (1 - p);
+    document.querySelectorAll("#exit-phases li").forEach((li) => { const k = +li.dataset.i; li.className = k < ph ? "done" : k === ph ? "active" : ""; li.querySelector("em").textContent = k < ph ? "✓" : ""; }); };
+  if (window.Sfx) Sfx.play("exit");
+  setP(0.1, 0);
+  try { localStorage.setItem("sm.held", JSON.stringify(heldInvoices())); } catch (_) {}
+  await new Promise((r) => setTimeout(r, 700));
+  setP(0.35, 1);
+  let res = null;
+  try { res = await api("/system/shutdown", { method: "POST", body: JSON.stringify({ backup: true, delay_seconds: 2.5 }) }); }
+  catch (e) { $("#exit-sub").textContent = "پشتیبان‌گیری انجام نشد: " + e.message; }
+  setP(0.7, 2);
+  await new Promise((r) => setTimeout(r, 900));
+  setP(1, 3);
+  $("#exit-sub").textContent = res && res.backup ? "نسخهٔ پشتیبان ذخیره شد" : "آماده";
+  await new Promise((r) => setTimeout(r, 900));
+  if (res && res.exiting) {
+    $("#exit-sub").textContent = "برنامه بسته می‌شود…";
+    try { window.close(); } catch (_) {}
+    return;
+  }
+  o.remove();
+  doLogout();
+}
+window.exitWithBackup = exitWithBackup;
+
+/* v1.6 — full-screen toggle (F11 also works in most browsers/WebView2). */
+function toggleFullscreen() {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => toast("مرورگر اجازهٔ تمام‌صفحه نداد", "err"));
+  else document.exitFullscreen().catch(() => {});
+}
+window.toggleFullscreen = toggleFullscreen;
+document.addEventListener("fullscreenchange", () => { const b = $("#sb-full"); if (b) b.textContent = document.fullscreenElement ? "⤡" : "⤢"; });
+
 
 /* ---------- security helpers ---------- */
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -437,13 +501,79 @@ function systemCard(title, sys) {
   );
 }
 
-const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0 };
+const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null };
+
+/* ---------------------------------------------------------------------------
+ * v1.6 — Parked ("held") invoices. A customer steps away → the cashier parks the
+ * open invoice (F6); it collapses into a chip on the dock UNDER the POS (no
+ * browser tabs), the next customer is served, and the chip restores it.
+ * Up to 10 at once; persisted in localStorage so a crash/exit never loses them.
+ * ------------------------------------------------------------------------ */
+const HELD_MAX = 10;
+function heldInvoices() { try { return JSON.parse(localStorage.getItem("sm.held") || "[]"); } catch (_) { return []; } }
+function saveHeld(list) { localStorage.setItem("sm.held", JSON.stringify(list.slice(0, HELD_MAX))); renderHeldDock(); }
+function posSnapshot() {
+  return { cart: JSON.parse(JSON.stringify(posState.cart)), customer: posState.customer, coupon: posState.coupon,
+           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount };
+}
+function posRestore(snap) {
+  posState.cart = snap.cart || []; posState.customer = snap.customer || null; posState.coupon = snap.coupon || null;
+  posState.couponInfo = snap.couponInfo || null; posState.invoiceDiscount = snap.invoiceDiscount || 0;
+}
+function posHold(label) {
+  if (!posState.cart.length) { toast("سبد خالی است؛ چیزی برای نگه‌داشتن نیست", "err"); return false; }
+  const list = heldInvoices();
+  if (!posState.heldId && list.length >= HELD_MAX) { toast(`حداکثر ${HELD_MAX} فاکتور همزمان قابل نگه‌داری است`, "err"); return false; }
+  const total = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+  const entry = { id: posState.heldId || ("h" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)), at: Date.now(),
+                  label: label || (posState.customer ? posState.customer.name : `مشتری ${list.length + 1}`),
+                  count: posState.cart.reduce((a, it) => a + Number(it.quantity), 0), total, snap: posSnapshot() };
+  const idx = list.findIndex((h) => h.id === entry.id);
+  if (idx >= 0) list[idx] = entry; else list.unshift(entry);
+  posState.cart = []; posState.customer = null; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; posState.heldId = null;
+  saveHeld(list);
+  renderPosCart(); if (window.Sfx) Sfx.play("hold");
+  toast(`فاکتور «${entry.label}» نگه داشته شد`);
+  const sc = $("#pos-scan"); if (sc) sc.focus();
+  return true;
+}
+window.posHold = posHold;
+window.posResume = (id) => {
+  const list = heldInvoices(); const h = list.find((x) => x.id === id); if (!h) return;
+  if (posState.cart.length && !posHold()) return;   // park the current one first so nothing is lost
+  posRestore(h.snap); posState.heldId = h.id;
+  saveHeld(heldInvoices().filter((x) => x.id !== id));
+  renderPosCart(); if (window.Sfx) Sfx.play("resume");
+  toast(`فاکتور «${h.label}» بازگردانده شد`);
+};
+window.posDropHeld = (id) => {
+  const list = heldInvoices(); const h = list.find((x) => x.id === id); if (!h) return;
+  if (!confirm(`فاکتور «${h.label}» حذف شود؟`)) return;
+  saveHeld(list.filter((x) => x.id !== id)); if (window.Sfx) Sfx.play("void");
+};
+function renderHeldDock() {
+  const dock = $("#pos-held"); if (!dock) return;
+  const list = heldInvoices();
+  const title = $("#pos-cart-title"); if (title) title.textContent = posState.heldId ? "سبد خرید (فاکتور بازگردانده‌شده)" : "سبد خرید فعلی";
+  if (!list.length) { dock.innerHTML = ""; dock.classList.add("empty"); return; }
+  dock.classList.remove("empty");
+  dock.innerHTML = `<div class="held-title">${icon("invoice", 16)} فاکتورهای در انتظار <b>${list.length}</b>/${HELD_MAX}</div>
+    <div class="held-chips">${list.map((h) => `
+      <div class="held-chip">
+        <button class="held-main" onclick="posResume('${h.id}')" title="بازگردانی">
+          <b>${esc(h.label)}</b><span class="muted">${qty(h.count)} قلم · ${money(h.total)} · ${new Date(h.at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" })}</span>
+        </button>
+        <button class="held-x" onclick="posDropHeld('${h.id}')" title="حذف">✕</button>
+      </div>`).join("")}</div>`;
+}
+
 
 function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
 
 function renderPosCart() {
   const tbl = $("#pos-cart-table");
   if (!tbl) return;
+  renderHeldDock();
   const cnt = $("#pos-cart-count"); if (cnt) cnt.textContent = `تعداد کل کالاها: ${posState.cart.reduce((a, it) => a + Number(it.quantity), 0)}`;
   if (!posState.cart.length) {
     tbl.innerHTML = `<div class="cart-empty">${icon("barcode", 48)}<b>سبد خالی است</b><span class="muted">بارکد را اسکن کنید یا نام کالا را جستجو کنید</span></div>`;
@@ -561,7 +691,7 @@ RENDER.pos = async () => {
       </div>
       <div class="pos-main">
         <div class="pos-cart">
-          <div class="pos-cart-head"><h3>سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
+          <div class="pos-cart-head"><h3 id="pos-cart-title">سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
           <div class="pos-cart-list" id="pos-cart-table"></div>
           <div id="pos-receipt"></div>
         </div>
@@ -577,11 +707,15 @@ RENDER.pos = async () => {
             <button class="pos-btn pos-btn-blue" id="pos-customer-btn">${icon("user", 18)} مشتری <span class="kbd">F8</span></button>
             <button class="pos-btn pos-btn-violet" id="pos-coupon-btn">${icon("gift", 18)} کوپن <span class="kbd">F9</span></button>
             <button class="pos-btn pos-btn-amber" id="pos-discount-btn">تخفیف <span class="kbd">F4</span></button>
+            <button class="pos-btn pos-btn-hold" id="pos-hold-btn">نگه‌داشتن فاکتور <span class="kbd">F6</span></button>
             <button class="pos-btn pos-btn-danger" id="pos-clear-btn">لغو کردن <span class="kbd">Esc</span></button>
           </div>
         </div>
       </div>
+      <div class="pos-held" id="pos-held"></div>
     </div>`;
+  $("#pos-hold-btn").addEventListener("click", () => posHold());
+  renderHeldDock();
   $("#pos-scan").addEventListener("keydown", async (e) => {
     if (e.key === "ArrowDown") {
       const first = document.querySelector(".pos-suggest .sug");
@@ -923,7 +1057,7 @@ async function doCheckout(total) {
         coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
     });
     posState.cart = []; posState.customer = null; posState.invoiceDiscount = 0;
-    posState.coupon = null; posState.couponInfo = null;
+    posState.coupon = null; posState.couponInfo = null; posState.heldId = null; renderHeldDock();
     if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
       toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
@@ -1014,6 +1148,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "F4") { e.preventDefault(); if (!modalOpen) posDiscountModal(); }
   else if (e.key === "F8") { e.preventDefault(); if (!modalOpen) posCustomerModal(); }
   else if (e.key === "F9") { e.preventDefault(); if (!modalOpen) posCouponModal(); }
+  else if (e.key === "F6") { e.preventDefault(); if (!modalOpen) posHold(); }
   else if (e.key === "Delete" && !modalOpen) { posState.cart.pop(); renderPosCart(); }
   else if (e.key === "Escape" && !modalOpen) {
     posState.cart = []; posState.coupon = null; posState.couponInfo = null; renderPosCart();
@@ -1786,7 +1921,7 @@ function voidInvoiceModal(i) {
     const pass = $("#void-pass"); if (pass) body.admin_password = pass.value;
     try {
       await api(`/invoices/${i.id}/void`, { method: "POST", body: JSON.stringify(body) });
-      closeModal(); toast("فاکتور ابطال شد"); RENDER.invoices();
+      closeModal(); if (window.Sfx) Sfx.play("void"); toast("فاکتور ابطال شد"); RENDER.invoices();
     } catch (e) { toast(e.message, "err"); }
   });
 }
@@ -2155,6 +2290,7 @@ const SET_CATEGORIES = [
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
   { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
+  { id: "mobile",   label: "موبایل (اندروید)", prefixes: [], panel: "mobile" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
@@ -2205,6 +2341,8 @@ async function renderSettingsPanel(cat, allRows) {
         <button class="btn btn-sm" id="sfx-test-success">تست: فروش موفق</button>
         <button class="btn btn-sm" id="sfx-test-add">تست: افزودن کالا</button>
         <button class="btn btn-sm" id="sfx-test-alert">تست: هشدار</button>
+        <button class="btn btn-sm" id="sfx-test-welcome">تست: موسیقی خوش‌آمد</button>
+        <button class="btn btn-sm" id="sfx-test-void">تست: ابطال فاکتور</button>
       </div>`;
     body.append(sc);
     $("#sfx-on").onchange = (e) => { Sfx.setEnabled(e.target.checked); if (e.target.checked) Sfx.play("ready"); };
@@ -2213,6 +2351,8 @@ async function renderSettingsPanel(cat, allRows) {
     $("#sfx-test-success").onclick = () => Sfx.play("success");
     $("#sfx-test-add").onclick = () => Sfx.play("add");
     $("#sfx-test-alert").onclick = () => Sfx.play("alert");
+    $("#sfx-test-welcome").onclick = () => Sfx.play("welcome");
+    $("#sfx-test-void").onclick = () => Sfx.play("void");
     return;
   }
   if (cat.panel === "general") {
@@ -2231,6 +2371,10 @@ async function renderSettingsPanel(cat, allRows) {
       <div id="upd-steps" style="margin-top:10px"></div>`;
     body.append(card);
     renderUpdateBox();  // settings table for update.* follows below (no return)
+  }
+  if (cat.panel === "mobile") {
+    await renderMobilePanel(body);
+    return;
   }
   if (cat.panel === "license") {
     const card = el("div", { class: "card", id: "license-card" });
@@ -2322,6 +2466,47 @@ function applyStoreLogo(path) {
   const src = path || "/icons/logo.svg";
   document.querySelectorAll(".brand-logo, .about-logo, .login-logo").forEach((img) => { img.src = src; });
 }
+
+/* v1.6 — Android companion: pairing QR + paired devices. */
+async function renderMobilePanel(body) {
+  const card = el("div", { class: "card", id: "mobile-card" });
+  card.innerHTML = `<h3>اتصال گوشی اندروید</h3>
+    <p class="muted">برنامهٔ «سوپرمارکت موبایل» را روی گوشی نصب کنید، گوشی را به همان Wi‑Fi رایانه وصل کنید و این کد را در برنامه اسکن کنید. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ گوشی آفلاین هم کار می‌کند و هر بار که به رایانه برسد، اطلاعات به‌صورت خودکار همگام می‌شود.</p>
+    <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap">
+      <div id="mob-qr" class="mob-qr"><span class="muted">در حال ساخت کد…</span></div>
+      <div style="flex:1;min-width:260px">
+        <div id="mob-info" class="muted"></div>
+        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-sm" id="mob-regen">ساخت کد جدید</button>
+          <a class="btn btn-sm" href="https://github.com/khajavy8056/Super-system-/releases/latest" target="_blank" rel="noopener">دانلود APK اندروید</a>
+        </div>
+      </div>
+    </div>`;
+  body.append(card);
+  const dev = el("div", { class: "card", id: "mobile-devices" }); dev.innerHTML = `<h3>گوشی‌های متصل</h3><div id="mob-devs" class="muted">…</div>`;
+  body.append(dev);
+  async function loadDevices() {
+    try {
+      const list = await api("/mobile/devices");
+      $("#mob-devs").innerHTML = list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>نام</th><th>کاربر</th><th>ایجاد</th><th>آخرین همگام‌سازی</th><th>انقضا</th><th></th></tr></thead><tbody>${list.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.user)}</td><td>${faDateTime(d.created_at)}</td><td>${d.last_sync_at ? faDateTime(d.last_sync_at) : "—"}</td><td>${faDateTime(d.expires_at, false)}</td><td><button class="btn btn-sm btn-danger" onclick="mobRevoke('${d.id}')">لغو دسترسی</button></td></tr>`).join("")}</tbody></table></div>` : `<span class="muted">هنوز گوشی‌ای متصل نشده است.</span>`;
+    } catch (e) { $("#mob-devs").textContent = e.message; }
+  }
+  window.mobRevoke = async (id) => { if (!confirm("دسترسی این گوشی لغو شود؟")) return; try { await api(`/mobile/devices/${id}`, { method: "DELETE" }); toast("دسترسی لغو شد"); loadDevices(); } catch (e) { toast(e.message, "err"); } };
+  async function gen() {
+    $("#mob-qr").innerHTML = `<span class="muted">در حال ساخت کد…</span>`;
+    try {
+      const r = await api("/mobile/pair/info");
+      $("#mob-qr").innerHTML = r.qr_png ? `<img src="${r.qr_png}" alt="QR" />` : `<textarea readonly class="ltr" style="width:220px;height:120px;font-size:10px">${esc(r.qr_text)}</textarea>`;
+      $("#mob-info").innerHTML = `<div>آدرس سرور در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}</div>
+        <div style="margin-top:6px">نسخهٔ وب موبایل (بدون نصب): <code class="ltr">${esc(r.mobile_url)}</code></div>
+        <div style="margin-top:6px">این کد شامل یک کلید دسترسی یک‌ساله برای گوشی است؛ آن را در اختیار دیگران قرار ندهید. با هر بار ساخت کد جدید، یک دستگاه جدید در فهرست زیر ثبت می‌شود.</div>`;
+      loadDevices();
+    } catch (e) { $("#mob-qr").innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+  }
+  $("#mob-regen").onclick = gen;
+  gen();
+}
+
 
 async function renderStoreProfile() {
   let p = {};

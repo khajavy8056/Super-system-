@@ -181,6 +181,56 @@ class UpdateAuthIn(BaseModel):
     download: bool = True
 
 
+# ---------------------------------------------------------------------------
+# v1.6 — graceful exit: backup → flush → stop the process (desktop launcher).
+# ---------------------------------------------------------------------------
+class ShutdownIn(BaseModel):
+    backup: bool = True
+    delay_seconds: float = 1.5
+
+
+def _sqlite_backup(db: Session) -> dict | None:
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        return None
+    db_path = settings.DATABASE_URL.split("///")[-1]
+    if db_path == ":memory:":
+        return None
+    backup_dir = settings.data_dir / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    dest = backup_dir / f"supermarket_{stamp}.db"
+    source = sqlite3.connect(db_path)
+    target = sqlite3.connect(str(dest))
+    with target:
+        source.backup(target)
+    source.close(); target.close()
+    _prune_backups(backup_dir, _backup_keep_count(db))
+    return {"path": str(dest), "size": dest.stat().st_size}
+
+
+@update_router.post("/shutdown")
+def shutdown(body: ShutdownIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Exit button (v1.6): take an online SQLite backup, write the audit row and
+    then stop the server so the desktop launcher's window closes cleanly.
+    Only the desktop build (or SUPERMARKET_ALLOW_SHUTDOWN=1) really exits the
+    process; a plain dev/LAN server just performs the backup."""
+    import os
+    import threading
+
+    result = _sqlite_backup(db) if body.backup else None
+    write_audit(db, action="APP_EXIT", user_id=user.id, entity_type="System",
+                after={"backup": (result or {}).get("path")})
+    db.commit()
+    will_exit = bool(os.environ.get("SUPERMARKET_ALLOW_SHUTDOWN") == "1" or getattr(__import__("sys"), "frozen", False))
+    if will_exit:
+        def _die():
+            import time
+            time.sleep(max(0.2, float(body.delay_seconds)))
+            os._exit(0)
+        threading.Thread(target=_die, daemon=True).start()
+    return {"ok": True, "backup": result, "exiting": will_exit}
+
+
 @update_router.get("/update/check")
 def check_update(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
     """Report whether a newer release exists. Read-only and side-effect free.

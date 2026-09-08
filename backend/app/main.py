@@ -26,6 +26,7 @@ from .routers import (
     diagnostics,
     hardware,
     inventory,
+    mobile,
     invoices,
     marketing,
     pos,
@@ -123,7 +124,7 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
-    setup.router,
+    setup.router, mobile.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -209,6 +210,12 @@ async def license_gate(request: Request, call_next):
         db = SessionLocal()
         try:
             st = license_svc.state(db)
+            if not st["allowed"] and st.get("activated"):
+                try:  # v1.6: preserve the shop's data in an encrypted archive when locking
+                    if license_svc.lock_vault(db):
+                        db.commit()
+                except Exception as exc:  # noqa: BLE001
+                    logging.getLogger("supermarket.license").warning("vault failed: %s", exc)
         finally:
             db.close()
         if not st["allowed"]:
