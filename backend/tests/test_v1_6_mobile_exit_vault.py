@@ -88,14 +88,15 @@ def test_mobile_sync_push_is_idempotent_and_pull_returns_changes(client, auth_he
 
 
 def test_v181_offline_product_then_sale_by_barcode_replays(client, auth_headers):
+    BC = "6261" + uuid.uuid4().hex[:9].upper().translate(str.maketrans("ABCDEF", "123456"))
     """v1.8.1 standalone phone: a product defined offline (temporary INT-L code),
     a stock receipt and a sale that references the line only by barcode all
     replay on the PC in one sync — and replaying the same batch is idempotent."""
     ops = [
-        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": "6261234567890", "name": "پفک آفلاین"}},
-        {"id": uuid.uuid4().hex, "type": "STOCK_RECEIVE", "payload": {"barcode": "6261234567890", "quantity_received": 10, "buy_price": 5000, "sell_price": 8000}},
+        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": BC, "name": "پفک آفلاین"}},
+        {"id": uuid.uuid4().hex, "type": "STOCK_RECEIVE", "payload": {"barcode": BC, "quantity_received": 10, "buy_price": 5000, "sell_price": 8000}},
         {"id": uuid.uuid4().hex, "type": "POS_CHECKOUT", "payload": {
-            "items": [{"barcode": "6261234567890", "quantity": 2}],
+            "items": [{"barcode": BC, "quantity": 2}],
             "payments": [{"method": "CASH", "amount": 16000}]}},
         # phone-minted temporary code → PC must mint a real INT- code, never store INT-L
         {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": "INT-L00001", "name": "کالای بدون بارکد"}},
@@ -105,7 +106,7 @@ def test_v181_offline_product_then_sale_by_barcode_replays(client, auth_headers)
     applied = r.json()["applied"]
     assert [a["status"] for a in applied] == ["APPLIED"] * 4, applied
     assert applied[2]["result"]["invoice_number"]
-    p = client.get("/api/products/barcode/6261234567890", headers=auth_headers).json()
+    p = client.get(f"/api/products/barcode/{BC}", headers=auth_headers).json()
     assert p["name"] == "پفک آفلاین"
     pid2 = applied[3]["result"]["product_id"]
     p2 = client.get(f"/api/products/{pid2}", headers=auth_headers).json()
