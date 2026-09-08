@@ -35,6 +35,7 @@ from .routers import (
     resolvers,
     returns,
     settings as settings_router,
+    setup,
     sms,
     system,
     users,
@@ -92,9 +93,12 @@ async def lifespan(app: FastAPI):
     init_db()
     sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
     _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
+    from .services import license as license_svc
+    license_svc.start_worker(SessionLocal)  # v1.5: 24h online licence re-validation
     yield
     sms_svc.stop_worker()
     _stop_sync_worker()
+    license_svc.stop_worker()
 
 
 app = FastAPI(
@@ -119,6 +123,7 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
+    setup.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -183,6 +188,34 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JS
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return _error_response(exc, request, "INTERNAL_ERROR", 500)
+
+
+# --- v1.5 licence gate ---------------------------------------------------------
+# The application never works without an activated licence. Everything except
+# health, the setup/licence endpoints and static assets is refused with 402 so
+# the UI can show the activation wizard. The verdict comes from the cached state
+# (no network on the request path); a background worker re-validates every 24 h.
+_LICENSE_FREE_PREFIXES = ("/api/setup/", "/health", "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
+_LICENSE_GATE_ENABLED = os.environ.get("SUPERMARKET_LICENSE_GATE", "1") not in ("0", "false", "off")
+
+
+@app.middleware("http")
+async def license_gate(request: Request, call_next):
+    path = request.url.path
+    if _LICENSE_GATE_ENABLED and path.startswith("/api/") and not path.startswith(_LICENSE_FREE_PREFIXES):
+        from .database import SessionLocal
+        from .services import license as license_svc
+
+        db = SessionLocal()
+        try:
+            st = license_svc.state(db)
+        finally:
+            db.close()
+        if not st["allowed"]:
+            return JSONResponse(status_code=402, content={"detail": {
+                "code": "LICENSE_REQUIRED", "message": st["reason"] or "لایسنس فعال نیست",
+                "license": {k: st[k] for k in ("status", "expires", "days_left", "hwid")}}})
+    return await call_next(request)
 
 
 @app.middleware("http")

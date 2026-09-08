@@ -408,3 +408,21 @@ KPIهای صندوق/بانک/کارت‌خوان/طلب/بدهی/ارزش مو�
 
 ### v14-07 — سخت‌افزار: شناسایی بارکدخوان
 ![سخت‌افزار](screenshots/v14-07-hardware.png)
+
+---
+
+## افزوده‌های نسخهٔ ۱٫۵٫۰ (2026-09-08؛ سرور لایسنس با stub محلی، لودینگ با `fastload` کوتاه شده)
+
+| تصویر | شرح |
+|---|---|
+| ![](screenshots/v15-01-wizard-welcome.png) | ویزارد راه‌اندازی — خوش‌آمد |
+| ![](screenshots/v15-02-wizard-license.png) | مرحلهٔ لایسنس (ورود کلید + HWID) |
+| ![](screenshots/v15-03-wizard-license-ok.png) | لایسنس فعال: نوع، مالک، انقضا، روز باقی‌مانده |
+| ![](screenshots/v15-04-wizard-store.png) | نام فروشگاه |
+| ![](screenshots/v15-05-wizard-currency.png) | واحد پول |
+| ![](screenshots/v15-06-wizard-theme.png) | پوسته و عرض کاغذ |
+| ![](screenshots/v15-07-wizard-admin.png) | حساب مدیر |
+| ![](screenshots/v15-08-wizard-finish.png) | خلاصه و شروع نصب |
+| ![](screenshots/v15-09-loading-install.png) | لودینگ نصب بار اول |
+| ![](screenshots/v15-13-dashboard-alerts.png) | داشبورد با نوتیفیکیشن‌های انقضا/لایسنس پایین صفحه |
+| ![](screenshots/v15-14-settings-license.png) | تنظیمات ← لایسنس |

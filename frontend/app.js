@@ -51,7 +51,12 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const detail = body && body.detail;
     const msg = typeof detail === "object" ? (detail.message || detail.code || JSON.stringify(detail)) : (detail || res.statusText);
-    throw new Error(msg);
+    if (res.status === 402 && window.Onboarding && !window._licPrompt) {  // v1.5 licence gate
+      window._licPrompt = true;
+      fetch(API + "/setup/license").then((r) => r.json()).then((l) => Onboarding.licenseScreen(l, () => { window._licPrompt = false; Onboarding.closeOverlay(); location.reload(); })).catch(() => { window._licPrompt = false; });
+    }
+    const err = new Error(msg); err.status = res.status; err.code = typeof detail === "object" ? detail.code : undefined;
+    throw err;
   }
   return body;
 }
@@ -114,11 +119,13 @@ $("#login-form").addEventListener("submit", async (e) => {
     localStorage.setItem("token", state.token);
     const me = await api("/auth/me");
     state.user = me;
+    if (window.Onboarding) await Onboarding.afterLogin();   // v1.5: licence recheck + loading
     await loadRuntimeConfig();
     showApp();
     buildNav();
     await applyTheme();
     startStatusBar();
+    if (window.Onboarding) Onboarding.alertsStack();
     if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -2143,6 +2150,7 @@ const SET_CATEGORIES = [
   { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."] },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
+  { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
@@ -2202,6 +2210,13 @@ async function renderSettingsPanel(cat, allRows) {
     body.append(card);
     renderUpdateBox();  // settings table for update.* follows below (no return)
   }
+  if (cat.panel === "license") {
+    const card = el("div", { class: "card", id: "license-card" });
+    body.append(card);
+    if (window.Onboarding) await Onboarding.licensePanel(card);
+    return;
+  }
+
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });
     card.innerHTML = `<h3>درباره سامانه</h3><div id="about-box" class="muted">…</div>`;
@@ -3006,18 +3021,21 @@ window.smsDebtReminder = async (id) => {
 
 /* ---------- boot ---------- */
 async function boot() {
+  if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {
     state.user = await api("/auth/me");
+    if (window.Onboarding) await Onboarding.afterLogin();
     await loadRuntimeConfig();
     showApp();
     buildNav();
     await applyTheme();
     startStatusBar();
+    if (window.Onboarding) Onboarding.alertsStack();
     go("dashboard");
   } catch (e) {
     localStorage.removeItem("token"); state.token = "";
     showLogin();
   }
 }
-boot();
+if (!window.__NO_AUTOBOOT) boot();

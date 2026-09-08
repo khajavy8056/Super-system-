@@ -178,7 +178,7 @@ async function doLogin() {
     const form = new URLSearchParams({ username: $("#l-user").value.trim(), password: $("#l-pass").value });
     const res = await fetch(API + "/auth/login", { method: "POST", body: form });
     const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || "ورود ناموفق");
+    if (!res.ok) { const d = body && body.detail; throw new Error(typeof d === "object" ? (d.message || d.code) : (d || "ورود ناموفق")); }
     state.token = body.access_token;
     localStorage.setItem("m_token", state.token);
     state.user = await api("/auth/me");

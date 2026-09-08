@@ -8,8 +8,8 @@
     "pdf": "node make_pdf_chromium.js"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^149.0.0",
+    "@sparticuz/chromium": "^131.0.1",
     "jsdom": "^30.0.1",
-    "puppeteer-core": "^25.10.0"
+    "puppeteer-core": "^23.11.1"
   }
 }

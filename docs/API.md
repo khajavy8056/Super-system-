@@ -192,3 +192,6 @@ the code as meaningless to external catalogues.
 ### سایر افزوده‌های v1.4.0
 - `GET /api/reports/dashboard` → فیلدهای جدید `top_products[]` (`share_pct`, `qty`, `profit`), `trend[]` (۷ روز: فروش/سود), `accounting` (خلاصهٔ overview).
 - `GET /api/hardware/scanner/discover` — فهرست بارکدخوان‌های USB (HID/سریال) با پیشنهاد درایور؛ `POST /api/hardware/scanner/detect` `{intervals_ms:[]}` — تشخیص ویج اسکنر از الگوی تایپ.
+
+## افزوده‌های v1.5.0 — لایسنس و راه‌اندازی (`/api/setup/*`)
+جدول کامل در [`LICENSING.md`](LICENSING.md). گیت لایسنس: هر مسیر `/api/*` به‌جز `/api/setup/*` بدون لایسنس فعال → `402 {"detail":{"code":"LICENSE_REQUIRED","message":…,"license":{status,expires,days_left,hwid}}}`.
