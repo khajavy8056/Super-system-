@@ -1,5 +1,6 @@
 """v1.4 — double-entry accounting: chart, auto-postings, statements, expenses, cheques, shifts."""
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 from datetime import date, timedelta
 
@@ -55,7 +56,7 @@ def test_sale_posts_revenue_cogs_and_is_idempotent(client, auth_headers, two_bat
     tb = client.get("/api/accounting/trial-balance", headers=auth_headers).json()
     assert tb["balanced"]
     # P&L for today shows the margin
-    today = date.today().isoformat()
+    today = _local_today().isoformat()
     pl = client.get("/api/accounting/income-statement", headers=auth_headers,
                     params={"start": today, "end": today}).json()
     assert pl["revenue"]["total"] >= 120000 and pl["cogs"]["total"] >= 100000
@@ -126,7 +127,7 @@ def test_customer_settlement_posts_to_receivable(client, auth_headers, two_batch
 
 
 def test_cheque_lifecycle(client, auth_headers):
-    due = (date.today() + timedelta(days=10)).isoformat()
+    due = (_local_today() + timedelta(days=10)).isoformat()
     r = client.post("/api/accounting/cheques", headers=auth_headers, json={
         "direction": "RECEIVED", "number": "123456", "amount": 900000, "due_date": due,
         "bank_name": "ملت", "party_name": "آقای احمدی"})

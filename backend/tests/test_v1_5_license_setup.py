@@ -1,5 +1,6 @@
 """v1.5 — licence activation (online, cached, 24h recheck, gate), setup wizard, bottom alerts."""
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 from datetime import date, datetime, timedelta
 
@@ -32,7 +33,7 @@ def _remote(answers):
 
 
 GOOD = {"KEY-LGT1-XLWT-DN7D": {"status": "SUCCESS", "type": "FULL", "owner": "Demo",
-                               "expires": (date.today() + timedelta(days=10)).isoformat()}}
+                               "expires": (_local_today() + timedelta(days=10)).isoformat()}}
 
 
 def test_hwid_is_stable_and_formatted():
@@ -102,7 +103,7 @@ def test_offline_allowed_until_known_expiry_then_locked(client, monkeypatch):
         st = lic.state(db)
         assert st["allowed"] is True and st["offline_until"] == st["expires"]
         # expiry in the past → locked
-        lic._set(db, "expires", (date.today() - timedelta(days=1)).isoformat()); db.commit()
+        lic._set(db, "expires", (_local_today() - timedelta(days=1)).isoformat()); db.commit()
         st = lic.state(db)
         assert st["allowed"] is False and "پایان رسیده" in st["reason"]
         # no expiry known → classic 7-day grace still applies
@@ -162,7 +163,7 @@ def test_setup_wizard_complete_then_locked(client, monkeypatch, auth_headers):
 def test_alerts_expiry_hours_days_and_license(client, auth_headers, monkeypatch, milk):
     monkeypatch.setattr(lic, "fetch_remote", _remote(GOOD))
     client.post("/api/setup/license/activate", json={"key": "KEY-LGT1-XLWT-DN7D"})
-    today = date.today()
+    today = _local_today()
     for d in (0, 2):
         r = client.post("/api/batches/receive", headers=auth_headers, json={
             "product_id": milk["id"], "quantity_received": 3, "buy_price": 1000, "sell_price": 1500,

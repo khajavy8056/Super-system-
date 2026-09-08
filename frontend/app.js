@@ -70,7 +70,7 @@ function faDateTime(iso, withTime = true) {
   const s = String(iso);
   const d = new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z");
   if (isNaN(d)) return "—";
-  const opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit", timeZone: (state.time && state.time.timezone) || "Asia/Tehran" };
   if (withTime) { opts.hour = "2-digit"; opts.minute = "2-digit"; }
   try {
     return new Intl.DateTimeFormat("fa-IR-u-ca-persian", opts).format(d);
@@ -276,7 +276,7 @@ function buildNav() {
     if (!can(perm)) return;
     const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
       onclick: () => go(key) });
-    btn.innerHTML = `${icon(ico, 18)}<span>${esc(label)}</span>`;
+    btn.innerHTML = `${icon(ico, 18)}<span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
     nav.append(btn);
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
@@ -289,6 +289,7 @@ async function go(view) {
   $("#view-title").textContent = titles[view] || view;
   $("#topbar-actions").innerHTML = "";
   const viewEl = $("#view");
+  viewEl.className = "view view-" + view;
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
     await RENDER[view]();
@@ -557,18 +558,18 @@ function renderHeldDock() {
   const dock = $("#pos-held"); if (!dock) return;
   const list = heldInvoices();
   const title = $("#pos-cart-title"); if (title) title.textContent = posState.heldId ? "سبد خرید (فاکتور بازگردانده‌شده)" : "سبد خرید فعلی";
-  if (!list.length) { dock.innerHTML = ""; dock.classList.add("empty"); return; }
   dock.classList.remove("empty");
-  dock.innerHTML = `<div class="held-title">${icon("invoice", 16)} فاکتورهای در انتظار <b>${list.length}</b>/${HELD_MAX}</div>
-    <div class="held-chips">${list.map((h) => `
+  const head = `<div class="held-title">${icon("invoice", 16)} فاکتورهای نگه‌داشته‌شده <b>${list.length}</b>/${HELD_MAX}
+      <span class="muted held-hint">${list.length ? "برای بازکردن روی فاکتور بزنید" : "با «نگه‌داشتن فاکتور» (F6) فاکتور فعلی این‌جا می‌آید و با یک کلیک دوباره باز می‌شود"}</span></div>`;
+  if (!list.length) { dock.innerHTML = head; return; }
+  dock.innerHTML = head + `<div class="held-chips">${list.map((h, i) => `
       <div class="held-chip">
-        <button class="held-main" onclick="posResume('${h.id}')" title="بازگردانی">
-          <b>${esc(h.label)}</b><span class="muted">${qty(h.count)} قلم · ${money(h.total)} · ${new Date(h.at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" })}</span>
+        <button class="held-main" onclick="posResume('${h.id}')" title="بازگردانی این فاکتور">
+          <b>${icon("invoice", 14)} ${esc(h.label)}</b><span class="muted">${qty(h.count)} قلم · ${money(h.total)} · ${new Date(h.at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" })}</span>
         </button>
         <button class="held-x" onclick="posDropHeld('${h.id}')" title="حذف">✕</button>
       </div>`).join("")}</div>`;
 }
-
 
 function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
 
@@ -598,16 +599,14 @@ function renderPosCart() {
   const count = posState.cart.reduce((a, it) => a + Number(it.quantity), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
   const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon));
-  const showCost = can("pricing.view_cost");
-  const profit = posState.cart.reduce((a, it) => a + (posGross(it) - (it.discount || 0) - (it.unit_buy_price || 0) * it.quantity), 0) - coupon - invDisc;
+  // v1.7.1: the register never shows profit/cost (management figures live in reports)
   $("#pos-totals").innerHTML = `
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
     <div class="row"><span class="muted">جمع</span><span>${money(gross)}</span></div>
     ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
     ${invDisc ? `<div class="row"><span class="muted">تخفیف فاکتور <a href="#" onclick="posState.invoiceDiscount=0;renderPosCart();return false;" class="muted">✕</a></span><span class="err">−${money(invDisc)}</span></div>` : ""}
     ${coupon ? `<div class="row"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
-    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>
-    ${showCost ? `<div class="row"><span class="muted">سود تخمینی</span><span class="ok">${money(profit)}</span></div>` : ""}`;
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>`;
   const cpEl = $("#pos-coupon-state");
   if (cpEl) {
     cpEl.innerHTML = posState.couponInfo
@@ -2822,15 +2821,67 @@ RENDER.support = async () => {
     try {
       const rows = await api("/support/tickets?limit=50");
       if (!$("#sup-list")) return; // user already left the view
-      $("#sup-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>شماره</th><th>نوع</th><th>موضوع</th><th>وضعیت</th><th>زمان</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr>
+      $("#sup-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>شماره</th><th>نوع</th><th>موضوع</th><th>وضعیت</th><th>زمان</th><th>گفتگو</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr class="${t.unread ? "sup-unread" : ""}">
         <td class="ltr">${esc(t.number)}</td><td>${esc(t.type_label)}</td><td>${esc(t.subject)}</td>
         <td><span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></td>
         <td>${faDateTime(t.created_at)}</td>
+        <td><button class="btn btn-sm ${t.unread ? "btn-primary" : ""}" onclick="supOpen(${t.id})">${t.unread ? `${t.unread} پاسخ جدید` : "مشاهده / پاسخ"}</button></td>
         <td>${t.status === "FAILED" || t.status === "NEW" ? `<button class="btn btn-sm" onclick="supResend(${t.id})">ارسال دوباره</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<span class="muted">هنوز درخواستی ثبت نشده است.</span>`;
     } catch (e) { const el = $("#sup-list"); if (el) el.textContent = e.message; }
   }
   window.supResend = async (id) => { try { const t = await api(`/support/tickets/${id}/resend`, { method: "POST" }); toast(t.status === "SENT" ? "ارسال شد" : "هنوز ارسال نشد؛ بعداً دوباره تلاش می‌شود", t.status === "SENT" ? "ok" : "err"); loadList(); } catch (e) { toast(e.message, "err"); } };
+  // v1.7.1 — conversation: support replies land here; the store can answer with text + one attachment
+  window.supOpen = async (id) => {
+    let conv;
+    try { conv = await api(`/support/tickets/${id}/messages`); } catch (e) { toast(e.message, "err"); return; }
+    const t = conv.ticket;
+    const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 1024 ? Math.round(n / 1024) + " KB" : (n || 0) + " B";
+    const bubble = (m) => `<div class="sup-msg ${m.direction === "IN" ? "in" : "out"}">
+        <div class="sup-msg-head">${m.direction === "IN" ? "پشتیبانی" : "شما"} · ${faDateTime(m.created_at)}${m.direction === "OUT" ? ` · <span class="muted">${esc(m.status_label)}</span>` : ""}</div>
+        ${m.text ? `<div class="sup-msg-text">${esc(m.text).replace(/\n/g, "<br/>")}</div>` : ""}
+        ${m.attachment_url ? `<a class="sup-att" href="${m.attachment_url}" target="_blank" download="${esc(m.attachment_name || "")}">📎 ${esc(m.attachment_name || "پیوست")} <span class="muted">(${fmtSize(m.attachment_size)})</span></a>` : ""}
+      </div>`;
+    openModal(`<div class="sup-conv">
+      <div class="modal-head"><h3>${esc(t.number)} — ${esc(t.subject)}</h3><button class="btn btn-sm" onclick="closeModal()">بستن</button></div>
+      <div class="muted" style="margin-bottom:8px">${esc(t.type_label)} · ${esc(t.priority_label)} · <span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></div>
+      <div class="sup-thread" id="sup-thread">
+        <div class="sup-msg out"><div class="sup-msg-head">شما · ${faDateTime(t.created_at)}</div><div class="sup-msg-text">${esc(t.description || t.subject).replace(/\n/g, "<br/>")}</div></div>
+        ${conv.messages.map(bubble).join("")}
+        ${conv.messages.some((m) => m.direction === "IN") ? "" : `<div class="muted" style="text-align:center;padding:8px">هنوز پاسخی دریافت نشده است؛ پاسخ پشتیبانی به‌صورت خودکار همین‌جا نمایش داده می‌شود.</div>`}
+      </div>
+      <form id="sup-reply" class="sup-reply">
+        <textarea id="sup-reply-text" rows="2" placeholder="پیام شما به پشتیبانی…"></textarea>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <label class="btn btn-sm">📎 پیوست فایل<input type="file" id="sup-reply-file" style="display:none" /></label>
+          <span id="sup-reply-fname" class="muted"></span>
+          <span class="muted" style="font-size:11px">تصویر، PDF، لاگ، ZIP — حداکثر ۵۰ مگابایت</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-sm" type="button" id="sup-poll">بررسی پاسخ جدید</button>
+          <button class="btn btn-primary" type="submit" id="sup-reply-send">ارسال</button>
+        </div>
+      </form>
+    </div>`);
+    const th = $("#sup-thread"); if (th) th.scrollTop = th.scrollHeight;
+    $("#sup-reply-file").addEventListener("change", (e) => { const f = e.target.files[0]; $("#sup-reply-fname").textContent = f ? `${f.name} (${fmtSize(f.size)})` : ""; });
+    $("#sup-poll").onclick = async () => { try { const r = await api("/support/poll", { method: "POST" }); toast(r.received ? `${r.received} پاسخ جدید دریافت شد` : "پاسخ جدیدی نیست"); if (r.received) supOpen(id); } catch (e) { toast(e.message, "err"); } };
+    $("#sup-reply").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = $("#sup-reply-text").value.trim(); const f = $("#sup-reply-file").files[0];
+      if (!text && !f) { toast("متن یا پیوست لازم است", "err"); return; }
+      if (f && f.size > 50 * 1024 * 1024) { toast("حجم پیوست حداکثر ۵۰ مگابایت است", "err"); return; }
+      const fd = new FormData(); if (text) fd.append("text", text); if (f) fd.append("file", f, f.name);
+      $("#sup-reply-send").disabled = true;
+      try {
+        const r = await fetch(`/api/support/tickets/${id}/messages`, { method: "POST", headers: { Authorization: "Bearer " + state.token }, body: fd });
+        if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error((b.detail && (b.detail.message || b.detail)) || r.statusText); }
+        const m = await r.json();
+        toast(m.status === "SENT" ? "پیام ارسال شد" : "پیام ذخیره شد و به‌محض اتصال ارسال می‌شود", m.status === "SENT" ? "ok" : "err");
+        supOpen(id); loadList();
+      } catch (err) { toast(err.message, "err"); $("#sup-reply-send").disabled = false; }
+    });
+    loadList(); refreshSupportBadge();
+  };
   $("#sup-refresh").onclick = loadList;
   $("#sup-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -3206,6 +3257,7 @@ function debounce(fn, ms) {
 /* ---------- runtime config (currency + units) ---------- */
 async function loadRuntimeConfig() {
   try { state.currency = await api("/settings/currency"); } catch (e) { /* defaults */ }
+  try { state.time = await api("/settings/time"); } catch (e) { state.time = { timezone: "Asia/Tehran", utc_offset: "+03:30" }; }
   try { state.units = await api("/units"); } catch (e) { state.units = []; }
   try {
     state.store = await api("/settings/store-profile");
@@ -3285,7 +3337,20 @@ async function refreshStatusBar() {
   }
 }
 
+/* v1.7.1 — unread support replies: badge on the nav item + soft note sound */
+let _supUnread = 0;
+async function refreshSupportBadge() {
+  if (!state.token || !can("pos.sell")) return;
+  try {
+    const r = await api("/support/unread");
+    const b = $("#nav-sup-badge");
+    if (b) { b.textContent = r.unread > 0 ? String(r.unread).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]) : ""; b.classList.toggle("hidden", !r.unread); }
+    if (r.unread > _supUnread && _supUnread >= 0 && window.Sfx && document.visibilityState !== "hidden" && state.view !== "support") { try { Sfx.play("note"); } catch (_) {} toast("پاسخ جدید از پشتیبانی رسید — منوی «درخواست پشتیبانی»"); }
+    _supUnread = r.unread;
+  } catch (_) {}
+}
 function startStatusBar() {
+  refreshSupportBadge(); clearInterval(window._supTimer); window._supTimer = setInterval(refreshSupportBadge, 30000);
   const btn = $("#sb-theme");
   if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", cycleTheme); }
   window.addEventListener("online", refreshStatusBar);

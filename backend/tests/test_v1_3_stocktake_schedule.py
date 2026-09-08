@@ -1,11 +1,12 @@
 """v1.3: scheduled stocktakes + alarm feed + richer wizard payload."""
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 from datetime import date, timedelta
 
 
 def test_scheduled_stocktake_appears_in_upcoming_with_days_left(client, auth_headers):
-    soon = (date.today() + timedelta(days=2)).isoformat()
+    soon = (_local_today() + timedelta(days=2)).isoformat()
     r = client.post("/api/inventory/stocktakes", headers=auth_headers,
                     json={"name": "شمارش قفسه‌های یخچالی", "scheduled_for": soon, "reminder_note": "اول یخچال‌ها"})
     assert r.status_code == 201, r.text
@@ -18,13 +19,13 @@ def test_scheduled_stocktake_appears_in_upcoming_with_days_left(client, auth_hea
 
     # overdue -> loudest level
     r2 = client.post("/api/inventory/stocktakes", headers=auth_headers,
-                     json={"name": "قدیمی", "scheduled_for": (date.today() - timedelta(days=1)).isoformat()})
+                     json={"name": "قدیمی", "scheduled_for": (_local_today() - timedelta(days=1)).isoformat()})
     up = client.get("/api/inventory/stocktakes-upcoming", headers=auth_headers).json()
     assert next(a for a in up if a["id"] == r2.json()["id"])["level"] == "overdue"
 
     # far future is outside the default horizon
     r3 = client.post("/api/inventory/stocktakes", headers=auth_headers,
-                     json={"name": "دور", "scheduled_for": (date.today() + timedelta(days=60)).isoformat()})
+                     json={"name": "دور", "scheduled_for": (_local_today() + timedelta(days=60)).isoformat()})
     up = client.get("/api/inventory/stocktakes-upcoming", headers=auth_headers).json()
     assert all(a["id"] != r3.json()["id"] for a in up)
 

@@ -51,6 +51,7 @@
     </div>
     <div class="foot">نسخهٔ <span id="ver">—</span> · طراحی و توسعه توسط خواجوی</div>
   </div>
+  <script src="/mobile/vendor/zxing.min.js"></script>
   <script>
   (function () {
     "use strict";
@@ -111,19 +112,40 @@
     // camera QR
     let stream = null, timer = null;
     async function startCam() {
-      if (!("BarcodeDetector" in window)) { $("#qr-status").textContent = "این دستگاه اسکن QR داخلی ندارد؛ از ورود دستی استفاده کنید."; return; }
+      // v1.7.1: native BarcodeDetector if it truly works, else ZXing on canvas — fast on every WebView
+      let det = null;
+      if ("BarcodeDetector" in window) { try { const sup = await window.BarcodeDetector.getSupportedFormats(); if (sup.includes("qr_code")) det = new window.BarcodeDetector({ formats: ["qr_code"] }); } catch (_) {} }
+      const Z = window.ZXing; let zx = null;
+      if (Z) { zx = new Z.MultiFormatReader(); const h = new Map(); h.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.QR_CODE]); h.set(Z.DecodeHintType.TRY_HARDER, true); zx.setHints(h); }
+      if (!det && !zx) { $("#qr-status").textContent = "این دستگاه اسکن QR داخلی ندارد؛ از ورود دستی استفاده کنید."; return; }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        const v = $("#qr-video"); v.srcObject = stream; await v.play();
-        const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+        const v = $("#qr-video"); v.setAttribute("playsinline", ""); v.muted = true; v.srcObject = stream; await v.play();
+        try { const tr = stream.getVideoTracks()[0]; const caps = tr.getCapabilities ? tr.getCapabilities() : {}; if (caps.focusMode && caps.focusMode.includes("continuous")) await tr.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (_) {}
         $("#qr-status").textContent = "کد QR را جلوی دوربین بگیرید…";
+        const canvas = document.createElement("canvas"); const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        let useNative = !!det, misses = 0, busy = false;
+        const done = async (hit) => { clearInterval(timer); stream.getTracks().forEach((t) => t.stop()); const p = decodePayload(hit); if (p) await connect(p, $("#qr-status")); else $("#qr-status").textContent = "کد نامعتبر"; };
         timer = setInterval(async () => {
+          if (busy || v.readyState < 2) return; busy = true;
           try {
-            const codes = await det.detect(v);
-            const hit = codes.map((c) => c.rawValue).find((t) => t && t.startsWith("SMKT:"));
-            if (hit) { clearInterval(timer); stream.getTracks().forEach((t) => t.stop()); const p = decodePayload(hit); if (p) await connect(p, $("#qr-status")); else $("#qr-status").textContent = "کد نامعتبر"; }
+            if (useNative) {
+              const codes = await det.detect(v);
+              const hit = codes.map((c) => c.rawValue).find((t) => t && t.startsWith("SMKT:"));
+              if (hit) { busy = false; return done(hit); }
+              if (!codes.length && zx && ++misses > 40) useNative = false;
+            }
+            if (!useNative && zx) {
+              const cw = Math.min(720, v.videoWidth), ch = Math.round(cw * v.videoHeight / v.videoWidth);
+              canvas.width = cw; canvas.height = ch; ctx.drawImage(v, 0, 0, cw, ch);
+              const d = ctx.getImageData(0, 0, cw, ch).data; const lum = new Uint8ClampedArray(cw * ch);
+              for (let i = 0, j = 0; j < lum.length; i += 4, j++) lum[j] = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
+              let r = null; try { r = zx.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(lum, cw, ch)))); } catch (_) {} zx.reset();
+              if (r && r.getText().startsWith("SMKT:")) { busy = false; return done(r.getText()); }
+            }
           } catch (_) {}
-        }, 400);
+          busy = false;
+        }, 120);
       } catch (e) { $("#qr-status").textContent = "دسترسی به دوربین داده نشد: " + e.message; }
     }
     $("#qr-start").onclick = startCam;

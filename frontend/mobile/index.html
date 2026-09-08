@@ -15,7 +15,8 @@
   <div id="toast" class="toast hidden"></div>
   <div id="scanner" class="scanner hidden">
     <video id="scan-video" playsinline muted></video>
-    <div class="scan-frame"></div>
+    <div class="scan-frame"><i></i></div>
+    <button id="scan-torch" class="scan-torch hidden" onclick="scanTorch()" title="چراغ قوه">🔦</button>
     <div class="scan-bar">
       <input id="scan-manual" placeholder="یا بارکد را دستی وارد کنید…" inputmode="numeric" autocomplete="off" />
       <div id="scan-status" class="muted">در حال اسکن…</div>
@@ -23,6 +24,7 @@
     </div>
   </div>
   <script src="/jalali.js"></script>
+  <script src="/mobile/vendor/zxing.min.js"></script>
   <script src="/mobile/app.js"></script>
   <script src="/mobile/app-more.js"></script>
 </body>

@@ -13,6 +13,7 @@ execution + expected result). Covered here:
   §215–§229 settings categories seeded
 """
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 H = None
 
@@ -568,7 +569,7 @@ def test_sales_report_monthly_jalali_buckets(client, auth_headers, two_batches, 
         "items": [{"product_id": milk["id"], "batch_id": two_batches["a"]["id"], "quantity": 1}],
         "payments": [{"method": "CASH", "amount": 60000}]})
     assert r.status_code in (200, 201), r.text
-    today = date.today().isoformat()
+    today = _local_today().isoformat()
     m = client.get(f"/api/reports/sales?start={today}&end={today}&group=monthly", headers=auth_headers).json()
     assert m["group"] == "monthly" and len(m["groups"]) == 1
     period = m["groups"][0]["period"]

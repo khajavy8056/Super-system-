@@ -37,6 +37,16 @@ from sqlalchemy.orm import Session
 
 from ..models import SystemSetting
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 log = logging.getLogger("supermarket.license")
 
 DEFAULT_SERVER = "https://soft-hat-4eba.khajavi8056.workers.dev/"
@@ -157,7 +167,7 @@ def activate(db: Session, key: str) -> dict:
         db.flush()
         raise LicenseError(status or "REJECTED", msg)
     exp = _parse_expires(data.get("expires"))
-    if exp and exp < date.today():
+    if exp and exp < _lt_today():
         raise LicenseError("EXPIRED", f"مدت اعتبار لایسنس در {exp.isoformat()} به پایان رسیده است")
     _set(db, "key", key, secret=True)
     _set(db, "status", "ACTIVE")
@@ -212,7 +222,7 @@ def state(db: Session) -> dict:
     status = _get(db, "status")
     exp = _parse_expires(_get(db, "expires"))
     checked = _get(db, "checked_at")
-    today = date.today()
+    today = _lt_today()
     days_left = (exp - today).days if exp else None
     allowed, reason = True, ""
     if not key or status != "ACTIVE":

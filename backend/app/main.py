@@ -94,15 +94,22 @@ async def lifespan(app: FastAPI):
     from .services import sync as sync_svc
 
     init_db()
+    # v1.7.1: store timezone (default Asia/Tehran, +03:30) drives every "today"
+    from .services import timeservice as _ts
+    with SessionLocal() as _db:
+        _ts.set_local_timezone(_ts.configured_timezone_name(_db))
     sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
     from .services import cloud as cloud_svc
     cloud_svc.start_worker(SessionLocal)  # v1.7 internet sync (no-op until connected)
+    from .services import support as support_svc
+    support_svc.start_poller(SessionLocal)  # v1.7.1 support replies (every 20 s)
     _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
     from .services import license as license_svc
     license_svc.start_worker(SessionLocal)  # v1.5: 24h online licence re-validation
     yield
     sms_svc.stop_worker()
     cloud_svc.stop_worker()
+    support_svc.stop_poller()
     _stop_sync_worker()
     license_svc.stop_worker()
 

@@ -236,6 +236,84 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ---------------------------------------------------------------------------
+# v1.7.1 — store-local time. Records stay naive-UTC in the database; every
+# "today" / day-boundary decision in the backend goes through these helpers so
+# reports, dashboards, expiry and auto-theme follow the STORE timezone
+# (default Asia/Tehran = UTC+03:30) instead of the machine or UTC.
+# ---------------------------------------------------------------------------
+DEFAULT_TZ = "Asia/Tehran"
+_tz_cache: dict = {"name": None, "tz": None}
+
+
+def _load_tz(name: str):
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 — unknown/missing tzdata → fixed +03:30
+        from datetime import timedelta as _td
+        return timezone(_td(hours=3, minutes=30), "Asia/Tehran")
+
+
+def configured_timezone_name(db=None) -> str:
+    """Setting ``time.timezone`` (DB) → env-less default Asia/Tehran."""
+    if db is not None:
+        try:
+            from sqlalchemy import select as _select
+            from ..models import SystemSetting
+            row = db.execute(_select(SystemSetting.value).where(SystemSetting.key == "time.timezone")).scalar_one_or_none()
+            if row:
+                return row
+        except Exception:  # noqa: BLE001
+            pass
+    return _tz_cache["name"] or DEFAULT_TZ
+
+
+def set_local_timezone(name: str) -> None:
+    """Called at startup / when the setting changes so helpers without a db work."""
+    _tz_cache["name"] = name or DEFAULT_TZ
+    _tz_cache["tz"] = _load_tz(_tz_cache["name"])
+
+
+def local_tz():
+    if _tz_cache["tz"] is None:
+        set_local_timezone(DEFAULT_TZ)
+    return _tz_cache["tz"]
+
+
+def local_now() -> datetime:
+    """Aware datetime in the store timezone."""
+    return now_utc().astimezone(local_tz())
+
+
+def local_today() -> _date:
+    return local_now().date()
+
+
+def local_day_range(d: _date) -> tuple[datetime, datetime]:
+    """Naive-UTC [start, end) bounds of a store-local calendar day — use these
+    when filtering ``created_at`` columns (which hold naive UTC)."""
+    start_local = datetime(d.year, d.month, d.day, tzinfo=local_tz())
+    start = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    from datetime import timedelta as _td
+    end_local = start_local + _td(days=1)
+    return start, end_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def utc_to_local(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(local_tz())
+
+
+def local_iso(dt: datetime | None) -> str | None:
+    """ISO string with the store offset (e.g. 2026-09-08T21:15:00+03:30)."""
+    d = utc_to_local(dt)
+    return d.isoformat(timespec="seconds") if d else None
+
+
 def describe_now(timezone_name: str = "Asia/Tehran",
                  calendar: str = "jalali") -> dict:
     """Everything the status bar (§21) needs in one payload."""
@@ -245,16 +323,20 @@ def describe_now(timezone_name: str = "Asia/Tehran",
 
         local = utc.astimezone(ZoneInfo(timezone_name))
         tz_ok = True
-    except Exception:  # noqa: BLE001 - unknown tz must not break the UI
-        local = utc
-        timezone_name = "UTC"
+    except Exception:  # noqa: BLE001 - tzdata missing → still Tehran (+03:30), never UTC
+        local = utc.astimezone(_load_tz(timezone_name))
         tz_ok = False
+    off = local.utcoffset() or timezone.utc.utcoffset(utc)
+    mins = int(off.total_seconds() // 60); sign = "+" if mins >= 0 else "-"; mins = abs(mins)
+    utc_offset = f"{sign}{mins // 60:02d}:{mins % 60:02d}"
 
     return {
         "utc": utc.isoformat(),
         "local": local.isoformat(),
         "timezone": timezone_name,
         "timezone_resolved": tz_ok,
+        "utc_offset": utc_offset,
+        "utc_offset_minutes": int(off.total_seconds() // 60),
         "calendar": calendar,
         "jalali": format_jalali(local),
         "jalali_date": format_jalali(local, with_time=False),

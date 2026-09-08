@@ -32,6 +32,25 @@ ZERO = Decimal("0")
 CENT = Decimal("0.01")
 
 
+
+
+def _local_date(dt):
+    """Store-local calendar date of a naive-UTC timestamp (Tehran day ≠ UTC day after 20:30 UTC)."""
+    from .timeservice import utc_to_local, local_today
+    if dt is None:
+        return local_today()
+    loc = utc_to_local(dt)
+    return (loc or dt).date()
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 class AccountingError(ValueError):
     def __init__(self, code: str, message: str = ""):
         super().__init__(message or code)
@@ -130,7 +149,7 @@ def ensure_chart(db: Session) -> None:
     for name, code in DEFAULT_EXPENSE_CATEGORIES:
         if name not in cats:
             db.add(ExpenseCategory(name=name, account_id=have[code].id))
-    ensure_fiscal_period(db, date.today())
+    ensure_fiscal_period(db, _lt_today())
     db.flush()
 
 
@@ -202,7 +221,7 @@ def post(db: Session, *, kind: str, lines: list[Line], description: str = "",
         if dup:
             return dup
 
-    d = entry_date or date.today()
+    d = entry_date or _lt_today()
     fp = ensure_fiscal_period(db, d)
     if fp.is_closed:
         raise AccountingError("PERIOD_CLOSED", f"دورهٔ مالی {fp.name} بسته شده است")
@@ -281,7 +300,7 @@ def post_sale(db: Session, invoice: Invoice, user: User | None = None) -> Journa
         lines.append(Line(A_COGS, debit=cogs, description="بهای تمام‌شده"))
         lines.append(Line(A_INVENTORY, credit=cogs, description="خروج کالا از انبار"))
     return post(db, kind="SALE", lines=lines, description=f"فروش — فاکتور {invoice.invoice_number}",
-                entry_date=(invoice.created_at or datetime.utcnow()).date(),
+                entry_date=_local_date(invoice.created_at),
                 source_type="Invoice", source_id=invoice.id, user=user)
 
 
@@ -317,7 +336,7 @@ def post_purchase(db: Session, batch: ProductBatch, user: User | None = None, *,
              Line(credit_acc, credit=value, description="خرید کالا",
                   party_type="SUPPLIER" if credit_acc == A_PAYABLE else None, party_id=supplier_id)]
     return post(db, kind="PURCHASE", lines=lines, description=f"خرید — بچ {batch.batch_number}",
-                entry_date=(batch.received_at or datetime.utcnow()).date(),
+                entry_date=_local_date(batch.received_at),
                 source_type="ProductBatch", source_id=batch.id, user=user)
 
 
@@ -365,7 +384,7 @@ def record_expense(db: Session, *, category_id: int, amount, expense_date: date 
     if amount <= ZERO:
         raise AccountingError("INVALID_AMOUNT", "مبلغ باید بزرگ‌تر از صفر باشد")
     pay_acc = {"CASH": A_CASH, "BANK": A_BANK, "CARD": A_CARD, "PAYABLE": A_PAYABLE}.get(paid_from.upper(), A_CASH)
-    exp = Expense(category_id=category_id, amount=amount, expense_date=expense_date or date.today(),
+    exp = Expense(category_id=category_id, amount=amount, expense_date=expense_date or _lt_today(),
                   paid_from=paid_from.upper(), description=description, supplier_id=supplier_id,
                   created_by=user.id if user else None)
     db.add(exp)
@@ -633,7 +652,7 @@ def income_statement(db: Session, start: date, end: date) -> dict:
 
 def balance_sheet(db: Session, as_of: date | None = None) -> dict:
     ensure_chart(db)
-    as_of = as_of or date.today()
+    as_of = as_of or _lt_today()
     accounts = {a.id: a for a in db.execute(select(Account)).scalars()}
     bal = _balances(db, None, as_of)
     groups: dict[str, list[dict]] = {"ASSET": [], "LIABILITY": [], "EQUITY": []}
@@ -696,7 +715,7 @@ def close_period(db: Session, *, period_id: int, user: User | None = None) -> Fi
 def overview(db: Session) -> dict:
     """Numbers for the accounting home + dashboard block."""
     ensure_chart(db)
-    today = date.today()
+    today = _lt_today()
     from .timeservice import from_jalali, to_jalali
     jy, jm, _ = to_jalali(datetime(today.year, today.month, today.day))
     sy, sm, sd = from_jalali(jy, jm, 1)

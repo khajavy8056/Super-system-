@@ -1,5 +1,6 @@
 """v1.6 — exit-with-backup, offline licence horizon + encrypted vault, mobile pairing & sync."""
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 import uuid
 from datetime import date, datetime, timedelta
@@ -21,7 +22,7 @@ def test_shutdown_makes_backup_but_does_not_exit_in_tests(client, auth_headers):
 
 def test_offline_horizon_is_expiry_date_and_vault_on_lock(client, monkeypatch, auth_headers):
     from app.database import SessionLocal
-    good = {"status": "SUCCESS", "type": "FULL", "owner": "Demo", "expires": (date.today() + timedelta(days=30)).isoformat()}
+    good = {"status": "SUCCESS", "type": "FULL", "owner": "Demo", "expires": (_local_today() + timedelta(days=30)).isoformat()}
     monkeypatch.setattr(lic, "fetch_remote", lambda url, key, hw: good)
     assert client.post("/api/setup/license/activate", json={"key": "KEY-LGT1-XLWT-DN7D"}).status_code == 200
     with SessionLocal() as db:
@@ -30,7 +31,7 @@ def test_offline_horizon_is_expiry_date_and_vault_on_lock(client, monkeypatch, a
         st = lic.state(db)
         assert st["allowed"] is True and st["offline_until"] == good["expires"]
         # past the expiry date → blocked, and the vault archive is written
-        lic._set(db, "expires", (date.today() - timedelta(days=1)).isoformat()); db.commit()
+        lic._set(db, "expires", (_local_today() - timedelta(days=1)).isoformat()); db.commit()
         st = lic.state(db)
         assert st["allowed"] is False
         out = lic.lock_vault(db, force=True); db.commit()

@@ -35,6 +35,16 @@ from ..services import expiry as expiry_svc
 from ..services import license as lic
 from ..services.audit import write_audit
 
+
+def _lt_today():
+    from ..services.timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from ..services.timeservice import local_now
+    return local_now()
+
 router = APIRouter(prefix="/setup", tags=["setup"])
 
 SETUP_KEYS = {"done": "setup.done", "done_at": "setup.done_at", "loading_done": "setup.first_loading_done",
@@ -257,8 +267,8 @@ def loading_done(db: Session = Depends(get_db), _: User = Depends(get_current_us
 @router.get("/alerts")
 def alerts(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """Near-expiry batches (hours/days left) + licence countdown, newest-critical first."""
-    today = date.today()
-    now = datetime.now()
+    today = _lt_today()
+    now = _lt_now().replace(tzinfo=None)
     th = expiry_svc.get_thresholds(db)
     horizon = today + timedelta(days=max(th.values()) if th else 30)
     rows = db.execute(

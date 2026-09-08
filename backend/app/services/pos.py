@@ -45,6 +45,16 @@ ZERO = Decimal("0")
 CENT = Decimal("0.01")
 
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 class PosError(Exception):
     """Business-level POS error with a machine-readable code (blueprint §102)."""
     def __init__(self, code: str, message: str):
@@ -110,7 +120,7 @@ def sellable_batches(db: Session, product: Product) -> list[ProductBatch]:
     HYBRID → expiry risk first, then oldest purchase. Expired batches are
     excluded when the block-sale policy is on.
     """
-    today = date.today()
+    today = _lt_today()
     batches = list(
         db.execute(
             select(ProductBatch).where(
@@ -136,7 +146,7 @@ def sellable_batches(db: Session, product: Product) -> list[ProductBatch]:
 
 def get_batch_options(db: Session, product: Product) -> list[BatchOption]:
     """Active (sellable) batches with expiry info + a recommendation."""
-    today = date.today()
+    today = _lt_today()
     policy = allocation_policy(db)
     options: list[BatchOption] = []
     for i, b in enumerate(sellable_batches(db, product)):
@@ -238,7 +248,7 @@ def _resolve_cart_line(db: Session, item: CartItem) -> CartItem:
     if batch.current_qty <= 0 or batch.status != "ACTIVE":
         raise PosError("INSUFFICIENT_STOCK", f"Batch {batch.batch_number} has no stock")
 
-    if expiry_svc.block_expired_policy(db) and batch.expiry_date and batch.expiry_date < date.today():
+    if expiry_svc.block_expired_policy(db) and batch.expiry_date and batch.expiry_date < _lt_today():
         raise PosError("BATCH_EXPIRED", f"Batch {batch.batch_number} is expired and blocked for sale")
 
     if item.quantity > to_qty(batch.current_qty):

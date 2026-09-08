@@ -28,9 +28,28 @@ ZERO = Decimal("0")
 PAID = "PAID"
 
 
+def _local_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _local_date_expr(col):
+    """SQL expression: store-local calendar date of a naive-UTC timestamp column
+    (SQLite ``date(col, '+210 minutes')``; other dialects fall back to date())."""
+    from .timeservice import local_now
+    off = local_now().utcoffset()
+    mins = int(off.total_seconds() // 60) if off else 0
+    try:
+        return func.date(col, f"{mins:+d} minutes")
+    except Exception:  # noqa: BLE001
+        return func.date(col)
+
+
+
 def _day_range(d: date) -> tuple[datetime, datetime]:
-    start = datetime(d.year, d.month, d.day)
-    return start, start + timedelta(days=1)
+    # v1.7.1: store-local day → naive-UTC bounds (created_at is naive UTC)
+    from .timeservice import local_day_range
+    return local_day_range(d)
 
 
 def _paid_filter(start: datetime, end: datetime):
@@ -55,10 +74,11 @@ def _profit_agg(db: Session, start: datetime, end: datetime) -> Decimal:
 
 
 def dashboard(db: Session) -> dict:
-    today = date.today()
+    from .timeservice import local_today
+    today = local_today()
     t0, t1 = _day_range(today)
     y0, y1 = _day_range(today - timedelta(days=1))
-    m0 = datetime(today.year, today.month, 1)
+    m0, _ = _day_range(today.replace(day=1))
 
     cnt_t, sum_t = _sales_agg(db, t0, t1)
     cnt_y, sum_y = _sales_agg(db, y0, y1)
@@ -165,7 +185,7 @@ def _sales_trend(db: Session, days: int = 7) -> list[dict]:
     """Per-day sales & profit for the last N days (today included), Jalali label."""
     from .timeservice import to_jalali
     out = []
-    today = date.today()
+    today = _local_today()
     for i in range(days - 1, -1, -1):
         d = today - timedelta(days=i)
         s0, e1 = _day_range(d)
@@ -373,11 +393,11 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
 
     if group == "daily":
         rows = db.execute(
-            select(func.date(Invoice.created_at), func.count(Invoice.id),
+            select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
                    func.coalesce(func.sum(Invoice.total_amount), 0))
             .where(_paid_filter(s0, e1))
-            .group_by(func.date(Invoice.created_at))
-            .order_by(func.date(Invoice.created_at))
+            .group_by(_local_date_expr(Invoice.created_at))
+            .order_by(_local_date_expr(Invoice.created_at))
         ).all()
         out["groups"] = [{"date": str(r[0]), "invoice_count": int(r[1]),
                           "total": float(Decimal(r[2]))} for r in rows]
@@ -386,11 +406,11 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
         # Persian calendar, so bucket in Python on the (bounded) day rows.
         from .timeservice import to_jalali
         rows = db.execute(
-            select(func.date(Invoice.created_at), func.count(Invoice.id),
+            select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
                    func.coalesce(func.sum(Invoice.total_amount), 0))
             .where(_paid_filter(s0, e1))
-            .group_by(func.date(Invoice.created_at))
-            .order_by(func.date(Invoice.created_at))
+            .group_by(_local_date_expr(Invoice.created_at))
+            .order_by(_local_date_expr(Invoice.created_at))
         ).all()
         buckets: dict[str, dict] = {}
         for r in rows:
@@ -506,7 +526,7 @@ def purchase_cost_history(db: Session, product_id: int | None = None, limit: int
 def expiry_report(db: Session) -> dict:
     """Full (untruncated) expiry buckets with values (§33)."""
     thresholds = expiry_svc.get_thresholds(db)
-    today = date.today()
+    today = _local_today()
     buckets: dict[str, list] = {}
     rows = db.execute(
         select(ProductBatch, Product.name)

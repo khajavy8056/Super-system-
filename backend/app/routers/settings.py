@@ -13,6 +13,16 @@ from ..models import SystemSetting, User
 from ..security import get_current_user, require_permission
 from ..services.audit import write_audit
 
+
+def _lt_today():
+    from ..services.timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from ..services.timeservice import local_now
+    return local_now()
+
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 # Sentinel the UI sends back when the user did not change a secret value
@@ -63,6 +73,9 @@ def upsert_setting(body: SettingIn, db: Session = Depends(get_db),
                 entity_id=None, after={"key": body.key,
                                        "value": "***" if body.is_secret else body.value})
     db.commit()
+    if body.key == "time.timezone":
+        from ..services.timeservice import set_local_timezone
+        set_local_timezone(body.value)
     return {"key": s.key, "value": "" if s.is_secret else s.value, "is_secret": s.is_secret}
 
 
@@ -260,7 +273,7 @@ def get_theme(db: Session = Depends(get_db), _: User = Depends(get_current_user)
 
     resolved = mode
     if mode == "auto":
-        now = datetime.now().strftime("%H:%M")
+        now = _lt_now().strftime("%H:%M")
         # light between light_at and dark_at, dark otherwise (handles wrap-around)
         if light_at <= dark_at:
             resolved = "light" if light_at <= now < dark_at else "dark"

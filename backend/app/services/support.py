@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..config import settings
-from ..models import SupportTicket, SystemSetting
+from ..models import SupportMessage, SupportTicket, SystemSetting
 from . import sync as sync_svc
 
 log = logging.getLogger("supermarket.support")
@@ -71,7 +71,8 @@ def compose_message(db: Session, t: SupportTicket) -> str:
     except Exception:  # noqa: BLE001
         lic = {}
     lines = [
-        f"🎫 درخواست پشتیبانی جدید — {t.number}",
+        f"🎫 درخواست پشتیبانی جدید — {_ticket_ref(db, t)}",
+        f"🆔 کد فروشگاه: {install_code(db)}   (برای پاسخ: روی همین پیام Reply بزنید یا پیام را با «{_ticket_ref(db, t)}» شروع کنید)",
         f"نوع: {_fa_type(t.type)}   |   اولویت: {PRIORITIES.get(t.priority, t.priority)}",
         f"موضوع: {t.subject}",
         "",
@@ -96,6 +97,26 @@ def compose_message(db: Session, t: SupportTicket) -> str:
 
 class RelayError(RuntimeError):
     pass
+
+
+def install_id() -> str:
+    """8 hex chars, stable per machine (derived from the licence HWID)."""
+    import hashlib
+    from .license import hwid
+    return hashlib.sha1(hwid().encode()).hexdigest()[:8].upper()
+
+
+def install_code(db: Session) -> str:
+    """Short, stable, human-readable id of THIS installation (hundreds of stores
+    may talk to the same support inbox — every message carries it)."""
+    name = _get(db, "store.name") or "فروشگاه"
+    return f"{name} #{install_id()}"
+
+
+def _ticket_ref(db: Session, t: SupportTicket) -> str:
+    """Globally unique thread key: TCK-000001@HWID8 — used in the message text
+    so a reply can be routed even when the operator does not use Reply."""
+    return f"{t.number}@{install_id()}"
 
 
 def _post(url: str, payload: dict, timeout: float = 15.0) -> dict:
@@ -161,7 +182,255 @@ def relay(db: Session, ticket: SupportTicket) -> dict:
                                                   "longitude": f"{ticket.longitude:.6f}"})
         except Exception as exc:  # noqa: BLE001 — pin is a bonus; text already carries coordinates
             log.warning("support relay location failed: %s", exc)
+    if mid:
+        ticket.relay_ref = str(mid)
+    # attachments recorded as OUT messages without text are sent as files
+    for m in db.execute(select(SupportMessage).where(SupportMessage.ticket_id == ticket.id, SupportMessage.direction == "OUT",
+                                                     SupportMessage.status.in_(("NEW", "FAILED")))).scalars().all():
+        try:
+            _send_out_message(db, ticket, m, inbox, url, token)
+        except Exception as exc:  # noqa: BLE001
+            m.status = "FAILED"; m.last_error = str(exc)[:500]
     return {"message_id": mid}
+
+
+# ---------------------------------------------------------------------------
+# v1.7.1 — two-way conversation + attachments
+# ---------------------------------------------------------------------------
+_FILE_TYPES = {".jpg": "Image", ".jpeg": "Image", ".png": "Image", ".gif": "Image", ".webp": "Image", ".mp4": "Video", ".mp3": "Music"}
+
+
+def _upload_file(url: str, token: str, path: str, name: str) -> str:
+    import os
+    ext = os.path.splitext(name)[1].lower()
+    ftype = _FILE_TYPES.get(ext, "File")
+    r = _post(f"{url}/{token}/requestSendFile", {"type": ftype})
+    up = (r.get("data") or {}).get("upload_url")
+    if not up:
+        raise RelayError("UPLOAD_URL_MISSING")
+    with open(path, "rb") as fh, httpx.Client(timeout=120) as c:
+        rr = c.post(up, files={"file": (name, fh)})
+    try:
+        data = rr.json()
+    except ValueError:
+        data = {}
+    fid = (data.get("data") or {}).get("file_id") or data.get("file_id")
+    if rr.status_code >= 400 or not fid:
+        raise RelayError(f"UPLOAD_FAILED: HTTP {rr.status_code}")
+    return fid
+
+
+def _send_out_message(db: Session, t: SupportTicket, m: SupportMessage, inbox: str, url: str, token: str) -> None:
+    head = f"💬 {_ticket_ref(db, t)} — {install_code(db)}\n"
+    payload = {"chat_id": inbox, "text": head + (m.text or "")}
+    if t.relay_ref:
+        payload["reply_to_message_id"] = t.relay_ref
+    if m.attachment_path:
+        import os
+        full = os.path.join(settings.MEDIA_DIR, m.attachment_path)
+        fid = _upload_file(url, token, full, m.attachment_name or os.path.basename(full))
+        payload["file_id"] = fid
+        res = _post(f"{url}/{token}/sendFile", payload)
+    else:
+        res = _post(f"{url}/{token}/sendMessage", payload)
+    m.relay_message_id = str(((res.get("data") or {}).get("message_id")) or "")
+    m.status = "SENT"; m.last_error = None
+    db.flush()
+
+
+def add_message(db: Session, ticket: SupportTicket, *, user_id: int | None, text: str | None,
+                attachment: tuple[str, str, int] | None = None) -> SupportMessage:
+    """Store an outgoing message (text and/or file) and try to relay it now."""
+    m = SupportMessage(ticket_id=ticket.id, direction="OUT", text=text, status="NEW", created_by=user_id, is_read=True)
+    if attachment:
+        m.attachment_path, m.attachment_name, m.attachment_size = attachment
+    db.add(m); db.flush()
+    if ticket.status == "CLOSED":
+        ticket.status = "SENT"
+    try:
+        url, token, _ = relay_config(db)
+        inbox = discover_inbox(db)
+        if not (url and token and inbox):
+            raise RelayError("INBOX_UNKNOWN")
+        if not ticket.relay_ref:  # ticket itself never left → send it first
+            relay(db, ticket); ticket.status = "SENT"; ticket.sent_at = datetime.utcnow()
+        if m.status != "SENT":
+            _send_out_message(db, ticket, m, inbox, url, token)
+    except Exception as exc:  # noqa: BLE001
+        m.status = "FAILED"; m.last_error = str(exc)[:500]
+        log.info("support message %s queued: %s", m.id, exc)
+    db.flush()
+    return m
+
+
+def resend_pending_messages(db: Session) -> int:
+    """Retry OUT messages that could not be relayed yet (called by the poller)."""
+    url, token, _ = relay_config(db)
+    inbox = discover_inbox(db) if url and token else None
+    if not inbox:
+        return 0
+    n = 0
+    rows = db.execute(select(SupportMessage).where(SupportMessage.direction == "OUT", SupportMessage.status.in_(("NEW", "FAILED")))).scalars().all()
+    for m in rows:
+        t = db.get(SupportTicket, m.ticket_id)
+        if t is None:
+            continue
+        try:
+            if not t.relay_ref:
+                relay(db, t); t.status = "SENT"; t.sent_at = datetime.utcnow()
+            if m.status != "SENT":
+                _send_out_message(db, t, m, inbox, url, token)
+            n += 1
+        except Exception as exc:  # noqa: BLE001
+            m.status = "FAILED"; m.last_error = str(exc)[:500]
+    db.commit()
+    return n
+
+
+_REF_RE = None
+
+
+def _match_ticket(db: Session, msg: dict) -> SupportTicket | None:
+    """Route an inbound support message to OUR ticket.
+
+    1. Reply to a message this install sent (reply_to_message_id == ticket.relay_ref
+       or one of its messages' relay ids) — the safe path with hundreds of stores.
+    2. Text starts with / contains ``TCK-000123@HWID8`` (our own hwid only).
+    Anything else is ignored: it belongs to another store."""
+    import re
+    global _REF_RE
+    mine = install_id()
+    rid = msg.get("reply_to_message_id")
+    if rid:
+        t = db.execute(select(SupportTicket).where(SupportTicket.relay_ref == str(rid))).scalar_one_or_none()
+        if t:
+            return t
+        m = db.execute(select(SupportMessage).where(SupportMessage.relay_message_id == str(rid))).scalar_one_or_none()
+        if m:
+            return db.get(SupportTicket, m.ticket_id)
+    text = msg.get("text") or ""
+    if _REF_RE is None:
+        _REF_RE = re.compile(r"(TCK-\d{6})@([0-9A-F]{8})", re.I)
+    for num, hw in _REF_RE.findall(text):
+        if hw.upper() == mine:
+            t = db.execute(select(SupportTicket).where(SupportTicket.number == num.upper())).scalar_one_or_none()
+            if t:
+                return t
+    return None
+
+
+def _download_file(url: str, token: str, file_id: str, name: str) -> tuple[str, str, int] | None:
+    import os, re as _re, uuid
+    r = _post(f"{url}/{token}/getFile", {"file_id": file_id})
+    dl = (r.get("data") or {}).get("download_url")
+    if not dl:
+        return None
+    safe = _re.sub(r"[^\w.\-]+", "_", name or "file")[:80] or "file"
+    rel = os.path.join("support", f"{uuid.uuid4().hex[:12]}_{safe}")
+    full = os.path.join(settings.MEDIA_DIR, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with httpx.Client(timeout=120, follow_redirects=True) as c, open(full, "wb") as fh:
+        with c.stream("GET", dl) as resp:
+            size = 0
+            for chunk in resp.iter_bytes():
+                fh.write(chunk); size += len(chunk)
+                if size > 60 * 1024 * 1024:
+                    break
+    return rel.replace(os.sep, "/"), safe, size
+
+
+def poll_replies(db: Session, limit: int = 100) -> int:
+    """Fetch the relay feed and file support replies under the right ticket.
+    Uses ``support.offset_id`` so every update is examined once."""
+    url, token, inbox = relay_config(db)
+    if not (url and token):
+        return 0
+    inbox = inbox or discover_inbox(db)
+    offset = _get(db, "support.offset_id")
+    payload = {"limit": limit}
+    if offset:
+        payload["offset_id"] = offset
+    try:
+        data = _post(f"{url}/{token}/getUpdates", payload)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("support poll failed: %s", exc)
+        return 0
+    d = data.get("data") or {}
+    got = 0
+    from .notifications import notify
+    for u in d.get("updates") or []:
+        msg = u.get("new_message") or {}
+        if not msg or (inbox and str(u.get("chat_id") or "") != str(inbox)):
+            continue
+        mid = str(msg.get("message_id") or "")
+        if msg.get("sender_type") == "Bot":
+            continue
+        if mid and db.execute(select(SupportMessage.id).where(SupportMessage.relay_message_id == mid, SupportMessage.direction == "IN")).first():
+            continue
+        t = _match_ticket(db, msg)
+        if t is None:
+            continue
+        text = msg.get("text") or ""
+        # strip our own routing prefix if the operator typed it
+        import re
+        text = re.sub(r"^\s*TCK-\d{6}@[0-9A-Fa-f]{8}\s*[:\-—]?\s*", "", text)
+        m = SupportMessage(ticket_id=t.id, direction="IN", text=text or None, relay_message_id=mid or None, status="RECEIVED", is_read=False)
+        f = msg.get("file") or {}
+        if f.get("file_id"):
+            try:
+                att = _download_file(url, token, f["file_id"], f.get("file_name") or "file")
+                if att:
+                    m.attachment_path, m.attachment_name, m.attachment_size = att
+            except Exception as exc:  # noqa: BLE001
+                m.text = (m.text or "") + f"\n[پیوست دریافت نشد: {exc}]"
+        db.add(m); db.flush()
+        if t.status in ("NEW", "FAILED"):
+            t.status = "SENT"
+        notify(db, type="SUPPORT_REPLY", title=f"پاسخ پشتیبانی — {t.number}", body=(text or "پیوست")[:200],
+               severity="INFO", reference_type="SupportTicket", reference_id=t.id)
+        got += 1
+    nxt = d.get("next_offset_id")
+    if nxt:
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == "support.offset_id")).scalar_one_or_none()
+        if row is None:
+            db.add(SystemSetting(key="support.offset_id", value=str(nxt), is_secret=False, description="Support relay feed cursor"))
+        else:
+            row.value = str(nxt)
+    db.commit()
+    return got
+
+
+import threading as _threading
+_poll_stop = _threading.Event()
+_poll_thread = None
+
+
+def start_poller(session_factory, interval: int = 20) -> None:
+    global _poll_thread
+    if _poll_thread and _poll_thread.is_alive():
+        return
+    _poll_stop.clear()
+
+    def run():
+        _poll_stop.wait(interval)
+        while not _poll_stop.is_set():
+            try:
+                db = session_factory()
+                try:
+                    resend_pending_messages(db)
+                    poll_replies(db)
+                finally:
+                    db.close()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("support poller tick failed: %s", exc)
+            _poll_stop.wait(interval)
+
+    _poll_thread = _threading.Thread(target=run, name="support-poller", daemon=True)
+    _poll_thread.start()
+
+
+def stop_poller() -> None:
+    _poll_stop.set()
 
 
 @sync_svc.register("SUPPORT_TICKET")

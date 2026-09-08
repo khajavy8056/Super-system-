@@ -84,12 +84,22 @@ const fmtNum = (n) => {
   return Number.isInteger(v) ? v.toLocaleString("en-US")
                              : parseFloat(v.toFixed(3)).toLocaleString("en-US");
 };
+/* v1.7.1: every timestamp from the PC is naive UTC → show it in the store timezone (Tehran, +03:30) */
+const STORE_TZ = () => localStorage.getItem("m_tz") || "Asia/Tehran";
+const faDT = (iso, withTime = true) => {
+  if (!iso) return "—";
+  const str = String(iso); const d = new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(str) ? str : str + "Z");
+  if (isNaN(d)) return "—";
+  const o = { year: "numeric", month: "2-digit", day: "2-digit", timeZone: STORE_TZ() }; if (withTime) { o.hour = "2-digit"; o.minute = "2-digit"; }
+  try { return new Intl.DateTimeFormat("fa-IR-u-ca-persian", o).format(d); } catch (_) { return d.toLocaleString("fa-IR"); }
+};
+window.faDT = faDT;
 const money = (n) => fmtNum(Math.round(Number(n || 0))) + " " + (state.currency.label || "");
 const qtyFmt = (n) => fmtNum(n);
 const unitById = (id) => state.units.find((u) => u.id === id) || null;
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const headers = { ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(opts.headers || {}) };
   if (state.token) headers.Authorization = "Bearer " + state.token;
   const res = await fetch(API + path, { ...opts, headers });
   if (res.status === 204) return null;
@@ -306,6 +316,7 @@ window.goTab = (key) => {
 async function loadConfig() {
   try { state.currency = await api("/settings/currency"); } catch (e) {}
   try { state.units = await api("/units"); } catch (e) { state.units = []; }
+  try { const t = await api("/settings/time"); if (t && t.timezone) localStorage.setItem("m_tz", t.timezone); } catch (e) {}
 }
 window.unpairDevice = () => {
   if (!confirm("اتصال این گوشی به رایانه قطع شود؟ صف آفلاین حفظ می‌شود.")) return;
@@ -1002,46 +1013,110 @@ window.findByBarcode = () => {
   });
 };
 
-/* ---------- camera scanner (§23) ---------- */
-let scanStream = null;
+/* ---------- camera scanner (§23) ----------
+ * v1.7.1: fast, reliable scanning on every phone.
+ *  - native BarcodeDetector (Chrome/WebView with Google Play services) when it
+ *    really works (it is probed once; some WebViews expose the API but never
+ *    detect anything), otherwise
+ *  - ZXing (Apache-2.0, /mobile/vendor/zxing.min.js) decoding video frames on a
+ *    canvas ~15×/s with TRY_HARDER + all retail formats.
+ *  - continuous autofocus, torch button, 1280×720 rear camera, haptic + beep. */
+let scanStream = null, scanRAF = null, scanTrack = null;
+const SCAN_FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "qr_code", "data_matrix"];
+function zxReader() {
+  const Z = window.ZXing; if (!Z) return null;
+  const hints = new Map();
+  hints.set(Z.DecodeHintType.TRY_HARDER, true);
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E,
+    Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE, Z.BarcodeFormat.DATA_MATRIX]);
+  const r = new Z.MultiFormatReader(); r.setHints(hints); return r;
+}
+function scanBeep() {
+  try { const ac = new (window.AudioContext || window.webkitAudioContext)(); const o = ac.createOscillator(); const g = ac.createGain();
+    o.frequency.value = 1760; g.gain.value = 0.08; o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.08); } catch (_) {}
+}
 window.scan = async () => {
-  if (!("BarcodeDetector" in window)) {
-    toast("این مرورگر دوربین بارکد‌خوان ندارد — از جستجوی دستی استفاده کنید", "err");
-    findByBarcode();
-    return;
-  }
   const overlay = $("#scanner");
   overlay.classList.remove("hidden");
-  $("#scan-status").textContent = "در حال اسکن…";
+  $("#scan-status").textContent = "دوربین را روی بارکد بگیرید…";
+  $("#scan-manual").value = "";
   try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    scanStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
     const video = $("#scan-video");
+    video.setAttribute("playsinline", ""); video.muted = true;
     video.srcObject = scanStream;
     await video.play();
-    const detector = new window.BarcodeDetector({
-      formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"],
-    });
-    const poll = async () => {
-      if (overlay.classList.contains("hidden")) return;
-      try {
-        const codes = await detector.detect(video);
-        if (codes && codes.length) {
-          const raw = codes[0].rawValue;
-          if (barcodeChecksumOk(raw)) { onScanHit(raw); return; }
-          $("#scan-status").textContent = "بارکد ناقص خوانده شد — دوباره";
-        }
-      } catch (_) { /* transient detect errors are ignored */ }
-      setTimeout(poll, 250);
+    scanTrack = scanStream.getVideoTracks()[0];
+    try {
+      const caps = scanTrack.getCapabilities ? scanTrack.getCapabilities() : {};
+      const adv = [];
+      if (caps.focusMode && caps.focusMode.includes("continuous")) adv.push({ focusMode: "continuous" });
+      if (caps.zoom && caps.zoom.min !== undefined) adv.push({ zoom: Math.min(caps.zoom.max, Math.max(caps.zoom.min, 1.5)) });
+      if (adv.length) await scanTrack.applyConstraints({ advanced: adv }).catch(() => {});
+      const tb = $("#scan-torch"); if (tb) tb.classList.toggle("hidden", !caps.torch);
+    } catch (_) {}
+    let detector = null;
+    if ("BarcodeDetector" in window) {
+      try { const sup = await window.BarcodeDetector.getSupportedFormats(); if (sup && sup.includes("ean_13")) detector = new window.BarcodeDetector({ formats: SCAN_FORMATS.filter((f) => sup.includes(f)) }); } catch (_) { detector = null; }
+    }
+    const zx = zxReader();
+    if (!detector && !zx) { $("#scan-status").textContent = "این دستگاه اسکن با دوربین ندارد — بارکد را دستی وارد کنید"; return; }
+    const canvas = document.createElement("canvas"); const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let busy = false, nativeMisses = 0, useNative = !!detector, lastHit = 0;
+    const hit = (raw) => {
+      raw = String(raw || "").trim(); if (!raw || Date.now() - lastHit < 1200) return false;
+      if (!barcodeChecksumOk(raw) && /^\d{8}$|^\d{12,13}$/.test(raw)) { $("#scan-status").textContent = "بارکد ناقص خوانده شد — کمی نزدیک‌تر"; return false; }
+      lastHit = Date.now(); scanBeep(); onScanHit(raw); return true;
     };
-    poll();
+    const tick = async () => {
+      if (overlay.classList.contains("hidden")) return;
+      if (!busy && video.readyState >= 2) {
+        busy = true;
+        try {
+          if (useNative) {
+            const codes = await detector.detect(video);
+            if (codes && codes.length) { nativeMisses = 0; if (hit(codes[0].rawValue)) { busy = false; return; } }
+            else if (zx && ++nativeMisses > 90) { useNative = false; } // ~6 s without a single detection → fall back to ZXing
+          }
+          if (!useNative && zx) {
+            // decode the central band (where the frame is) at reduced size — fast and accurate
+            const vw = video.videoWidth, vh = video.videoHeight;
+            const cw = Math.min(800, vw), ch = Math.round(cw * (vh / vw));
+            canvas.width = cw; canvas.height = ch; ctx.drawImage(video, 0, 0, cw, ch);
+            const bandY = Math.round(ch * 0.25), bandH = Math.round(ch * 0.5);
+            const img = ctx.getImageData(0, bandY, cw, bandH);
+            const Z = window.ZXing;
+            const lum = new Z.RGBLuminanceSource(toLuminance(img.data, cw * bandH), cw, bandH);
+            let res = null;
+            try { res = zx.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(lum))); } catch (_) { try { zx.reset(); res = zx.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(lum.invert()))); } catch (_) { res = null; } }
+            zx.reset();
+            if (res && hit(res.getText())) { busy = false; return; }
+          }
+        } catch (_) { /* transient frame error */ }
+        busy = false;
+      }
+      scanRAF = requestAnimationFrame(() => setTimeout(tick, 60));
+    };
+    tick();
   } catch (e) {
-    $("#scan-status").textContent = "دسترسی به دوربین ممکن نیست: " + e.message;
+    $("#scan-status").textContent = "دسترسی به دوربین ممکن نیست: " + (e && e.name === "NotAllowedError" ? "اجازهٔ دوربین داده نشده است" : (e.message || e));
   }
+};
+function toLuminance(rgba, n) {
+  const out = new Uint8ClampedArray(n);
+  for (let i = 0, j = 0; j < n; i += 4, j++) out[j] = (rgba[i] * 77 + rgba[i + 1] * 151 + rgba[i + 2] * 28) >> 8;
+  return out;
+}
+window.scanTorch = async () => {
+  if (!scanTrack) return;
+  try { const cur = scanTrack.getSettings().torch; await scanTrack.applyConstraints({ advanced: [{ torch: !cur }] }); } catch (_) { toast("چراغ قوه در این دستگاه در دسترس نیست", "err"); }
 };
 $("#scan-close").addEventListener("click", closeScanner);
 function closeScanner() {
   $("#scanner").classList.add("hidden");
-  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
+  if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = null; }
+  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; scanTrack = null; }
 }
 $("#scan-manual").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
@@ -1145,18 +1220,18 @@ window.showSync = async () => {
   const oRows = ops.map((x) => `
     <div class="card" style="margin-top:8px">
       <b>${esc(x.label || x.type)}</b>
-      <div class="muted">${x.type === "POS_CHECKOUT" ? "فروش آفلاین" : x.type === "STOCK_RECEIVE" ? "ورود کالای آفلاین" : x.type} · ${new Date(x.created_at).toLocaleString("fa-IR")}</div>
+      <div class="muted">${x.type === "POS_CHECKOUT" ? "فروش آفلاین" : x.type === "STOCK_RECEIVE" ? "ورود کالای آفلاین" : x.type} · ${faDT(x.created_at)}</div>
     </div>`).join("");
   const qRows = oRows + q.map((x) => `
     <div class="card" style="margin-top:8px">
       <b>${esc(x.product_name || "آیتم " + x.item_id)}</b>
-      <div class="muted">شمارش آفلاین: ${x.physical_qty} · ${new Date(x.saved_at).toLocaleString("fa-IR")}</div>
+      <div class="muted">شمارش آفلاین: ${x.physical_qty} · ${faDT(x.saved_at)}</div>
     </div>`).join("");
   const cRows = c.map((x) => x.kind === "op" ? `
     <div class="card conflict" style="margin-top:8px">
       <b>${esc(x.product_name || "عملیات آفلاین")}</b>
       <div class="err">رایانه این عملیات را نپذیرفت: ${esc(x.server_message)}</div>
-      <div class="muted">${new Date(x.at).toLocaleString("fa-IR")}</div>
+      <div class="muted">${faDT(x.at)}</div>
       <button class="btn btn-danger" style="margin-top:6px" onclick="resolveConflict(${x.id},'drop')">متوجه شدم (حذف از فهرست)</button>
     </div>` : `
     <div class="card conflict" style="margin-top:8px">
@@ -1173,7 +1248,7 @@ window.showSync = async () => {
       <div class="card">
         <h2>همگام‌سازی</h2>
         <p class="muted"><i class="dot ${state.online ? "on" : "off"}"></i>${state.online ? "آنلاین" : "آفلاین"} — صف ارسال: ${q.length + ops.length} · تعارض‌ها: ${c.length}</p>
-        <p class="muted">آخرین همگام‌سازی با رایانه: ${localStorage.getItem("m_last_sync") ? new Date(localStorage.getItem("m_last_sync")).toLocaleString("fa-IR") : "هنوز انجام نشده"}</p>
+        <p class="muted">آخرین همگام‌سازی با رایانه: ${localStorage.getItem("m_last_sync") ? faDT(localStorage.getItem("m_last_sync")) : "هنوز انجام نشده"}</p>
         ${qRows || '<p class="muted">صف خالی است.</p>'}
         <button class="btn btn-primary" style="margin-top:10px" onclick="mobileSync(true).then(syncLoop)">همگام‌سازی با رایانه</button>
       </div>

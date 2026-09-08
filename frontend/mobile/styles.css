@@ -294,3 +294,15 @@ textarea { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid va
 .ltr { direction: ltr; text-align: left; unicode-bidi: embed; }
 .sheet-body { max-height: 88vh; overflow-y: auto; }
 [data-theme="light"] { --bg: #f4f6fa; --bg2: #ffffff; --card: #ffffff; --text: #17202e; --muted: #5b6577; --border: #d9dfe8; }
+
+/* v1.7.1 scanner */
+.scan-frame { position: absolute; left: 8%; right: 8%; top: 28%; height: 34%; border: 2px solid rgba(255,255,255,.85); border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.35); pointer-events: none; }
+.scan-frame i { position: absolute; left: 6px; right: 6px; top: 50%; height: 2px; background: #ff4d4d; box-shadow: 0 0 8px #ff4d4d; animation: scanline 1.6s ease-in-out infinite; }
+@keyframes scanline { 0%,100% { transform: translateY(-40px); } 50% { transform: translateY(40px); } }
+.scan-torch { position: absolute; top: 14px; left: 14px; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(255,255,255,.5); background: rgba(0,0,0,.4); color: #fff; font-size: 20px; }
+
+/* v1.7.1 support conversation */
+.tk-thread { display: flex; flex-direction: column; gap: 8px; max-height: 45vh; overflow: auto; }
+.tk-msg { max-width: 85%; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border, #ddd); line-height: 1.7; word-break: break-word; }
+.tk-msg.out { align-self: flex-start; }
+.tk-msg.in { align-self: flex-end; background: rgba(55,184,170,.14); }

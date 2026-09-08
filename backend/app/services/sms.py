@@ -32,6 +32,16 @@ _worker: threading.Thread | None = None
 _stop = threading.Event()
 
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 class SmsProviderError(Exception):
     def __init__(self, kind: str, detail: str = ""):
         super().__init__(f"{kind}: {detail}")
@@ -399,7 +409,7 @@ def queue_daily_report(db: Session) -> "SmsMessage | None":
     sales = d.get("sales", {}) or {}
     text = render_template(
         db, "daily_report",
-        date=_date.today().isoformat(),
+        date=_lt_today().isoformat(),
         invoices=sales.get("invoice_count_today", 0),
         sales=_fmt(sales.get("today", 0)), profit=_fmt((d.get("profit") or {}).get("today", 0)),
         debt=_fmt((d.get("receivables") or {}).get("customer_debt", 0)), **_store_ctx(db))

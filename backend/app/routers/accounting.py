@@ -16,6 +16,16 @@ from ..security import get_current_user, require_permission
 from ..services import accounting as acc
 from ..services.audit import write_audit
 
+
+def _lt_today():
+    from ..services.timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from ..services.timeservice import local_now
+    return local_now()
+
 router = APIRouter(prefix="/accounting", tags=["accounting"])
 
 _STATUS = {"ACCOUNT_NOT_FOUND": 404, "ENTRY_NOT_FOUND": 404, "CHEQUE_NOT_FOUND": 404,
@@ -379,7 +389,7 @@ def _cheque_out(c: Cheque) -> dict:
     return {"id": c.id, "direction": c.direction, "number": c.number, "bank_name": c.bank_name,
             "amount": float(c.amount), "due_date": str(c.due_date), "issue_date": str(c.issue_date) if c.issue_date else None,
             "status": c.status, "party_type": c.party_type, "party_id": c.party_id, "party_name": c.party_name,
-            "description": c.description, "days_left": (c.due_date - date.today()).days}
+            "description": c.description, "days_left": (c.due_date - _lt_today()).days}
 
 
 @router.get("/cheques")

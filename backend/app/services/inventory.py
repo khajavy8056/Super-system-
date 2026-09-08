@@ -16,6 +16,16 @@ from .audit import write_audit
 from .units import to_qty
 
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 class InventoryError(Exception):
     pass
 
@@ -438,7 +448,7 @@ def upcoming_stocktakes(db: Session, *, horizon_days: int = 14) -> list[dict]:
     """
     from datetime import date as _date
 
-    today = _date.today()
+    today = _lt_today()
     rows = db.execute(
         select(Stocktake).where(Stocktake.status.in_(["DRAFT", "IN_PROGRESS"]))
         .order_by(Stocktake.scheduled_for.asc().nulls_last(), Stocktake.id.desc())

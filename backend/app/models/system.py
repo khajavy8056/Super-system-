@@ -112,3 +112,21 @@ class SupportTicket(TimestampMixin, Base):
     relay_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class SupportMessage(TimestampMixin, Base):
+    """v1.7.1 — one line of a ticket conversation (store → support, support → store)."""
+    __tablename__ = "support_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("support_tickets.id"), index=True)
+    direction: Mapped[str] = mapped_column(String(3), index=True)          # OUT (store) | IN (support)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachment_path: Mapped[str | None] = mapped_column(String(255), nullable=True)   # under MEDIA_DIR/support/
+    attachment_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    attachment_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    relay_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(8), default="NEW", index=True)   # NEW | SENT | FAILED | RECEIVED
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_read: Mapped[bool] = mapped_column(default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)

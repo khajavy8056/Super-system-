@@ -5,10 +5,12 @@
  * chrome, tabbar, closeSheet, icon, state, opQueueAdd). */
 (function () {
   "use strict";
+  // dates: plain YYYY-MM-DD (expiry etc.) → Jalali date; timestamps → store timezone (Tehran) via faDT
   const J = (iso, t = true) => {
     if (!iso) return "—";
-    try { return window.Jalali ? (t ? Jalali.fromIsoDateTime ? Jalali.fromIsoDateTime(iso) : Jalali.fromIso(iso.slice(0, 10)) + " " + iso.slice(11, 16) : Jalali.fromIso(iso.slice(0, 10))) : iso.slice(0, 16).replace("T", " "); }
-    catch (_) { return iso.slice(0, 16).replace("T", " "); }
+    const str = String(iso);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) { try { return window.Jalali ? Jalali.fromIso(str) : str; } catch (_) { return str; } }
+    return window.faDT ? faDT(str, t) : str.slice(0, 16).replace("T", " ");
   };
   const perm = (p) => !p || ((state.user && state.user.permissions) || []).includes(p);
   const num = (v) => Number(String(v || "0").replace(/[^\d.-]/g, "")) || 0;
@@ -395,7 +397,7 @@
       ${sel("tk-type", "نوع درخواست", meta.types.map((t) => [t.id, t.label]), "BUG")}${sel("tk-prio", "اولویت", meta.priorities.map((t) => [t.id, t.label]), "NORMAL")}${field("tk-subj", "موضوع *")}${field("tk-desc", "شرح", "", "textarea")}${field("tk-contact", "راه تماس", `class="ltr" inputmode="tel"`)}
       <label class="check"><input type="checkbox" id="tk-geo" checked /> ارسال موقعیت مکانی دقیق گوشی</label><button class="btn btn-primary" id="tk-send">ثبت و ارسال</button></div>
       <div class="card"><h2>درخواست‌های قبلی</h2><div id="tk-list"></div></div>`);
-    const load = () => list("#tk-list", () => api("/support/tickets?limit=30"), (t) => row(`<span class="ltr">${esc(t.number)}</span> · ${esc(t.subject)}`, `${esc(t.type_label)} · ${J(t.created_at)}`, `<span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-amber"}">${esc(t.status_label)}</span>${t.status === "FAILED" || t.status === "NEW" ? `<button class="qbtn" onclick="run_(()=>api('/support/tickets/${t.id}/resend',{method:'POST'}),'تلاش شد').then(showSupportM)">↻</button>` : ""}`), "درخواستی ثبت نشده");
+    const load = () => list("#tk-list", () => api("/support/tickets?limit=30"), (t) => row(`<span class="ltr">${esc(t.number)}</span> · ${esc(t.subject)}${t.unread ? ` <span class="badge badge-red">${t.unread} پاسخ جدید</span>` : ""}`, `${esc(t.type_label)} · ${J(t.created_at)}`, `<span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-amber"}">${esc(t.status_label)}</span><button class="qbtn" onclick="showTicketM(${t.id})">💬</button>${t.status === "FAILED" || t.status === "NEW" ? `<button class="qbtn" onclick="run_(()=>api('/support/tickets/${t.id}/resend',{method:'POST'}),'تلاش شد').then(showSupportM)">↻</button>` : ""}`), "درخواستی ثبت نشده");
     $("#tk-send").onclick = async () => {
       if (v("tk-subj").length < 3) { toast("موضوع را بنویسید", "err"); return; }
       $("#tk-send").disabled = true;
@@ -405,6 +407,30 @@
       catch (e) { if (!e.status || e.status >= 500) { await opQueueAdd("SUPPORT_TICKET", body, `درخواست پشتیبانی: ${body.subject}`); toast("آفلاین: درخواست ذخیره شد و با اتصال به رایانه ارسال می‌شود"); showSupportM(); } else { toast(e.message, "err"); $("#tk-send").disabled = false; } }
     };
     load();
+  };
+
+  /* v1.7.1 — conversation with support (replies from the vendor bot + store follow-ups with attachment) */
+  window.showTicketM = async (id) => {
+    let conv; try { conv = await api(`/support/tickets/${id}/messages`); } catch (e) { toast(e.message, "err"); return; }
+    const t = conv.ticket;
+    const sz = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 1024 ? Math.round(n / 1024) + " KB" : (n || 0) + " B";
+    const bub = (m) => `<div class="tk-msg ${m.direction === "IN" ? "in" : "out"}"><div class="muted" style="font-size:11px">${m.direction === "IN" ? "پشتیبانی" : "شما"} · ${J(m.created_at)}${m.direction === "OUT" ? " · " + esc(m.status_label) : ""}</div>${m.text ? `<div>${esc(m.text).replace(/\n/g, "<br/>")}</div>` : ""}${m.attachment_url ? `<a href="${(typeof SERVER !== "undefined" ? SERVER : "") + m.attachment_url}" target="_blank">📎 ${esc(m.attachment_name || "پیوست")} (${sz(m.attachment_size)})</a>` : ""}</div>`;
+    screen(t.number, "showSupportM()", `<div class="card"><b>${esc(t.subject)}</b><div class="muted">${esc(t.type_label)} · ${esc(t.status_label)}</div></div>
+      <div class="card tk-thread" id="tk-thread"><div class="tk-msg out"><div class="muted" style="font-size:11px">شما · ${J(t.created_at)}</div><div>${esc(t.description || t.subject)}</div></div>${conv.messages.map(bub).join("")}${conv.messages.some((m) => m.direction === "IN") ? "" : `<div class="muted" style="text-align:center">هنوز پاسخی نرسیده؛ پاسخ پشتیبانی همین‌جا نمایش داده می‌شود.</div>`}</div>
+      <div class="card">${field("tk-reply", "پیام به پشتیبانی", "", "textarea")}<label class="btn" style="display:block;text-align:center">📎 پیوست (عکس/فایل)<input type="file" id="tk-file" style="display:none" accept="*/*" /></label><div class="muted" id="tk-fname" style="text-align:center"></div>
+      <div class="row" style="gap:8px"><button class="btn" id="tk-poll" style="flex:1">بررسی پاسخ جدید</button><button class="btn btn-primary" id="tk-sendr" style="flex:1">ارسال</button></div></div>`);
+    const th = $("#tk-thread"); if (th) th.scrollTop = th.scrollHeight;
+    $("#tk-file").onchange = (e) => { const f = e.target.files[0]; $("#tk-fname").textContent = f ? `${f.name} (${sz(f.size)})` : ""; };
+    $("#tk-poll").onclick = async () => { try { const r = await api("/support/poll", { method: "POST" }); toast(r.received ? `${r.received} پاسخ جدید` : "پاسخ جدیدی نیست"); if (r.received) showTicketM(id); } catch (e) { toast(e.message, "err"); } };
+    $("#tk-sendr").onclick = async () => {
+      const text = v("tk-reply"), f = $("#tk-file").files[0];
+      if (!text && !f) { toast("متن یا پیوست لازم است", "err"); return; }
+      if (f && f.size > 50 * 1024 * 1024) { toast("حجم پیوست حداکثر ۵۰ مگابایت است", "err"); return; }
+      const fd = new FormData(); if (text) fd.append("text", text); if (f) fd.append("file", f, f.name);
+      $("#tk-sendr").disabled = true;
+      try { const m = await api(`/support/tickets/${id}/messages`, { method: "POST", body: fd }); toast(m.status === "SENT" ? "ارسال شد" : "ذخیره شد؛ به‌محض اتصال ارسال می‌شود"); showTicketM(id); }
+      catch (e) { toast(e.message, "err"); $("#tk-sendr").disabled = false; }
+    };
   };
 
   /* ------------------------------------------------------------------ Cloud sync (internet) */
