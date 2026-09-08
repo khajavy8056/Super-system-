@@ -49,6 +49,7 @@
 | `Inno Setup 6 not found` | Inno نصب نیست | لازم نیست! Portable ساخته شده؛ برای Setup.exe آن را نصب کنید و دوباره بیلد بگیرید |
 | `Could not find a version that satisfies the requirement pywebview` / `Read timed out ... pypi.org` (v1.4.0) | اینترنت به pypi.org نمی‌رسد (تحریم/فیلتر/کندی) و pywebview فقط از آنجا نصب می‌شد | **از v1.4.1 رفع شد:** pywebview اختیاری است (`backend\requirements-desktop.txt`)؛ سازنده با timeout ۶۰ ثانیه و ۸ تلاش، سپس با آینه‌های جایگزین (runflare, iranrepo, tuna, aliyun) تلاش می‌کند؛ اگر باز هم نشد **ساخت ادامه می‌یابد** و برنامه در پنجرهٔ Edge (app-mode) باز می‌شود. برای پنجرهٔ بومی به‌صورت آفلاین: فایل‌های wheel (`pywebview`, `pythonnet`, `clr_loader`, `bottle`, `proxy_tools`, `typing_extensions`, `cffi`, `pycparser`) را در `installer\windows\wheels\` بگذارید |
 | `Read timed out` روی بسته‌های اصلی (fastapi و…) | همان مشکل شبکه | VPN/DNS دیگر، یا یک بار روی سیستمی با اینترنت: `pip download -r backend\requirements.txt pyinstaller -d installer\windows\wheels` و پوشه را کنار مخزن کپی کنید؛ سازنده خودکار از آن استفاده می‌کند |
+| `ValueError: not enough values to unpack (expected 3, got 2)` در مرحلهٔ ۵ (PyInstaller / `app.spec` خط `EXE(`) | ورودی‌های ۲تایی هوک pywebview مستقیماً به TOC اضافه می‌شدند (v1.4.1) | **از v1.4.2 رفع شد** (`_as_toc` در `app.spec`)؛ از ZIP نسخهٔ جدید بسازید |
 | SmartScreen هنگام اجرای exe | فایل امضای دیجیتال ندارد (عادی است) | More info → Run anyway |
 | آنتی‌ویروس exe را می‌گیرد | PyInstaller onefile گاهی false-positive می‌دهد | استثنا گذاشتن یا استفاده از نسخهٔ portable در پوشهٔ خود پروژه |
 

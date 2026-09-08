@@ -3,6 +3,17 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [1.4.2] - 2026-09-08 (رفع شکست مرحلهٔ ۵ ساخت نصب‌کننده: `ValueError: not enough values to unpack (expected 3, got 2)`)
+
+### Fixed
+- **PyInstaller در `EXE()` با `ValueError: not enough values to unpack (expected 3, got 2)` می‌ایستاد** (گزارش کاربر، مرحلهٔ «ساخت فایل اجرایی خودکفا»). ریشه در `installer/windows/app.spec`: خروجی `collect_data_files()/collect_dynamic_libs()` (فرمت ۲تایی هوک `(src, dest_dir)`) مستقیماً به `a.datas`/`a.binaries` (فرمت ۳تایی TOC `(dest, src, typecode)`) اضافه می‌شد. تا v1.3 این مسیر با `except: pass` پنهان بود؛ در v1.4.1 که pywebview اختیاری شد و نصب شد، خطا آشکار شد.
+  - تابع `_as_toc()` ورودی‌های هوک را به TOC صحیح تبدیل می‌کند؛ جمع‌آوری فایل‌های pywebview/clr_loader فقط وقتی بسته نصب باشد انجام می‌شود (بدون try/except پنهان‌کننده).
+  - `hiddenimports` مربوط به pywebview/pythonnet هم شرطی شدند (`_optional_desktop_hiddenimports()`) تا در نبود بسته، هشدار/خطای ماژول گم‌شده ندهد.
+  - آزمون رگرسیون `tests/test_v1_4_2_spec_toc.py`: با PyInstaller واقعی ثابت می‌کند ۲تایی خام همان `ValueError` را می‌دهد و خروجی `_as_toc` در `normalize_toc` پذیرفته می‌شود.
+
+### Changed
+- نسخه → 1.4.2؛ ۳۰۲ آزمون.
+
 ## [1.4.1] - 2026-09-08 (رفع شکست ساخت نصب‌کننده: `No matching distribution found for pywebview`)
 
 ### Fixed

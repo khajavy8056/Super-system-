@@ -15,6 +15,20 @@ from pathlib import Path
 
 ROOT = Path(os.path.abspath(SPECPATH)).parent.parent  # repo root (installer/windows -> repo)
 
+
+def _optional_desktop_hiddenimports():
+    """pywebview (native WebView2 window) is optional since v1.4.1; only ask
+    PyInstaller for its modules when the package is actually installed."""
+    import importlib.util
+    if importlib.util.find_spec("webview") is None:
+        return []
+    mods = ["webview", "webview.platforms.edgechromium", "webview.platforms.winforms",
+            "bottle", "proxy_tools"]
+    for m in ("clr", "clr_loader", "pythonnet"):
+        if importlib.util.find_spec(m) is not None:
+            mods.append(m)
+    return mods
+
 a = Analysis(
     [str(ROOT / "installer" / "windows" / "run_supermarket.py")],
     pathex=[str(ROOT / "backend")],
@@ -46,9 +60,7 @@ a = Analysis(
         "multipart", "python_multipart",
         # v1.3 native desktop window (pywebview on WebView2). pythonnet/clr
         # is loaded dynamically by pywebview's edgechromium backend.
-        "webview", "webview.platforms.edgechromium", "webview.platforms.winforms",
-        "clr", "clr_loader", "pythonnet", "bottle", "proxy_tools",
-    ],
+    ] + _optional_desktop_hiddenimports(),
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
@@ -56,14 +68,29 @@ a = Analysis(
 )
 
 # pywebview ships the WebView2 loader DLLs as package data; make sure they
-# travel with the exe (PyInstaller's hook usually does this, belt-and-braces).
-try:
+# travel with the exe. OPTIONAL since v1.4.1 (requirements-desktop.txt): when
+# the package is not installed nothing is added and the app opens in Edge
+# app-mode instead.
+#
+# v1.4.2 FIX: collect_data_files()/collect_dynamic_libs() return the 2-tuple
+# hook format (src, dest_dir). After Analysis, a.datas / a.binaries are TOC
+# lists of 3-tuples (dest_name, src_path, typecode). Appending 2-tuples made
+# EXE() fail with "ValueError: not enough values to unpack (expected 3, got 2)".
+# Convert to proper TOC entries before extending.
+def _as_toc(entries, typecode):
+    toc = []
+    for src, dest_dir in entries:
+        dest = os.path.join(dest_dir, os.path.basename(src)) if dest_dir not in ("", ".") else os.path.basename(src)
+        toc.append((dest, src, typecode))
+    return toc
+
+import importlib.util as _ilu
+if _ilu.find_spec("webview") is not None:
     from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
-    a.datas += collect_data_files("webview")
-    a.binaries += collect_dynamic_libs("webview")
-    a.datas += collect_data_files("clr_loader")
-except Exception:
-    pass
+    a.datas += _as_toc(collect_data_files("webview"), "DATA")
+    a.binaries += _as_toc(collect_dynamic_libs("webview"), "BINARY")
+    if _ilu.find_spec("clr_loader") is not None:
+        a.datas += _as_toc(collect_data_files("clr_loader"), "DATA")
 
 pyz = PYZ(a.pure)
 
