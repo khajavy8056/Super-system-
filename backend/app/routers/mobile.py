@@ -112,8 +112,13 @@ def pair_info(request: Request, db: Session = Depends(get_db), user: User = Depe
     minted = _mint(db, user, "گوشی (QR)", 365)
     write_audit(db, action="MOBILE_PAIR_TOKEN", user_id=user.id, entity_type="Mobile", reference=minted["device_id"])
     db.commit()
-    payload = {"v": 1, "url": f"http://{ips[0]}:{port}", "urls": [f"http://{ip}:{port}" for ip in ips],
+    payload = {"v": 2, "url": f"http://{ips[0]}:{port}", "urls": [f"http://{ip}:{port}" for ip in ips],
                "token": minted["token"], "store": (store.value if store else "") or "", "device_id": minted["device_id"]}
+    # v1.7: when internet sync is on, the phone gets the same cloud mailbox
+    from ..services import cloud as cloud_svc
+    cloud = cloud_svc.credentials_for_device(db)
+    if cloud:
+        payload["cloud"] = cloud
     text = "SMKT:" + base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False).encode()).decode()
     png = None
     try:

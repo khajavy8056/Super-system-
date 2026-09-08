@@ -11,6 +11,8 @@
     "@sparticuz/chromium": "^131.0.1",
     "fake-indexeddb": "^5.0.2",
     "jsdom": "^30.0.1",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
     "puppeteer-core": "^23.11.1"
   }
 }

@@ -41,6 +41,8 @@ from .routers import (
     system,
     users,
     warehouses,
+    support,
+    cloud,
 )
 
 logger = logging.getLogger("supermarket.errors")
@@ -93,11 +95,14 @@ async def lifespan(app: FastAPI):
 
     init_db()
     sms_svc.start_worker(SessionLocal)  # background SMS dispatch (§68)
+    from .services import cloud as cloud_svc
+    cloud_svc.start_worker(SessionLocal)  # v1.7 internet sync (no-op until connected)
     _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
     from .services import license as license_svc
     license_svc.start_worker(SessionLocal)  # v1.5: 24h online licence re-validation
     yield
     sms_svc.stop_worker()
+    cloud_svc.stop_worker()
     _stop_sync_worker()
     license_svc.stop_worker()
 
@@ -127,7 +132,7 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
-    setup.router, mobile.router,
+    setup.router, mobile.router, support.router, cloud.router,
 ):
     app.include_router(r, prefix=API)
 

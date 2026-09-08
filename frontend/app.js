@@ -230,6 +230,7 @@ const ICONS = {
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
   stethoscope: '<path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M6 3H4M14 3h2"/><path d="M10 13v2a5 5 0 0 0 10 0v-1"/><circle cx="20" cy="12" r="2"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  lifebuoy: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M5.6 5.6l3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/>',
   barcode: '<path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/><path d="M12 5v14" stroke-width="2.6"/>',
   scanner: '<path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3"/><path d="M7 12h10"/>',
   ledger: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
@@ -259,6 +260,7 @@ const NAV = [
   ["users", "کاربران", "users.manage", "users"],
   ["settings", "تنظیمات", "settings.manage", "gear"],
   ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
+  ["support", "درخواست پشتیبانی", "pos.sell", "lifebuoy"],
   ["audit", "لاگ‌ها", "audit.view", "shield"],
 ];
 
@@ -2291,6 +2293,7 @@ const SET_CATEGORIES = [
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
   { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
   { id: "mobile",   label: "موبایل (اندروید)", prefixes: [], panel: "mobile" },
+  { id: "cloud",    label: "همگام‌سازی ابری (اینترنت)", prefixes: ["cloud."], panel: "cloud" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
@@ -2374,6 +2377,10 @@ async function renderSettingsPanel(cat, allRows) {
   }
   if (cat.panel === "mobile") {
     await renderMobilePanel(body);
+    return;
+  }
+  if (cat.panel === "cloud") {
+    await renderCloudPanel(body);
     return;
   }
   if (cat.panel === "license") {
@@ -2496,7 +2503,20 @@ async function renderMobilePanel(body) {
     $("#mob-qr").innerHTML = `<span class="muted">در حال ساخت کد…</span>`;
     try {
       const r = await api("/mobile/pair/info");
-      $("#mob-qr").innerHTML = r.qr_png ? `<img src="${r.qr_png}" alt="QR" />` : `<textarea readonly class="ltr" style="width:220px;height:120px;font-size:10px">${esc(r.qr_text)}</textarea>`;
+      // v1.7: the QR is drawn in the browser (vendor-qrcode.js, MIT) so it
+      // never depends on an image library being bundled on the PC; the
+      // server-side PNG is only a fallback. Manual entry always remains.
+      let html = "";
+      try {
+        if (window.qrcode) {
+          const q = window.qrcode(0, "M"); q.addData(r.qr_text); q.make();
+          html = q.createSvgTag({ cellSize: 4, margin: 8, scalable: true });
+          html = `<div class="qr-box" style="width:260px;height:260px;background:#fff;padding:6px;border-radius:12px">${html.replace("<svg", '<svg style="width:100%;height:100%"')}</div>`;
+        }
+      } catch (_) { html = ""; }
+      if (!html && r.qr_png) html = `<img src="${r.qr_png}" alt="QR" style="width:260px;height:260px;border-radius:12px;background:#fff" />`;
+      if (!html) html = `<div class="error">ساخت تصویر QR ممکن نشد — کد زیر را در گوشی به‌صورت دستی وارد کنید.</div>`;
+      $("#mob-qr").innerHTML = html + `<details style="margin-top:8px"><summary class="muted">کد متنی (ورود دستی در گوشی)</summary><textarea readonly class="ltr" style="width:100%;height:90px;font-size:10px" onclick="this.select()">${esc(r.qr_text)}</textarea></details>`;
       $("#mob-info").innerHTML = `<div>آدرس سرور در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}</div>
         <div style="margin-top:6px">نسخهٔ وب موبایل (بدون نصب): <code class="ltr">${esc(r.mobile_url)}</code></div>
         <div style="margin-top:6px">این کد شامل یک کلید دسترسی یک‌ساله برای گوشی است؛ آن را در اختیار دیگران قرار ندهید. با هر بار ساخت کد جدید، یک دستگاه جدید در فهرست زیر ثبت می‌شود.</div>`;
@@ -2507,6 +2527,64 @@ async function renderMobilePanel(body) {
   gen();
 }
 
+
+/* ---------- Settings → همگام‌سازی ابری (v1.7) ----------
+ * Internet sync via the owner's own Google Drive (hidden app folder). Sign-in
+ * uses Google's device flow: a short code is shown here, the owner types it
+ * at google.com/device on any phone/PC, and this machine picks up the token. */
+async function renderCloudPanel(body) {
+  const card = el("div", { class: "card", id: "cloud-card" });
+  body.append(card);
+  let pollTimer = null;
+  async function draw() {
+    let st = {};
+    try { st = await api("/cloud/status"); } catch (e) { card.innerHTML = `<span class="error">${esc(e.message)}</span>`; return; }
+    card.innerHTML = `<h3>همگام‌سازی ابری (اینترنت)</h3>
+      <p class="muted">وقتی گوشی و رایانه در یک شبکه نیستند، تغییرات از طریق پوشهٔ مخفی برنامه در حساب Google Drive شما رد و بدل می‌شود (برنامه به فایل‌های شخصی شما دسترسی ندارد). یک نسخهٔ پشتیبان از پایگاه داده هم آنجا نگه داشته می‌شود.</p>
+      <div class="grid grid-3" style="margin:10px 0">
+        <div class="kpi"><span class="k">وضعیت</span><b>${st.connected ? "متصل ✓" : "غیرفعال"}</b></div>
+        <div class="kpi"><span class="k">حساب</span><b class="ltr">${esc(st.account || "—")}</b></div>
+        <div class="kpi"><span class="k">آخرین همگام‌سازی</span><b>${st.last_push_at ? faDateTime(st.last_push_at) : "—"}</b></div>
+      </div>
+      ${st.last_error ? `<div class="error" style="margin-bottom:8px">آخرین خطا: ${esc(st.last_error)}</div>` : ""}
+      ${st.connected ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="cl-sync">همگام‌سازی اکنون</button>
+          <button class="btn btn-danger" id="cl-off">قطع اتصال حساب</button>
+        </div>
+        <p class="muted" style="margin-top:10px">برای گوشی کافی است دوباره کد QR بخش «موبایل (اندروید)» را اسکن کنید؛ دسترسی ابری داخل همان کد قرار می‌گیرد. همگام‌سازی خودکار هر ۵ دقیقه انجام می‌شود.</p>`
+      : `
+        <details ${st.configured ? "" : "open"}>
+          <summary>مرحلهٔ ۱ — کلید سرویس (یک‌بار)</summary>
+          <p class="muted">در <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> یک OAuth Client از نوع «TVs and Limited Input devices» بسازید، Google Drive API را فعال کنید و مقادیر را اینجا وارد کنید. رایگان است و فقط یک‌بار لازم است.</p>
+          <div class="form-grid">
+            <div><label>Client ID</label><input id="cl-id" class="ltr" placeholder="xxxx.apps.googleusercontent.com" /></div>
+            <div><label>Client Secret</label><input id="cl-secret" class="ltr" type="password" /></div>
+          </div>
+        </details>
+        <div style="margin-top:10px"><button class="btn btn-primary" id="cl-start">مرحلهٔ ۲ — ورود به حساب Google</button></div>
+        <div id="cl-code" style="margin-top:10px"></div>`}`;
+    if ($("#cl-sync")) $("#cl-sync").onclick = async () => { $("#cl-sync").disabled = true; try { const r = await api("/cloud/sync-now", { method: "POST" }); toast(`همگام شد — ${r.files} فایل، ${r.applied} عملیات اعمال شد`); } catch (e) { toast(e.message, "err"); } draw(); };
+    if ($("#cl-off")) $("#cl-off").onclick = async () => { if (!confirm("اتصال حساب ابری قطع شود؟")) return; await api("/cloud/disconnect", { method: "POST" }); toast("قطع شد"); draw(); };
+    if ($("#cl-start")) $("#cl-start").onclick = async () => {
+      const body = { client_id: $("#cl-id").value.trim(), client_secret: $("#cl-secret").value.trim() };
+      if (!st.configured && (!body.client_id || !body.client_secret)) { toast("Client ID و Secret را وارد کنید", "err"); return; }
+      try {
+        const d = await api("/cloud/connect/start", { method: "POST", body: JSON.stringify(body) });
+        $("#cl-code").innerHTML = `<div class="card" style="text-align:center"><div class="muted">در مرورگر (روی همین رایانه یا گوشی) به نشانی زیر بروید و این کد را وارد کنید:</div>
+          <div class="ltr" style="font-size:18px;margin:6px 0"><a href="${esc(d.verification_url)}" target="_blank" rel="noopener">${esc(d.verification_url)}</a></div>
+          <div class="ltr" style="font-size:34px;letter-spacing:4px;font-weight:700">${esc(d.user_code)}</div>
+          <div class="muted" id="cl-wait">در انتظار تأیید…</div></div>`;
+        clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+          try { const p = await api("/cloud/connect/poll", { method: "POST" }); if (p.status === "CONNECTED") { clearInterval(pollTimer); toast("حساب متصل شد: " + p.account); if (window.Sfx) Sfx.play("success"); draw(); } }
+          catch (e) { clearInterval(pollTimer); $("#cl-wait").textContent = e.message; }
+        }, (d.interval || 5) * 1000);
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+  draw();
+}
 
 async function renderStoreProfile() {
   let p = {};
@@ -2702,6 +2780,75 @@ function startUpdate() {
     }
   });
 }
+
+/* ---------- support requests (v1.7) ----------
+ * The shop files a request (bug / feature / question …); it is stored locally
+ * and delivered to the support inbox in the background (retries while
+ * offline). The exact location is attached ONLY when the operator allows the
+ * browser prompt. */
+window.getGeo = () => new Promise((resolve) => {
+  if (!navigator.geolocation) return resolve(null);
+  navigator.geolocation.getCurrentPosition(
+    (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy }),
+    () => resolve(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+});
+RENDER.support = async () => {
+  const v = $("#view");
+  let meta = { types: [], priorities: [] };
+  try { meta = await api("/support/types"); } catch (e) { toast(e.message, "err"); }
+  v.innerHTML = `<div class="grid grid-2">
+    <div class="card">
+      <h3>ثبت درخواست پشتیبانی</h3>
+      <p class="muted">خرابی، پیشنهاد امکان جدید، سؤال یا مشکل سخت‌افزاری را همین‌جا ثبت کنید. درخواست همراه با مشخصات فروشگاه برای تیم پشتیبانی ارسال می‌شود؛ اگر اینترنت قطع باشد، ذخیره شده و به‌محض اتصال ارسال می‌شود.</p>
+      <form id="sup-form" class="form-grid">
+        <div><label>نوع درخواست</label><select id="sup-type">${meta.types.map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join("")}</select></div>
+        <div><label>اولویت</label><select id="sup-prio">${meta.priorities.map((p) => `<option value="${p.id}" ${p.id === "NORMAL" ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select></div>
+        <div class="full"><label>موضوع</label><input id="sup-subject" required minlength="3" maxlength="160" placeholder="مثلاً: چاپگر رسید چاپ نمی‌کند" /></div>
+        <div class="full"><label>شرح</label><textarea id="sup-desc" rows="5" maxlength="4000" placeholder="چه اتفاقی افتاد؟ چه زمانی؟ چه پیامی دیدید؟"></textarea></div>
+        <div><label>راه تماس (اختیاری)</label><input id="sup-contact" class="ltr" placeholder="09xxxxxxxxx" /></div>
+        <div><label class="checkbox"><input type="checkbox" id="sup-geo" checked /> ارسال موقعیت مکانی دقیق این دستگاه (برای اعزام سریع‌تر)</label></div>
+        <div class="full" style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary" type="submit" id="sup-send">ثبت و ارسال</button>
+          <span id="sup-status" class="muted"></span>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>درخواست‌های قبلی</h3><button class="btn btn-sm" id="sup-refresh">بازخوانی</button></div>
+      <div id="sup-list" class="muted">در حال بارگذاری…</div>
+    </div>
+  </div>`;
+  async function loadList() {
+    try {
+      const rows = await api("/support/tickets?limit=50");
+      $("#sup-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>شماره</th><th>نوع</th><th>موضوع</th><th>وضعیت</th><th>زمان</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr>
+        <td class="ltr">${esc(t.number)}</td><td>${esc(t.type_label)}</td><td>${esc(t.subject)}</td>
+        <td><span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></td>
+        <td>${faDateTime(t.created_at)}</td>
+        <td>${t.status === "FAILED" || t.status === "NEW" ? `<button class="btn btn-sm" onclick="supResend(${t.id})">ارسال دوباره</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+        : `<span class="muted">هنوز درخواستی ثبت نشده است.</span>`;
+    } catch (e) { $("#sup-list").textContent = e.message; }
+  }
+  window.supResend = async (id) => { try { const t = await api(`/support/tickets/${id}/resend`, { method: "POST" }); toast(t.status === "SENT" ? "ارسال شد" : "هنوز ارسال نشد؛ بعداً دوباره تلاش می‌شود", t.status === "SENT" ? "ok" : "err"); loadList(); } catch (e) { toast(e.message, "err"); } };
+  $("#sup-refresh").onclick = loadList;
+  $("#sup-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const btn = $("#sup-send"); btn.disabled = true; $("#sup-status").textContent = "در حال آماده‌سازی…";
+    const geo = $("#sup-geo").checked ? await window.getGeo() : null;
+    const body = { type: $("#sup-type").value, priority: $("#sup-prio").value, subject: $("#sup-subject").value.trim(),
+      description: $("#sup-desc").value.trim() || null, contact: $("#sup-contact").value.trim() || null,
+      device: window.SupermarketAndroid ? "Android" : (/Windows/i.test(navigator.userAgent) ? "Windows" : "Web"), ...(geo || {}) };
+    try {
+      const t = await api("/support/tickets", { method: "POST", body: JSON.stringify(body) });
+      if (window.Sfx) Sfx.play(t.status === "SENT" ? "success" : "note");
+      toast(t.status === "SENT" ? `درخواست ${t.number} ثبت و ارسال شد` : `درخواست ${t.number} ذخیره شد و به‌محض اتصال ارسال می‌شود`);
+      $("#sup-form").reset(); $("#sup-status").textContent = "";
+      loadList();
+    } catch (e) { toast(e.message, "err"); $("#sup-status").textContent = ""; }
+    btn.disabled = false;
+  });
+  loadList();
+};
 
 /* ---------- audit ---------- */
 RENDER.audit = async () => {

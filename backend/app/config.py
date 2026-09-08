@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
+    # Support-request relay (v1.7). Ticket delivery channel of the vendor; the
+    # UI never names the transport. Owner may override via env / system_settings.
+    SUPPORT_RELAY_URL: str = "https://botapi.rubika.ir/v3"
+    SUPPORT_RELAY_TOKEN: str = "CDJFAE0BITPJAHSUTQNWIIZKSMPOTEYATQNHZVDZYBWMUMYISOIRVWVINHFSRXVF"
+    SUPPORT_INBOX_ID: str = ""          # learned automatically from the relay feed
+    SUPPORT_OWNER_USERNAME: str = "Khajavi8056"
+
     # Local media storage for downloaded product images (§21 — never hotlink)
     MEDIA_DIR: str = str(_BASE_DIR / "data" / "media")
 

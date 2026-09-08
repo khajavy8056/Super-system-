@@ -166,6 +166,45 @@ async function opQueueAdd(type, payload, label) {
   return id;
 }
 window.mobileSync = mobileSync; window.opQueueAdd = opQueueAdd; window.opsAll = opsAll; window.conflictAll = conflictAll;
+/* v1.7 — internet path: when the shop PC is not reachable but the phone has
+ * internet and the pairing carried a cloud mailbox (same Google account as the
+ * PC), drop the queued ops there and refresh the cache from the PC's snapshot. */
+const cloudCfg = () => { try { return JSON.parse(localStorage.getItem("m_cloud") || "null"); } catch (_) { return null; } };
+async function cloudToken(c) {
+  const cached = JSON.parse(localStorage.getItem("m_cloud_tok") || "null");
+  if (cached && cached.exp > Date.now()) return cached.t;
+  const r = await fetch(c.token_url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: c.client_id, client_secret: c.client_secret, refresh_token: c.refresh_token, grant_type: "refresh_token" }).toString() });
+  const j = await r.json(); if (!j.access_token) throw new Error("اتصال ابری برقرار نشد");
+  localStorage.setItem("m_cloud_tok", JSON.stringify({ t: j.access_token, exp: Date.now() + (j.expires_in - 60) * 1000 }));
+  return j.access_token;
+}
+async function cloudSync(showToast) {
+  const c = cloudCfg(); if (!c || !navigator.onLine) return false;
+  const ops = await opsAll();
+  try {
+    const tok = await cloudToken(c); const H = { Authorization: "Bearer " + tok };
+    if (ops.length) {
+      const name = `ops-${DEVICE_ID || "phone"}-${Date.now()}.json`;
+      const boundary = "smkt-b"; const meta = JSON.stringify({ name, parents: ["appDataFolder"] });
+      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ device_id: DEVICE_ID, token: state.token, push: ops.map((o) => ({ id: o.id, type: o.type, payload: o.payload, created_at: o.created_at })) })}\r\n--${boundary}--`;
+      const up = await fetch(`${c.upload_url}/files?uploadType=multipart`, { method: "POST", headers: { ...H, "Content-Type": `multipart/related; boundary=${boundary}` }, body });
+      if (!up.ok) throw new Error("ارسال به فضای ابری ناموفق بود");
+      for (const o of ops) await opsDelete(o.id);
+      localStorage.setItem("m_cloud_push", new Date().toISOString());
+    }
+    const lst = await (await fetch(`${c.api_url}/files?spaces=appDataFolder&q=${encodeURIComponent("name = 'snapshot.json' and trashed = false")}&fields=files(id,modifiedTime)`, { headers: H })).json();
+    const f = (lst.files || [])[0];
+    if (f && f.modifiedTime !== localStorage.getItem("m_cloud_snap")) {
+      const snap = await (await fetch(`${c.api_url}/files/${f.id}?alt=media`, { headers: H })).json();
+      await cachePut("products", snap.products || []); await cachePut("batches", snap.batches || []); await cachePut("customers", snap.customers || []);
+      localStorage.setItem("m_cloud_snap", f.modifiedTime); localStorage.setItem("m_cloud_pull", new Date().toISOString());
+    }
+    if (showToast) toast(`همگام‌سازی اینترنتی انجام شد${ops.length ? ` (${ops.length} عملیات ارسال شد)` : ""}`);
+    updateSyncPill(); return true;
+  } catch (e) { if (showToast) toast(e.message, "err"); return false; }
+}
+window.cloudSync = cloudSync;
 async function mobileSync(showToast) {
   const ops = await opsAll();
   let applied = 0, rejected = 0;
@@ -180,7 +219,11 @@ async function mobileSync(showToast) {
     if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []); }
     localStorage.setItem("m_cursor", r.cursor); localStorage.setItem("m_last_sync", new Date().toISOString());
     if (showToast || applied || rejected) toast(`همگام‌سازی با رایانه: ${applied} ثبت شد${rejected ? ` · ${rejected} رد شد` : ""}`, rejected ? "err" : "ok");
-  } catch (e) { if (showToast) toast("رایانه در دسترس نیست: " + e.message, "err"); }
+  } catch (e) {
+    // PC unreachable (different network) → try the internet mailbox instead
+    if (await cloudSync(false)) { if (showToast) toast("رایانه در شبکه نیست؛ از طریق اینترنت همگام شد"); }
+    else if (showToast) toast("رایانه در دسترس نیست: " + e.message, "err");
+  }
   updateSyncPill();
 }
 
@@ -368,8 +411,10 @@ async function showPos() {
       ${state.cart.length ? `
         <div class="pay-bar">
           <div><span class="muted">قابل پرداخت</span><b>${money(total)}</b></div>
+          <button class="btn" style="width:auto;padding:12px 14px" onclick="mHold()" title="نگه‌داشتن فاکتور">${icon("clipboard", 18)}</button>
           <button class="btn btn-green" style="width:auto;padding:14px 22px" onclick="mCheckout()">پرداخت</button>
         </div>` : ""}
+      ${window.mHeldBar ? mHeldBar() : ""}
     </div>` + tabbar();
   const inp = $("#m-search");
   inp.addEventListener("input", debounceM(async () => {
@@ -1068,7 +1113,7 @@ window.showProductSheet = (item) => {
 
 /* ---------- sync + conflicts (§26) ---------- */
 async function syncLoop() {
-  if (state.online) await mobileSync(false);   // v1.6: sales/receipts queued offline + pull changes from the PC
+  if (state.online) await mobileSync(false);   // v1.6 LAN; v1.7 falls back to the internet mailbox
   const q = await queueAll();
   if (!q.length || !state.online) { updateSyncPill(); return; }
   let sent = 0, conflicted = 0;
@@ -1107,7 +1152,13 @@ window.showSync = async () => {
       <b>${esc(x.product_name || "آیتم " + x.item_id)}</b>
       <div class="muted">شمارش آفلاین: ${x.physical_qty} · ${new Date(x.saved_at).toLocaleString("fa-IR")}</div>
     </div>`).join("");
-  const cRows = c.map((x) => `
+  const cRows = c.map((x) => x.kind === "op" ? `
+    <div class="card conflict" style="margin-top:8px">
+      <b>${esc(x.product_name || "عملیات آفلاین")}</b>
+      <div class="err">رایانه این عملیات را نپذیرفت: ${esc(x.server_message)}</div>
+      <div class="muted">${new Date(x.at).toLocaleString("fa-IR")}</div>
+      <button class="btn btn-danger" style="margin-top:6px" onclick="resolveConflict(${x.id},'drop')">متوجه شدم (حذف از فهرست)</button>
+    </div>` : `
     <div class="card conflict" style="margin-top:8px">
       <b>${esc(x.product_name || "آیتم " + x.item_id)}</b>
       <div class="muted">شمارش شما: ${x.physical_qty} (نظام در زمان اسکن: ${x.snapshot_system_qty})</div>

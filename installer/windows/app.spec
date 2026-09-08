@@ -58,6 +58,8 @@ a = Analysis(
         "sqlalchemy.dialects.sqlite",
         # starlette imports the multipart parser lazily on first form POST
         "multipart", "python_multipart",
+        # v1.7 pairing QR PNG fallback (qrcode + Pillow PNG plugin)
+        "qrcode", "qrcode.image.pil", "PIL", "PIL.Image", "PIL.PngImagePlugin",
         # v1.3 native desktop window (pywebview on WebView2). pythonnet/clr
         # is loaded dynamically by pywebview's edgechromium backend.
     ] + _optional_desktop_hiddenimports(),

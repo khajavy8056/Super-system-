@@ -87,3 +87,28 @@ class SystemSetting(TimestampMixin, Base):
     value: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_secret: Mapped[bool] = mapped_column(default=False)
+
+
+class SupportTicket(TimestampMixin, Base):
+    """v1.7 — درخواست پشتیبانی. Stored locally first; relayed by the sync queue."""
+    __tablename__ = "support_tickets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    number: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    type: Mapped[str] = mapped_column(String(16), index=True)        # BUG | FEATURE | QUESTION | HARDWARE | LICENSE | TRAINING | OTHER
+    priority: Mapped[str] = mapped_column(String(8), default="NORMAL")
+    subject: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reporter_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    contact: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    device: Mapped[str | None] = mapped_column(String(64), nullable=True)   # Windows / Android / Web
+    app_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(nullable=True)
+    longitude: Mapped[float | None] = mapped_column(nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(nullable=True)
+    attachments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(8), default="NEW", index=True)  # NEW | SENT | FAILED | CLOSED
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    relay_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)

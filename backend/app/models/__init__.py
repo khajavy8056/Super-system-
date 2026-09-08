@@ -13,7 +13,7 @@ from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
 from .sales import (Customer, CustomerLedgerEntry, Invoice, InvoiceItem,
                     Payment, Return)
-from .system import AuditLog, Counter, HardwareDevice, Notification, SmsMessage, SystemSetting
+from .system import AuditLog, Counter, HardwareDevice, Notification, SmsMessage, SupportTicket, SystemSetting
 from .user import Permission, Role, User
 
 __all__ = [
@@ -52,6 +52,7 @@ __all__ = [
     "Counter",
     "Notification",
     "SystemSetting",
+    "SupportTicket",
     "Campaign",
     "Coupon",
     "CouponRedemption",

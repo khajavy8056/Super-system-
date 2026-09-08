@@ -281,3 +281,16 @@ input:focus { outline: 2px solid var(--primary); }
 .jdate-grid .jd { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; height: 36px; font-family: inherit; }
 .jdate-grid .jd.sel { background: var(--green); color: #04140a; border: 0; }
 .jdate-foot { display: flex; justify-content: space-between; margin-top: 10px; }
+
+/* v1.7 — parity module */
+.held-bar { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 2px; }
+.held-chip { flex: 0 0 auto; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--primary); background: rgba(59,130,246,.12); color: var(--text); font-size: 12px; }
+.menu-list { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; font-size: 14px; color: var(--text); }
+.check input { width: 20px; height: 20px; }
+textarea { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); font-size: 16px; font-family: inherit; }
+.batch-pick.on { outline: 2px solid var(--primary); }
+.pay-total { font-size: 22px; font-weight: 700; text-align: center; margin: 8px 0; font-variant-numeric: tabular-nums; }
+.ltr { direction: ltr; text-align: left; unicode-bidi: embed; }
+.sheet-body { max-height: 88vh; overflow-y: auto; }
+[data-theme="light"] { --bg: #f4f6fa; --bg2: #ffffff; --card: #ffffff; --text: #17202e; --muted: #5b6577; --border: #d9dfe8; }

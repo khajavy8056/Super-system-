@@ -82,10 +82,20 @@
           localStorage.setItem("m_server", u);
           if (payload.token) { localStorage.setItem("m_token", payload.token); localStorage.setItem("m_device", payload.device_id || ""); }
           if (payload.store) localStorage.setItem("m_store", payload.store);
+          if (payload.cloud) localStorage.setItem("m_cloud", JSON.stringify(payload.cloud)); else localStorage.removeItem("m_cloud");
           if (A) A.pair(u, payload.token || "", payload.store || "", payload.device_id || "");
           else location.href = "/mobile/index.html";
           return true;
         }
+      }
+      if (payload.cloud && payload.token) {
+        // not on the shop Wi-Fi right now — pair anyway; the internet mailbox keeps things in sync
+        localStorage.setItem("m_server", urls[0] || payload.url); localStorage.setItem("m_token", payload.token);
+        localStorage.setItem("m_device", payload.device_id || ""); localStorage.setItem("m_store", payload.store || "");
+        localStorage.setItem("m_cloud", JSON.stringify(payload.cloud));
+        statusEl.textContent = "رایانه در این شبکه نیست؛ اتصال ذخیره شد و همگام‌سازی از طریق اینترنت انجام می‌شود.";
+        if (A) A.pair(urls[0] || payload.url, payload.token, payload.store || "", payload.device_id || ""); else setTimeout(() => location.href = "/mobile/index.html", 1200);
+        return true;
       }
       statusEl.textContent = "اتصال برقرار نشد — Wi‑Fi گوشی و رایانه باید یکی باشد و برنامهٔ ویندوز باز باشد.";
       return false;

@@ -46,6 +46,9 @@ public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 11;
     private WebView web;
     private PermissionRequest pendingPermission;
+    private static final int REQ_LOCATION = 2;
+    private android.webkit.GeolocationPermissions.Callback pendingGeoCb;
+    private String pendingGeoOrigin;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -63,6 +66,7 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        s.setGeolocationEnabled(true);
         s.setDatabaseEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
@@ -102,6 +106,17 @@ public class MainActivity extends Activity {
                 } else {
                     pendingPermission = request;
                     requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+                }
+            }
+
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, android.webkit.GeolocationPermissions.Callback callback) {
+                // v1.7: exact location for support requests (only when the user ticks the box in the form)
+                if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    callback.invoke(origin, true, false);
+                } else {
+                    pendingGeoCb = callback; pendingGeoOrigin = origin;
+                    requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
                 }
             }
         });
@@ -204,6 +219,11 @@ public class MainActivity extends Activity {
                 pendingPermission.grant(pendingPermission.getResources());
             else pendingPermission.deny();
             pendingPermission = null;
+        }
+        if (code == REQ_LOCATION && pendingGeoCb != null) {
+            boolean ok = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
+            pendingGeoCb.invoke(pendingGeoOrigin, ok, false);
+            pendingGeoCb = null; pendingGeoOrigin = null;
         }
     }
 

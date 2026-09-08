@@ -25,7 +25,9 @@ const FE = path.join(__dirname, "..", "..", "frontend");
   window.SupermarketAndroid = { getServerUrl: () => BASE, getDeviceToken: () => "", getDeviceId: () => "dev-smoke-1", getStoreName: () => "", version: () => "1.6.0", isPaired: () => true, pair() {}, unpair() {}, exitApp() {} };
   window.localStorage.setItem("m_token", token);
   window.confirm = () => true;
-  try { window.eval(fs.readFileSync(FE + "/mobile/app.js", "utf8")); } catch (e) { errors.push("eval: " + e.message); }
+  // both files are classic <script> tags in index.html → one shared global lexical scope; eval them together to mirror that
+  try { window.eval(fs.readFileSync(FE + "/mobile/app.js", "utf8") + "\n" + fs.readFileSync(FE + "/mobile/app-more.js", "utf8") + "\nwindow.__st = state;"); } catch (e) { errors.push("eval: " + e.message); }
+  window.prompt = () => "مشتری تست"; window.navigator.geolocation = { getCurrentPosition: (ok) => ok({ coords: { latitude: 35.7, longitude: 51.4, accuracy: 9 } }) };
   await new Promise((r) => setTimeout(r, 1500));
   const app = window.document.getElementById("app");
   console.log("native mode API base:", window.SM_MOBILE.API);
@@ -52,6 +54,27 @@ const FE = path.join(__dirname, "..", "..", "frontend");
   console.log("sync screen mentions PC sync:", app.textContent.includes("همگام‌سازی با رایانه"));
   await window.eval("showSettingsM()"); await new Promise((r) => setTimeout(r, 300));
   console.log("settings shows unpair:", app.textContent.includes("قطع اتصال"));
+  // v1.7 — every "More" screen must render without runtime errors (feature parity on the phone)
+  const screens = ["showMore","showHeldM","showProducts","showStockOpsM","showWarehousesM","showMovementsM","showCustomersM","showDebtorsM","showInvoicesM","showCampaignsM","showCouponsM","showReportsM","showAccountingM","showUsersM","showStoreM","showSmsM","showHardwareM","showLicenseM","showAuditM","showAboutM","showSupportM","showCloudM","showSync","showSettingsM"];
+  let rendered = 0;
+  for (const fn of screens) {
+    try { await window.eval(`${fn}()`); await new Promise((r) => setTimeout(r, 350)); if (app.textContent.trim().length > 10 && !/undefined/.test(app.textContent)) rendered++; else errors.push("screen empty/undefined: " + fn); }
+    catch (e) { errors.push("screen " + fn + ": " + e.message); }
+  }
+  console.log("mobile screens rendered:", rendered + "/" + screens.length);
+  for (const k of ["mReport('sales')","mReport('low-stock')","mReport('expiry')","mExpenses()","mCheques()","mSuppliers()"]) { try { await window.eval(k); await new Promise((r) => setTimeout(r, 300)); } catch (e) { errors.push(k + ": " + e.message); } }
+  // held invoices: hold 1 cart, list, resume
+  window.eval(`__st.cart = [{product_id: ${list[0] ? list[0].id : 1}, batch_id: 1, name: "x", sell: 1000, qty: 2}]`); window.eval("mHold()");
+  await window.eval("showHeldM()"); await new Promise((r) => setTimeout(r, 200));
+  console.log("held listed:", app.textContent.includes("مشتری تست"));
+  if (!app.textContent.includes("مشتری تست")) errors.push("held invoice not listed");
+  // support ticket from the phone (relay unreachable → stored locally as FAILED, retried later)
+  await window.eval("showSupportM()"); await new Promise((r) => setTimeout(r, 400));
+  window.document.getElementById("tk-subj").value = "تست از گوشی"; window.document.getElementById("tk-send").click();
+  await new Promise((r) => setTimeout(r, 1200));
+  const tk = await (await fetch(BASE + "/api/support/tickets?limit=1", { headers: { Authorization: "Bearer " + token } })).json();
+  console.log("ticket from phone:", tk[0] && tk[0].subject, tk[0] && tk[0].status, "geo:", tk[0] && tk[0].latitude, "device:", tk[0] && tk[0].device);
+  if (!tk[0] || tk[0].subject !== "تست از گوشی" || tk[0].latitude !== 35.7 || tk[0].device !== "Android") errors.push("ticket not stored with geo/device");
   if (errors.length) { console.log("ERRORS:"); errors.forEach((e) => console.log(" -", e)); process.exit(1); }
   console.log("ANDROID SMOKE OK"); process.exit(0);
 })();

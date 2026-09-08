@@ -12,3 +12,4 @@ python-multipart>=0.0.9,<1.0
 # The launcher falls back to an Edge app-mode window when pywebview is absent.
 pyzipper>=0.3,<1.0
 qrcode>=7.4,<9.0
+pillow>=10.0,<13.0
