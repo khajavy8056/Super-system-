@@ -59,6 +59,12 @@ public final class Db extends SQLiteOpenHelper {
             JSONArray ps = pull.optJSONArray("products"); if (ps != null) for (int i = 0; i < ps.length(); i++) putProduct(ps.optJSONObject(i), false);
             JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
             JSONArray cs = pull.optJSONArray("customers"); if (cs != null) for (int i = 0; i < cs.length(); i++) putCustomer(cs.optJSONObject(i), false);
+            if (full) {
+                // temp rows created offline are superseded once the PC has the real ones
+                d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode IN (SELECT barcode FROM products WHERE is_local=0)");
+                d.execSQL("DELETE FROM customers WHERE is_local=1 AND phone IS NOT NULL AND phone<>'' AND phone IN (SELECT phone FROM customers WHERE is_local=0)");
+                if (count("ops") == 0) { d.execSQL("DELETE FROM batches WHERE is_local=1"); d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode LIKE 'INT-L%'"); }
+            }
             kv("last_pull", now()); d.setTransactionSuccessful();
         } finally { d.endTransaction(); }
     }
