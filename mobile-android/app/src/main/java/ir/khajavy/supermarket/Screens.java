@@ -57,6 +57,7 @@ public final class Screens {
             case "cloud": return new Cloud(a);
             case "device": return new Device(a);
             case "about": return new About(a);
+            case "notifications": return new Notifications(a);
         }
         return null;
     }
@@ -75,7 +76,7 @@ public final class Screens {
         if (Api.standalone()) return;
         Api.get("/auth/me", r -> { user = (JSONObject) r; Prefs.set("user_json", user.toString()); }, e -> {});
         Api.get("/settings/currency", r -> { JSONObject c = (JSONObject) r; String code = c.optString("code", "IRR"); Ui.currencyLabel = "IRT".equals(code) ? "تومان" : "ریال"; Prefs.set("currency_label", Ui.currencyLabel); }, e -> {});
-        Api.get("/settings/theme", r -> { String res = ((JSONObject) r).optString("resolved", "dark"); if (!res.equals(Prefs.get("theme_resolved", "dark"))) { Prefs.set("theme_resolved", res); a.recreate(); } }, e -> {});
+        if (Prefs.get("theme_mode", "").isEmpty()) Api.get("/settings/theme", r -> { String res = ((JSONObject) r).optString("resolved", "dark"); if (!res.equals(Prefs.get("theme_resolved", "dark"))) { Prefs.set("theme_resolved", res); a.recreate(); } }, e -> {});
         Api.get("/settings/store-profile", r -> Prefs.set("store_name", ((JSONObject) r).optString("name", "")), e -> {});
     }
 
@@ -120,21 +121,33 @@ public final class Screens {
         public boolean autoRefresh() { return true; }
         public void load() {
             clear();
-            LinearLayout hero = Ui.col(c); hero.setBackground(Ui.rounded(Ui.PRIMARY, 0, 20)); hero.setPadding(Ui.dp(16), Ui.dp(16), Ui.dp(16), Ui.dp(16)); hero.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 12));
-            hero.addView(Ui.text(c, "سلام " + userName(), 13, 0xCCFFFFFF, false)); hero.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه"), 19, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, Jalali.todayLong(), 12, 0xCCFFFFFF, false));
-            LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(12), 0, 0);
-            quick.addView(qb("فروش جدید", () -> a.route("pos"))); quick.addView(qb("اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("ورود کالا", () -> a.route("receive")));
+            LinearLayout hero = Ui.hero(c);
+            LinearLayout hr = Ui.row(c); LinearLayout hcol = Ui.col(c); hcol.setLayoutParams(Ui.weight(1));
+            hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه"), 21, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, "📅  " + Jalali.todayLong(), 12, 0xDDFFFFFF, false));
+            hr.addView(hcol); TextView av = Ui.text(c, "🏪", 26, 0xFFFFFFFF, true); av.setGravity(android.view.Gravity.CENTER); av.setBackground(Ui.rounded(0x2EFFFFFF, 0, 16)); av.setLayoutParams(Ui.lp(Ui.dp(52), Ui.dp(52))); hr.addView(av); hero.addView(hr);
+            LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
+            quick.addView(qb("＋ فروش جدید", () -> a.route("pos"))); quick.addView(qb("▣ اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("↓ ورود کالا", () -> a.route("receive")));
             hero.addView(quick); body.addView(hero);
             double[] loc = Db.todayStats();
-            if (Api.standalone()) { body.addView(Ui.grid2(c, Ui.kpi(c, "فروش امروز (این گوشی)", Ui.money(loc[1]), null, Ui.GREEN), Ui.kpi(c, "فاکتور امروز", Ui.num(loc[0]), null, Ui.PRIMARY))); body.addView(Ui.grid2(c, Ui.kpi(c, "کالاها", Ui.num(Db.count("products")), null, Ui.VIOLET), Ui.kpi(c, "مشتریان", Ui.num(Db.count("customers")), null, Ui.TEAL))); body.addView(Ui.note(c, "حالت مستقل", "این گوشی بدون رایانه کار می‌کند. هر زمان به رایانهٔ فروشگاه وصل شوید، همهٔ داده‌ها همگام می‌شود.")); return; }
+            if (Api.standalone()) {
+                double[] week = Db.weekSales();
+                body.addView(Ui.grid2(c, Ui.tile(c, "↗", Ui.TEAL, "فروش امروز", Ui.money(loc[1]), Ui.spark(c, week, Ui.TEAL)), Ui.tile(c, "🏷", Ui.VIOLET, "کالاها", Ui.num(Db.count("products")), null)));
+                body.addView(Ui.grid2(c, Ui.tile(c, "👤", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "🧾", Ui.GREEN, "فاکتور امروز", Ui.num(loc[0]), null)));
+                String[] tops = Db.topSellingToday(3); LinearLayout tp = Ui.card(c, "⭐ پرفروش‌ترین‌ها"); if (tops.length == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (String t : tops) tp.addView(Ui.kv(c, t.substring(0, t.indexOf('|')), t.substring(t.indexOf('|') + 1), Ui.GOLD)); body.addView(tp);
+                LinearLayout ex = Ui.card(c, "⏳ نزدیک انقضا"); int ne = Db.expiringCount(7), nx = Db.expiringCount(0); ex.addView(Ui.kv(c, "منقضی‌شده", Ui.num(nx), nx > 0 ? Ui.RED : 0)); ex.addView(Ui.kv(c, "تا ۷ روز آینده", Ui.num(ne), ne > 0 ? Ui.AMBER : 0)); ex.setOnClickListener(v -> a.route("inventory")); body.addView(ex);
+                LinearLayout sa = Ui.card(c, "ℹ حالت مستقل"); sa.addView(Ui.muted(c, "این گوشی بدون رایانه کار می‌کند. هر زمان به رایانهٔ فروشگاه وصل شوید، همهٔ داده‌ها همگام می‌شود.")); body.addView(sa); return;
+            }
             body.addView(Ui.empty(c, "در حال دریافت داشبورد…"));
             get("/reports/dashboard", r -> { JSONObject d = (JSONObject) r; body.removeViewAt(body.getChildCount() - 1); render(d, loc); });
         }
-        private View qb(String s, Runnable r) { TextView t = Ui.text(c, s, 12, 0xFFFFFFFF, true); t.setGravity(android.view.Gravity.CENTER); t.setBackground(Ui.rounded(0x33FFFFFF, 0, 12)); t.setPadding(0, Ui.dp(9), 0, Ui.dp(9)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.setOnClickListener(v -> r.run()); return t; }
+        static String greeting() { int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); return h < 12 ? "صبح بخیر" : h < 17 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر"; }
+        private View qb(String s, Runnable r) { TextView t = Ui.text(c, s, 12, 0xFFFFFFFF, true); t.setGravity(android.view.Gravity.CENTER); t.setBackground(Ui.rounded(0x2EFFFFFF, 0, 14)); t.setPadding(0, Ui.dp(9), 0, Ui.dp(9)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.setOnClickListener(v -> r.run()); return t; }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
             // 1-2 sales / invoices
-            body.addView(Ui.grid2(c, Ui.kpi(c, "فروش امروز", Ui.money(d(sales, "today")), "دیروز " + Ui.money(d(sales, "yesterday")), Ui.GREEN), Ui.kpi(c, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), "میانگین " + Ui.money(d(sales, "avg_invoice_today")), Ui.PRIMARY)));
+            JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
+            body.addView(Ui.grid2(c, Ui.tile(c, "↗", Ui.TEAL, "فروش امروز", Ui.money(d(sales, "today")), wk.length > 0 ? Ui.spark(c, wk, Ui.TEAL) : null), Ui.tile(c, "🧾", Ui.GREEN, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), null)));
+            body.addView(Ui.grid2(c, Ui.tile(c, "🏷", Ui.VIOLET, "کالاها", Ui.num(d(inv, "product_count")), null), Ui.tile(c, "👤", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null)));
             // 3-4 month / profit
             body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", Ui.money(d(profit, "today")), Ui.money(d(profit, "month")), Ui.VIOLET)));
             // 5-6 inventory / low stock
@@ -147,7 +160,7 @@ public final class Screens {
             // 8 receivables
             LinearLayout rc = Ui.card(c, "مطالبات و بدهکاران"); rc.addView(Ui.kv(c, "بدهی مشتریان", Ui.money(d(rec, "customer_debt")), Ui.AMBER)); rc.addView(Ui.kv(c, "تعداد بدهکار", Ui.num(d(rec, "debtor_count")), 0)); rc.addView(Ui.kv(c, "فاکتور در انتظار پرداخت", Ui.num(d(rec, "pending_count")) + " · " + Ui.money(d(rec, "pending_amount")), 0)); rc.setOnClickListener(v -> a.route("customers")); body.addView(rc);
             // 9 top products
-            LinearLayout tp = Ui.card(c, "پرفروش‌ترین کالاها"); JSONArray top = d.optJSONArray("top_products"); if (top == null || top.length() == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (int i = 0; i < Math.min(5, top.length()); i++) { JSONObject t = top.optJSONObject(i); tp.addView(Ui.kv(c, t.optString("name"), Ui.num(d(t, "qty")) + " · " + Ui.money(d(t, "revenue")), 0)); } body.addView(tp);
+            LinearLayout tp = Ui.card(c, "⭐ پرفروش‌ترین کالاها"); JSONArray top = d.optJSONArray("top_products"); if (top == null || top.length() == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (int i = 0; i < Math.min(5, top.length()); i++) { JSONObject t = top.optJSONObject(i); tp.addView(Ui.kv(c, t.optString("name"), Ui.num(d(t, "qty")) + " · " + Ui.money(d(t, "revenue")), Ui.GOLD)); } body.addView(tp);
             // 10 trend (7 days, bar chart drawn with views)
             LinearLayout tr = Ui.card(c, "روند فروش ۷ روز"); JSONArray trend = d.optJSONArray("trend"); if (trend != null && trend.length() > 0) { double mx = 1; for (int i = 0; i < trend.length(); i++) mx = Math.max(mx, d(trend.optJSONObject(i), "sales")); LinearLayout bars = Ui.row(c); bars.setGravity(android.view.Gravity.BOTTOM); bars.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(110))); for (int i = 0; i < trend.length(); i++) { JSONObject t = trend.optJSONObject(i); LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL); LinearLayout.LayoutParams lp = Ui.weight(1); lp.height = ViewGroup.LayoutParams.MATCH_PARENT; col.setLayoutParams(lp); View bar = new View(c); bar.setBackground(Ui.rounded(Ui.PRIMARY, 0, 4)); bar.setLayoutParams(Ui.lp(Ui.dp(14), Math.max(Ui.dp(3), (int) (Ui.dp(80) * d(t, "sales") / mx)))); col.addView(bar); TextView lb = Ui.muted(c, Ui.fa(t.optString("label").substring(3))); lb.setTextSize(10); col.addView(lb); bars.addView(col); } tr.addView(bars); } body.addView(tr);
             // 11 recent invoices
@@ -189,7 +202,7 @@ public final class Screens {
             cn.addView(Ui.primary(c, Api.standalone() ? "اتصال به رایانهٔ فروشگاه (QR / کد)" : "جفت‌سازی دوباره (QR / کد ۶ رقمی)", () -> { Intent i = new Intent(a, SetupActivity.class); i.putExtra("pair", true); a.startActivity(i); }));
             cn.addView(Ui.ghost(c, "تغییر آدرس رایانه", () -> Ui.prompt(c, "آدرس رایانه", "مثال: 192.168.1.10:8000", false, v -> { if (!v.isEmpty()) { String u = Prefs.normalise(v); Prefs.set("server_url", u); Api.base = u; Db.kv("cursor", null); Sync.kick(); load(); } })));
             body.addView(cn);
-            LinearLayout ap = Ui.card(c, "ظاهر"); ap.addView(Ui.ghost(c, Ui.dark ? "پوستهٔ روشن" : "پوستهٔ تیره", () -> { Prefs.set("theme_resolved", Ui.dark ? "light" : "dark"); a.recreate(); })); ap.addView(Ui.ghost(c, "پخش دوبارهٔ همهٔ راهنماها", () -> { Tour.resetAll(); Ui.toast("راهنماها دوباره نمایش داده می‌شوند"); })); body.addView(ap);
+            LinearLayout ap = Ui.card(c, "ظاهر"); ap.addView(Ui.ghost(c, Ui.dark ? "پوستهٔ روشن" : "پوستهٔ تیره", () -> { Prefs.set("theme_resolved", Ui.dark ? "light" : "dark"); Prefs.set("theme_mode", Ui.dark ? "light" : "dark"); a.recreate(); })); ap.addView(Ui.ghost(c, "پوستهٔ خودکار (۷ صبح روشن / ۷ شب تیره)", () -> { Prefs.set("theme_mode", ""); int hr = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); Prefs.set("theme_resolved", hr >= 7 && hr < 19 ? "light" : "dark"); a.recreate(); })); ap.addView(Ui.ghost(c, "پخش دوبارهٔ همهٔ راهنماها", () -> { Tour.resetAll(); Ui.toast("راهنماها دوباره نمایش داده می‌شوند"); })); body.addView(ap);
             LinearLayout sc = Ui.card(c, "اسکنر"); sc.addView(Ui.muted(c, "دوربین گوشی به‌صورت پیوسته بارکد را می‌خواند (EAN/UPC/Code128/QR). با هر خواندن لرزش کوتاه می‌دهد.")); sc.addView(Ui.ghost(c, "آزمایش اسکنر", () -> a.scan("آزمایش اسکنر", code -> Ui.toast("خوانده شد: " + code)))); body.addView(sc);
             LinearLayout dz = Ui.card(c, "داده‌های گوشی"); dz.addView(Ui.muted(c, "کاتالوگ و صف عملیات روی همین گوشی (SQLite) نگه داشته می‌شود تا بدون رایانه هم کار کند.")); dz.addView(Ui.danger(c, "حذف داده‌های محلی و لغو جفت‌سازی", () -> Ui.confirm(c, "همهٔ داده‌های محلی حذف می‌شود. عملیات همگام‌نشده (" + Db.opCount() + ") از بین می‌رود. ادامه؟", () -> { a.deleteDatabase("supermarket_native.db"); Prefs.clear(a); a.startActivity(new Intent(a, SetupActivity.class)); a.finish(); }))); body.addView(dz);
         }
@@ -217,6 +230,31 @@ public final class Screens {
     }
 
     /* ---------------- About ---------------- */
+    /* ---------------- Notifications & sounds (v2.2) ---------------- */
+    public static final class Notifications extends Screen {
+        Notifications(AppActivity a) { super(a); }
+        public String key() { return "notifications"; } public String title() { return "اعلان‌ها و صداها"; }
+        public void load() {
+            clear();
+            LinearLayout n = Ui.card(c, "🔔 اعلان‌های نوار بالا");
+            n.addView(Ui.muted(c, "اعلان‌ها حتی وقتی برنامه بسته است هر نیم ساعت بررسی می‌شوند (پاسخ پشتیبانی، انقضا، کمبود موجودی، همگام‌سازی)."));
+            n.addView(toggle("پاسخ پشتیبانی", "notif_" + Notify.CH_SUPPORT)); n.addView(toggle("انقضا و کمبود موجودی", "notif_" + Notify.CH_STOCK)); n.addView(toggle("سامانه و همگام‌سازی", "notif_" + Notify.CH_SYSTEM));
+            if (android.os.Build.VERSION.SDK_INT >= 33 && a.checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                n.addView(Ui.primary(c, "اجازهٔ نمایش اعلان", () -> { Prefs.set("notif_asked", ""); Notify.askPermission(a); }));
+            n.addView(Ui.ghost(c, "ارسال اعلان آزمایشی", () -> Notify.show(a, Notify.CH_SYSTEM, 199, "اعلان آزمایشی", "اعلان‌های سوپری من درست کار می‌کند ✓", "notifications", "note")));
+            n.addView(Ui.ghost(c, "بررسی اکنون (انقضا / موجودی / پشتیبانی)", () -> { Prefs.set("notif_expiry_day", ""); Api.bg(() -> { Notify.checkLocal(a); if (Api.standalone()) { int k = SupportRelay.poll(); if (k > 0) Notify.supportReply(a, k); } else Notify.checkPcSupport(a); Api.ui(() -> Ui.toast("بررسی انجام شد")); }); }));
+            body.addView(n);
+            LinearLayout so = Ui.card(c, "🔈 صداها"); so.addView(Ui.muted(c, "صداها مانند نسخهٔ رایانه ملایم‌اند: ثبت فروش، افزودن کالا، خطا، ابطال، نگه‌داشتن و اعلان هرکدام صدای جداگانه دارند."));
+            so.addView(toggle("پخش صداها", "sfx"));
+            android.widget.SeekBar sb = new android.widget.SeekBar(c); sb.setMax(100); sb.setProgress(Math.round(Sfx.volume() * 100)); sb.setLayoutDirection(View.LAYOUT_DIRECTION_LTR); sb.setPadding(Ui.dp(8), Ui.dp(8), Ui.dp(8), Ui.dp(8));
+            sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() { public void onProgressChanged(android.widget.SeekBar b, int v, boolean u) { Prefs.set("sfx_vol", String.valueOf(v / 100f)); } public void onStartTrackingTouch(android.widget.SeekBar b) {} public void onStopTrackingTouch(android.widget.SeekBar b) { Sfx.play("note"); } });
+            so.addView(Ui.label(c, "بلندی")); so.addView(sb);
+            LinearLayout tr = Ui.row(c); for (String[] k : new String[][]{{"success", "فروش"}, {"add", "افزودن"}, {"alert", "هشدار"}, {"void", "ابطال"}, {"error", "خطا"}}) tr.addView(Ui.chip(c, k[1], false, () -> Sfx.play(k[0]))); so.addView(Ui.chips(c, tr));
+            body.addView(so);
+        }
+        private View toggle(String label, String key) { LinearLayout r = Ui.row(c); r.setPadding(0, Ui.dp(6), 0, Ui.dp(6)); TextView t = Ui.body(c, label); t.setLayoutParams(Ui.weight(1)); r.addView(t); android.widget.Switch sw = new android.widget.Switch(c); sw.setChecked(!"0".equals(Prefs.get(key, "1"))); sw.setOnCheckedChangeListener((b, on) -> Prefs.set(key, on ? "1" : "0")); r.addView(sw); return r; }
+    }
+
     public static final class About extends Screen {
         About(AppActivity a) { super(a); }
         public String key() { return "about"; } public String title() { return "دربارهٔ برنامه"; }

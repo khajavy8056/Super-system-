@@ -1,4 +1,15 @@
-# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.1.0 (بومی / Native)
+# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.2.0 (بومی / Native)
+
+## تازه‌های v2.2 (وضعیت §57)
+| مورد | وضعیت | شاهد |
+|---|---|---|
+| نصب به‌روزرسانی روی نسخهٔ قبل | DONE | کلید ثابت `mobile-android/keystore/supery-release.jks`؛ امضای 2.2.0 = 2.1.0 (`0f9d69b2…`)، `apksigner verify` |
+| هشدار Play Protect | تا حد ممکن (کلید ثابت + راهنمای نصب) — حذف کامل فقط با انتشار در Play | README |
+| اعلان‌های نوار بالا (پشتیبانی/انقضا/موجودی/همگام‌سازی) | DONE (کد + کامپایل + تست منبع) / NOT VERIFIED روی گوشی | `Notify.java`, `AndroidManifest.xml` |
+| صداهای ملایم مانند رایانه | DONE (کد + کامپایل) / NOT VERIFIED روی گوشی | `Sfx.java` |
+| بازطراحی UI/UX طبق طرح‌های مرجع | DONE (کد + کامپایل + تست منبع) | `Ui.java`, `AppActivity.java`, `Screens.Home`, `SalesScreens.Pos` |
+| APK 2.2.0 (versionCode 20200) | DONE | `releases/android/SupermarketMobile-2.2.0.apk` + sha256 |
+
 
 ## تازه‌های v2.1 (وضعیت §57)
 | مورد | وضعیت | شاهد |

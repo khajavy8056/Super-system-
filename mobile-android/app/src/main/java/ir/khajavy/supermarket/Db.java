@@ -196,6 +196,40 @@ public final class Db extends SQLiteOpenHelper {
         try (Cursor c = w().rawQuery("SELECT COUNT(*), IFNULL(SUM(total),0), (SELECT COUNT(*) FROM invoices WHERE synced=0) FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { return c.moveToFirst() ? new double[]{c.getDouble(0), c.getDouble(1), c.getDouble(2)} : new double[]{0, 0, 0}; }
     }
 
+    /** sales totals for the last 7 days (oldest first) — dashboard sparkline. */
+    public static double[] weekSales() {
+        double[] out = new double[7]; java.util.Calendar cal = java.util.Calendar.getInstance();
+        for (int i = 6; i >= 0; i--) { String day = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH)); try (Cursor c = w().rawQuery("SELECT IFNULL(SUM(total),0) FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { out[i] = c.moveToFirst() ? c.getDouble(0) : 0; } cal.add(java.util.Calendar.DAY_OF_MONTH, -1); }
+        return out;
+    }
+    /** "name|qty" of today's best sellers (from local invoice JSON). */
+    public static String[] topSellingToday(int n) {
+        java.util.Map<String, Double> m = new java.util.HashMap<>(); String day = now().substring(0, 10);
+        try (Cursor c = w().rawQuery("SELECT json FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { while (c.moveToNext()) { try { JSONArray it = new JSONObject(c.getString(0)).optJSONArray("items"); for (int i = 0; it != null && i < it.length(); i++) { JSONObject x = it.optJSONObject(i); String k = x.optString("name"); m.put(k, (m.containsKey(k) ? m.get(k) : 0) + x.optDouble("quantity", 0)); } } catch (Exception ignore) {} } }
+        java.util.List<java.util.Map.Entry<String, Double>> l = new java.util.ArrayList<>(m.entrySet()); java.util.Collections.sort(l, (x, y) -> Double.compare(y.getValue(), x.getValue()));
+        String[] out = new String[Math.min(n, l.size())]; for (int i = 0; i < out.length; i++) out[i] = l.get(i).getKey() + "|" + Ui.num(l.get(i).getValue()); return out;
+    }
+    /** batches with stock whose expiry is within `days` (0 = already expired). */
+    public static int expiringCount(int days) {
+        java.util.Calendar cal = java.util.Calendar.getInstance(); String today = now().substring(0, 10); cal.add(java.util.Calendar.DAY_OF_MONTH, days);
+        String lim = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH));
+        String sql = days == 0 ? "SELECT COUNT(*) FROM batches WHERE current_qty>0 AND expiry_date IS NOT NULL AND expiry_date<?" : "SELECT COUNT(*) FROM batches WHERE current_qty>0 AND expiry_date IS NOT NULL AND expiry_date>=? AND expiry_date<=?";
+        try (Cursor c = w().rawQuery(sql, days == 0 ? new String[]{today} : new String[]{today, lim})) { return c.moveToFirst() ? c.getInt(0) : 0; }
+    }
+    /** names of batches expiring within `days` (for notifications). */
+    public static java.util.List<String> expiringNames(int days, int limit) {
+        java.util.List<String> out = new java.util.ArrayList<>(); java.util.Calendar cal = java.util.Calendar.getInstance(); cal.add(java.util.Calendar.DAY_OF_MONTH, days);
+        String lim = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH));
+        try (Cursor c = w().rawQuery("SELECT p.name, b.expiry_date FROM batches b JOIN products p ON p.id=b.product_id WHERE b.current_qty>0 AND b.expiry_date IS NOT NULL AND b.expiry_date<=? ORDER BY b.expiry_date LIMIT " + limit, new String[]{lim})) { while (c.moveToNext()) out.add(c.getString(0) + " (" + Ui.jdate(c.getString(1)) + ")"); }
+        return out;
+    }
+    /** products whose total stock is at/below their alert threshold. */
+    public static java.util.List<String> lowStockNames(int limit) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try (Cursor c = w().rawQuery("SELECT p.name, IFNULL(SUM(b.current_qty),0) q, p.min_stock_alert FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1 AND p.min_stock_alert>0 GROUP BY p.id HAVING q<=p.min_stock_alert LIMIT " + limit, null)) { while (c.moveToNext()) out.add(c.getString(0) + " (" + Ui.num(c.getDouble(1)) + ")"); }
+        return out;
+    }
+
     /* ---------------- op queue ---------------- */
     public static String opAdd(String type, JSONObject payload, String label, String localNo) {
         String id = "op" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);

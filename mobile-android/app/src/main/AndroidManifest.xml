@@ -9,6 +9,9 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- v2.2: status-bar notifications (Android 13+ runtime permission) + background check -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -43,6 +46,11 @@
         <activity android:name=".LoginActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".SetupActivity" android:exported="false" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden" />
         <activity android:name=".LockActivity" android:exported="false" android:launchMode="singleTask" />
+        <receiver android:name=".Notify$Checker" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <activity android:name=".SupportActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".ScanActivity"

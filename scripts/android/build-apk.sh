@@ -55,7 +55,7 @@ cp "$W/base.apk" "$W/unsigned.apk"
 if [ -x "$TOOLS/zipalign" ]; then "$TOOLS/zipalign" -f -p 4 "$W/unsigned.apk" "$W/aligned.apk"; else cp "$W/unsigned.apk" "$W/aligned.apk"; fi
 
 echo "== 6/6 sign (apksigner v2+v3)"
-KS="${SUPERMARKET_KEYSTORE:-$ROOT/installer/output/supermarket-release.jks}"
+KS="${SUPERMARKET_KEYSTORE:-$ROOT/mobile-android/keystore/supery-release.jks}"
 KS_PASS="${SUPERMARKET_KEYSTORE_PASSWORD:-supermarket}"; KS_ALIAS="${SUPERMARKET_KEY_ALIAS:-supermarket}"; KEY_PASS="${SUPERMARKET_KEY_PASSWORD:-$KS_PASS}"
 if [ ! -f "$KS" ]; then
   echo "   generating keystore $KS (keep it! updates must be signed with the same key)"

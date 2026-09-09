@@ -36,29 +36,30 @@ public final class SalesScreens {
         public String key() { return "pos"; } public String title() { return "صندوق فروش"; }
         public View view() {
             LinearLayout root = Ui.col(c); root.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
-            // search row
+            // search row (mockup: rounded input + teal «اسکن» button)
             LinearLayout sr = Ui.row(c);
-            search = Ui.input(c, "نام یا بارکد کالا…"); search.setLayoutParams(Ui.weight(1)); sr.addView(search);
-            View scanB = Ui.btn(c, "اسکن", Ui.PRIMARY, Color.WHITE, () -> a.scan("اسکن کالا برای فروش", this::onBarcode)); scanB.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(44)), 6, 0, 0, 6)); sr.addView(scanB);
+            search = Ui.input(c, "🔍  نام یا بارکد کالا…"); search.setLayoutParams(Ui.weight(1)); sr.addView(search);
+            View scanB = Ui.btn(c, "▣ اسکن", Ui.PRIMARY, Color.WHITE, () -> a.scan("اسکن کالا برای فروش", this::onBarcode)); scanB.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(46)), 8, 0, 0, 6)); sr.addView(scanB);
             root.addView(sr);
             search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (pending != null) h.removeCallbacks(pending); pending = () -> suggest(e.toString().trim()); h.postDelayed(pending, 220); } });
             search.setOnEditorActionListener((v, id, ev) -> { String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
             sugg = Ui.col(c); root.addView(sugg);
             // customer + coupon strip
-            LinearLayout cs = Ui.row(c); cs.setPadding(0, Ui.dp(4), 0, Ui.dp(4));
-            custTxt = Ui.text(c, "مشتری آزاد", 12, Ui.MUTED, false); custTxt.setLayoutParams(Ui.weight(1)); custTxt.setOnClickListener(v -> pickCustomer()); cs.addView(custTxt);
-            cs.addView(Ui.small(c, "مشتری", this::pickCustomer)); cs.addView(Ui.small(c, "کوپن", this::askCoupon)); cs.addView(Ui.small(c, "تخفیف", this::askDiscount));
-            root.addView(cs);
+            LinearLayout cs = Ui.row(c); cs.setPadding(0, Ui.dp(4), 0, Ui.dp(2));
+            cs.addView(Ui.pill(c, "👤", "مشتری", customer != null, this::pickCustomer)); cs.addView(Ui.pill(c, "🎟", "کوپن", coupon != null, this::askCoupon)); cs.addView(Ui.pill(c, "％", "تخفیف", invoiceDiscount > 0, this::askDiscount));
+            root.addView(Ui.chips(c, cs));
+            custTxt = Ui.text(c, "مشتری آزاد", 12, Ui.MUTED, false); custTxt.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); custTxt.setOnClickListener(v -> pickCustomer()); root.addView(custTxt);
             // cart list (scrolls)
             lines = Ui.col(c); android.widget.ScrollView sv = new android.widget.ScrollView(c); sv.addView(lines); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(sv);
             // footer
-            LinearLayout foot = Ui.col(c); foot.setBackground(Ui.rounded(Ui.CARD, Ui.BORDER, 16)); foot.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
-            LinearLayout tr = Ui.row(c); cnt = Ui.muted(c, ""); cnt.setLayoutParams(Ui.weight(1)); tr.addView(cnt); tot = Ui.text(c, Ui.money(0), 20, Ui.TEXT, true); tr.addView(tot); foot.addView(tr);
-            LinearLayout br = Ui.row(c);
-            View hold = Ui.ghost(c, "نگه‌داشتن", this::hold); hold.setLayoutParams(Ui.margin(Ui.weight(1), 0, 4, 3, 0)); br.addView(hold);
-            View held = Ui.ghost(c, "نگه‌داشته‌ها", () -> a.open(new Held(a), true)); held.setLayoutParams(Ui.margin(Ui.weight(1), 3, 4, 3, 0)); br.addView(held);
-            View pay = Ui.success(c, "پرداخت", this::pay); pay.setLayoutParams(Ui.margin(Ui.weight(1.4f), 3, 4, 0, 0)); br.addView(pay);
-            foot.addView(br); root.addView(foot);
+            LinearLayout foot = Ui.col(c); foot.setBackground(Ui.surface(20)); foot.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(12)); foot.setElevation(Ui.dp(4));
+            LinearLayout tr = Ui.row(c); LinearLayout tl = Ui.col(c); tl.setLayoutParams(Ui.weight(1)); tl.addView(Ui.muted(c, "مبلغ قابل پرداخت")); cnt = Ui.muted(c, ""); tl.addView(cnt); tr.addView(tl); tot = Ui.text(c, Ui.money(0), 22, Ui.PRIMARY, true); tr.addView(tot); foot.addView(tr);
+            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(8), 0, 0);
+            View hold = Ui.ghost(c, "⏸ نگه‌داشتن", this::hold); hold.setLayoutParams(Ui.margin(Ui.weight(1), 0, 0, 3, 0)); br.addView(hold);
+            View held = Ui.ghost(c, "نگه‌داشته‌ها", () -> a.open(new Held(a), true)); held.setLayoutParams(Ui.margin(Ui.weight(1), 3, 0, 0, 0)); br.addView(held);
+            foot.addView(br);
+            View pay = Ui.cta(c, "پرداخت  ←", this::pay); pay.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0)); foot.addView(pay);
+            root.addView(foot);
             return root;
         }
         public void load() { String restore = Prefs.get("pos_restore", ""); if (!restore.isEmpty()) { Prefs.set("pos_restore", ""); restoreHeld(restore); } renderCart(); }
@@ -84,10 +85,11 @@ public final class SalesScreens {
         void notFound(String bc) { Ui.toast("کالایی با بارکد " + Ui.fa(bc) + " نیست"); Ui.confirm(c, "کالای " + Ui.fa(bc) + " تعریف نشده. اکنون تعریف و دریافت شود؟", () -> a.open(new StockScreens.Receive(a, bc), true)); }
         void add(JSONObject p, JSONObject batch) {
             JSONArray bs = p.optJSONArray("batches");
-            if (bs == null || bs.length() == 0) { Ui.toast("این کالا موجودی ندارد"); return; }
+            if (bs == null || bs.length() == 0) { Sfx.play("error"); Ui.toast("این کالا موجودی ندارد"); return; }
             if (batch == null && bs.length() > 1) { chooseBatch(p, bs); return; }
             JSONObject b = batch != null ? batch : bs.optJSONObject(0);
             long pid = p.optLong("product_id", p.optLong("id")), bid = b.optLong("batch_id", b.optLong("id"));
+            Sfx.play("add");
             for (JSONObject l : cart) if (l.optLong("product_id") == pid && l.optLong("batch_id") == bid) { try { l.put("quantity", l.optDouble("quantity") + 1); } catch (Exception ignore) {} renderCart(); return; }
             try { JSONObject l = new JSONObject(); l.put("product_id", pid); l.put("name", p.optString("name")); l.put("barcode", p.optString("barcode")); l.put("batch_id", bid); l.put("batch_number", b.optString("batch_number")); l.put("quantity", 1); l.put("price", b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))); l.put("discount", 0); l.put("avail", b.optDouble("current_qty", 0)); l.put("expiry", b.isNull("expiry_date") ? "" : b.optString("expiry_date")); cart.add(0, l); } catch (Exception ignore) {}
             renderCart();
@@ -103,9 +105,12 @@ public final class SalesScreens {
             if (cart.isEmpty()) lines.addView(Ui.empty(c, "سبد خالی است — کالا را جست‌وجو یا اسکن کنید"));
             for (JSONObject l : cart) {
                 double q = l.optDouble("quantity"), pr = l.optDouble("price"), disc = l.optDouble("discount"); double sub = q * pr - disc; total += sub; n += q;
-                LinearLayout row = Ui.col(c); row.setBackground(Ui.rounded(Ui.CARD, Ui.BORDER, 14)); row.setPadding(Ui.dp(10), Ui.dp(8), Ui.dp(10), Ui.dp(8)); row.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 6));
-                LinearLayout r1 = Ui.row(c); TextView nm = Ui.text(c, l.optString("name"), 14, Ui.TEXT, true); nm.setLayoutParams(Ui.weight(1)); r1.addView(nm); r1.addView(Ui.text(c, Ui.money(sub), 14, Ui.TEXT, true)); row.addView(r1);
-                TextView meta = Ui.muted(c, Ui.money(pr) + " × " + Ui.num(q) + (disc > 0 ? " − تخفیف " + Ui.money(disc) : "") + (l.optString("expiry").isEmpty() ? "" : " · انقضا " + Ui.jdate(l.optString("expiry")))); row.addView(meta);
+                LinearLayout row = Ui.col(c); row.setBackground(Ui.surface(18)); row.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); row.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8));
+                LinearLayout r1 = Ui.row(c);
+                TextView ic = Ui.text(c, l.optString("name").isEmpty() ? "🛍" : l.optString("name").substring(0, 1), 16, Ui.PRIMARY, true); ic.setGravity(Gravity.CENTER); ic.setBackground(Ui.rounded((Ui.PRIMARY & 0x00FFFFFF) | 0x22000000, 0, 12)); ic.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(40), Ui.dp(40)), 0, 0, 10, 0)); r1.addView(ic);
+                LinearLayout nc = Ui.col(c); nc.setLayoutParams(Ui.weight(1)); nc.addView(Ui.text(c, l.optString("name"), 14, Ui.TEXT, true));
+                nc.addView(Ui.muted(c, Ui.money(pr) + " × " + Ui.num(q) + (disc > 0 ? " − تخفیف " + Ui.money(disc) : "") + (l.optString("expiry").isEmpty() ? "" : " · انقضا " + Ui.jdate(l.optString("expiry"))))); r1.addView(nc);
+                r1.addView(Ui.text(c, Ui.money(sub), 14, Ui.TEXT, true)); row.addView(r1);
                 LinearLayout r2 = Ui.row(c); r2.setPadding(0, Ui.dp(4), 0, 0);
                 r2.addView(qbtn("−", () -> { double nq = q - 1; if (nq <= 0) cart.remove(l); else set(l, "quantity", nq); renderCart(); }));
                 TextView qt = Ui.text(c, Ui.num(q), 15, Ui.TEXT, true); qt.setGravity(Gravity.CENTER); qt.setMinWidth(Ui.dp(44)); qt.setOnClickListener(v -> Ui.prompt(c, "تعداد / مقدار", "مثلاً 2 یا 1.5 (کیلوگرم)", true, s -> { try { double nq = Double.parseDouble(Db.norm(s)); if (nq > 0) { set(l, "quantity", nq); renderCart(); } } catch (Exception ignore) {} })); r2.addView(qt);
@@ -119,7 +124,7 @@ public final class SalesScreens {
             tot.setText(Ui.money(total)); cnt.setText(Ui.num(cart.size()) + " قلم · " + Ui.num(n) + " واحد" + (invoiceDiscount > 0 ? " · تخفیف فاکتور " + Ui.money(invoiceDiscount) : "") + (coupon != null ? " · کوپن " + coupon : ""));
             custTxt.setText(customer == null ? "مشتری آزاد (بدون ثبت)" : "مشتری: " + customer.optString("name") + " " + Screens.Screen.s(customer, "last_name") + " · " + Ui.fa(customer.optString("phone")));
         }
-        View qbtn(String s, Runnable r) { TextView t = Ui.text(c, s, 18, Ui.TEXT, true); t.setGravity(Gravity.CENTER); t.setBackground(Ui.rounded(Ui.BG2, Ui.BORDER, 10)); t.setLayoutParams(Ui.lp(Ui.dp(38), Ui.dp(34))); t.setOnClickListener(v -> r.run()); return t; }
+        View qbtn(String s, Runnable r) { TextView t = Ui.text(c, s, 18, "+".equals(s) ? Color.WHITE : Ui.TEXT, true); t.setGravity(Gravity.CENTER); t.setBackground(Ui.rounded("+".equals(s) ? Ui.PRIMARY : Ui.CARD2, "+".equals(s) ? 0 : Ui.BORDER, 10)); t.setLayoutParams(Ui.lp(Ui.dp(36), Ui.dp(34))); t.setOnClickListener(v -> r.run()); return t; }
         static void set(JSONObject o, String k, double v) { try { o.put(k, v); } catch (Exception ignore) {} }
         double total() { double t = 0; for (JSONObject l : cart) t += l.optDouble("quantity") * l.optDouble("price") - l.optDouble("discount"); return Math.max(0, t - invoiceDiscount); }
 
@@ -142,11 +147,11 @@ public final class SalesScreens {
             try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); JSONArray keep = new JSONArray(); for (int i = 0; i < held.length(); i++) if (!held.optJSONObject(i).optString("id").equals(heldId)) keep.put(held.optJSONObject(i));
                 if (keep.length() >= HELD_MAX) { Ui.toast("حداکثر " + Ui.fa("10") + " فاکتور نگه‌داشته"); return; }
                 JSONObject hjson = new JSONObject(); hjson.put("id", heldId != null ? heldId : "h" + System.currentTimeMillis()); hjson.put("at", Db.now()); hjson.put("cart", new JSONArray(cart)); hjson.put("customer", customer); hjson.put("coupon", coupon); hjson.put("invoice_discount", invoiceDiscount); hjson.put("total", total()); hjson.put("label", cart.get(0).optString("name") + (cart.size() > 1 ? " و " + Ui.num(cart.size() - 1) + " قلم دیگر" : "")); keep.put(hjson);
-                Prefs.set("pos_held", keep.toString()); cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart(); Ui.toast("فاکتور نگه داشته شد (" + Ui.num(keep.length()) + ")");
+                Prefs.set("pos_held", keep.toString()); cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart(); Sfx.play("hold"); Ui.toast("فاکتور نگه داشته شد (" + Ui.num(keep.length()) + ")");
             } catch (Exception e) { Ui.toast("خطا در نگه‌داشتن"); }
         }
         void restoreHeld(String id) {
-            try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); for (int i = 0; i < held.length(); i++) { JSONObject hj = held.optJSONObject(i); if (hj.optString("id").equals(id)) { cart.clear(); JSONArray ca = hj.optJSONArray("cart"); for (int k = 0; ca != null && k < ca.length(); k++) cart.add(ca.optJSONObject(k)); customer = hj.optJSONObject("customer"); coupon = hj.isNull("coupon") ? null : hj.optString("coupon"); invoiceDiscount = hj.optDouble("invoice_discount", 0); heldId = id; } } } catch (Exception ignore) {}
+            Sfx.play("resume"); try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); for (int i = 0; i < held.length(); i++) { JSONObject hj = held.optJSONObject(i); if (hj.optString("id").equals(id)) { cart.clear(); JSONArray ca = hj.optJSONArray("cart"); for (int k = 0; ca != null && k < ca.length(); k++) cart.add(ca.optJSONObject(k)); customer = hj.optJSONObject("customer"); coupon = hj.isNull("coupon") ? null : hj.optString("coupon"); invoiceDiscount = hj.optDouble("invoice_discount", 0); heldId = id; } } } catch (Exception ignore) {}
         }
         static void removeHeld(String id) { try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); JSONArray keep = new JSONArray(); for (int i = 0; i < held.length(); i++) if (!held.optJSONObject(i).optString("id").equals(id)) keep.put(held.optJSONObject(i)); Prefs.set("pos_held", keep.toString()); } catch (Exception ignore) {} }
 
@@ -176,7 +181,7 @@ public final class SalesScreens {
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
                 cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart();
-                Ui.toast("فاکتور " + Ui.fa(no) + " ثبت شد" + (Api.online ? " — در حال ارسال به رایانه" : " — پس از اتصال ارسال می‌شود"));
+                Sfx.play("success"); Ui.toast("فاکتور " + Ui.fa(no) + " ثبت شد" + (Api.online ? " — در حال ارسال به رایانه" : " — پس از اتصال ارسال می‌شود"));
             } catch (Exception e) { Ui.toast("خطا: " + e.getMessage()); }
         }
     }
@@ -228,7 +233,7 @@ public final class SalesScreens {
             if (!"VOID".equals(inv.optString("status")) && (Screens.can("pos.void_paid") || Screens.can("pos.void_unpaid"))) act.addView(Ui.danger(c, "ابطال فاکتور", this::voidInvoice));
             body.addView(act);
         }
-        void voidInvoice() { LinearLayout l = Ui.col(c); EditText reason = Ui.input(c, "دلیل ابطال"); l.addView(reason); EditText pw = Ui.input(c, "رمز مدیر (برای فاکتور پرداخت‌شده)"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); l.addView(pw); Dialog[] d = new Dialog[1]; l.addView(Ui.danger(c, "تأیید ابطال", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putIf(b, "admin_password", Ui.str(pw)); post("/invoices/" + id + "/void", b, r -> { Ui.toast("فاکتور باطل شد"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "ابطال " + Ui.fa(inv.optString("invoice_number")), l); }
+        void voidInvoice() { LinearLayout l = Ui.col(c); EditText reason = Ui.input(c, "دلیل ابطال"); l.addView(reason); EditText pw = Ui.input(c, "رمز مدیر (برای فاکتور پرداخت‌شده)"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); l.addView(pw); Dialog[] d = new Dialog[1]; l.addView(Ui.danger(c, "تأیید ابطال", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putIf(b, "admin_password", Ui.str(pw)); post("/invoices/" + id + "/void", b, r -> { Sfx.play("void"); Ui.toast("فاکتور باطل شد"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "ابطال " + Ui.fa(inv.optString("invoice_number")), l); }
         void returnItem(JSONObject it, String name) { LinearLayout l = Ui.col(c); l.addView(Ui.body(c, name + " — فروخته‌شده: " + Ui.num(it.optDouble("qty")))); EditText qty = Ui.input(c, "تعداد مرجوعی", true); l.addView(qty); EditText reason = Ui.input(c, "دلیل"); l.addView(reason); EditText refund = Ui.input(c, "مبلغ بازپرداخت (خالی = خودکار)", true); l.addView(refund); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ثبت مرجوعی", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putNum(b, "invoice_id", id); putNum(b, "invoice_item_id", it.optLong("id")); putNum(b, "qty", (int) Ui.numVal(qty, 1)); if (!Ui.str(refund).isEmpty()) putNum(b, "refund_amount", Ui.numVal(refund, 0)); post("/returns", b, r -> { Ui.toast("مرجوعی ثبت شد (RETURN_IN)"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "مرجوعی", l); }
     }
 
