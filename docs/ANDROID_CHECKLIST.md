@@ -1,4 +1,18 @@
-# چک‌لیست کامل برنامهٔ اندروید — v2.0.0 (بومی / Native)
+# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.1.0 (بومی / Native)
+
+## تازه‌های v2.1 (وضعیت §57)
+| مورد | وضعیت | شاهد |
+|---|---|---|
+| QR رایانه کامل و قابل اسکن | DONE | اسکرین‌شات Chromium `docs/screenshots/v21-mobile-pair.png` با jsQR رمزگشایی شد؛ `test_pc_qr_is_not_cropped_anymore` |
+| کد ۶ رقمی جفت‌سازی | DONE | `POST /mobile/pair/code` → `claim` روی سرور زنده؛ تست یک‌بارمصرف |
+| کلید اتصال + بیکن UDP (تغییر IP) | DONE (سرور) / NOT VERIFIED روی گوشی واقعی | `SMKT-FIND/HERE` روی سرور زنده پاسخ داد؛ `Discovery.java` کامپایل شد، اجرای روی دستگاه فیزیکی در این محیط ممکن نیست |
+| ویزارد راه‌اندازی اندروید (دو مسیر، لودینگ ۴۵ دقیقه‌ای یک‌باره) | DONE (کد + کامپایل + تست قرارداد) / اجرای UI روی دستگاه NOT VERIFIED | `SetupActivity.java`; `test_android_v21_wizard_datepicker_name_and_support` |
+| لایسنس روی گوشی / قفل با انقضای رایانه | DONE (سرور: `/mobile/link` + ۴۰۲) / گوشی NOT VERIFIED روی دستگاه | `Lic.java`, `LockActivity.java`, `Api.java` (402) |
+| پشتیبانی بدون رایانه (همان ربات) | کد کامل، ارسال واقعی به صندوق پشتیبانی از این محیط تست نشد (NOT VERIFIED) | `SupportRelay.java` همان پروتکل `services/support.py` |
+| ورود Google داخل برنامه | DONE با stub (تبادل توکن گوگل واقعی NOT VERIFIED — نیاز به Client ID مالک) | `test_inapp_google_signin_endpoints` |
+| تقویم شمسی همهٔ تاریخ‌ها | DONE (کد + کامپایل) | `DatePicker.java`; هیچ `Ui.input` با الگوی تاریخ باقی نمانده (تست) |
+| نام برنامه «سوپری من» | DONE | `aapt2 dump badging` → `application-label:'سوپری من'` |
+
 
 **قاعدهٔ صداقت (§57):** ✅ = کد + اجرا + آزمون + نتیجهٔ مورد انتظار (در سندباکس: کامپایل ecj/d8، امضای APK، آزمون‌های pytest روی قرارداد API، اجرای واقعی سرور و فراخوانی endpointها).
 ⚠️ NOT VERIFIED = فقط روی گوشی فیزیکی قابل تأیید است (این محیط اندروید/دوربین واقعی ندارد؛ امولاتور هم در دسترس نیست). **رندر واقعی صفحات بومی روی دستگاه در این محیط تأیید نشده است.**

@@ -93,6 +93,7 @@ public final class Api {
             String text = in == null ? "" : slurp(in);
             if (code == 204 || text.isEmpty()) { if (code >= 400) throw new ApiError(code, "HTTP_" + code, "خطای " + code); return null; }
             Object parsed = parse(text);
+            if (code == 402) { ApiError le = errorFrom(code, parsed); if ("pc".equals(Lic.mode())) { Lic.pcLocked(le.getMessage()); MAIN.post(() -> { LockActivity.showIfNeeded(); }); } throw le; }
             if (code >= 400) throw errorFrom(code, parsed);
             return parsed;
         } catch (ApiError e) { throw e;
@@ -122,6 +123,7 @@ public final class Api {
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             String text = in == null ? "" : slurp(in);
             Object parsed = text.isEmpty() ? null : parse(text);
+            if (code == 402) { ApiError le = errorFrom(code, parsed); if ("pc".equals(Lic.mode())) { Lic.pcLocked(le.getMessage()); MAIN.post(() -> { LockActivity.showIfNeeded(); }); } throw le; }
             if (code >= 400) throw errorFrom(code, parsed);
             return parsed;
         } catch (ApiError e) { throw e;

@@ -90,6 +90,27 @@ public final class Db extends SQLiteOpenHelper {
         w().insertWithOnConflict("customers", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
+    /** v2.1 standalone: bundled starter catalogue (same CSV as the Windows wizard) → local products. */
+    public static int importStarter(Context ctx) {
+        int n = 0; SQLiteDatabase d = w(); d.beginTransaction();
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(ctx.getAssets().open("starter_catalog.csv"), "UTF-8"))) {
+            String line = br.readLine(); // header: category,subcategory,name,brand,unit,min_stock_alert,barcode
+            java.util.Map<String, Long> units = new java.util.HashMap<>(); java.util.Map<String, Long> cats = new java.util.HashMap<>();
+            while ((line = br.readLine()) != null) {
+                String[] f = line.split(",", -1); if (f.length < 5 || f[2].trim().isEmpty()) continue;
+                String unit = f[4].trim().isEmpty() ? "عدد" : f[4].trim(); if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
+                String cat = f[0].trim() + (f[1].trim().isEmpty() ? "" : " / " + f[1].trim()); if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
+                long id = -counter("pid"); JSONObject p = new JSONObject();
+                try { p.put("id", id); p.put("name", f[2].trim()); p.put("barcode", f.length > 6 && !f[6].trim().isEmpty() ? f[6].trim() : "INT-L" + pad5(-id)); p.put("unit_id", units.get(unit)); p.put("unit_name", unit); p.put("category_id", cats.get(cat)); p.put("category_name", cat); if (!f[3].trim().isEmpty()) p.put("brand_name", f[3].trim()); p.put("min_stock_alert", f.length > 5 && !f[5].trim().isEmpty() ? Double.parseDouble(f[5].trim()) : 0); p.put("is_active", true); p.put("_local", true); p.put("has_own_barcode", f.length > 6 && !f[6].trim().isEmpty()); } catch (Exception ignore) {}
+                putProduct(p, true); n++;
+            }
+            try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
+            kv("starter_imported", "1"); d.setTransactionSuccessful();
+        } catch (Exception ignore) {
+        } finally { d.endTransaction(); }
+        return n;
+    }
+
     /* ---------------- local reads ---------------- */
     public static List<JSONObject> searchProducts(String q, int limit) {
         List<JSONObject> out = new ArrayList<>(); q = norm(q);

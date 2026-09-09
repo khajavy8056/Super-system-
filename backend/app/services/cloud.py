@@ -153,6 +153,63 @@ def device_poll(db: Session) -> dict:
     raise CloudError("DEVICE_DENIED", data.get("error_description") or err or "رد شد")
 
 
+# --- v2.1: in-app sign-in (authorization code + PKCE, loopback redirect) -------------------
+# The Windows app runs in the local browser, so Google can send the browser straight
+# back to http://127.0.0.1:<port>/api/cloud/oauth/callback — the owner picks the Google
+# account on Google's own page and lands back inside the app. No code to copy, no
+# second device. (Embedded WebView logins are forbidden by Google; this is the
+# sanctioned native flow, RFC 8252.)
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+
+def oauth_start(db: Session, redirect_uri: str, client_id: str | None = None, client_secret: str | None = None) -> dict:
+    import hashlib
+    import secrets
+    from urllib.parse import urlencode
+    if client_id:
+        _set(db, "cloud.client_id", client_id.strip())
+    if client_secret:
+        _set(db, "cloud.client_secret", client_secret.strip(), secret=True)
+    db.commit()
+    c = config(db)
+    if not (c["client_id"] and c["client_secret"]):
+        raise CloudError("CONFIG_MISSING", "شناسه و کلید سرویس ابری وارد نشده است")
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(24)
+    _set(db, "cloud.oauth_state", state, secret=True)
+    _set(db, "cloud.oauth_verifier", verifier, secret=True)
+    _set(db, "cloud.oauth_redirect", redirect_uri)
+    db.commit()
+    q = {"client_id": c["client_id"], "redirect_uri": redirect_uri, "response_type": "code", "scope": SCOPE + " openid email",
+         "access_type": "offline", "prompt": "consent select_account", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
+    return {"url": f"{_get(db, 'cloud.auth_url', AUTH_URL)}?{urlencode(q)}", "state": state}
+
+
+def oauth_finish(db: Session, code: str, state: str) -> dict:
+    c = config(db)
+    if not state or state != _get(db, "cloud.oauth_state"):
+        raise CloudError("STATE_MISMATCH", "درخواست ورود معتبر نیست؛ دوباره تلاش کنید")
+    r = httpx.post(c["token_url"], data={"client_id": c["client_id"], "client_secret": c["client_secret"], "code": code,
+                                         "code_verifier": _get(db, "cloud.oauth_verifier"), "redirect_uri": _get(db, "cloud.oauth_redirect"),
+                                         "grant_type": "authorization_code"}, timeout=20)
+    data = r.json()
+    if "access_token" not in data:
+        raise CloudError("TOKEN_EXCHANGE_FAILED", data.get("error_description") or data.get("error") or r.text[:200])
+    _set(db, "cloud.refresh_token", data.get("refresh_token", ""), secret=True)
+    _set(db, "cloud.access_token", data["access_token"], secret=True)
+    _set(db, "cloud.access_exp", str(time.time() + int(data.get("expires_in", 3600)) - 60))
+    _set(db, "cloud.oauth_state", ""); _set(db, "cloud.oauth_verifier", "")
+    _set(db, "cloud.enabled", "1")
+    try:
+        ui = httpx.get(c["userinfo_url"], headers={"Authorization": "Bearer " + data["access_token"]}, timeout=10).json()
+        _set(db, "cloud.account", ui.get("email") or ui.get("name") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    db.commit()
+    return {"status": "CONNECTED", "account": _get(db, "cloud.account")}
+
+
 def disconnect(db: Session) -> None:
     for k in ("cloud.refresh_token", "cloud.access_token", "cloud.access_exp", "cloud.device_code", "cloud.account"):
         _set(db, k, "")

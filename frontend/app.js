@@ -2480,15 +2480,19 @@ function applyStoreLogo(path) {
 async function renderMobilePanel(body) {
   const card = el("div", { class: "card", id: "mobile-card" });
   card.innerHTML = `<h3>اتصال گوشی اندروید</h3>
-    <p class="muted">برنامهٔ «سوپرمارکت موبایل» را روی گوشی نصب کنید، گوشی را به همان Wi‑Fi رایانه وصل کنید و این کد را در برنامه اسکن کنید. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ گوشی آفلاین هم کار می‌کند و هر بار که به رایانه برسد، اطلاعات به‌صورت خودکار همگام می‌شود.</p>
-    <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap">
+    <p class="muted">برنامهٔ «سوپری من» را روی گوشی نصب کنید و گوشی را به همان Wi‑Fi رایانه وصل کنید. دو راه ساده دارید: اسکن کد QR، یا وارد کردن <b>کد ۶ رقمی</b> در برنامه. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ اگر آدرس رایانه در شبکه عوض شود، گوشی با «کلید اتصال» دوباره رایانه را پیدا می‌کند.</p>
+    <div class="row" style="gap:22px;align-items:flex-start;flex-wrap:wrap;justify-content:center">
       <div id="mob-qr" class="mob-qr"><span class="muted">در حال ساخت کد…</span></div>
-      <div style="flex:1;min-width:260px">
-        <div id="mob-info" class="muted"></div>
+      <div style="flex:1;min-width:280px">
+        <h4 style="margin:0 0 6px">راه دوم: کد ۶ رقمی</h4>
+        <p class="muted" style="margin:0 0 8px">در گوشی: «اتصال به رایانه» → «کد ۶ رقمی» را بزنید و این عدد را وارد کنید (۱۰ دقیقه اعتبار دارد).</p>
+        <div id="mob-code" class="pair-code">— — — — — —</div>
         <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
-          <button class="btn btn-sm" id="mob-regen">ساخت کد جدید</button>
-          <a class="btn btn-sm" href="https://github.com/khajavy8056/Super-system-/releases/latest" target="_blank" rel="noopener">دانلود APK اندروید</a>
+          <button class="btn btn-sm btn-primary" id="mob-code-new">ساخت کد ۶ رقمی</button>
+          <button class="btn btn-sm" id="mob-regen">ساخت QR جدید</button>
+          <a class="btn btn-sm" href="https://github.com/khajavy8056/Super-system-/releases/latest" target="_blank" rel="noopener">دانلود برنامهٔ اندروید</a>
         </div>
+        <div id="mob-info" class="muted" style="margin-top:12px"></div>
       </div>
     </div>`;
   body.append(card);
@@ -2501,31 +2505,41 @@ async function renderMobilePanel(body) {
     } catch (e) { $("#mob-devs").textContent = e.message; }
   }
   window.mobRevoke = async (id) => { if (!confirm("دسترسی این گوشی لغو شود؟")) return; try { await api(`/mobile/devices/${id}`, { method: "DELETE" }); toast("دسترسی لغو شد"); loadDevices(); } catch (e) { toast(e.message, "err"); } };
+  let codeTimer = null;
+  async function newCode() {
+    try {
+      const r = await api("/mobile/pair/code", { method: "POST", body: "{}" });
+      const box = $("#mob-code"); let left = r.expires_in;
+      box.textContent = r.code.split("").join(" ");
+      clearInterval(codeTimer);
+      codeTimer = setInterval(() => { left -= 1; if (left <= 0) { clearInterval(codeTimer); box.textContent = "— — — — — —"; box.title = ""; } else box.title = `اعتبار: ${fa(Math.ceil(left / 60))} دقیقه`; }, 1000);
+      loadDevices();
+    } catch (e) { toast(e.message, "err"); }
+  }
   async function gen() {
     $("#mob-qr").innerHTML = `<span class="muted">در حال ساخت کد…</span>`;
     try {
       const r = await api("/mobile/pair/info");
-      // v1.7: the QR is drawn in the browser (vendor-qrcode.js, MIT) so it
-      // never depends on an image library being bundled on the PC; the
-      // server-side PNG is only a fallback. Manual entry always remains.
+      // v2.1: the QR is drawn as a scalable SVG inside a fixed square white box with
+      // a real quiet zone (was cropped by an overflow:hidden 232px container).
       let html = "";
       try {
         if (window.qrcode) {
-          const q = window.qrcode(0, "M"); q.addData(r.qr_text); q.make();
-          html = q.createSvgTag({ cellSize: 4, margin: 8, scalable: true });
-          html = `<div class="qr-box" style="width:260px;height:260px;background:#fff;padding:6px;border-radius:12px">${html.replace("<svg", '<svg style="width:100%;height:100%"')}</div>`;
+          const q = window.qrcode(0, "L"); q.addData(r.qr_text); q.make();
+          html = `<div class="qr-box">${q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }).replace("<svg", '<svg preserveAspectRatio="xMidYMid meet" shape-rendering="crispEdges"')}</div>`;
         }
       } catch (_) { html = ""; }
-      if (!html && r.qr_png) html = `<img src="${r.qr_png}" alt="QR" style="width:260px;height:260px;border-radius:12px;background:#fff" />`;
-      if (!html) html = `<div class="error">ساخت تصویر QR ممکن نشد — کد زیر را در گوشی به‌صورت دستی وارد کنید.</div>`;
-      $("#mob-qr").innerHTML = html + `<details style="margin-top:8px"><summary class="muted">کد متنی (ورود دستی در گوشی)</summary><textarea readonly class="ltr" style="width:100%;height:90px;font-size:10px" onclick="this.select()">${esc(r.qr_text)}</textarea></details>`;
-      $("#mob-info").innerHTML = `<div>آدرس سرور در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}</div>
-        <div style="margin-top:6px">نسخهٔ وب موبایل (بدون نصب): <code class="ltr">${esc(r.mobile_url)}</code></div>
-        <div style="margin-top:6px">این کد شامل یک کلید دسترسی یک‌ساله برای گوشی است؛ آن را در اختیار دیگران قرار ندهید. با هر بار ساخت کد جدید، یک دستگاه جدید در فهرست زیر ثبت می‌شود.</div>`;
+      if (!html && r.qr_png) html = `<div class="qr-box"><img src="${r.qr_png}" alt="QR" style="image-rendering:pixelated;object-fit:contain"/></div>`;
+      if (!html) html = `<div class="error">ساخت تصویر QR ممکن نشد — از کد ۶ رقمی استفاده کنید.</div>`;
+      $("#mob-qr").innerHTML = html + `<span class="muted">راه اول: این کد را در برنامهٔ گوشی اسکن کنید</span><details style="align-self:stretch"><summary class="muted">کد متنی (ورود دستی)</summary><textarea readonly class="ltr" style="width:100%;height:80px;font-size:10px" onclick="this.select()">${esc(r.qr_text)}</textarea></details>`;
+      $("#mob-info").innerHTML = `<div>آدرس رایانه در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}</div>
+        <div style="margin-top:6px">کلید اتصال این رایانه: <code class="ltr">${esc(r.payload.link_key || "")}</code> — گوشی با این کلید، حتی پس از تغییر IP، رایانه را در شبکه پیدا می‌کند.</div>
+        <div style="margin-top:6px">هر کد شامل یک کلید دسترسی یک‌ساله برای گوشی است؛ آن را در اختیار دیگران قرار ندهید.</div>`;
       loadDevices();
     } catch (e) { $("#mob-qr").innerHTML = `<span class="error">${esc(e.message)}</span>`; }
   }
   $("#mob-regen").onclick = gen;
+  $("#mob-code-new").onclick = newCode;
   gen();
 }
 
@@ -2558,19 +2572,36 @@ async function renderCloudPanel(body) {
       : `
         <details ${st.configured ? "" : "open"}>
           <summary>مرحلهٔ ۱ — کلید سرویس (یک‌بار)</summary>
-          <p class="muted">در <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> یک OAuth Client از نوع «TVs and Limited Input devices» بسازید، Google Drive API را فعال کنید و مقادیر را اینجا وارد کنید. رایگان است و فقط یک‌بار لازم است.</p>
+          <p class="muted">در <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> یک OAuth Client از نوع «Desktop app» بسازید، Google Drive API را فعال کنید و مقادیر را اینجا وارد کنید. رایگان است و فقط یک‌بار لازم است.</p>
           <div class="form-grid">
             <div><label>Client ID</label><input id="cl-id" class="ltr" placeholder="xxxx.apps.googleusercontent.com" /></div>
             <div><label>Client Secret</label><input id="cl-secret" class="ltr" type="password" /></div>
           </div>
         </details>
-        <div style="margin-top:10px"><button class="btn btn-primary" id="cl-start">مرحلهٔ ۲ — ورود به حساب Google</button></div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="cl-start">مرحلهٔ ۲ — ورود با حساب Google (داخل برنامه)</button>
+          <button class="btn btn-ghost" id="cl-start-code">روش جایگزین: کد روی دستگاه دیگر</button>
+        </div>
+        <p class="muted" style="margin-top:6px">با «ورود با حساب Google» صفحهٔ انتخاب حساب گوگل باز می‌شود؛ حساب را انتخاب کنید و خودکار به برنامه برمی‌گردید. اگر دسترسی به گوگل در شبکهٔ شما محدود است، از روش جایگزین (کد روی گوشی) یا همان همگام‌سازی شبکهٔ داخلی استفاده کنید.</p>
         <div id="cl-code" style="margin-top:10px"></div>`}`;
     if ($("#cl-sync")) $("#cl-sync").onclick = async () => { $("#cl-sync").disabled = true; try { const r = await api("/cloud/sync-now", { method: "POST" }); toast(`همگام شد — ${r.files} فایل، ${r.applied} عملیات اعمال شد`); } catch (e) { toast(e.message, "err"); } draw(); };
     if ($("#cl-off")) $("#cl-off").onclick = async () => { if (!confirm("اتصال حساب ابری قطع شود؟")) return; await api("/cloud/disconnect", { method: "POST" }); toast("قطع شد"); draw(); };
+    const creds = () => { const body = { client_id: $("#cl-id").value.trim(), client_secret: $("#cl-secret").value.trim() }; if (!st.configured && (!body.client_id || !body.client_secret)) { toast("Client ID و Secret را وارد کنید", "err"); return null; } return body; };
+    // v2.1: in-app sign-in — Google's account picker opens in a popup and lands back on this PC
     if ($("#cl-start")) $("#cl-start").onclick = async () => {
-      const body = { client_id: $("#cl-id").value.trim(), client_secret: $("#cl-secret").value.trim() };
-      if (!st.configured && (!body.client_id || !body.client_secret)) { toast("Client ID و Secret را وارد کنید", "err"); return; }
+      const body = creds(); if (!body) return;
+      try {
+        const d = await api("/cloud/oauth/start", { method: "POST", body: JSON.stringify(body) });
+        const w = window.open(d.url, "cloud-oauth", "width=520,height=680");
+        $("#cl-code").innerHTML = `<div class="card" style="text-align:center"><div class="muted" id="cl-wait">صفحهٔ ورود Google باز شد؛ حساب خود را انتخاب کنید…</div>${w ? "" : `<div><a href="${esc(d.url)}" target="_blank" rel="noopener">اگر پنجره باز نشد، اینجا را بزنید</a></div>`}</div>`;
+        const onMsg = (ev) => { if (ev.data && ev.data.type === "cloud-oauth") { window.removeEventListener("message", onMsg); clearInterval(pollTimer); if (ev.data.ok) { toast("حساب Google متصل شد"); if (window.Sfx) Sfx.play("success"); } draw(); } };
+        window.addEventListener("message", onMsg);
+        clearInterval(pollTimer);
+        pollTimer = setInterval(async () => { try { const s2 = await api("/cloud/status"); if (s2.connected) { clearInterval(pollTimer); window.removeEventListener("message", onMsg); toast("حساب متصل شد: " + s2.account); draw(); } } catch (_) {} }, 3000);
+      } catch (e) { toast(e.message, "err"); }
+    };
+    if ($("#cl-start-code")) $("#cl-start-code").onclick = async () => {
+      const body = creds(); if (!body) return;
       try {
         const d = await api("/cloud/connect/start", { method: "POST", body: JSON.stringify(body) });
         $("#cl-code").innerHTML = `<div class="card" style="text-align:center"><div class="muted">در مرورگر (روی همین رایانه یا گوشی) به نشانی زیر بروید و این کد را وارد کنید:</div>

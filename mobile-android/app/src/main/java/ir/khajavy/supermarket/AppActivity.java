@@ -45,7 +45,11 @@ public class AppActivity extends Activity {
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");
-        if (Api.base.isEmpty()) { startActivity(new Intent(this, PairActivity.class)); finish(); return; }
+        LockActivity.top = this;
+        if (Api.base.isEmpty() || !Lic.setupDone()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
+        if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
+        Lic.recheckIfDue();
         getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (!Ui.dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
@@ -61,7 +65,7 @@ public class AppActivity extends Activity {
         open(new Screens.Home(this), false);
         Tour.maybe(this, "home");
     }
-    @Override protected void onResume() { super.onResume(); h.post(ticker); }
+    @Override protected void onResume() { super.onResume(); LockActivity.top = this; h.post(ticker); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); }); }
     @Override protected void onPause() { super.onPause(); h.removeCallbacks(ticker); }
 
     /* ---------------- shell ---------------- */
@@ -135,7 +139,8 @@ public class AppActivity extends Activity {
         ScrollView sv = new ScrollView(this); sv.addView(list); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); drawer.addView(sv);
         LinearLayout foot = Ui.col(this); foot.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(12)); foot.addView(Ui.divider(this));
         foot.addView(Ui.ghost(this, Ui.dark ? "پوستهٔ روشن" : "پوستهٔ تیره", () -> { Prefs.set("theme_resolved", Ui.dark ? "light" : "dark"); recreate(); }));
-        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        foot.addView(Ui.ghost(this, "ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Prefs.set("user_json", ""); Api.token = ""; if (Api.standalone()) { Prefs.set("setup_done", ""); startActivity(new Intent(this, SetupActivity.class)); } else startActivity(new Intent(this, LoginActivity.class)); finish(); })));
         drawer.addView(foot);
         drawerLayer.setVisibility(View.VISIBLE);
     }

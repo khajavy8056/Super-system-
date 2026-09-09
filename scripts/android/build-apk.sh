@@ -28,6 +28,7 @@ mkdir -p "$W/gen" "$W/classes" "$W/dex" "$OUT"
 echo "== 1/6 assets (fonts only — v2.0 is fully native, no bundled web app)"
 ASSETS="$W/assets"; mkdir -p "$ASSETS/fonts"
 cp "$APP"/assets/fonts/* "$ASSETS/fonts/"
+cp "$APP"/assets/starter_catalog.csv "$ASSETS/"   # v2.1: standalone wizard starter catalogue
 echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\",\"ui\":\"native\"}" > "$ASSETS/build.json"
 
 echo "== 2/6 resources (aapt2)"

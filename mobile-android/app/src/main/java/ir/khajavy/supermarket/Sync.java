@@ -22,7 +22,7 @@ public final class Sync {
     public interface Listener { void onSync(boolean online, int applied, int rejected, int pending); }
     public static volatile Listener listener;
     private static volatile boolean running = false;
-    private static volatile long lastRun = 0;
+    private static volatile long lastRun = 0, lastCloud = 0;
 
     private Sync() {}
 
@@ -33,7 +33,11 @@ public final class Sync {
     public static synchronized void runBlocking() {
         running = true;
         try {
-            boolean up = Api.health(); Api.online = up;
+            boolean up = Api.health();
+            // v2.1: the PC's IP may have changed — ask the LAN who holds our link key
+            if (!up && !Api.standalone()) { String found = Discovery.find(Prefs.get("link_key", ""), 1500); if (found != null && !found.equals(Api.base)) { Api.base = found; Prefs.set("server_url", found); up = Api.health(); } }
+            Api.online = up;
+            if (up && "pc".equals(Lic.mode())) checkPcLicense();
             int applied = 0, rejected = 0;
             if (up) {
                 List<JSONObject> ops = Db.ops();
@@ -72,6 +76,8 @@ public final class Sync {
                 // after the first successful sync the local (negative-id) rows have been replaced by the PC's truth
                 if (applied > 0) Db.applyPull(fetchFull(), true);
             }
+            // v2.1: PC not reachable on this network → exchange through the shared Drive folder (if the owner connected one)
+            if (!up && !Api.standalone() && CloudSync.available() && System.currentTimeMillis() - lastCloud > 60000) { lastCloud = System.currentTimeMillis(); int n = CloudSync.run(); if (n >= 0) { applied += n; Db.kv("last_sync", Db.now()); } }
             lastRun = System.currentTimeMillis();
             final int a = applied, rj = rejected, p = Db.opCount(); final boolean on = up;
             Listener l = listener; if (l != null) Api.ui(() -> l.onSync(on, a, rj, p));
@@ -79,6 +85,15 @@ public final class Sync {
             Api.online = false; lastRun = System.currentTimeMillis();
             Listener l = listener; if (l != null) Api.ui(() -> l.onSync(false, 0, 0, Db.opCount()));
         } finally { running = false; }
+    }
+
+    /** PC mode: the phone's licence IS the PC's licence. */
+    static void checkPcLicense() {
+        try {
+            Object r = Api.call("GET", "/mobile/link", null, null);
+            if (r instanceof JSONObject) { JSONObject j = (JSONObject) r; Lic.fromPc(j.optJSONObject("license")); if (!j.optString("link_key").isEmpty()) Prefs.set("link_key", j.optString("link_key")); if (!j.optString("store").isEmpty()) Prefs.set("store_name", j.optString("store")); if (j.optJSONObject("cloud") != null) Prefs.set("cloud_json", j.optJSONObject("cloud").toString()); }
+        } catch (Api.ApiError e) { if (e.status == 402) Lic.pcLocked(e.getMessage()); }
+        if (!Lic.allowed()) Api.ui(LockActivity::showIfNeeded);
     }
 
     /** Whole catalogue (no cursor) — used after local rows were replayed so temp ids vanish. */

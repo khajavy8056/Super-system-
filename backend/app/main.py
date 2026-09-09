@@ -106,7 +106,11 @@ async def lifespan(app: FastAPI):
     _start_sync_worker(SessionLocal)    # offline job queue drain (§49)
     from .services import license as license_svc
     license_svc.start_worker(SessionLocal)  # v1.5: 24h online licence re-validation
+    from .services import discovery as discovery_svc
+    if os.environ.get("SUPERMARKET_LAN_BEACON", "1") not in ("0", "false", "off"):
+        discovery_svc.start(SessionLocal, settings.PORT)  # v2.1: phone re-finds the PC when its IP changes
     yield
+    discovery_svc.stop()
     sms_svc.stop_worker()
     cloud_svc.stop_worker()
     support_svc.stop_poller()

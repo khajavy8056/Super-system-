@@ -115,7 +115,8 @@ def pair_info(request: Request, db: Session = Depends(get_db), user: User = Depe
     write_audit(db, action="MOBILE_PAIR_TOKEN", user_id=user.id, entity_type="Mobile", reference=minted["device_id"])
     db.commit()
     payload = {"v": 2, "url": f"http://{ips[0]}:{port}", "urls": [f"http://{ip}:{port}" for ip in ips],
-               "token": minted["token"], "store": (store.value if store else "") or "", "device_id": minted["device_id"]}
+               "token": minted["token"], "store": (store.value if store else "") or "", "device_id": minted["device_id"],
+               "link_key": link_key(db), "port": port}
     # v1.7: when internet sync is on, the phone gets the same cloud mailbox
     from ..services import cloud as cloud_svc
     cloud = cloud_svc.credentials_for_device(db)
@@ -132,6 +133,103 @@ def pair_info(request: Request, db: Session = Depends(get_db), user: User = Depe
         png = None
     return {"addresses": ips, "port": port, "payload": payload, "qr_text": text, "qr_png": png,
             "mobile_url": f"http://{ips[0]}:{port}/mobile/"}
+
+
+# --- v2.1: short pairing code + LAN discovery (stable link when IPs change) ------------
+PAIR_CODES_KEY = "mobile.pair_codes"   # JSON list [{code, token, device_id, store, expires}]
+LINK_KEY_SETTING = "mobile.link_key"    # stable per-install secret the phone uses to re-find the PC
+
+
+def link_key(db: Session) -> str:
+    """Stable 12-char key of THIS installation. The phone keeps it after pairing
+    and the LAN beacon (UDP) answers only to it — so when the PC's IP changes
+    the phone still finds the right PC (and never a neighbour's)."""
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == LINK_KEY_SETTING)).scalar_one_or_none()
+    if row and row.value:
+        return row.value
+    key = secrets.token_hex(6).upper()
+    db.add(SystemSetting(key=LINK_KEY_SETTING, value=key, is_secret=True, description="Mobile link key"))
+    db.commit()
+    return key
+
+
+def _pair_codes(db: Session) -> list[dict]:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == PAIR_CODES_KEY)).scalar_one_or_none()
+    try:
+        items = json.loads(row.value) if row and row.value else []
+    except ValueError:
+        items = []
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    return [c for c in items if c.get("expires", "") > now]
+
+
+def _save_pair_codes(db: Session, items: list[dict]) -> None:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == PAIR_CODES_KEY)).scalar_one_or_none()
+    val = json.dumps(items, ensure_ascii=False)
+    if row is None:
+        db.add(SystemSetting(key=PAIR_CODES_KEY, value=val, is_secret=True, description="Mobile pairing codes"))
+    else:
+        row.value = val
+
+
+def _link_payload(db: Session, request: Request, minted: dict) -> dict:
+    port = _server_port(request)
+    ips = lan_addresses()
+    store = db.execute(select(SystemSetting).where(SystemSetting.key == "store.name")).scalar_one_or_none()
+    payload = {"v": 3, "url": f"http://{ips[0]}:{port}", "urls": [f"http://{ip}:{port}" for ip in ips],
+               "token": minted["token"], "store": (store.value if store else "") or "", "device_id": minted["device_id"],
+               "link_key": link_key(db), "port": port}
+    from ..services import cloud as cloud_svc
+    cloud = cloud_svc.credentials_for_device(db)
+    if cloud:
+        payload["cloud"] = cloud
+    return payload
+
+
+@router.post("/pair/code")
+def pair_code(request: Request, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """v2.1 — a 6-digit code typed into the phone instead of scanning (valid 10 min,
+    single use). The phone posts it to /pair/claim from the same Wi-Fi."""
+    minted = _mint(db, user, "گوشی (کد)", 365)
+    codes = _pair_codes(db)
+    code = "".join(secrets.choice("0123456789") for _ in range(6))
+    while any(c["code"] == code for c in codes):
+        code = "".join(secrets.choice("0123456789") for _ in range(6))
+    payload = _link_payload(db, request, minted)
+    codes.append({"code": code, "payload": payload, "expires": (datetime.utcnow() + timedelta(minutes=10)).isoformat(timespec="seconds")})
+    _save_pair_codes(db, codes)
+    write_audit(db, action="MOBILE_PAIR_CODE", user_id=user.id, entity_type="Mobile", reference=minted["device_id"])
+    db.commit()
+    return {"code": code, "expires_in": 600, "addresses": payload["urls"], "link_key": payload["link_key"]}
+
+
+class ClaimIn(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+@router.post("/pair/claim")
+def pair_claim(body: ClaimIn, db: Session = Depends(get_db)):
+    """Public (LAN only in practice): exchange a fresh 6-digit code for the pairing payload."""
+    codes = _pair_codes(db)
+    hit = next((c for c in codes if c["code"] == body.code.strip()), None)
+    if hit is None:
+        raise HTTPException(status_code=404, detail={"code": "PAIR_CODE_INVALID", "message": "کد نادرست است یا منقضی شده؛ در رایانه کد جدید بسازید"})
+    _save_pair_codes(db, [c for c in codes if c is not hit])
+    db.commit()
+    return hit["payload"]
+
+
+@router.get("/link")
+def link_info(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """v2.1 — what a paired phone needs to keep the link alive: the install's link
+    key (for LAN rediscovery) and the PC licence verdict (phone locks with it)."""
+    from ..services import license as lic
+    st = lic.state(db)
+    store = db.execute(select(SystemSetting).where(SystemSetting.key == "store.name")).scalar_one_or_none()
+    from ..services import cloud as cloud_svc
+    return {"link_key": link_key(db), "store": (store.value if store else "") or "",
+            "license": {k: st.get(k) for k in ("allowed", "reason", "status", "expires", "days_left", "activated")},
+            "cloud": cloud_svc.credentials_for_device(db)}
 
 
 @router.post("/pair/token")

@@ -408,8 +408,9 @@
         try {
           const r = await api("/mobile/pair/info");
           let html = "";
-          if (window.qrcode) { const qq = window.qrcode(0, "M"); qq.addData(r.qr_text); qq.make(); html = `<div style="width:240px;height:240px;background:#fff;padding:6px;border-radius:12px">${qq.createSvgTag({ cellSize: 4, margin: 8, scalable: true }).replace("<svg", '<svg style="width:100%;height:100%"')}</div>`; }
-          else if (r.qr_png) html = `<img src="${r.qr_png}" alt="QR" style="width:240px;height:240px;border-radius:12px;background:#fff"/>`;
+          if (window.qrcode) { const qq = window.qrcode(0, "L"); qq.addData(r.qr_text); qq.make(); html = `<div class="qr-box">${qq.createSvgTag({ cellSize: 4, margin: 0, scalable: true }).replace("<svg", '<svg preserveAspectRatio="xMidYMid meet" shape-rendering="crispEdges"')}</div>`; }
+          else if (r.qr_png) html = `<div class="qr-box"><img src="${r.qr_png}" alt="QR" style="object-fit:contain;image-rendering:pixelated"/></div>`;
+          try { const cd = await api("/mobile/pair/code", { method: "POST", body: "{}" }); html += `<div style="margin-top:10px;text-align:center"><div class="muted">یا کد ۶ رقمی را در گوشی وارد کنید:</div><div class="pair-code" style="display:inline-block;margin-top:6px">${cd.code.split("").join(" ")}</div></div>`; } catch (_) {}
           q("#ob-pair-qr").innerHTML = html || `<span class="error">ساخت کد ممکن نشد — از تنظیمات → موبایل استفاده کنید.</span>`;
           q("#ob-pair-info").innerHTML = `آدرس رایانه در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}<br/>نسخهٔ وب موبایل (بدون نصب): <code class="ltr">${_esc(r.mobile_url)}</code>`;
         } catch (e) { q("#ob-pair-qr").innerHTML = `<span class="muted">${_esc(e.message || "خطا")}</span>`; }

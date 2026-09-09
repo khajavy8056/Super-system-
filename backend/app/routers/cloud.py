@@ -1,7 +1,8 @@
 """v1.7 — /api/cloud: internet sync through the owner's Google Drive (appDataFolder)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,51 @@ def connect_poll(db: Session = Depends(get_db), user: User = Depends(require_per
     if out.get("status") == "CONNECTED":
         write_audit(db, action="CLOUD_CONNECTED", user_id=user.id, entity_type="Cloud", reference=out.get("account")); db.commit()
     return out
+
+
+class OAuthStartIn(BaseModel):
+    client_id: str | None = None
+    client_secret: str | None = None
+
+
+@router.post("/oauth/start")
+def oauth_start(body: OAuthStartIn, request: Request, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """v2.1 — in-app Google sign-in: returns the URL the browser opens; Google
+    redirects back to /api/cloud/oauth/callback on this very machine."""
+    host = request.headers.get("host") or f"127.0.0.1:{request.url.port or 8000}"
+    hostname = host.split(":")[0]
+    # Google only allows loopback IPs for desktop clients; map localhost → 127.0.0.1
+    if hostname in ("localhost", "0.0.0.0", "::1"):
+        host = "127.0.0.1" + (":" + host.split(":")[1] if ":" in host else "")
+    redirect = f"http://{host}/api/cloud/oauth/callback"
+    try:
+        return svc.oauth_start(db, redirect, body.client_id, body.client_secret)
+    except svc.CloudError as exc:
+        _raise(exc)
+
+
+@router.get("/oauth/callback", response_class=HTMLResponse)
+def oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None, db: Session = Depends(get_db)):
+    """Landing page after the Google account picker (no bearer header here — the
+    single-use ``state`` proves the request was started from this install)."""
+    ok, msg = False, ""
+    if error:
+        msg = "ورود انجام نشد: " + error
+    else:
+        try:
+            out = svc.oauth_finish(db, code or "", state or "")
+            ok, msg = True, f"حساب {out.get('account') or ''} متصل شد"
+            write_audit(db, action="CLOUD_CONNECTED", entity_type="Cloud", reference=out.get("account")); db.commit()
+        except svc.CloudError as exc:
+            msg = str(exc)
+    color = "#1f9d55" if ok else "#c0392b"
+    return f"""<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><title>همگام‌سازی ابری</title>
+<body style="font-family:Vazirmatn,Tahoma,sans-serif;background:#f6f7f9;display:grid;place-items:center;height:100vh;margin:0">
+<div style="background:#fff;border-radius:16px;padding:28px 32px;box-shadow:0 8px 30px rgba(0,0,0,.08);text-align:center;max-width:420px">
+<div style="font-size:42px">{'✓' if ok else '✕'}</div><h2 style="color:{color};margin:8px 0">{msg}</h2>
+<p style="color:#666">{'می‌توانید این برگه را ببندید؛ برنامه خودش ادامه می‌دهد.' if ok else 'به برنامه برگردید و دوباره تلاش کنید.'}</p>
+<button onclick="window.close()" style="padding:10px 22px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-size:15px">بستن</button></div>
+<script>try{{if(window.opener){{window.opener.postMessage({{type:'cloud-oauth',ok:{str(ok).lower()}}},'*');setTimeout(()=>window.close(),1500);}}}}catch(e){{}}</script></body></html>"""
 
 
 @router.post("/disconnect")

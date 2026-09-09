@@ -18,7 +18,8 @@ import java.util.List;
 public final class StockScreens {
     private StockScreens() {}
     static JSONArray units = new JSONArray(), categories = new JSONArray(), brands = new JSONArray();
-    static void loadTaxonomy() { Api.get("/units", r -> units = (JSONArray) r, e -> {}); Api.get("/products/categories", r -> categories = (JSONArray) r, e -> {}); Api.get("/products/brands", r -> brands = (JSONArray) r, e -> {}); }
+    static void loadLocalUnits() { if (units.length() == 0) { try { String u = Db.kv("local_units"); if (u != null) units = new JSONArray(u); } catch (Exception ignore) {} if (units.length() == 0) { try { units = new JSONArray("[{\"id\":1,\"name\":\"عدد\",\"allow_decimal\":false},{\"id\":2,\"name\":\"کیلوگرم\",\"allow_decimal\":true},{\"id\":3,\"name\":\"بسته\",\"allow_decimal\":false},{\"id\":4,\"name\":\"لیتر\",\"allow_decimal\":true}]"); } catch (Exception ignore) {} } } }
+    static void loadTaxonomy() { if (Api.standalone()) { loadLocalUnits(); return; } Api.get("/units", r -> units = (JSONArray) r, e -> {}); Api.get("/products/categories", r -> categories = (JSONArray) r, e -> {}); Api.get("/products/brands", r -> brands = (JSONArray) r, e -> {}); }
     static String unitName(long id) { for (int i = 0; i < units.length(); i++) if (units.optJSONObject(i).optLong("id") == id) return units.optJSONObject(i).optString("name"); return ""; }
     static boolean unitDecimal(long id) { for (int i = 0; i < units.length(); i++) if (units.optJSONObject(i).optLong("id") == id) return units.optJSONObject(i).optBoolean("allow_decimal"); return false; }
 
@@ -29,7 +30,7 @@ public final class StockScreens {
         public String key() { return "products"; } public String title() { return "کالاها"; }
         public boolean autoRefresh() { return true; }
         public void load() {
-            clear(); if (units.length() == 0 && !Api.standalone()) loadTaxonomy();
+            clear(); if (units.length() == 0) loadTaxonomy();
             LinearLayout sr = Ui.row(c); q = Ui.input(c, "نام / بارکد / SKU"); q.setLayoutParams(Ui.weight(1)); sr.addView(q);
             View sc = Ui.btn(c, "اسکن", Ui.PRIMARY, 0xFFFFFFFF, () -> a.scan("اسکن کالا", code -> a.open(new ProductDetail(a, code), true))); sc.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(44)), 6, 0, 0, 6)); sr.addView(sc); body.addView(sr);
             LinearLayout act = Ui.row(c); if (Screens.can("products.manage")) act.addView(Ui.small(c, "+ کالای جدید", () -> newProduct(a, null, p -> load()))); act.addView(Ui.small(c, "واحدها", () -> a.open(new Units(a), true))); act.addView(Ui.small(c, "دسته / برند", () -> a.open(new Taxonomy(a), true))); body.addView(act);
@@ -87,12 +88,12 @@ public final class StockScreens {
         Receive(AppActivity a) { super(a); } Receive(AppActivity a, String bc) { super(a); barcode = bc; }
         public String key() { return "receive"; } public String title() { return "ورود کالا"; }
         public void load() {
-            clear(); if (units.length() == 0 && !Api.standalone()) loadTaxonomy();
+            clear(); if (units.length() == 0) loadTaxonomy();
             LinearLayout cd = Ui.card(c, "کالا"); LinearLayout br = Ui.row(c); bc = Ui.input(c, "بارکد", true); bc.setLayoutParams(Ui.weight(1)); br.addView(bc); br.addView(Ui.small(c, "اسکن", () -> a.scan("اسکن کالای ورودی", code -> { bc.setText(code); resolve(code); }))); cd.addView(br);
             pname = Ui.text(c, "—", 15, Ui.TEXT, true); cd.addView(pname); body.addView(cd);
             bc.setOnEditorActionListener((v, i, e) -> { resolve(Ui.str(bc)); return true; });
             bc.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (e.length() >= 8) resolve(e.toString()); } });
-            LinearLayout f = Ui.card(c, "بچ جدید"); qty = Ui.input(c, "تعداد / مقدار دریافتی *", true); buy = Ui.input(c, "قیمت خرید *", true); cons = Ui.input(c, "قیمت مصرف‌کننده", true); sell = Ui.input(c, "قیمت فروش (خالی = مصرف‌کننده)", true); exp = Ui.input(c, "تاریخ انقضا ۱۴۰۴/۱۲/۲۹ (اختیاری)", true); note = Ui.input(c, "توضیح / تأمین‌کننده");
+            LinearLayout f = Ui.card(c, "بچ جدید"); qty = Ui.input(c, "تعداد / مقدار دریافتی *", true); buy = Ui.input(c, "قیمت خرید *", true); cons = Ui.input(c, "قیمت مصرف‌کننده", true); sell = Ui.input(c, "قیمت فروش (خالی = مصرف‌کننده)", true); exp = DatePicker.field(c, "تاریخ انقضا (اختیاری)"); note = Ui.input(c, "توضیح / تأمین‌کننده");
             f.addView(qty); f.addView(buy); f.addView(cons); f.addView(sell); f.addView(exp); f.addView(note); f.addView(Ui.success(c, "ثبت ورود (IN)", this::submit)); body.addView(f);
             body.addView(Ui.note(c, null, "هر ورود یک «بچ» جدا با قیمت و انقضای خودش می‌سازد (کالا ≠ بچ). فروش به‌صورت FEFO از بچ نزدیک‌تر به انقضا برداشت می‌کند."));
             if (barcode != null) { bc.setText(barcode); resolve(barcode); }
@@ -128,7 +129,7 @@ public final class StockScreens {
         Stocktake(AppActivity a) { super(a); }
         public String key() { return "stocktake"; } public String title() { return "انبارگردانی"; }
         public void load() { loading(); get("/inventory/stocktakes", r -> { JSONArray ar = arr(r); clear(); body.addView(Ui.primary(c, "+ انبارگردانی جدید", this::create)); if (ar.length() == 0) body.addView(Ui.empty(c, "انبارگردانی‌ای ثبت نشده")); for (int i = ar.length() - 1; i >= 0; i--) { JSONObject st = ar.optJSONObject(i); body.addView(Ui.item(c, st.optString("name"), Ui.jdate(s(st, "created_at", s(st, "started_at"))) + (st.isNull("scheduled_for") ? "" : " · زمان‌بندی " + Ui.jdate(st.optString("scheduled_for"))), label(st.optString("status"), new String[][]{{"DRAFT", "پیش‌نویس"}, {"IN_PROGRESS", "در حال شمارش"}, {"COMPLETED", "شمارش تمام"}, {"APPROVED", "تأیید‌شده"}, {"CANCELLED", "لغو"}}), stColor(st.optString("status")), () -> a.open(new StocktakeSession(a, st.optLong("id")), true))); } }); }
-        void create() { LinearLayout l = Ui.col(c); EditText n = Ui.input(c, "نام (مثلاً شمارش قفسهٔ لبنیات)"); EditText area = Ui.input(c, "محدوده / قفسه (اختیاری)"); EditText sch = Ui.input(c, "زمان‌بندی ۱۴۰۴/۰۷/۰۱ (اختیاری)", true); l.addView(n); l.addView(area); l.addView(sch); l.addView(Ui.muted(c, "همهٔ بچ‌های فعال (حتی صفر) عکس‌برداری می‌شود؛ شمارش قابل توقف و ادامه است.")); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ایجاد", () -> { try { String sc = dateIn(sch); d[0].dismiss(); JSONObject b = j("name", Ui.str(n).isEmpty() ? "انبارگردانی " + Jalali.todayLong() : Ui.str(n), "area", Ui.str(area)); try { b.put("include_zero", true); if (sc != null) b.put("scheduled_for", sc); } catch (Exception ignore) {} post("/inventory/stocktakes", b, r -> a.open(new StocktakeSession(a, ((JSONObject) r).optLong("id")), true)); } catch (IllegalArgumentException ignore) {} })); d[0] = Ui.sheet(c, "انبارگردانی جدید", l); }
+        void create() { LinearLayout l = Ui.col(c); EditText n = Ui.input(c, "نام (مثلاً شمارش قفسهٔ لبنیات)"); EditText area = Ui.input(c, "محدوده / قفسه (اختیاری)"); EditText sch = DatePicker.field(c, "زمان‌بندی (اختیاری)"); l.addView(n); l.addView(area); l.addView(sch); l.addView(Ui.muted(c, "همهٔ بچ‌های فعال (حتی صفر) عکس‌برداری می‌شود؛ شمارش قابل توقف و ادامه است.")); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ایجاد", () -> { try { String sc = dateIn(sch); d[0].dismiss(); JSONObject b = j("name", Ui.str(n).isEmpty() ? "انبارگردانی " + Jalali.todayLong() : Ui.str(n), "area", Ui.str(area)); try { b.put("include_zero", true); if (sc != null) b.put("scheduled_for", sc); } catch (Exception ignore) {} post("/inventory/stocktakes", b, r -> a.open(new StocktakeSession(a, ((JSONObject) r).optLong("id")), true)); } catch (IllegalArgumentException ignore) {} })); d[0] = Ui.sheet(c, "انبارگردانی جدید", l); }
     }
     public static final class StocktakeSession extends Screens.Screen {
         final long id; JSONObject prog; JSONArray items;

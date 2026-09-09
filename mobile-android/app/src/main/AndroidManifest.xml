@@ -41,6 +41,9 @@
             </intent-filter>
         </activity>
         <activity android:name=".LoginActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".SetupActivity" android:exported="false" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name=".LockActivity" android:exported="false" android:launchMode="singleTask" />
+        <activity android:name=".SupportActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".ScanActivity"
             android:exported="false"
