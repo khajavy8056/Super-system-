@@ -8,6 +8,11 @@ public final class Prefs {
     private static final String FILE = "supermarket";
 
     private Prefs() {}
+    private static Context APP;
+    public static void init(Context c) { APP = c.getApplicationContext(); }
+    public static String deviceIdStatic() { return APP == null ? null : deviceId(APP); }
+    public static String get(String k, String def) { return APP == null ? def : p(APP).getString(k, def); }
+    public static void set(String k, String v) { if (APP != null) p(APP).edit().putString(k, v).apply(); }
 
     private static SharedPreferences p(Context c) { return c.getSharedPreferences(FILE, Context.MODE_PRIVATE); }
 

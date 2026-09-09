@@ -285,14 +285,17 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
     if body.pull:
         prods = _changed_since(db, Product, since, body.limit)
         pull["products"] = [{"id": p.id, "name": p.name, "sku": p.sku, "barcode": p.barcode, "unit_id": p.unit_id,
-                             "category_id": p.category_id, "is_active": p.is_active, "image_url": getattr(p, "image_url", None),
+                             "category_id": p.category_id, "brand_id": p.brand_id, "is_active": p.is_active, "image_url": getattr(p, "image_url", None),
+                             "min_stock_alert": p.min_stock_alert, "has_own_barcode": getattr(p, "has_own_barcode", True),
                              "updated_at": p.updated_at.isoformat()} for p in prods]
         batches = _changed_since(db, ProductBatch, since, body.limit)
         pull["batches"] = [{"id": b.id, "product_id": b.product_id, "batch_number": b.batch_number, "expiry_date": b.expiry_date.isoformat() if b.expiry_date else None,
-                            "current_qty": float(b.current_qty or 0), "unit_sell_price": float(b.sell_price or 0), "status": b.status,
+                            "current_qty": float(b.current_qty or 0), "unit_sell_price": float(b.sell_price or 0), "sell_price": float(b.sell_price or 0),
+                            "consumer_price": float(b.consumer_price or 0), "buy_price": float(b.buy_price or 0), "status": b.status,
                             "updated_at": b.updated_at.isoformat()} for b in batches]
         custs = _changed_since(db, Customer, since, body.limit)
-        pull["customers"] = [{"id": c.id, "name": c.name, "phone": c.phone, "updated_at": c.updated_at.isoformat()} for c in custs]
+        pull["customers"] = [{"id": c.id, "name": c.name, "last_name": c.last_name, "phone": c.phone, "credit_limit": float(c.credit_limit or 0),
+                              "updated_at": c.updated_at.isoformat()} for c in custs]
     # remember the device
     if body.device_id:
         items = _devices(db)

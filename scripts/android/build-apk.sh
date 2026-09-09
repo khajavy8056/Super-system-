@@ -25,15 +25,10 @@ APP="$ROOT/mobile-android/app/src/main"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/gen" "$W/classes" "$W/dex" "$OUT"
 
-echo "== 1/6 bundle web app into assets/www (version $VER)"
-ASSETS="$W/assets/www"; mkdir -p "$ASSETS/mobile" "$ASSETS/fonts" "$ASSETS/icons"
-cp "$ROOT"/frontend/mobile/*.{html,js,css} "$ASSETS/mobile/"
-cp "$ROOT"/frontend/jalali.js "$ASSETS/"
-# v1.9: the FULL panel ships in the APK too (same screens as Windows, phone shell)
-cp "$ROOT"/frontend/index.html "$ROOT"/frontend/*.js "$ROOT"/frontend/*.css "$ROOT"/frontend/manifest.webmanifest "$ASSETS/"
-cp "$ROOT"/frontend/fonts/*.woff2 "$ROOT"/frontend/fonts/OFL-Vazirmatn.txt "$ASSETS/fonts/"
-cp "$ROOT"/frontend/icons/* "$ASSETS/icons/"
-echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\"}" > "$ASSETS/mobile/build.json"
+echo "== 1/6 assets (fonts only — v2.0 is fully native, no bundled web app)"
+ASSETS="$W/assets"; mkdir -p "$ASSETS/fonts"
+cp "$APP"/assets/fonts/* "$ASSETS/fonts/"
+echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\",\"ui\":\"native\"}" > "$ASSETS/build.json"
 
 echo "== 2/6 resources (aapt2)"
 "$AAPT2" compile --dir "$APP/res" -o "$W/res.zip"
@@ -47,7 +42,7 @@ cat > "$W/gen/ir/khajavy/supermarket/Version.java" <<JAVA
 package ir.khajavy.supermarket;
 public final class Version { public static final String NAME = "$VER"; public static final int CODE = $CODE; private Version() {} }
 JAVA
-"$JAVA" -jar "$ECJ" -8 -nowarn -proc:none -cp "$ANDROID_JAR" -d "$W/classes" "$W/gen" "$APP/java" "$ROOT/mobile-android/third_party/zxing-core/com"   # + vendored ZXing core (Apache-2.0)
+"$JAVA" -jar "$ECJ" -8 -nowarn -proc:none -encoding UTF-8 -cp "$ANDROID_JAR" -d "$W/classes" "$W/gen" "$APP/java" "$ROOT/mobile-android/third_party/zxing-core/com"   # + vendored ZXing core (Apache-2.0)
 
 echo "== 4/6 dex (d8)"
 find "$W/classes" -name '*.class' > "$W/classes.txt"

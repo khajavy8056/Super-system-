@@ -216,6 +216,15 @@ _LICENSE_GATE_ENABLED = os.environ.get("SUPERMARKET_LICENSE_GATE", "1") not in (
 
 
 @app.middleware("http")
+async def method_override(request: Request, call_next):
+    """v2.0 — the native Android client (HttpURLConnection) cannot emit PATCH;
+    it sends POST + ``X-HTTP-Method-Override: PATCH``. Only PATCH is honoured."""
+    if request.method == "POST" and request.headers.get("x-http-method-override", "").upper() == "PATCH":
+        request.scope["method"] = "PATCH"
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def license_gate(request: Request, call_next):
     path = request.url.path
     if _LICENSE_GATE_ENABLED and path.startswith("/api/") and not path.startswith(_LICENSE_FREE_PREFIXES):
