@@ -1,9 +1,11 @@
 /* Supermarket System — Web Panel (vanilla JS SPA) */
 const $ = (sel) => document.querySelector(sel);
-const API = "/api";
+/* v1.9: on the Android app the same panel talks to the paired shop PC
+ * (window.SM_SERVER is set by index.html from the pairing); in a browser it stays relative. */
+const API = (window.SM_SERVER || "") + "/api";
 
 const state = {
-  token: localStorage.getItem("token") || "",
+  token: localStorage.getItem("token") || localStorage.getItem("m_token") || "",   // m_token = phone pairing token
   user: null,
   view: "dashboard",
   kiosk: localStorage.getItem("kiosk") === "1",
@@ -1266,7 +1268,7 @@ RENDER.products = async () => {
       <label class="btn btn-ghost file-btn">انتخاب فایل CSV<input type="file" id="p-csv" accept=".csv,text/csv" /></label>
       <span id="p-csv-name" class="muted"></span>
       <button id="p-csv-up" class="btn btn-ghost">ورود فایل CSV فروشگاه</button>
-      <a class="muted" href="/api/products/import/starter" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode</a>
+      <a class="muted" href="${API}/products/import/starter" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode</a>
     </div>
     <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
   </div>
@@ -2874,7 +2876,7 @@ RENDER.support = async () => {
       const fd = new FormData(); if (text) fd.append("text", text); if (f) fd.append("file", f, f.name);
       $("#sup-reply-send").disabled = true;
       try {
-        const r = await fetch(`/api/support/tickets/${id}/messages`, { method: "POST", headers: { Authorization: "Bearer " + state.token }, body: fd });
+        const r = await fetch(`${API}/support/tickets/${id}/messages`, { method: "POST", headers: { Authorization: "Bearer " + state.token }, body: fd });
         if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error((b.detail && (b.detail.message || b.detail)) || r.statusText); }
         const m = await r.json();
         toast(m.status === "SENT" ? "پیام ارسال شد" : "پیام ذخیره شد و به‌محض اتصال ارسال می‌شود", m.status === "SENT" ? "ok" : "err");

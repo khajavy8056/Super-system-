@@ -123,7 +123,9 @@ public class MainActivity extends Activity {
         });
 
         if (savedInstanceState == null) {
-            String start = Prefs.serverUrl(this) == null ? ORIGIN + "/mobile/setup.html" : ORIGIN + "/mobile/index.html";
+            // v1.9: paired phone opens the FULL panel (same screens as Windows, phone shell);
+            // index.html itself hands off to /mobile/ when unpaired, standalone or the PC is unreachable.
+            String start = Prefs.serverUrl(this) == null ? ORIGIN + "/mobile/setup.html" : ORIGIN + "/index.html";
             web.loadUrl(start);
         } else {
             web.restoreState(savedInstanceState);
@@ -191,7 +193,7 @@ public class MainActivity extends Activity {
         /** Called by setup.html after a QR scan / manual entry: {url, token, store, device_id}. */
         @JavascriptInterface public void pair(String url, String token, String store, String deviceId) {
             Prefs.save(MainActivity.this, Prefs.normalise(url), token, store, deviceId);
-            runOnUiThread(() -> web.loadUrl(ORIGIN + "/mobile/index.html"));
+            runOnUiThread(() -> web.loadUrl(ORIGIN + (url != null && url.contains("standalone.invalid") ? "/mobile/index.html" : "/index.html")));
         }
 
         @JavascriptInterface public void unpair() {
@@ -228,7 +230,19 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) { web.goBack(); return; }
+        if (web != null) {
+            // let the page close its drawer / sheet / go home first (full panel shell)
+            web.evaluateJavascript("(function(){try{return window.__androidBack?String(!!window.__androidBack()):'none'}catch(e){return 'none'}})()", v -> {
+                if ("\"true\"".equals(v)) return;
+                if (web.canGoBack()) { web.goBack(); return; }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setMessage(R.string.exit_confirm)
+                        .setPositiveButton(R.string.exit_yes, (d, w) -> finish())
+                        .setNegativeButton(R.string.exit_no, null)
+                        .show();
+            });
+            return;
+        }
         new AlertDialog.Builder(this)
                 .setMessage(R.string.exit_confirm)
                 .setPositiveButton(R.string.exit_yes, (d, w) -> finish())

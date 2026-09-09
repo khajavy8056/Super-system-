@@ -6,6 +6,20 @@
   <title>سیستم مدیریت سوپرمارکت</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="theme-pro.css" />
+  <link rel="stylesheet" href="mobile-shell.css" />
+  <script>
+    /* v1.9 — the SAME panel runs inside the Android app. Resolve the paired shop
+       PC before any module loads; a phone that is not paired / standalone /
+       cannot reach the PC right now goes to the local-first phone app instead. */
+    (function () {
+      var A = window.SupermarketAndroid || null;
+      var srv = (A && A.getServerUrl && A.getServerUrl()) || localStorage.getItem("m_server") || "";
+      if (A && (!srv || /standalone\.invalid/.test(srv))) { location.replace(srv ? "/mobile/index.html" : "/mobile/setup.html"); return; }
+      if (srv && srv.indexOf(location.origin) === 0) srv = "";
+      window.SM_SERVER = srv.replace(/\/+$/, "");
+      window.SM_NATIVE = !!A;
+    })();
+  </script>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/svg+xml" href="/icons/logo.svg" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
@@ -73,8 +87,9 @@
   <script src="tour.js"></script>
   <script src="app.js"></script>
   <script src="accounting.js"></script>
+  <script src="mobile-shell.js"></script>
   <script>
-    if ("serviceWorker" in navigator) {
+    if ("serviceWorker" in navigator && !window.SM_NATIVE) {
       window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
     }
   </script>

@@ -168,7 +168,10 @@
   function start(view, opts = {}) {
     const def = T[view]; if (!def) return false;
     // keep only steps whose target exists (roles may hide cards); always keep at least one
-    const steps = def.steps.filter(([sel]) => document.querySelector(sel));
+    // phone shell: the sidebar lives in a drawer → point at the menu button / bottom tabs instead
+    const phone = document.documentElement.classList.contains("m-shell");
+    const steps = def.steps.map((st) => (phone && st[0] === "#nav") ? ["#m-tabbar", "منوی برنامه", "بخش‌های پرکاربرد در نوار پایین‌اند؛ با دکمهٔ ☰ بالا (یا «بیشتر») به همهٔ بخش‌های سامانه دسترسی دارید. نشان قرمز یعنی پاسخ جدید پشتیبانی."] : st)
+      .filter(([sel]) => visible(document.querySelector(sel)));
     if (!steps.length) return false;
     cur = { view, steps, i: 0 };
     if (!opts.replay) markSeen(view);

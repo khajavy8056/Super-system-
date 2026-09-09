@@ -1,0 +1,148 @@
+/* =============================================================================
+ * v1.9 — MOBILE SHELL for the full panel.
+ *
+ * The complete Windows panel (index.html + app.js + accounting.js) runs inside
+ * the Android app. This sheet re-lays it out for a thumb: bottom tab bar,
+ * slide-in drawer with EVERY section, sticky top bar, cards instead of wide
+ * tables, bottom-sheet modals, big touch targets. Applied when
+ * <html class="m-shell"> (phone-sized viewport or the Android app).
+ * ========================================================================== */
+html.m-shell { --m-tab-h: 64px; --m-top-h: 56px; --m-safe-b: env(safe-area-inset-bottom, 0px); }
+html.m-shell body { font-size: 15px; overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
+html.m-shell .app { display: block; min-height: 100dvh; }
+html.m-shell .sidebar { display: none; }
+
+/* ---- top bar ------------------------------------------------------------ */
+html.m-shell .topbar {
+  position: sticky; top: 0; z-index: 30; height: var(--m-top-h); padding: 0 8px 0 10px;
+  background: color-mix(in srgb, var(--bg2) 88%, transparent); backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+html.m-shell .topbar h2 { font-size: 17px; flex: 1; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.m-shell .topbar #topbar-actions { display: flex; gap: 6px; align-items: center; }
+html.m-shell .topbar #topbar-actions .btn { padding: 7px 10px; font-size: 12px; }
+html.m-shell .m-menu-btn { border: 0; background: transparent; color: var(--text); width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; }
+html.m-shell .m-menu-btn:active { background: var(--card); }
+
+/* ---- content ------------------------------------------------------------ */
+html.m-shell .main { min-height: 100dvh; }
+html.m-shell .view { padding: 12px 12px calc(var(--m-tab-h) + var(--m-safe-b) + 16px); overflow: visible; }
+html.m-shell .statusbar { display: none; }
+html.m-shell .card { border-radius: 18px; padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
+html.m-shell .card + .card, html.m-shell .card ~ .card { margin-top: 12px; }
+html.m-shell .grid-2, html.m-shell .grid-3, html.m-shell .form-grid, html.m-shell .recv-grid, html.m-shell .bs-grid,
+html.m-shell .st-card, html.m-shell .kpi-grid { grid-template-columns: 1fr !important; }
+html.m-shell .dash > * { grid-column: span 12 !important; }
+html.m-shell .kpi-grid { grid-template-columns: 1fr 1fr !important; }
+html.m-shell .kpi { padding: 12px; border-radius: 16px; }
+html.m-shell .kpi b { font-size: 17px; }
+html.m-shell .toolbar { flex-wrap: wrap; position: sticky; top: var(--m-top-h); z-index: 5; background: var(--bg); padding: 6px 0; margin: -6px 0 8px; }
+html.m-shell .toolbar input, html.m-shell .toolbar select { flex: 1 1 140px; min-width: 0; }
+html.m-shell input, html.m-shell select, html.m-shell textarea { font-size: 16px; padding: 11px 12px; border-radius: 12px; }
+html.m-shell .btn { padding: 11px 14px; border-radius: 12px; font-size: 14px; min-height: 42px; }
+html.m-shell .btn-sm { padding: 7px 10px; min-height: 34px; font-size: 12px; }
+html.m-shell .acc-tabs, html.m-shell .tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+html.m-shell .acc-tabs::-webkit-scrollbar { display: none; }
+html.m-shell .acc-tabs .btn { white-space: nowrap; }
+
+/* ---- tables → stacked cards -------------------------------------------- */
+html.m-shell .table-wrap { overflow: visible; }
+html.m-shell table { display: block; }
+html.m-shell thead { display: none; }
+html.m-shell tbody { display: grid; gap: 8px; }
+html.m-shell tr { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+html.m-shell td { display: block; border: 0; padding: 2px 0; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+html.m-shell td[data-l]::before { content: attr(data-l); display: block; font-size: 10.5px; color: var(--muted); }
+html.m-shell td:first-child { grid-column: 1 / -1; font-weight: 700; font-size: 14px; }
+html.m-shell td:has(> .btn), html.m-shell td:has(> button) { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 6px; }
+html.m-shell td.empty, html.m-shell td[colspan] { grid-column: 1 / -1; text-align: center; color: var(--muted); }
+html.m-shell tr:has(td.empty) { background: transparent; border-style: dashed; }
+/* tiny tables (2-3 cols like key/value) stay as one column */
+html.m-shell table.m-kv tr { grid-template-columns: 1fr; }
+
+/* ---- modals → bottom sheets ------------------------------------------- */
+html.m-shell .modal-overlay { align-items: flex-end; padding: 0; }
+html.m-shell .modal { max-width: none !important; width: 100%; max-height: 92dvh; border-radius: 22px 22px 0 0; padding: 18px 16px calc(18px + var(--m-safe-b)); animation: m-sheet-in .22s ease-out; }
+html.m-shell .modal::before { content: ""; display: block; width: 44px; height: 4px; border-radius: 2px; background: var(--border); margin: -6px auto 12px; }
+@keyframes m-sheet-in { from { transform: translateY(40px); opacity: .5; } to { transform: none; opacity: 1; } }
+html.m-shell .modal .modal-actions, html.m-shell .modal .actions { display: flex; flex-direction: column-reverse; gap: 8px; }
+html.m-shell .modal .btn { width: 100%; }
+html.m-shell .modal .btn-sm { width: auto; }
+
+/* ---- POS on a phone ---------------------------------------------------- */
+html.m-shell #view.view-pos { overflow: visible; display: block; padding-bottom: calc(var(--m-tab-h) + var(--m-safe-b) + 8px); }
+html.m-shell .pos-screen { height: auto; display: flex; flex-direction: column; gap: 10px; }
+/* one column, sensible thumb order: scan → cart → customer/coupon → totals → actions */
+html.m-shell .pos-main { display: contents !important; }
+html.m-shell .pos-side { display: contents !important; }
+html.m-shell .pos-scan-wrap { order: 1; position: sticky; top: calc(var(--m-top-h) + 6px); z-index: 20; }
+html.m-shell .pos-suggest { order: 1; position: static; max-height: 46dvh; margin-top: -4px; }
+html.m-shell .pos-cart { order: 2; min-height: 120px; max-height: none; }
+html.m-shell .pos-cart .pos-cart-list { max-height: 34dvh; overflow: auto; }
+html.m-shell #pos-customer, html.m-shell #pos-coupon-state { order: 3; padding: 9px 12px; font-size: 13px; }
+html.m-shell .pos-totals { order: 4; }
+html.m-shell .pos-actions { order: 5; grid-template-columns: 1fr 1fr; gap: 8px; }
+html.m-shell .pos-held { order: 6; }
+html.m-shell .pos-hint, html.m-shell .pos-side .kbd, html.m-shell .pos-actions .kbd { display: none; }
+html.m-shell .pos-btn { min-height: 48px; font-size: 14px; }
+html.m-shell .pos-btn-pay { grid-column: 1 / -1; min-height: 58px; font-size: 18px; }
+html.m-shell .m-scan-fab { position: fixed; z-index: 28; left: 14px; bottom: calc(var(--m-tab-h) + var(--m-safe-b) + 14px); width: 58px; height: 58px; border-radius: 20px; border: 0;
+  background: var(--grad, linear-gradient(135deg, #3b82f6, #7c3aed)); color: #fff; display: grid; place-items: center; box-shadow: 0 10px 28px rgba(59,130,246,.4); }
+html.m-shell .m-scan-fab:active { transform: scale(.94); }
+
+/* ---- bottom tab bar ----------------------------------------------------- */
+.m-tabbar { display: none; }
+html.m-shell .m-tabbar {
+  display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; z-index: 29; left: 0; right: 0; bottom: 0;
+  height: calc(var(--m-tab-h) + var(--m-safe-b)); padding-bottom: var(--m-safe-b);
+  background: color-mix(in srgb, var(--bg2) 92%, transparent); backdrop-filter: blur(16px); border-top: 1px solid var(--border);
+}
+.m-tab { border: 0; background: transparent; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 10.5px; font-weight: 600; position: relative; }
+.m-tab svg { width: 24px; height: 24px; }
+.m-tab.active { color: var(--primary); }
+.m-tab.active::before { content: ""; position: absolute; top: 0; width: 28px; height: 3px; border-radius: 0 0 3px 3px; background: var(--primary); }
+.m-tab .m-badge { position: absolute; top: 6px; right: calc(50% - 20px); min-width: 16px; height: 16px; border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; display: grid; place-items: center; padding: 0 4px; }
+
+/* ---- drawer with every section ----------------------------------------- */
+.m-drawer-bg { display: none; }
+html.m-shell .m-drawer-bg { display: block; position: fixed; inset: 0; z-index: 1005; background: rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
+html.m-shell .m-drawer-bg.open { opacity: 1; pointer-events: auto; }
+html.m-shell .m-drawer { position: fixed; z-index: 1006; top: 0; bottom: 0; right: 0; width: min(320px, 86vw); background: var(--bg2); transform: translateX(100%); transition: transform .24s cubic-bezier(.2,.8,.2,1);
+  display: flex; flex-direction: column; box-shadow: -12px 0 40px rgba(0,0,0,.35); }
+html.m-shell .m-drawer.open { transform: none; }
+.m-drawer-head { padding: 18px 16px 12px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 18%, transparent), transparent); }
+.m-drawer-head img { width: 44px; height: 44px; border-radius: 12px; }
+.m-drawer-head b { display: block; font-size: 15px; }
+.m-drawer-head span { font-size: 12px; color: var(--muted); }
+.m-drawer-list { flex: 1; overflow-y: auto; padding: 8px; }
+.m-drawer-list .m-sec { font-size: 11px; color: var(--muted); padding: 10px 12px 4px; letter-spacing: .3px; }
+.m-drawer-list .nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 12px; border-radius: 12px; font-size: 14px; }
+.m-drawer-list .nav-item svg { width: 20px; height: 20px; flex: none; }
+.m-drawer-foot { padding: 10px 12px calc(10px + var(--m-safe-b)); border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.m-drawer-foot .m-sync { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 6px 4px; }
+.m-drawer-foot .m-sync i { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.m-drawer-foot .m-sync i.on { background: var(--green); }
+
+/* ---- misc --------------------------------------------------------------- */
+html.m-shell .toast { bottom: calc(var(--m-tab-h) + var(--m-safe-b) + 12px); left: 12px; right: 12px; transform: none; max-width: none; }
+html.m-shell .tour-btn { padding: 6px 9px; font-size: 12px; }
+html.m-shell .about-logo { max-width: 120px; }
+html.m-shell canvas { max-width: 100%; }
+html.m-shell .login-card { max-width: 100%; border-radius: 22px; }
+html.m-shell #login-view { background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 60%), var(--bg); }
+
+/* ---- POS cart line on a phone: two rows (image+name / qty+total) ---- */
+html.m-shell .citem { display: grid !important; grid-template-columns: 44px 1fr; grid-template-areas: "img info" "qty total"; gap: 6px 10px; padding: 10px; align-items: center; }
+html.m-shell .cimg { grid-area: img; width: 44px; height: 44px; }
+html.m-shell .cinfo { grid-area: info; min-width: 0; }
+html.m-shell .cinfo b { font-size: 14px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.m-shell .cinfo .muted, html.m-shell .cmeta { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+html.m-shell .cqty { grid-area: qty; justify-self: start; display: flex; gap: 4px; }
+html.m-shell .cqty .qbtn { width: 38px; height: 38px; border-radius: 10px; }
+html.m-shell .cqty input { width: 54px; height: 38px; padding: 0; text-align: center; font-size: 15px; }
+html.m-shell .ctotal { grid-area: total; justify-self: end; display: flex; align-items: center; gap: 8px; }
+html.m-shell .ctotal b { font-size: 15px; }
+html.m-shell .cdel { width: 34px; height: 34px; border-radius: 10px; }
+html.m-shell .pos-header { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; align-items: center; }
+html.m-shell .pos-header .pos-clock { display: none; }
+html.m-shell .pos-header #pos-kiosk-btn { font-size: 11px; padding: 6px 8px; min-height: 0; }

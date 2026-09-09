@@ -11,7 +11,7 @@
   async function pub(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (!(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
-    const r = await fetch("/api" + path, { ...opts, headers });
+    const r = await fetch((window.SM_SERVER || "") + "/api" + path, { ...opts, headers });
     let b = null; try { b = await r.json(); } catch (_) {}
     if (!r.ok) { const d = b && b.detail; throw Object.assign(new Error(typeof d === "object" ? (d.message || d.code) : (d || r.statusText)), { code: d && d.code, status: r.status }); }
     return b;
@@ -368,6 +368,7 @@
 
   // After a successful login: licence recheck (if due) + the per-login loading screen (2 min; 45 min the very first time).
   async function afterLogin() {
+    if (window.SM_NATIVE) return;   // v1.9: the phone reuses the PC's licence state — no second loading screen
     if (sessionStorage.getItem(LS_LOADED) === localStorage.getItem("token")) return;
     // v1.5.1: the long install screen is shown ONLY inside the setup wizard.
     // Every login afterwards gets the short one (2 min).

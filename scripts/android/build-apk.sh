@@ -29,6 +29,8 @@ echo "== 1/6 bundle web app into assets/www (version $VER)"
 ASSETS="$W/assets/www"; mkdir -p "$ASSETS/mobile" "$ASSETS/fonts" "$ASSETS/icons"
 cp "$ROOT"/frontend/mobile/*.{html,js,css} "$ASSETS/mobile/"
 cp "$ROOT"/frontend/jalali.js "$ASSETS/"
+# v1.9: the FULL panel ships in the APK too (same screens as Windows, phone shell)
+cp "$ROOT"/frontend/index.html "$ROOT"/frontend/*.js "$ROOT"/frontend/*.css "$ROOT"/frontend/manifest.webmanifest "$ASSETS/"
 cp "$ROOT"/frontend/fonts/*.woff2 "$ROOT"/frontend/fonts/OFL-Vazirmatn.txt "$ASSETS/fonts/"
 cp "$ROOT"/frontend/icons/* "$ASSETS/icons/"
 echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\"}" > "$ASSETS/mobile/build.json"

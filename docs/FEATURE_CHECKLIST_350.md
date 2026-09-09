@@ -153,7 +153,7 @@
 | 250–254 | Web Panel، Backend محلی، Local DB، Local-First، Offline | ✅ | FastAPI + SQLite + `sw.js` + صف آفلاین موبایل |
 | 255 | همگام‌سازی با سرور | 🔵 | `SyncJob` صف عمومی + `sync/run`; سرور مرکزی = فاز بعد (مطابق فهرست §260) |
 | 256 | PWA | ✅ | `manifest.webmanifest`, `sw.js`, آیکون‌ها |
-| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.8.1.apk`; اسکنر بومی Camera2+ZXing، حالت مستقل آفلاین (local.js)، جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
+| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.9.0.apk`; اسکنر بومی Camera2+ZXing، حالت مستقل آفلاین (local.js)، جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
 | 258–259 | اتصال موبایل به DB اصلی در LAN | ✅ | `bind 0.0.0.0`, `check_lan` در عیب‌یابی |
 | 260 | اتصال آینده از اینترنت | 🔵 | JWT + CORS پیکربندی‌پذیر (`CORS_ORIGINS`) |
 | 261–265 | انبارگردانی موبایل، دوربین، UI اختصاصی، ذخیرهٔ لحظه‌ای، ادامه | ✅ | `frontend/mobile/app.js`, `client_key` idempotent; T: `test_phase10_scan.py` |
