@@ -18,6 +18,7 @@ const results = []; const ok = (name, cond, extra = "") => { results.push([name,
   const browser = await puppeteer.launch({ executablePath: await chromium.executablePath(), headless: true, args: [...chromium.args, "--no-sandbox", "--lang=fa"] });
   const page = await browser.newPage(); await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
   const errors = []; page.on("pageerror", (e) => errors.push(e.message.slice(0, 160)));
+  page.on("dialog", (d) => d.accept());   // duplicate-name advisory confirm on reruns
   await page.evaluateOnNewDocument((tok, dev, base) => {
     window.__scans = []; window.__scanCode = "6260000000012";
     window.SupermarketAndroid = { getServerUrl: () => base, getDeviceToken: () => tok, getDeviceId: () => dev, getStoreName: () => "فروشگاه خواجوی", version: () => "1.9.0", isPaired: () => true, pair() {}, unpair() {}, exitApp() {}, hasNativeScanner: () => true, scan: (t) => { window.__scans.push(t); setTimeout(() => window.__nativeScan(window.__scanCode, "EAN_13"), 30); } };
@@ -43,10 +44,10 @@ const results = []; const ok = (name, cond, extra = "") => { results.push([name,
   }
   // products: create from phone
   await page.evaluate(() => go("products")); await sleep(900); await killTour();
-  await page.evaluate((s) => { document.getElementById("p-barcode").value = "627" + s + "000"; document.getElementById("p-name").value = "کالای ثبت‌شده از گوشی"; }, stamp);
+  await page.evaluate((s) => { document.getElementById("p-barcode").value = "627" + s + "000"; document.getElementById("p-name").value = "کالای ثبت‌شده از گوشی " + s; }, stamp);
   await page.evaluate(() => document.getElementById("p-add").click()); await sleep(1200);
   const onPc = await (await fetch(B + "/api/products/barcode/627" + stamp + "000", { headers: { Authorization: "Bearer " + adminTok } })).json();
-  ok("product created on phone is on PC instantly", onPc && onPc.name === "کالای ثبت‌شده از گوشی");
+  ok("product created on phone is on PC instantly", onPc && onPc.name.startsWith("کالای ثبت‌شده از گوشی"));
   // batches: receive stock for it from phone
   await page.evaluate(() => go("batches")); await sleep(900); await killTour();
   await page.evaluate((s) => { const b = document.getElementById("b-barcode"); b.value = "627" + s + "000"; b.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); }, stamp); await sleep(800);
@@ -55,7 +56,7 @@ const results = []; const ok = (name, cond, extra = "") => { results.push([name,
   const stock = await (await fetch(B + "/api/pos/search?q=627" + stamp + "000&limit=1", { headers: { Authorization: "Bearer " + adminTok } })).json();
   ok("stock received on phone visible on PC", stock.items.length && Number(stock.items[0].available_qty) === 7, JSON.stringify(stock.items[0] && stock.items[0].available_qty));
   // PC creates a product → phone sees it
-  await fetch(B + "/api/products", { method: "POST", headers: { Authorization: "Bearer " + adminTok, "Content-Type": "application/json" }, body: JSON.stringify({ barcode: "628" + stamp + "000", name: "کالای ثبت‌شده از رایانه" }) });
+  await fetch(B + "/api/products", { method: "POST", headers: { Authorization: "Bearer " + adminTok, "Content-Type": "application/json" }, body: JSON.stringify({ barcode: "628" + stamp + "000", name: "کالای ثبت‌شده از رایانه " + stamp }) });
   await page.evaluate(() => go("products")); await sleep(1200);
   ok("product created on PC visible on phone", await page.evaluate(() => document.body.innerText.includes("کالای ثبت‌شده از رایانه")));
   // POS: native scan → cart → hold → restore → pay
