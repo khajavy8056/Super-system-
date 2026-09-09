@@ -146,3 +146,8 @@ html.m-shell .cdel { width: 34px; height: 34px; border-radius: 10px; }
 html.m-shell .pos-header { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; align-items: center; }
 html.m-shell .pos-header .pos-clock { display: none; }
 html.m-shell .pos-header #pos-kiosk-btn { font-size: 11px; padding: 6px 8px; min-height: 0; }
+
+/* sheets are opaque (no page bleed-through); toast floats above sheets */
+html.m-shell .modal { background: var(--bg2) !important; backdrop-filter: none; box-shadow: 0 -12px 40px rgba(0,0,0,.45); }
+html.m-shell .modal-overlay { background: rgba(3,6,14,.72); backdrop-filter: blur(3px); }
+html.m-shell .toast { z-index: 2000; bottom: auto; top: calc(var(--m-top-h) + 10px); }
