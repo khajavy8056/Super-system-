@@ -358,7 +358,7 @@ def about(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
         "developer_en": "Khajavy",
         "description": (
             "سامانهٔ یکپارچهٔ صندوق فروش، انبارداری، انبارگردانی و باشگاه "
-            "مشتریان، با معماری Local-First و اپ موبایل PWA."
+            "مشتریان، با معماری Local-First و اپ اندروید بومی (Native) با همگام‌سازی محلی."
         ),
         "store_name": _get(db, "store.name", ""),
     }

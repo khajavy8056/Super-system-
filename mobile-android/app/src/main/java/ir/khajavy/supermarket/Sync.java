@@ -56,6 +56,8 @@ public final class Sync {
                         applied++;
                         JSONObject result = a.optJSONObject("result");
                         if (src != null && result != null && result.has("invoice_number") && !src.isNull("local_no")) Db.markInvoiceSynced(src.optString("local_no"), result.optString("invoice_number"));
+                        JSONObject adj = result == null ? null : result.optJSONObject("adjusted");
+                        if (adj != null) Db.conflictAdd(id, src == null ? id : src.optString("label"), "قیمت روی رایانه متفاوت بود: گوشی " + Ui.money(adj.optDouble("phone_total")) + " ← رایانه " + Ui.money(adj.optDouble("pc_total")) + " (فاکتور با مبلغ رایانه ثبت شد)");
                         Db.opDelete(id);
                     } else {
                         rejected++;

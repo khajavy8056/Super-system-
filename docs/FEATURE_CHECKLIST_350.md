@@ -153,7 +153,7 @@
 | 250–254 | Web Panel، Backend محلی، Local DB، Local-First، Offline | ✅ | FastAPI + SQLite + `sw.js` + صف آفلاین موبایل |
 | 255 | همگام‌سازی با سرور | 🔵 | `SyncJob` صف عمومی + `sync/run`; سرور مرکزی = فاز بعد (مطابق فهرست §260) |
 | 256 | PWA | ✅ | `manifest.webmanifest`, `sw.js`, آیکون‌ها |
-| 257 | نسخهٔ Android | ✅ **v1.7** (APK ساخته و امضا شده؛ نصب روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/` + `releases/android/SupermarketMobile-1.9.0.apk`; اسکنر بومی Camera2+ZXing، حالت مستقل آفلاین (local.js)، جفت‌سازی QR، همگام‌سازی آفلاین LAN، ابر اختیاری، برابری امکانات (`app-more.js`, ۲۴ صفحه در `smoke-android.js`) |
+| 257 | نسخهٔ Android | ✅ **v2.0 — اپ کاملاً بومی (Java، بدون WebView/PWA)** (APK ساخته و امضا شده؛ اجرا روی دستگاه فیزیکی NOT VERIFIED) | `mobile-android/app/src/main/java/…/{AppActivity,Screens,SalesScreens,StockScreens,AdminScreens,Api,Db,Sync,Ui,Jalali,Tour,PairActivity,LoginActivity,ScanActivity}.java` + `releases/android/SupermarketMobile-2.0.0.apk`; ۲۷ بخش بومی، SQLite محلی، حالت مستقل، جفت‌سازی QR/ورود، همگام‌سازی دوطرفهٔ LAN؛ T: `test_v20_native_android.py`; `docs/ANDROID_CHECKLIST.md` |
 | 258–259 | اتصال موبایل به DB اصلی در LAN | ✅ | `bind 0.0.0.0`, `check_lan` در عیب‌یابی |
 | 260 | اتصال آینده از اینترنت | 🔵 | JWT + CORS پیکربندی‌پذیر (`CORS_ORIGINS`) |
 | 261–265 | انبارگردانی موبایل، دوربین، UI اختصاصی، ذخیرهٔ لحظه‌ای، ادامه | ✅ | `frontend/mobile/app.js`, `client_key` idempotent; T: `test_phase10_scan.py` |
@@ -229,14 +229,14 @@
 | M2 | فاکتور معلق در صندوق گوشی (تا ۱۰) | ✅ | `mHold/mHeldBar`; smoke: `held listed: true` |
 | M3 | QR جفت‌سازی در مرورگر (SVG، بدون Pillow) + رمزگشایی واقعی در آزمون | ✅ | `vendor-qrcode.js`; `smoke-v1_7.js`: jsQR → `SMKT:` → payload v2 |
 | M4 | صفحهٔ «اتصال گوشی» یک‌بار پس از اولین ورود | ✅ | `onboarding.js: pairingIntro`; smoke |
-| M5 | اندروید: مجوز موقعیت مکانی فقط هنگام نیاز | ✅ (کامپایل‌شده در APK 1.7.0؛ اجرا روی دستگاه NOT VERIFIED) | `MainActivity.java: onGeolocationPermissionsShowPrompt` |
+| M5 | اندروید: مجوز موقعیت مکانی فقط هنگام نیاز | ✅ (کامپایل‌شده در APK 1.7.0؛ اجرا روی دستگاه NOT VERIFIED) | v2.0: موقعیت فقط در تیکت پشتیبانی رایانه استفاده می‌شود؛ اپ بومی مجوز موقعیت را درخواست نمی‌کند (اعلان‌شده در manifest برای سازگاری) |
 
 
 ## افزوده‌های v1.8.0 (درخواست کاربر)
 
 | # | قابلیت | وضعیت | شواهد |
 |---|---|---|---|
-| N1 | اسکن سریع بارکد در اندروید | ✅ موتور (ZXing/BarcodeDetector) با EAN-13 واقعی تست شد؛ اجرا با دوربین دستگاه فیزیکی NOT VERIFIED | `mobile/app.js: window.scan`, `scripts/uitest/zxing-decode.js` (۰٫۷ ms/فریم) |
+| N1 | اسکن سریع بارکد در اندروید | ✅ موتور بومی Camera2+ZXing جاوا (`ScanActivity.java`) با EAN-13 واقعی روی JVM تست شد؛ اجرا با دوربین دستگاه فیزیکی NOT VERIFIED | `AppActivity.scan()` ← صندوق/کالا/ورود/انبارگردانی/ضایعات/جفت‌سازی |
 | N2 | حذف سود از صندوق | ✅ | `smoke-v1_8.js` «no profit shown»؛ `docs/screenshots/v18-pos-1366x768.png` |
 | N3 | فاکتورهای نگه‌داشته قابل مشاهده/بازگردانی | ✅ | `renderHeldDock`; smoke: hold → listed with time → restore |
 | N4 | صندوق قفل به اندازهٔ مانیتور (بدون اسکرول) | ✅ در ۳ رزولوشن با Chromium اندازه‌گیری شد | `#view.view-pos{overflow:hidden}`; `v18-pos-1366x768.png`, `v18-pos-1920x1080.png` |

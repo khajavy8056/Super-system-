@@ -22,7 +22,7 @@ const FE = path.join(__dirname, "..", "..", "frontend");
   };
   window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   window.navigator.serviceWorker = { register: async () => {} };
-  window.SupermarketAndroid = { getServerUrl: () => BASE, getDeviceToken: () => "", getDeviceId: () => "dev-smoke-1", getStoreName: () => "", version: () => "1.9.0", isPaired: () => true, pair() {}, unpair() {}, exitApp() {} };
+  window.SupermarketAndroid = { getServerUrl: () => BASE, getDeviceToken: () => "", getDeviceId: () => "dev-smoke-1", getStoreName: () => "", version: () => "2.0.0", isPaired: () => true, pair() {}, unpair() {}, exitApp() {} };
   window.localStorage.setItem("m_token", token);
   window.confirm = () => true;
   // both files are classic <script> tags in index.html → one shared global lexical scope; eval them together to mirror that

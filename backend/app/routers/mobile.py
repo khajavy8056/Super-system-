@@ -218,8 +218,33 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
                     it.pop("batch_id", None)
                 items.append(it)
             body = pos_router.CheckoutIn(**{**op.payload, "items": items})
-            res = pos_router.checkout(body, db=db, user=user)  # type: ignore[arg-type]
-            return {"id": op.id, "status": "APPLIED", "result": {"invoice_number": getattr(res, "invoice_number", None) or (res.get("invoice_number") if isinstance(res, dict) else None)}}
+            adjusted = None
+            try:
+                res = pos_router.checkout(body, db=db, user=user)  # type: ignore[arg-type]
+            except HTTPException as exc:
+                # v2.0: the phone priced the sale with the catalogue it had at the time; if the PC's
+                # price/tax differs, keep the sale (money already changed hands) by re-tendering the
+                # PC total on the last payment line and report the delta so the phone can show it.
+                det = exc.detail if isinstance(exc.detail, dict) else {}
+                if det.get("code") != "PAYMENT_MISMATCH" or not body.payments:
+                    raise
+                db.rollback()
+                import re as _re
+                m = _re.search(r"total is ([0-9.]+)", str(det.get("message", "")))
+                if not m:
+                    raise
+                from decimal import Decimal as _D
+                server_total = _D(m.group(1))
+                paid = sum((_D(str(p.amount)) for p in body.payments), _D("0"))
+                pays = [p.model_copy() for p in body.payments]
+                pays[-1].amount = max(_D("0"), _D(str(pays[-1].amount)) + (server_total - paid))
+                body = body.model_copy(update={"payments": pays})
+                res = pos_router.checkout(body, db=db, user=user)  # type: ignore[arg-type]
+                adjusted = {"phone_total": float(paid), "pc_total": float(server_total)}
+            out = {"invoice_number": getattr(res, "invoice_number", None) or (res.get("invoice_number") if isinstance(res, dict) else None)}
+            if adjusted:
+                out["adjusted"] = adjusted
+            return {"id": op.id, "status": "APPLIED", "result": out}
         if kind == "STOCK_RECEIVE":
             body = batches_router.ReceiveIn(**op.payload)
             res = batches_router.receive(body, db=db, user=user)  # type: ignore[arg-type]
@@ -231,7 +256,7 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
         if kind == "CUSTOMER_CREATE":
             body = customers_router.CustomerIn(**op.payload)
             res = customers_router.create_customer(body, db=db, _=user)  # type: ignore[arg-type]
-            return {"id": op.id, "status": "APPLIED", "result": {"customer_id": getattr(res, "id", None)}}
+            return {"id": op.id, "status": "APPLIED", "result": {"customer_id": res.get("id") if isinstance(res, dict) else getattr(res, "id", None)}}
         if kind == "SUPPORT_TICKET":
             # v1.7: a support request written on the phone while the PC was unreachable
             from ..routers import support as support_router
