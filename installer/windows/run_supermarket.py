@@ -58,6 +58,43 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+PREFERRED_PORT = 8765
+
+
+def stable_port(base: Path) -> int:
+    """v2.3 — the phones remember the PC by *port* as well as IP, so the port
+    must not change between launches. Order: SUPERMARKET_PORT env → the port
+    used last time (``server.port.last``) → 8765 → the first free port after it.
+    Whatever is chosen is exported as ``PORT`` so the backend's LAN beacon and
+    pairing QR advertise the *real* port (v2.2 advertised 8000 while listening
+    on a random port — the phone then re-found the PC at the wrong port)."""
+    env = os.environ.get("SUPERMARKET_PORT", "").strip()
+    candidates: list[int] = []
+    if env.isdigit():
+        candidates.append(int(env))
+    lf = base / "server.port.last"
+    try:
+        candidates.append(int(lf.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        pass
+    candidates += [PREFERRED_PORT + i for i in range(0, 20)]
+    for port in candidates:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", port))
+            except OSError:
+                continue
+        try:
+            lf.write_text(str(port), encoding="utf-8")
+        except OSError:
+            pass
+        os.environ["PORT"] = str(port)
+        return port
+    port = free_port()
+    os.environ["PORT"] = str(port)
+    return port
+
+
 def persistent_secret(base: Path) -> str:
     """Return SECRET_KEY from env, or the per-install persisted key, or a new one."""
     env_key = os.environ.get("SECRET_KEY", "").strip()
@@ -166,9 +203,14 @@ def open_native_window(url: str, base: Path, log, on_closed):
         profile = base / "webview2"
         profile.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
+        # v2.3 — the shop panel is a kiosk: opens FULL SCREEN with no title bar
+        # (no minimise/maximise/close buttons); the in-app «خروج» button exits.
+        # SUPERMARKET_WINDOWED=1 restores a normal window for support sessions.
+        kiosk = os.environ.get("SUPERMARKET_WINDOWED", "").strip() not in ("1", "true", "yes")
         win = webview.create_window(
             "سیستم مدیریت سوپرمارکت", url,
             width=1440, height=900, min_size=(1024, 640),
+            fullscreen=kiosk, frameless=kiosk, easy_drag=False,
             text_select=True, zoomable=True, confirm_close=False,
         )
         try:
@@ -221,6 +263,7 @@ def open_window(url: str, base: Path, log):
     argv = [
         exe,
         f"--app={url}",
+        "--start-fullscreen", "--kiosk",
         f"--user-data-dir={profile}",
         "--new-window",
         "--window-size=1440,900",
@@ -336,7 +379,7 @@ def main() -> None:
 
     init_db()
 
-    port = free_port()
+    port = stable_port(base)
     (base / "server.port").write_text(str(port), encoding="utf-8")
     log.info("data dir: %s", base)
     log.info("log file: %s", log_file)

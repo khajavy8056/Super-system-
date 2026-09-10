@@ -308,6 +308,14 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
 
 # --- Background worker -----------------------------------------------------------
 
+_wake = threading.Event()
+
+
+def kick_worker() -> None:
+    """Wake the dispatcher now (invoice SMS must go out the moment the sale is confirmed)."""
+    _wake.set()
+
+
 def start_worker(session_factory) -> None:
     """Start the background dispatch thread (idempotent)."""
     global _worker
@@ -328,13 +336,16 @@ def start_worker(session_factory) -> None:
                 import logging
                 logging.getLogger("supermarket.sms").exception("sms worker tick failed")
                 interval = 10
-            _stop.wait(max(3, min(interval, 300)))
+            # sleep until the next tick — or until a checkout kicks us (v2.3)
+            _wake.wait(max(3, min(interval, 300)))
+            _wake.clear()
 
     _worker = threading.Thread(target=run, name="sms-worker", daemon=True)
     _worker.start()
 
 
 def stop_worker() -> None:
+    _wake.set()
     _stop.set()
 
 

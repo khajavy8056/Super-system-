@@ -34,6 +34,7 @@ from ..config import settings
 from ..database import get_db
 from ..models import Customer, Product, ProductBatch, SystemSetting, User
 from ..security import create_access_token, get_current_user, require_permission
+from ..services import relay_client as relay_svc
 from ..services import sync as sync_svc
 from ..services.audit import write_audit
 
@@ -82,6 +83,9 @@ def lan_addresses() -> list[str]:
 
 
 def _server_port(request: Request) -> int:
+    import os
+    if os.environ.get("PORT", "").isdigit():
+        return int(os.environ["PORT"])  # v2.3: the launcher's real listening port
     try:
         return int(request.url.port or settings.PORT)
     except (TypeError, ValueError):
@@ -183,6 +187,10 @@ def _link_payload(db: Session, request: Request, minted: dict) -> dict:
     cloud = cloud_svc.credentials_for_device(db)
     if cloud:
         payload["cloud"] = cloud
+    from ..services import relay_client as relay_svc
+    relay = relay_svc.for_device(db)
+    if relay:
+        payload["relay"] = relay  # v2.3: phones can reach this PC from any network
     return payload
 
 
@@ -229,7 +237,14 @@ def link_info(db: Session = Depends(get_db), user: User = Depends(get_current_us
     from ..services import cloud as cloud_svc
     return {"link_key": link_key(db), "store": (store.value if store else "") or "",
             "license": {k: st.get(k) for k in ("allowed", "reason", "status", "expires", "days_left", "activated")},
-            "cloud": cloud_svc.credentials_for_device(db)}
+            "cloud": cloud_svc.credentials_for_device(db),
+            "relay": relay_svc.for_device(db),
+            "lan": [f"http://{ip}:{_port_env()}" for ip in lan_addresses()]}
+
+
+def _port_env() -> int:
+    import os
+    return int(os.environ.get("PORT", settings.PORT) or settings.PORT)
 
 
 @router.post("/pair/token")

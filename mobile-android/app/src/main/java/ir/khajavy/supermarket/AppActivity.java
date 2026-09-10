@@ -46,17 +46,18 @@ public class AppActivity extends Activity {
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         LockActivity.top = this;
-        if (Api.base.isEmpty() || !Lic.setupDone()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (Api.base.isEmpty() || !Lic.setupDone() || InstallService.running()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
         if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
         if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
         Lic.recheckIfDue();
+        Sync.watchNetwork(this);
         getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (!Ui.dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         buildShell();
         Sync.listener = (online, applied, rejected, pending) -> {
             syncDot.setBackground(Ui.rounded(online ? Ui.GREEN : Ui.RED, 0, 5));
-            syncTxt.setText(online ? (pending > 0 ? "همگام‌سازی " + Ui.fa(String.valueOf(pending)) + " مورد…" : "متصل · همگام") : (Api.standalone() ? "مستقل" : "آفلاین · صف " + Ui.fa(String.valueOf(pending))));
+            syncTxt.setText(online ? (pending > 0 ? "همگام‌سازی " + Ui.fa(String.valueOf(pending)) + " مورد…" : (Relay.active ? "متصل از راه دور · همگام" : "متصل · همگام")) : (Api.standalone() ? "مستقل" : "آفلاین · صف " + Ui.fa(String.valueOf(pending))));
             if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }
             if (rejected > 0) { Ui.toast(Ui.fa(String.valueOf(rejected)) + " مورد رد شد — بخش همگام‌سازی"); Notify.syncProblem(this, rejected); }
             if (applied == 0 && rejected == 0 && online) { Screens.Screen s = stack.peek(); if (s != null && s.autoRefresh()) s.refresh(); }
@@ -69,7 +70,13 @@ public class AppActivity extends Activity {
         else { Tour.maybe(this, "home"); if (!"1".equals(Prefs.get("welcomed_" + Db.now().substring(0, 10), ""))) { Prefs.set("welcomed_" + Db.now().substring(0, 10), "1"); Sfx.play("welcome"); } }
         Api.bg(() -> Notify.checkLocal(this));
     }
-    @Override protected void onResume() { super.onResume(); LockActivity.top = this; h.post(ticker); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> Notify.checkPcSupport(this)); }
+    private boolean bioShowing = false;
+    void bioGate() {
+        if (bioShowing || !Biometric.lockDue()) return;
+        bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
+        Biometric.prompt(this, "باز کردن سوپری من", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
+    }
+    @Override protected void onResume() { super.onResume(); LockActivity.top = this; h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> Notify.checkPcSupport(this)); }
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }
     @Override protected void onPause() { super.onPause(); h.removeCallbacks(ticker); }
 
@@ -198,6 +205,7 @@ public class AppActivity extends Activity {
     @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); }
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == Biometric.REQ_KEYGUARD) { bioShowing = false; if (res == RESULT_OK) { Biometric.lastUnlock = System.currentTimeMillis(); recreate(); } else finishAffinity(); return; }
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null && pickCb != null) { Consumer<android.net.Uri> cb = pickCb; pickCb = null; cb.accept(data.getData()); return; }
         if (req == REQ_SCAN && res == RESULT_OK && data != null && scanCb != null) { String code = data.getStringExtra("code"); Consumer<String> cb = scanCb; scanCb = null; if (code != null) cb.accept(code.trim()); }
     }

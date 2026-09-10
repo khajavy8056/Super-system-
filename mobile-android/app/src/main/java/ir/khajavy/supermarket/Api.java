@@ -75,6 +75,7 @@ public final class Api {
     /* ---------------- blocking (call from a worker thread) ---------------- */
     public static Object call(String method, String path, String body, String contentType) throws ApiError {
         if (standalone()) throw new ApiError(0, "STANDALONE", "حالت مستقل: رایانه‌ای متصل نیست");
+        if (Relay.active && Relay.available()) return viaRelay(method, path, body, contentType);
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(base + "/api" + path).openConnection();
@@ -99,6 +100,20 @@ public final class Api {
         } catch (ApiError e) { throw e;
         } catch (Exception e) { throw new ApiError(0, "NETWORK", "ارتباط با رایانهٔ فروشگاه برقرار نشد");
         } finally { if (c != null) c.disconnect(); }
+    }
+
+    /** v2.3: same request, carried by the online relay (PC not on this network). */
+    static Object viaRelay(String method, String path, String body, String contentType) throws ApiError {
+        try {
+            String[] r = Relay.call(method, path, body, contentType == null ? "application/json" : contentType, token);
+            int code = Integer.parseInt(r[0]); String text = r[1];
+            if (code == 204 || text.isEmpty()) { if (code >= 400) throw new ApiError(code, "HTTP_" + code, "خطای " + code); return null; }
+            Object parsed = parse(text);
+            if (code == 402) { ApiError le = errorFrom(code, parsed); if ("pc".equals(Lic.mode())) { Lic.pcLocked(le.getMessage()); MAIN.post(LockActivity::showIfNeeded); } throw le; }
+            if (code >= 400) throw errorFrom(code, parsed);
+            return parsed;
+        } catch (ApiError e) { throw e;
+        } catch (Exception e) { Relay.active = false; throw new ApiError(0, "NETWORK", "ارتباط از طریق رله برقرار نشد: " + e.getMessage()); }
     }
 
     /** multipart/form-data (support attachments, store logo). */
@@ -157,8 +172,18 @@ public final class Api {
 
     public static boolean health() {
         if (standalone()) return false;
+        if (healthAt(base)) { Relay.active = false; return true; }
+        // v2.3: the PC publishes its current LAN addresses on the relay — try them (fast path) before falling back to the relay itself
+        String lan = Prefs.get("pc_lan_json", "");
+        if (!lan.isEmpty()) { try { org.json.JSONArray a = new org.json.JSONArray(lan.substring(0, lan.lastIndexOf('|'))); for (int i = 0; i < a.length(); i++) { String u = Prefs.normalise(a.optString(i)); if (!u.equals(base) && healthAt(u)) { base = u; Prefs.set("server_url", u); Relay.active = false; return true; } } } catch (Exception ignore) {} }
+        if (Relay.available() && Relay.pcOnline()) { Relay.active = true; return true; }
+        return false;
+    }
+    /** plain LAN health check of one base URL. */
+    public static boolean healthAt(String b) {
+        if (b == null || b.isEmpty()) return false;
         HttpURLConnection c = null;
-        try { c = (HttpURLConnection) new URL(base + "/health").openConnection(); c.setConnectTimeout(2500); c.setReadTimeout(2500); return c.getResponseCode() == 200; }
+        try { c = (HttpURLConnection) new URL(b + "/health").openConnection(); c.setConnectTimeout(2500); c.setReadTimeout(2500); return c.getResponseCode() == 200; }
         catch (Exception e) { return false; } finally { if (c != null) c.disconnect(); }
     }
 

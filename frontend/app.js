@@ -2209,6 +2209,8 @@ const SETTING_FA = {
  "expiry.days.thirty": "آستانهٔ هشدار: ۳۰ روز",
  "barcode.scanner.min_interval_ms": "حداقل فاصلهٔ کلیدها برای تشخیص بارکدخوان (میلی‌ثانیه)",
  "sms.provider": "سرویس پیامک: melipayamak | kavenegar | file | خالی=غیرفعال",
+ "sms.send_invoice": "ارسال خودکار پیامک فاکتور به مشتری (مستقل از چاپ رسید)",
+ "sms.send_immediately": "ارسال فوری به محض تأیید فاکتور (در غیر این صورت با نوبت صف)",
  "sms.username": "نام کاربری پنل پیامک",
  "sms.password": "رمز/کلید API پنل پیامک",
  "sms.api_key": "کلید API (کاوه‌نگار)",
@@ -2427,6 +2429,22 @@ async function renderSettingsPanel(cat, allRows) {
       catch (e) { toast(e.message, "err"); }
     });
     await renderSmsLog();
+    // v2.3 — in-app tutorial: what to do inside the Melipayamak / Kavenegar panel, plus live readiness
+    const guide = el("div", { class: "card", id: "sms-guide" });
+    guide.innerHTML = `<h3>آموزش راه‌اندازی پیامک (قدم‌به‌قدم)</h3><div class="muted">در حال بارگذاری…</div>`;
+    body.append(guide);
+    try {
+      const g = await api("/sms/guide");
+      const st = g.state; const miss = st.missing || [];
+      const status = st.ready
+        ? `<span class="badge badge-green">آمادهٔ ارسال</span> سرویس ${esc(st.provider)} پیکربندی شده است.`
+        : `<span class="badge badge-amber">ناقص</span> هنوز لازم است: ${miss.map((k) => `<code>${esc(SETTING_FA[k] || k)}</code>`).join("، ") || "انتخاب سرویس"}`;
+      guide.innerHTML = `<h3>آموزش راه‌اندازی پیامک (قدم‌به‌قدم)</h3>
+        <div style="margin:6px 0 10px">${status}</div>
+        <div class="muted" style="margin-bottom:8px">پیامک فاکتور: <b>${st.send_invoice ? "روشن" : "خاموش"}</b> · ارسال فوری پس از تأیید فاکتور: <b>${st.send_immediately ? "روشن" : "خاموش"}</b> · چاپ خودکار رسید: <b>${st.print_after_checkout ? "روشن" : "خاموش"}</b> — این سه مستقل‌اند؛ می‌توانید چاپ را خاموش و فقط پیامک را روشن بگذارید.</div>
+        <ol class="guide-steps">${g.steps.map((x) => `<li><b>${esc(x.title)}</b>${x.site ? ` — <a href="${x.site}" target="_blank" rel="noopener">${esc(x.site.replace("https://", ""))}</a>` : ""}<div class="muted" style="white-space:pre-line;margin-top:2px">${esc(x.text)}</div></li>`).join("")}</ol>
+        <div class="muted">تنظیمات مربوطه در همین صفحه (جدول پایین) ذخیره می‌شوند: ${g.settings.map((k) => `<code>${esc(k)}</code>`).join(" ")}</div>`;
+    } catch (e) { guide.querySelector(".muted").textContent = e.message; }
   }
 
   // raw-key category: show the grouped key/value table for this prefix set.
@@ -2617,6 +2635,38 @@ async function renderCloudPanel(body) {
     };
   }
   draw();
+  // v2.3 — online relay (self-hosted): phones reach this PC from ANY network, instantly.
+  const relay = el("div", { class: "card", id: "relay-card" });
+  body.append(relay);
+  async function drawRelay() {
+    let st = {};
+    try { st = await api("/cloud/relay/status"); } catch (e) { relay.innerHTML = `<span class="error">${esc(e.message)}</span>`; return; }
+    relay.innerHTML = `<h3>رلهٔ آنلاین (اتصال از هر جا)</h3>
+      <p class="muted">سه راه اتصال گوشی‌ها: <b>۱)</b> وای‌فای فروشگاه — رایگان، خودکار، حتی با تغییر IP (پورت ثابت ۸۷۶۵ + بیکن). <b>۲)</b> Google Drive — رایگان، با تأخیر چند دقیقه. <b>۳)</b> رلهٔ آنلاین — یک سرویس کوچک روی هاست خودتان (پوشهٔ <code>relay/</code> مخزن، راهنمای ۵ دقیقه‌ای)؛ همهٔ امکانات، آنی، از هر شبکه‌ای. رایانه خودش به رله وصل می‌شود؛ روی مودم هیچ تنظیمی لازم نیست. گوشی‌ها خودکار بهترین مسیر (وای‌فای ← رله ← Drive) را انتخاب می‌کنند.</p>
+      <div class="grid grid-3" style="margin:10px 0">
+        <div class="kpi"><span class="k">وضعیت</span><b>${!st.configured ? "تنظیم‌نشده" : st.online ? "رایانه به رله متصل است ✓" : "قطع"}</b></div>
+        <div class="kpi"><span class="k">شناسهٔ فروشگاه</span><b class="ltr">${esc(st.store || "—")}</b></div>
+        <div class="kpi"><span class="k">درخواست‌های پاسخ‌داده</span><b>${fa(st.served || 0)}</b></div>
+      </div>
+      ${st.last_error ? `<div class="muted">آخرین خطا: ${esc(st.last_error)}</div>` : ""}
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input id="relay-url" class="ltr" placeholder="https://relay.example.ir" value="${esc(st.url || "")}" style="min-width:320px"/>
+        <label class="row" style="gap:6px"><input type="checkbox" id="relay-en" ${st.enabled ? "checked" : ""}/> فعال</label>
+        <button class="btn btn-sm" id="relay-save">ذخیره</button>
+        <button class="btn btn-sm" id="relay-test">تست اتصال</button>
+        <button class="btn btn-sm" id="relay-regen" title="گوشی‌ها باید دوباره جفت شوند">تولید کلید جدید</button>
+      </div>
+      <div id="relay-res" class="muted" style="margin-top:6px"></div>
+      <div class="muted" style="margin-top:6px">پس از ذخیره، آدرس و کلید رله داخل QR جفت‌سازی قرار می‌گیرد؛ گوشی‌های قبلاً جفت‌شده در اولین اتصال وای‌فای آن را دریافت می‌کنند.</div>`;
+    const save = async (regen) => {
+      try { await api("/cloud/relay", { method: "PUT", body: JSON.stringify({ url: $("#relay-url").value.trim(), enabled: $("#relay-en").checked, regenerate_key: !!regen }) }); toast("ذخیره شد"); setTimeout(drawRelay, 1500); }
+      catch (e) { toast(e.message, "err"); }
+    };
+    $("#relay-save").onclick = () => save(false);
+    $("#relay-regen").onclick = () => { if (confirm("کلید جدید ساخته شود؟ همهٔ گوشی‌ها باید دوباره جفت شوند.")) save(true); };
+    $("#relay-test").onclick = async () => { try { const r = await api("/cloud/relay/test", { method: "POST" }); $("#relay-res").innerHTML = `<span class="badge badge-${r.ok ? "green" : "red"}">${r.ok ? "OK" : "خطا"}</span> ${esc(r.message)}`; } catch (e) { $("#relay-res").textContent = e.message; } };
+  }
+  drawRelay();
 }
 
 async function renderStoreProfile() {

@@ -27,6 +27,22 @@ public final class Sync {
     private Sync() {}
 
     public static void kick() { if (!running) Api.bg(Sync::runBlocking); }
+
+    private static boolean netWatching;
+    /** v2.3: re-run the route ladder (LAN → relay beacon → relay) as soon as the phone changes network
+     *  (new Wi‑Fi, mobile data, back home) so a changed PC address never needs a manual re-pair. */
+    public static void watchNetwork(android.content.Context ctx) {
+        if (netWatching || android.os.Build.VERSION.SDK_INT < 24) return;
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getApplicationContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            cm.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(android.net.Network n) { lastRun = 0; Api.ui(Sync::kick, 1200); }
+                @Override public void onLost(android.net.Network n) { lastRun = 0; }
+            });
+            netWatching = true;
+        } catch (Exception ignore) {}
+    }
     public static void kickIfStale(long ms) { if (System.currentTimeMillis() - lastRun > ms) kick(); }
 
     /** Full cycle on a worker thread. */
@@ -91,7 +107,7 @@ public final class Sync {
     static void checkPcLicense() {
         try {
             Object r = Api.call("GET", "/mobile/link", null, null);
-            if (r instanceof JSONObject) { JSONObject j = (JSONObject) r; Lic.fromPc(j.optJSONObject("license")); if (!j.optString("link_key").isEmpty()) Prefs.set("link_key", j.optString("link_key")); if (!j.optString("store").isEmpty()) Prefs.set("store_name", j.optString("store")); if (j.optJSONObject("cloud") != null) Prefs.set("cloud_json", j.optJSONObject("cloud").toString()); }
+            if (r instanceof JSONObject) { JSONObject j = (JSONObject) r; Lic.fromPc(j.optJSONObject("license")); if (j.optJSONObject("relay") != null) Prefs.set("relay_json", j.optJSONObject("relay").toString()); if (j.optJSONArray("lan") != null) Prefs.set("pc_lan_json", j.optJSONArray("lan").toString() + "|0"); if (!j.optString("link_key").isEmpty()) Prefs.set("link_key", j.optString("link_key")); if (!j.optString("store").isEmpty()) Prefs.set("store_name", j.optString("store")); if (j.optJSONObject("cloud") != null) Prefs.set("cloud_json", j.optJSONObject("cloud").toString()); }
         } catch (Api.ApiError e) { if (e.status == 402) Lic.pcLocked(e.getMessage()); }
         if (!Lic.allowed()) Api.ui(LockActivity::showIfNeeded);
     }

@@ -114,3 +114,38 @@ def sync_now(db: Session = Depends(get_db), _: User = Depends(get_current_user))
 def device_credentials(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
     """Handed to a paired phone (inside the QR) so it can reach the same mailbox."""
     return svc.credentials_for_device(db) or {}
+
+
+# --- v2.3 online relay (optional, self-hosted) ------------------------------------------------
+from ..services import relay_client as relay_svc  # noqa: E402
+
+
+class RelayIn(BaseModel):
+    url: str = ""
+    enabled: bool = True
+    regenerate_key: bool = False
+
+
+@router.get("/relay/status")
+def relay_status(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return relay_svc.status(db)
+
+
+@router.put("/relay")
+def relay_config(body: RelayIn, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    url = body.url.strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    relay_svc._set(db, "relay.url", url)
+    relay_svc._set(db, "relay.enabled", "true" if body.enabled else "false")
+    if body.regenerate_key:
+        relay_svc._set(db, "relay.key", "", secret=True)
+    relay_svc.ensure_identity(db)
+    write_audit(db, action="SETTINGS_CHANGED", user_id=user.id, entity_type="SystemSetting", entity_id=None, after={"key": "relay.url", "value": url})
+    db.commit()
+    return relay_svc.status(db)
+
+
+@router.post("/relay/test")
+def relay_test(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    return relay_svc.test(db)

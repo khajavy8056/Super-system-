@@ -1,4 +1,16 @@
-# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.2.0 (بومی / Native)
+# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.3.0 (بومی / Native)
+
+## تازه‌های v2.3 (وضعیت §57)
+| مورد | وضعیت | شاهد |
+|---|---|---|
+| پیامک به محض تأیید فاکتور، حتی با چاپ خاموش (حالت رایانه و مستقل) | DONE (کد + کامپایل + تست بک‌اند) | `SmsLocal.java`, `routers/pos.py`, `test_v23_online_sms.py` |
+| صفحهٔ پیامک کامل + راهنمای گام‌به‌گام ملی‌پیامک | DONE (کد + کامپایل + تست `/api/sms/guide`) | `AdminScreens.java` (پیامک), `routers/sms.py` |
+| راه‌اندازی اولیه در پس‌زمینه با اعلان پیشرفت | DONE (کد + کامپایل) / NOT VERIFIED روی گوشی | `InstallService.java`, `SetupActivity.java`, Manifest |
+| ورود/قفل با اثر انگشت | DONE (کد + کامپایل) / NOT VERIFIED روی گوشی | `Biometric.java`, `LoginActivity.java`, `Screens.Device` |
+| پورت از جفت‌سازی/بیکن (نه 8000)، کشف مجدد پس از تغییر IP و تغییر شبکه | DONE (کد + کامپایل + تست بار جفت‌سازی) | `Sync.watchNetwork`, `Api.health`, `test_relay_config_and_pairing_payload` |
+| اتصال از راه دور (رله) + بازگشت خودکار به LAN | DONE (کد + کامپایل + تست رفت‌وبرگشت رله) | `Relay.java`, `relay/server.py`, `relay_client.py` |
+| APK 2.3.0 (versionCode 20300) | DONE | `releases/android/SupermarketMobile-2.3.0.apk` + sha256 (کلید جدید — ارتقا از 2.2 یک‌بار حذف/نصب) |
+
 
 ## تازه‌های v2.2 (وضعیت §57)
 | مورد | وضعیت | شاهد |

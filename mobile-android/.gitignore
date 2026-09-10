@@ -6,3 +6,5 @@ local.properties
 *.jks
 .idea/
 *.iml
+
+!keystore/supery-release.jks

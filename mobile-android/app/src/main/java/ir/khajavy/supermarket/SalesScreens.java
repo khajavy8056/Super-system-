@@ -179,6 +179,8 @@ public final class SalesScreens {
                 if (coupon != null) body.put("coupon_code", coupon); if (invoiceDiscount > 0) body.put("invoice_discount", invoiceDiscount); body.put("open_drawer", false);
                 // local-first: apply on the phone immediately, then push
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
+                // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
+                if (customer != null && !customer.optString("phone").isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend() && SmsLocal.configured()) SmsLocal.enqueueAndSend(customer.optString("phone"), SmsLocal.renderInvoice(no, total), no);
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
                 cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart();
                 Sfx.play("success"); Ui.toast("فاکتور " + Ui.fa(no) + " ثبت شد" + (Api.online ? " — در حال ارسال به رایانه" : " — پس از اتصال ارسال می‌شود"));

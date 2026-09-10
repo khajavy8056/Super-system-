@@ -22,6 +22,8 @@ _stop = threading.Event()
 
 
 def _serve(session_factory, http_port: int) -> None:
+    import os
+    http_port = int(os.environ.get("PORT", http_port) or http_port)  # v2.3: the launcher exports the real listening port
     from sqlalchemy import select
 
     from ..models import SystemSetting

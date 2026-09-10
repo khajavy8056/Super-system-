@@ -56,6 +56,7 @@ public class SetupActivity extends Activity {
         Intent in = getIntent();
         if (in != null && in.getData() != null) { showPair(); handlePayload(in.getData().toString()); }
         else if (in != null && in.getBooleanExtra("pair", false)) showPair();
+        else if (resumeInstallIfRunning()) { /* v2.3: background install still running */ }
         else showWelcome();
     }
 
@@ -137,12 +138,13 @@ public class SetupActivity extends Activity {
         JSONArray urls = p.optJSONArray("urls"); List<String> cands = new ArrayList<>(); if (!p.optString("url").isEmpty()) cands.add(p.optString("url")); for (int i = 0; urls != null && i < urls.length(); i++) if (!cands.contains(urls.optString(i))) cands.add(urls.optString(i));
         if (pairStatus != null) pairStatus.setText("در حال اتصال به رایانه…");
         Api.bg(() -> {
-            String found = null; for (String u : cands) { Api.base = Prefs.normalise(u); if (Api.health()) { found = Api.base; break; } }
+            String found = null; for (String u : cands) { Api.base = Prefs.normalise(u); if (Api.healthAt(Api.base)) { found = Api.base; break; } }
             if (found == null && !link.isEmpty()) found = Discovery.find(link, 2500);
+            if (found == null && p.has("relay")) { Prefs.set("relay_json", p.optJSONObject("relay").toString()); if (Relay.pcOnline()) { Relay.active = true; found = cands.isEmpty() ? "http://relay.invalid" : Prefs.normalise(cands.get(0)); } }
             final String f = found;
             Api.ui(() -> {
                 Prefs.save(this, f == null ? (cands.isEmpty() ? "" : Prefs.normalise(cands.get(0))) : f, token, store, dev); Api.token = token; Api.base = Prefs.serverUrl(this);
-                Prefs.set("store_name", store); Prefs.set("link_key", link); Prefs.set("lic_mode", "pc"); if (p.has("cloud")) Prefs.set("cloud_json", p.optJSONObject("cloud").toString());
+                Prefs.set("store_name", store); Prefs.set("link_key", link); Prefs.set("lic_mode", "pc"); if (p.has("cloud")) Prefs.set("cloud_json", p.optJSONObject("cloud").toString()); if (p.has("relay")) Prefs.set("relay_json", p.optJSONObject("relay").toString());
                 if (f == null) { pairStatus.setText("رایانه پاسخ نداد — اطلاعات ذخیره شد؛ به محض اتصال به وای‌فای فروشگاه، لایسنس بررسی و همگام‌سازی انجام می‌شود."); finishSetup(false); return; }
                 pairStatus.setText("متصل شد ✓ — در حال بررسی لایسنس رایانه…");
                 Api.bg(() -> { Sync.checkPcLicense(); Api.ui(() -> { if (!Lic.allowed()) { pairStatus.setText("لایسنس رایانه معتبر نیست: " + Lic.reason()); Prefs.set("setup_done", "1"); LockActivity.showIfNeeded(); return; } pairStatus.setText("لایسنس معتبر ✓ (تا " + Ui.jdate(Lic.expires()) + ")"); finishSetup(false); }); });
@@ -239,7 +241,19 @@ public class SetupActivity extends Activity {
         final boolean starter = data.optBoolean("starter");
         boolean fast = "1".equals(Prefs.get("loading_fast", "")) || getIntent().getBooleanExtra("fastload", false);
         long total = fast ? 6000L : 45L * 60L * 1000L;
-        loadingScreen(total, () -> { if (starter && Db.count("products") == 0) Db.importStarter(this); }, () -> { Prefs.set("first_loading_done", "1"); finishSetup(true); });
+        // v2.3: the long first-time loading runs in a foreground service (progress in the
+        // status bar); this screen only mirrors it, so leaving the app never resets it.
+        Prefs.set("install_starter", starter ? "1" : "0"); Prefs.set("install_work_done", "");
+        InstallService.start(this, total);
+        loadingScreen(total, null, () -> finishSetup(true));
+    }
+    /** phase label for an eased progress value (shared with the notification). */
+    static String phaseAt(double eased) { for (String[] p : PHASES) if (eased < Double.parseDouble(p[1])) return p[0]; return PHASES[PHASES.length - 1][0]; }
+    /** re-entering the wizard while the install service is running → show the same loading screen. */
+    boolean resumeInstallIfRunning() {
+        if (!InstallService.running()) return false;
+        long total = 1; try { total = Long.parseLong(Prefs.get("install_total", "1")); } catch (Exception ignore) {}
+        loadingScreen(total, null, () -> finishSetup(true)); return true;
     }
     void loadingScreen(long totalMs, Runnable work, Runnable done) {
         pane.removeAllViews(); dots.removeAllViews(); stepLbl.setText("در حال نصب");
@@ -252,8 +266,10 @@ public class SetupActivity extends Activity {
         LinearLayout ph = Ui.card(this, null); final TextView[] rows = new TextView[PHASES.length]; for (int i = 0; i < PHASES.length; i++) { rows[i] = Ui.body(this, "○  " + PHASES[i][0]); rows[i].setTextColor(Ui.MUTED); ph.addView(rows[i]); } box.addView(ph);
         TextView log = Ui.muted(this, ""); box.addView(log);
         pane.addView(box);
-        final long t0 = System.currentTimeMillis(); final boolean[] workDone = {false}; final int[] last = {-1};
-        Api.bg(() -> { try { work.run(); } catch (Exception ignore) {} workDone[0] = true; });
+        long t0x = System.currentTimeMillis(); try { if (!Prefs.get("install_t0", "").isEmpty()) t0x = Long.parseLong(Prefs.get("install_t0", "")); } catch (Exception ignore) {}
+        final long t0 = t0x; final boolean[] workDone = {work == null}; final int[] last = {-1};
+        if (work != null) Api.bg(() -> { try { work.run(); } catch (Exception ignore) {} workDone[0] = true; });
+        sub.setText("این مرحله فقط بار اول انجام می‌شود. می‌توانید برنامه را ببندید؛ نصب در پس‌زمینه ادامه می‌یابد و پیشرفت آن در نوار اعلان دیده می‌شود.");
         final String[] noise = {"اتصال برقرار شد", "بستهٔ داده دریافت شد", "جدول به‌روزرسانی شد", "ایندکس ساخته شد", "بررسی یکپارچگی: موفق", "پیکربندی اعمال شد"};
         Runnable[] tick = new Runnable[1];
         tick[0] = () -> {
@@ -263,7 +279,7 @@ public class SetupActivity extends Activity {
             int cur = PHASES.length - 1; for (int i = 0; i < PHASES.length; i++) if (eased < Double.parseDouble(PHASES[i][1])) { cur = i; break; }
             if (cur != last[0]) { for (int i = 0; i < PHASES.length; i++) { rows[i].setText((i < cur ? "✓  " : i == cur ? "▸  " : "○  ") + PHASES[i][0]); rows[i].setTextColor(i < cur ? Ui.GREEN : i == cur ? Ui.TEXT : Ui.MUTED); } log.setText("▸ " + PHASES[cur][0] + "…"); last[0] = cur; }
             else if (Math.random() < 0.04) log.setText(noise[(int) (Math.random() * noise.length)]);
-            if (p >= 1 && workDone[0]) { eta.setText("آماده شد"); h.postDelayed(done, 600); return; }
+            if (p >= 1 && (workDone[0] && (work != null || "1".equals(Prefs.get("install_work_done", "")) || "1".equals(Prefs.get("first_loading_done", ""))))) { eta.setText("آماده شد"); h.postDelayed(done, 600); return; }
             h.postDelayed(tick[0], 250);
         };
         tick[0].run();

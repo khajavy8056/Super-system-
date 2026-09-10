@@ -184,8 +184,11 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
         issued = coupon_svc.issue_next_purchase_coupon(
             db, invoice=invoice, customer=customer, user=user)
 
-        if customer and customer.phone:
-            from ..services import sms as sms_svc
+        from ..services import sms as sms_svc
+        # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
+        # printer off (pos.print_after_checkout=false) and still text every invoice.
+        sms_on = sms_svc.get_setting(db, "sms.send_invoice", "true").strip().lower() != "false"
+        if sms_on and customer and customer.phone:
             from ..services import sync as sync_svc
 
             # §172/§162 — invoice SMS from the shop-editable pattern (§166);
@@ -205,6 +208,10 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             sync_svc.enqueue(db, job_type="SMS", payload={"sms_id": msg.id},
                              reference_type="Invoice", reference_id=invoice.id,
                              idempotency_key=f"sms:invoice:{invoice.id}", user_id=user.id)
+            # «به محض تأیید فاکتور»: try to hand it to the provider right away; the
+            # queue/worker above still guarantees retry if the network is down.
+            if sms_svc.get_setting(db, "sms.send_immediately", "true").strip().lower() != "false":
+                sms_svc.kick_worker()
 
         out = _invoice_out(invoice)
         # §19 — cash drawer opens on cash tenders (never blocks the sale)

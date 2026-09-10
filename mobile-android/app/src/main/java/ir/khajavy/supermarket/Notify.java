@@ -109,7 +109,7 @@ public final class Notify {
                     if (Intent.ACTION_BOOT_COMPLETED.equals(i.getAction())) { schedule(c); }
                     if (!"1".equals(Prefs.get("setup_done", ""))) return;
                     Api.base = Prefs.serverUrl(c) == null ? "" : Prefs.serverUrl(c); Api.token = Prefs.deviceToken(c) == null ? "" : Prefs.deviceToken(c);
-                    checkLocal(c);
+                    checkLocal(c); SmsLocal.flush();
                     if (Api.standalone() || !Lic.allowed()) { int n = SupportRelay.poll(); if (n > 0) supportReply(c, n); }
                     else { Api.online = Api.health(); checkPcSupport(c); }
                 } catch (Throwable ignore) {} finally { pr.finish(); }

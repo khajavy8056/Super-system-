@@ -109,7 +109,10 @@ async def lifespan(app: FastAPI):
     from .services import discovery as discovery_svc
     if os.environ.get("SUPERMARKET_LAN_BEACON", "1") not in ("0", "false", "off"):
         discovery_svc.start(SessionLocal, settings.PORT)  # v2.1: phone re-finds the PC when its IP changes
+    from .services import relay_client as relay_svc
+    relay_svc.start_worker(SessionLocal)  # v2.3: outbound connection to the optional online relay
     yield
+    relay_svc.stop_worker()
     discovery_svc.stop()
     sms_svc.stop_worker()
     cloud_svc.stop_worker()
