@@ -217,7 +217,7 @@ public final class SalesScreens {
         public String key() { return "invoices"; } public String title() { return "فاکتورها"; }
         public boolean autoRefresh() { return tab == 0; }
         public void load() {
-            clear(); body.addView(tabs(new String[]{"فاکتورهای رایانه", "فاکتورهای این گوشی"}, tab, t -> { tab = t; load(); }));
+            clear(); body.addView(tabs(new String[]{Api.standalone() ? "همهٔ فاکتورها (ابطال / مرجوعی)" : "فاکتورهای رایانه", "فاکتورهای این گوشی"}, tab, t -> { tab = t; load(); }));
             if (tab == 1) { for (JSONObject o : Db.localInvoices()) body.addView(Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total")), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, null)); if (Db.localInvoices().isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
             body.addView(Ui.empty(c, "…")); get("/invoices?limit=100", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "فاکتوری نیست")); for (int i = 0; i < ar.length(); i++) { JSONObject inv = ar.optJSONObject(i); body.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
         }
@@ -238,7 +238,7 @@ public final class SalesScreens {
             if (Screens.can("pos.return") && "PAID".equals(inv.optString("status"))) its.addView(Ui.muted(c, "برای مرجوعی روی قلم ضربه بزنید")); body.addView(its);
             LinearLayout act = Ui.card(c, "عملیات");
             act.addView(Ui.ghost(c, "نمایش رسید", () -> get("/invoices/" + id + "/receipt", r -> { TextView t = Ui.text(c, ((JSONObject) r).optString("receipt_text"), 12, Ui.TEXT, false); t.setTypeface(android.graphics.Typeface.MONOSPACE); t.setTextDirection(View.TEXT_DIRECTION_LTR); t.setGravity(Gravity.START); Ui.sheet(c, "رسید", t); })));
-            act.addView(Ui.ghost(c, "چاپ روی چاپگر رایانه", () -> post("/invoices/" + id + "/print", null, r -> Ui.toast("به صف چاپ رایانه رفت"))));
+            act.addView(Ui.ghost(c, Api.standalone() ? "چاپ / اشتراک رسید" : "چاپ روی چاپگر رایانه", () -> post("/invoices/" + id + "/print", null, r -> Ui.toast("به صف چاپ رایانه رفت"))));
             if (!"VOID".equals(inv.optString("status")) && (Screens.can("pos.void_paid") || Screens.can("pos.void_unpaid"))) act.addView(Ui.danger(c, "ابطال فاکتور", this::voidInvoice));
             body.addView(act);
         }
@@ -273,7 +273,7 @@ public final class SalesScreens {
         public String key() { return "customers"; } public String title() { return "پروندهٔ مشتری"; }
         public void load() {
             clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit") > 0 ? Ui.money(cu.optDouble("credit_limit")) : "بدون سقف", 0)); body.addView(hd);
-            if (id < 0) { body.addView(Ui.note(c, null, "این مشتری هنوز به رایانه ارسال نشده؛ دفتر حساب پس از همگام‌سازی در دسترس است.")); return; }
+            if (id < 0 && !Api.standalone()) { body.addView(Ui.note(c, null, "این مشتری هنوز به رایانه ارسال نشده؛ دفتر حساب پس از همگام‌سازی در دسترس است.")); return; }
             LinearLayout act = Ui.row(c); act.addView(Ui.small(c, "فروش به این مشتری", () -> { Prefs.set("pos_restore", ""); a.route("pos"); ((Pos) a.current()).customer = cu; ((Pos) a.current()).renderCart(); })); act.addView(Ui.small(c, "ویرایش", this::edit)); body.addView(act);
             LinearLayout led = Ui.card(c, "دفتر حساب"); body.addView(led); LinearLayout invs = Ui.card(c, "فاکتورها"); body.addView(invs);
             getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance"); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged")) + " / " + Ui.money(lg.optDouble("total_paid")), 0));
