@@ -29,7 +29,7 @@ import java.util.concurrent.Executors;
 public final class Api {
     public static final class ApiError extends Exception {
         public final int status; public final String code;
-        ApiError(int status, String code, String message) { super(message); this.status = status; this.code = code; }
+        public ApiError(int status, String code, String message) { super(message); this.status = status; this.code = code; }
         public boolean offline() { return status == 0 || status >= 500; }
     }
     public interface Cb<T> { void ok(T result); }
@@ -74,8 +74,17 @@ public final class Api {
 
     /* ---------------- blocking (call from a worker thread) ---------------- */
     public static Object call(String method, String path, String body, String contentType) throws ApiError {
-        if (standalone()) throw new ApiError(0, "STANDALONE", "حالت مستقل: رایانه‌ای متصل نیست");
+        // v2.4: standalone → the phone answers every endpoint itself from SQLite (Local).
+        if (standalone()) return Local.handle(method, path, body);
         if (Relay.active && Relay.available()) return viaRelay(method, path, body, contentType);
+        try { return callPc(method, path, body, contentType); }
+        catch (ApiError e) {
+            // paired but PC unreachable: reads are served from the phone's own data (writes keep using the sync queue)
+            if (e.offline() && "GET".equals(method)) { try { return Local.handle(method, path, body); } catch (ApiError ignore) {} }
+            throw e;
+        }
+    }
+    static Object callPc(String method, String path, String body, String contentType) throws ApiError {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(base + "/api" + path).openConnection();

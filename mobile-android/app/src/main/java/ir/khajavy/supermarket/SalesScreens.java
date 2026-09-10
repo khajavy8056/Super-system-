@@ -155,6 +155,7 @@ public final class SalesScreens {
         }
         static void removeHeld(String id) { try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); JSONArray keep = new JSONArray(); for (int i = 0; i < held.length(); i++) if (!held.optJSONObject(i).optString("id").equals(id)) keep.put(held.optJSONObject(i)); Prefs.set("pos_held", keep.toString()); } catch (Exception ignore) {} }
 
+        String smsPhone = null;
         /* ---- payment ---- */
         void pay() {
             if (cart.isEmpty()) { Ui.toast("سبد خالی است"); return; }
@@ -165,7 +166,10 @@ public final class SalesScreens {
             Runnable[] redraw = new Runnable[1]; redraw[0] = () -> { chips.removeAllViews(); for (int i = 0; i < methods.length; i++) { final String m = methods[i]; chips.addView(Ui.chip(c, labels[i], m.equals(chosen[0]), () -> { chosen[0] = m; redraw[0].run(); })); } if (customer != null) chips.addView(Ui.chip(c, "نسیه (دفتر حساب)", "CREDIT".equals(chosen[0]), () -> { chosen[0] = "CREDIT"; redraw[0].run(); })); }; redraw[0].run(); l.addView(chips);
             l.addView(Ui.label(c, "مبلغ دریافتی (برای محاسبهٔ باقی‌مانده)")); EditText paid = Ui.input(c, Ui.num(total), true); l.addView(paid); TextView change = Ui.muted(c, ""); l.addView(change);
             paid.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { double p = Ui.numVal(paid, total); change.setText(p >= total ? "باقی‌مانده به مشتری: " + Ui.money(p - total) : "کسری: " + Ui.money(total - p) + (customer == null ? " (برای نسیه، مشتری انتخاب کنید)" : " → در دفتر حساب ثبت می‌شود")); } });
-            l.addView(Ui.success(c, "ثبت فاکتور", () -> { d[0].dismiss(); checkout(chosen[0], Math.min(total, Ui.numVal(paid, total)), total); }));
+            // v2.4: SMS phone is asked on EVERY checkout — pre-filled from the chosen customer; empty = no SMS
+            l.addView(Ui.label(c, "موبایل مشتری برای پیامک فاکتور" + (SmsLocal.configured() || !Api.standalone() ? "" : " (سرویس پیامک تنظیم نشده)")));
+            EditText phone = Ui.input(c, "09xxxxxxxxx — خالی = بدون پیامک", true); if (customer != null) phone.setText(customer.optString("phone")); else phone.setText(Prefs.get("pos_last_phone", "")); l.addView(phone);
+            l.addView(Ui.success(c, "ثبت فاکتور", () -> { d[0].dismiss(); smsPhone = Db.norm(Ui.str(phone)); Prefs.set("pos_last_phone", ""); checkout(chosen[0], Math.min(total, Ui.numVal(paid, total)), total); }));
             d[0] = Ui.sheet(c, "پرداخت", l);
         }
         void checkout(String method, double paidAmt, double total) {
@@ -180,7 +184,10 @@ public final class SalesScreens {
                 // local-first: apply on the phone immediately, then push
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
                 // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
-                if (customer != null && !customer.optString("phone").isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend() && SmsLocal.configured()) SmsLocal.enqueueAndSend(customer.optString("phone"), SmsLocal.renderInvoice(no, total), no);
+                String ph = smsPhone != null && !smsPhone.isEmpty() ? smsPhone : (customer == null ? "" : customer.optString("phone"));
+                if (!ph.isEmpty()) { body.put("customer_phone", ph); if (customer == null) { body.put("customer_name", "مشتری " + ph); if (Api.standalone()) { JSONObject cu = Db.customerByPhone(ph); if (cu == null) cu = Db.localCustomer("مشتری " + ph, ph); body.put("customer_id", cu.optLong("id")); } } }
+                if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) SmsLocal.enqueueAndSend(ph, SmsLocal.renderInvoice(no, total), no); else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
+                smsPhone = null;
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
                 cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart();
                 Sfx.play("success"); Ui.toast("فاکتور " + Ui.fa(no) + " ثبت شد" + (Api.online ? " — در حال ارسال به رایانه" : " — پس از اتصال ارسال می‌شود"));

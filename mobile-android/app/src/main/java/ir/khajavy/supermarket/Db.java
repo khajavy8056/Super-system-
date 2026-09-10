@@ -25,8 +25,50 @@ public final class Db extends SQLiteOpenHelper {
     private static Db I;
     public static synchronized void init(Context c) { if (I == null) I = new Db(c.getApplicationContext()); }
     private static SQLiteDatabase w() { return I.getWritableDatabase(); }
+    /** v2.4: the local API router ({@link Local}) works directly on the database. */
+    public static SQLiteDatabase db() { return w(); }
 
-    private Db(Context c) { super(c, "supermarket_native.db", null, 1); }
+    private Db(Context c) { super(c, "supermarket_native.db", null, 2); }
+
+    /** v2.4 — full standalone schema: every Windows section has a table on the phone. */
+    static final String[] V2 = {
+        "CREATE TABLE IF NOT EXISTS invoice_items(id INTEGER PRIMARY KEY AUTOINCREMENT, inv INTEGER, product_id INTEGER, batch_id INTEGER, qty REAL, unit_sell_price REAL, unit_buy_price REAL, discount REAL DEFAULT 0, subtotal REAL, returned_qty REAL DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS ix_ii_inv ON invoice_items(inv)",
+        "CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, batch_id INTEGER, movement_type TEXT, quantity REAL, reference_type TEXT, reference_id TEXT, reason TEXT, user TEXT, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, entry_type TEXT, amount REAL, note TEXT, ref TEXT, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, symbol TEXT, allow_decimal INTEGER DEFAULT 0, decimals INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS price_history(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, price_type TEXT, price REAL, effective_from TEXT, is_active INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS stocktakes(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, area TEXT, status TEXT DEFAULT 'DRAFT', scheduled_for TEXT, created_at TEXT, started_at TEXT, completed_at TEXT, approved_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS stocktake_items(id INTEGER PRIMARY KEY AUTOINCREMENT, st INTEGER, product_id INTEGER, batch_id INTEGER, system_qty REAL, physical_qty REAL, reason TEXT, counted_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS warehouses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, code TEXT, address TEXT, is_default INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS locations(id INTEGER PRIMARY KEY AUTOINCREMENT, warehouse_id INTEGER, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS expense_categories(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER, amount REAL, description TEXT, paid_from TEXT, expense_date TEXT)",
+        "CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, address TEXT, balance REAL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS cheques(id INTEGER PRIMARY KEY AUTOINCREMENT, direction TEXT, number TEXT, amount REAL, due_date TEXT, bank_name TEXT, party_name TEXT, status TEXT DEFAULT 'PENDING', created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY AUTOINCREMENT, number INTEGER, date TEXT, description TEXT, kind TEXT, status TEXT DEFAULT 'POSTED', total REAL, lines TEXT, ref TEXT)",
+        "CREATE TABLE IF NOT EXISTS cash_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT, opened_at TEXT, closed_at TEXT, opening_float REAL DEFAULT 0, counted_cash REAL, expected_cash REAL, difference REAL, status TEXT DEFAULT 'OPEN', note TEXT)",
+        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, full_name TEXT, pass_hash TEXT, roles TEXT, is_active INTEGER DEFAULT 1, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, entity_type TEXT, entity_id TEXT, reference TEXT, user TEXT, before TEXT, after TEXT, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
+    };
+    static final String[] V2_ALTER = {
+        "ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'PAID'", "ALTER TABLE invoices ADD COLUMN payment_status TEXT DEFAULT 'PAID'",
+        "ALTER TABLE invoices ADD COLUMN customer_id INTEGER", "ALTER TABLE invoices ADD COLUMN subtotal REAL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN discount REAL DEFAULT 0",
+        "ALTER TABLE invoices ADD COLUMN tax REAL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN user TEXT", "ALTER TABLE invoices ADD COLUMN void_reason TEXT", "ALTER TABLE invoices ADD COLUMN coupon TEXT",
+        "ALTER TABLE customers ADD COLUMN address TEXT", "ALTER TABLE batches ADD COLUMN warehouse_id INTEGER DEFAULT 1", "ALTER TABLE batches ADD COLUMN quantity_received REAL", "ALTER TABLE batches ADD COLUMN received_at TEXT",
+    };
+    static void v2(SQLiteDatabase d) {
+        for (String q : V2) d.execSQL(q);
+        for (String q : V2_ALTER) { try { d.execSQL(q); } catch (Exception ignore) {} }
+        try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM warehouses", null)) { if (c.moveToFirst() && c.getInt(0) == 0) d.execSQL("INSERT INTO warehouses(name,code,address,is_default) VALUES('انبار اصلی','MAIN','',1)"); }
+        try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM expense_categories", null)) { if (c.moveToFirst() && c.getInt(0) == 0) for (String n : new String[]{"اجاره", "حقوق", "آب و برق و گاز", "حمل و نقل", "تعمیرات", "متفرقه"}) d.execSQL("INSERT INTO expense_categories(name) VALUES(?)", new Object[]{n}); }
+        try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM units", null)) { if (c.moveToFirst() && c.getInt(0) == 0) { Object[][] us = {{"عدد", "عدد", 0, 0}, {"کیلوگرم", "kg", 1, 3}, {"گرم", "g", 1, 0}, {"لیتر", "L", 1, 2}, {"بسته", "بسته", 0, 0}, {"کارتن", "کارتن", 0, 0}, {"متر", "m", 1, 2}}; for (Object[] u : us) d.execSQL("INSERT INTO units(name,symbol,allow_decimal,decimals,is_active) VALUES(?,?,?,?,1)", u); } }
+    }
 
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE products(id INTEGER PRIMARY KEY, barcode TEXT, name TEXT, sku TEXT, unit_id INTEGER, category_id INTEGER, brand_id INTEGER, min_stock_alert REAL DEFAULT 0, image_url TEXT, is_active INTEGER DEFAULT 1, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
@@ -39,8 +81,9 @@ public final class Db extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE cache(path TEXT PRIMARY KEY, json TEXT, at TEXT)");
         d.execSQL("CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT)");
         d.execSQL("CREATE TABLE conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
+        v2(d);
     }
-    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {}
+    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 2) v2(d); }
 
     /* ---------------- kv ---------------- */
     public static String kv(String k) { try (Cursor c = w().rawQuery("SELECT v FROM kv WHERE k=?", new String[]{k})) { return c.moveToFirst() ? c.getString(0) : null; } }
@@ -142,6 +185,7 @@ public final class Db extends SQLiteOpenHelper {
         }
         return out;
     }
+    public static JSONObject customerByPhone(String phone) { try (Cursor c = w().rawQuery("SELECT json FROM customers WHERE phone=? LIMIT 1", new String[]{norm(phone)})) { if (c.moveToFirst()) return new JSONObject(c.getString(0)); } catch (Exception ignore) {} return null; }
     public static List<JSONObject> customers(String q) {
         List<JSONObject> out = new ArrayList<>(); q = norm(q);
         try (Cursor c = w().rawQuery("SELECT json FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY name LIMIT 200", new String[]{"%" + q + "%", "%" + q + "%"})) { while (c.moveToNext()) { try { out.add(new JSONObject(c.getString(0))); } catch (Exception ignore) {} } }
@@ -160,7 +204,7 @@ public final class Db extends SQLiteOpenHelper {
         long id = -counter("bid");
         JSONObject b = new JSONObject();
         try { b.put("id", id); b.put("product_id", productId); b.put("batch_number", "L-" + pad5(-id)); b.put("current_qty", qty); b.put("sell_price", sell); b.put("consumer_price", consumer); b.put("buy_price", buy); if (expiry != null) b.put("expiry_date", expiry); b.put("status", "ACTIVE"); } catch (Exception ignore) {}
-        putBatch(b, true); return b;
+        putBatch(b, true); Local.onBatchReceived(productId, id, qty, buy, sell, consumer); return b;
     }
     public static JSONObject localCustomer(String name, String phone) {
         long id = -counter("cid"); JSONObject c = Api.obj("name", name, "phone", phone);
@@ -178,16 +222,34 @@ public final class Db extends SQLiteOpenHelper {
             }
             String no = "M-" + String.format("%06d", counter("inv_no"));
             ContentValues cv = new ContentValues(); cv.put("local_no", no); cv.put("total", total); cv.put("item_count", items == null ? 0 : items.length());
-            JSONArray pays = payload.optJSONArray("payments"); cv.put("payment", pays != null && pays.length() > 0 ? pays.optJSONObject(0).optString("method", "CASH") : "CASH");
-            cv.put("at", now()); cv.put("synced", 0); cv.put("json", payload.toString()); d.insert("invoices", null, cv);
-            d.setTransactionSuccessful(); return no;
+            JSONArray pays = payload.optJSONArray("payments"); String method = pays != null && pays.length() > 0 ? pays.optJSONObject(0).optString("method", "CASH") : "CASH";
+            boolean credit = false; if (pays != null) for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) credit = true;
+            if (pays != null && pays.length() > 1) method = credit ? "CREDIT" : "MIXED";
+            cv.put("payment", method); cv.put("status", "PAID"); cv.put("payment_status", credit ? "PENDING" : "PAID");
+            if (payload.has("customer_id")) cv.put("customer_id", payload.optLong("customer_id"));
+            double sub = 0, disc = payload.optDouble("invoice_discount", 0);
+            for (int i = 0; items != null && i < items.length(); i++) { JSONObject it = items.optJSONObject(i); sub += it.optDouble("quantity", 1) * it.optDouble("price", 0); disc += it.optDouble("discount", 0); }
+            cv.put("subtotal", sub > 0 ? sub : total); cv.put("discount", disc); cv.put("tax", 0); cv.put("user", Screens.userName()); cv.put("coupon", payload.optString("coupon_code", null));
+            cv.put("at", now()); cv.put("synced", 0); cv.put("json", payload.toString()); long rid = d.insert("invoices", null, cv);
+            for (int i = 0; items != null && i < items.length(); i++) {
+                JSONObject it = items.optJSONObject(i); long bid = it.optLong("batch_id", 0); double q = it.optDouble("quantity", 1), pr = it.optDouble("price", 0), buy = 0;
+                if (bid != 0) try (Cursor c = d.rawQuery("SELECT buy_price FROM batches WHERE id=?", new String[]{String.valueOf(bid)})) { if (c.moveToFirst()) buy = c.getDouble(0); }
+                d.execSQL("INSERT INTO invoice_items(inv,product_id,batch_id,qty,unit_sell_price,unit_buy_price,discount,subtotal) VALUES(?,?,?,?,?,?,?,?)", new Object[]{rid, it.optLong("product_id"), bid, q, pr, buy, it.optDouble("discount", 0), q * pr - it.optDouble("discount", 0)});
+                d.execSQL("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,user,created_at) VALUES(?,?,'SALE_OUT',?,'Invoice',?,?,?)", new Object[]{it.optLong("product_id"), bid, -q, no, Screens.userName(), now()});
+            }
+            if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += pays.optJSONObject(i).optDouble("amount"); d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
+            if (!payload.optString("coupon_code").isEmpty()) d.execSQL("UPDATE coupons SET used_count=used_count+1, status=CASE WHEN used_count+1>=usage_limit THEN 'USED' ELSE status END WHERE code=?", new Object[]{payload.optString("coupon_code")});
+            d.setTransactionSuccessful();
+            double cogs = 0; try (Cursor c = d.rawQuery("SELECT IFNULL(SUM(qty*unit_buy_price),0) FROM invoice_items WHERE inv=?", new String[]{String.valueOf(rid)})) { if (c.moveToFirst()) cogs = c.getDouble(0); }
+            final double fc = cogs; Local.postSale(no, total, fc, pays);
+            return no;
         } finally { d.endTransaction(); }
     }
     public static void markInvoiceSynced(String localNo, String invoiceNumber) { ContentValues cv = new ContentValues(); cv.put("synced", 1); cv.put("invoice_number", invoiceNumber); w().update("invoices", cv, "local_no=?", new String[]{localNo}); }
     public static List<JSONObject> localInvoices() {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = w().rawQuery("SELECT local_no,total,item_count,payment,at,synced,invoice_number FROM invoices ORDER BY at DESC LIMIT 200", null)) {
-            while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("local_no", c.getString(0)); o.put("total", c.getDouble(1)); o.put("items", c.getInt(2)); o.put("payment", c.getString(3)); o.put("at", c.getString(4)); o.put("synced", c.getInt(5) == 1); o.put("invoice_number", c.isNull(6) ? null : c.getString(6)); } catch (Exception ignore) {} out.add(o); }
+        try (Cursor c = w().rawQuery("SELECT local_no,total,item_count,payment,at,synced,invoice_number,rowid,status FROM invoices ORDER BY at DESC LIMIT 200", null)) {
+            while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("local_no", c.getString(0)); o.put("total", c.getDouble(1)); o.put("items", c.getInt(2)); o.put("payment", c.getString(3)); o.put("at", c.getString(4)); o.put("synced", c.getInt(5) == 1); o.put("invoice_number", c.isNull(6) ? null : c.getString(6)); o.put("id", c.getLong(7)); o.put("status", c.getString(8)); } catch (Exception ignore) {} out.add(o); }
         }
         return out;
     }
@@ -257,7 +319,7 @@ public final class Db extends SQLiteOpenHelper {
     /* ---------------- util ---------------- */
     public static String now() { return new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(new java.util.Date()); }
     private static String pad5(long n) { return String.format("%05d", n); }
-    static String norm(String s) {
+    public static String norm(String s) {
         if (s == null) return ""; StringBuilder b = new StringBuilder();
         for (char ch : s.trim().toCharArray()) { if (ch >= '۰' && ch <= '۹') b.append((char) ('0' + ch - '۰')); else if (ch == 'ي') b.append('ی'); else if (ch == 'ك') b.append('ک'); else b.append(ch); }
         return b.toString();
