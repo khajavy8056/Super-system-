@@ -73,7 +73,6 @@ public final class Screens {
     public static String userName() { String n = user.optString("full_name", ""); return n.isEmpty() ? user.optString("username", "") : n; }
     public static void loadConfig(AppActivity a) {
         try { user = new JSONObject(Prefs.get("user_json", "{}")); } catch (Exception ignore) {}
-        if (Api.standalone()) return;
         Api.get("/auth/me", r -> { user = (JSONObject) r; Prefs.set("user_json", user.toString()); }, e -> {});
         Api.get("/settings/currency", r -> { JSONObject c = (JSONObject) r; String code = c.optString("code", "IRR"); Ui.currencyLabel = "IRT".equals(code) ? "تومان" : "ریال"; Prefs.set("currency_label", Ui.currencyLabel); }, e -> {});
         if (Prefs.get("theme_mode", "").isEmpty()) Api.get("/settings/theme", r -> { String res = ((JSONObject) r).optString("resolved", "dark"); if (!res.equals(Prefs.get("theme_resolved", "dark"))) { Prefs.set("theme_resolved", res); a.recreate(); } }, e -> {});
@@ -129,14 +128,6 @@ public final class Screens {
             quick.addView(qb("＋ فروش جدید", () -> a.route("pos"))); quick.addView(qb("▣ اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("↓ ورود کالا", () -> a.route("receive")));
             hero.addView(quick); body.addView(hero);
             double[] loc = Db.todayStats();
-            if (Api.standalone()) {
-                double[] week = Db.weekSales();
-                body.addView(Ui.grid2(c, Ui.tile(c, "↗", Ui.TEAL, "فروش امروز", Ui.money(loc[1]), Ui.spark(c, week, Ui.TEAL)), Ui.tile(c, "🏷", Ui.VIOLET, "کالاها", Ui.num(Db.count("products")), null)));
-                body.addView(Ui.grid2(c, Ui.tile(c, "👤", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "🧾", Ui.GREEN, "فاکتور امروز", Ui.num(loc[0]), null)));
-                String[] tops = Db.topSellingToday(3); LinearLayout tp = Ui.card(c, "⭐ پرفروش‌ترین‌ها"); if (tops.length == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (String t : tops) tp.addView(Ui.kv(c, t.substring(0, t.indexOf('|')), t.substring(t.indexOf('|') + 1), Ui.GOLD)); body.addView(tp);
-                LinearLayout ex = Ui.card(c, "⏳ نزدیک انقضا"); int ne = Db.expiringCount(7), nx = Db.expiringCount(0); ex.addView(Ui.kv(c, "منقضی‌شده", Ui.num(nx), nx > 0 ? Ui.RED : 0)); ex.addView(Ui.kv(c, "تا ۷ روز آینده", Ui.num(ne), ne > 0 ? Ui.AMBER : 0)); ex.setOnClickListener(v -> a.route("inventory")); body.addView(ex);
-                LinearLayout sa = Ui.card(c, "ℹ حالت مستقل"); sa.addView(Ui.muted(c, "این گوشی بدون رایانه کار می‌کند. هر زمان به رایانهٔ فروشگاه وصل شوید، همهٔ داده‌ها همگام می‌شود.")); body.addView(sa); return;
-            }
             body.addView(Ui.empty(c, "در حال دریافت داشبورد…"));
             get("/reports/dashboard", r -> { JSONObject d = (JSONObject) r; body.removeViewAt(body.getChildCount() - 1); render(d, loc); });
         }

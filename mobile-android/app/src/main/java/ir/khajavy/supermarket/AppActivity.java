@@ -166,7 +166,7 @@ public class AppActivity extends Activity {
         android.widget.Switch sw = new android.widget.Switch(this); sw.setChecked(!Ui.dark); sw.setOnCheckedChangeListener((b, on) -> { Prefs.set("theme_resolved", on ? "light" : "dark"); Prefs.set("theme_mode", on ? "light" : "dark"); recreate(); }); th.addView(sw);
         foot.addView(th);
         foot.addView(Ui.ghost(this, "💬  ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
-        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Prefs.set("user_json", ""); Api.token = ""; if (Api.standalone()) { Prefs.set("setup_done", ""); startActivity(new Intent(this, SetupActivity.class)); } else startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
         drawer.addView(foot);
         drawerLayer.setVisibility(View.VISIBLE);
     }

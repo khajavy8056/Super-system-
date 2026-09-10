@@ -57,7 +57,7 @@ public final class Api {
             try {
                 Object r = call(method, path, body, "application/json");
                 if (cacheable) Db.cachePut(path, r == null ? "null" : r.toString());
-                online = true;
+                if (!standalone()) online = true;
                 MAIN.post(() -> { if (ok != null) ok.ok(r); });
             } catch (ApiError e) {
                 if (e.offline()) online = false;
