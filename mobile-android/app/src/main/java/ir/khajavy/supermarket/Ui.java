@@ -1,5 +1,7 @@
 package ir.khajavy.supermarket;
 
+import org.json.JSONObject;
+
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
@@ -157,6 +159,22 @@ public final class Ui {
         if (trailing != null) { TextView t = text(c, trailing, 14, trailingColor == 0 ? TEXT : trailingColor, true); t.setGravity(Gravity.END); t.setPadding(dp(8), 0, 0, 0); r.addView(t); }
         if (onClick != null) { r.setClickable(true); r.setOnClickListener(v -> onClick.run()); }
         return r;
+    }
+    /** v2.5 — 44dp product thumbnail (placeholder = first letter tile, replaced async by the picture). */
+    public static android.widget.ImageView thumb(Context c, JSONObject p, int sizeDp) {
+        android.widget.ImageView iv = new android.widget.ImageView(c); iv.setLayoutParams(margin(lp(dp(sizeDp), dp(sizeDp)), 0, 0, 10, 0)); iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+        iv.setBackground(rounded((PRIMARY & 0x00FFFFFF) | 0x22000000, 0, 12)); iv.setClipToOutline(true);
+        String n = p == null ? "" : p.optString("name", ""); iv.setImageBitmap(letterTile(n.isEmpty() ? "🛍" : n.substring(0, 1), dp(sizeDp)));
+        Images.bind(iv, p); return iv;
+    }
+    static android.graphics.Bitmap letterTile(String ch, int px) {
+        android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888); android.graphics.Canvas cv = new android.graphics.Canvas(b);
+        android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG); pt.setColor(PRIMARY); pt.setTextSize(px * 0.42f); pt.setTextAlign(android.graphics.Paint.Align.CENTER); if (FONT != null) pt.setTypeface(FONT);
+        cv.drawText(ch, px / 2f, px / 2f - (pt.descent() + pt.ascent()) / 2f, pt); return b;
+    }
+    /** product list row: thumbnail + title/sub + trailing. */
+    public static LinearLayout pitem(Context c, JSONObject p, String title, String sub, String trailing, int trailingColor, Runnable onClick) {
+        LinearLayout r = item(c, title, sub, trailing, trailingColor, onClick); r.addView(thumb(c, p, 44), 0); return r;
     }
     /** key/value line inside a card. */
     public static LinearLayout kv(Context c, String k, String v, int vColor) {

@@ -72,7 +72,7 @@ public final class SalesScreens {
         }
         void showSugg(List<JSONObject> list) {
             sugg.removeAllViews();
-            for (JSONObject p : list) { double avail = p.optDouble("available_qty", 0); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price", 0) : 0; sugg.addView(Ui.item(c, p.optString("name"), Ui.fa(p.optString("barcode")) + " · موجودی " + Ui.num(avail), Ui.money(price), avail > 0 ? Ui.TEXT : Ui.RED, () -> { add(p, null); search.setText(""); sugg.removeAllViews(); })); }
+            for (JSONObject p : list) { double avail = p.optDouble("available_qty", 0); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price", 0) : 0; sugg.addView(Ui.pitem(c, p, p.optString("name"), Ui.fa(p.optString("barcode")) + " · موجودی " + Ui.num(avail), Ui.money(price), avail > 0 ? Ui.TEXT : Ui.RED, () -> { add(p, null); search.setText(""); sugg.removeAllViews(); })); }
         }
         void onBarcode(String code) {
             code = Db.norm(code); search.setText(""); sugg.removeAllViews();
@@ -107,7 +107,7 @@ public final class SalesScreens {
                 double q = l.optDouble("quantity"), pr = l.optDouble("price"), disc = l.optDouble("discount"); double sub = q * pr - disc; total += sub; n += q;
                 LinearLayout row = Ui.col(c); row.setBackground(Ui.surface(18)); row.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); row.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8));
                 LinearLayout r1 = Ui.row(c);
-                TextView ic = Ui.text(c, l.optString("name").isEmpty() ? "🛍" : l.optString("name").substring(0, 1), 16, Ui.PRIMARY, true); ic.setGravity(Gravity.CENTER); ic.setBackground(Ui.rounded((Ui.PRIMARY & 0x00FFFFFF) | 0x22000000, 0, 12)); ic.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(40), Ui.dp(40)), 0, 0, 10, 0)); r1.addView(ic);
+                android.widget.ImageView ic = Ui.thumb(c, Db.productById(l.optLong("product_id")) == null ? l : Db.productById(l.optLong("product_id")), 40); r1.addView(ic);
                 LinearLayout nc = Ui.col(c); nc.setLayoutParams(Ui.weight(1)); nc.addView(Ui.text(c, l.optString("name"), 14, Ui.TEXT, true));
                 nc.addView(Ui.muted(c, Ui.money(pr) + " × " + Ui.num(q) + (disc > 0 ? " − تخفیف " + Ui.money(disc) : "") + (l.optString("expiry").isEmpty() ? "" : " · انقضا " + Ui.jdate(l.optString("expiry"))))); r1.addView(nc);
                 r1.addView(Ui.text(c, Ui.money(sub), 14, Ui.TEXT, true)); row.addView(r1);

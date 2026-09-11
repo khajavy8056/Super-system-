@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Category, Product, User
 from ..security import get_current_user, require_permission
-from ..services import catalog
+from ..services import catalog, product_images
 from ..services.audit import write_audit
 from ..services.catalog import CatalogError
 
@@ -301,6 +301,8 @@ def create_product(body: ProductIn, db: Session = Depends(get_db),
                    user: User = Depends(require_permission("products.manage"))):
     try:
         p = catalog.create_product(db, barcode=body.barcode, name=body.name, user=user, **body.model_dump(exclude={"barcode", "name"}))
+        if not p.image_url:
+            product_images.enqueue(db, p.id, user_id=user.id)   # v2.5: picture found in the background
         db.commit()
         return _out(p)
     except CatalogError as e:
@@ -314,8 +316,47 @@ def update_product(product_id: int, body: ProductPatch, db: Session = Depends(ge
     if not p or p.deleted_at is not None:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     catalog.update_product(db, p, user=user, **body.model_dump(exclude_none=True))
+    if not p.image_url:
+        product_images.enqueue(db, p.id, user_id=user.id)
     db.commit()
     return _out(p)
+
+
+# --- v2.5 automatic product pictures --------------------------------------------
+
+@router.post("/{product_id}/image/find")
+def find_image_now(product_id: int, force: bool = False, db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("products.manage"))):
+    """Look the picture up right now (blocking, ≤ ~30 s) — used by the «یافتن تصویر» button."""
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+    rep = product_images.find_and_store(db, p, force=force)
+    db.commit()
+    rep["image_url"] = p.image_url
+    return rep
+
+
+@router.post("/images/backfill")
+def backfill_images(limit: int = 500, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("products.manage"))):
+    """Queue a background picture lookup for every product that has none (starter catalogue etc.)."""
+    rep = product_images.backfill(db, limit=limit, user_id=user.id)
+    db.commit()
+    rep["missing"] = product_images.missing_count(db)
+    return rep
+
+
+@router.get("/images/status")
+def images_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from sqlalchemy import func as _f
+    from ..models import SyncJob
+    q = db.execute(select(SyncJob.status, _f.count(SyncJob.id)).where(SyncJob.job_type == "PRODUCT_IMAGE").group_by(SyncJob.status)).all()
+    total = db.execute(select(_f.count(Product.id)).where(Product.deleted_at.is_(None), Product.is_active.is_(True))).scalar() or 0
+    missing = product_images.missing_count(db)
+    return {"total": total, "with_image": total - missing, "missing": missing, "jobs": {s: n for s, n in q},
+            "auto_find": product_images.setting(db, "images.auto_find", "true") == "true",
+            "web_fallback": product_images.setting(db, "images.web_fallback", "true") == "true"}
 
 
 @router.delete("/{product_id}", status_code=204)

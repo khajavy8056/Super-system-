@@ -65,6 +65,10 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "inventory.default_min_stock": ("5", "Default minimum stock for new products", False),
     "inventory.low_stock_alert": ("true", "Show low-stock alerts on the dashboard", False),
     "products.autofill_requires_confirm": ("true", "Auto-fill data must be confirmed by a human before saving", False),
+    # --- v2.5 automatic product pictures ---
+    "images.auto_find": ("true", "Find a product picture automatically (by name/brand/barcode) when a product is saved", False),
+    "images.web_fallback": ("true", "Also use keyless web image search (DuckDuckGo) when OpenFoodFacts/Wikimedia have nothing", False),
+    "images.min_score": ("0.34", "Minimum name-match score (0..1) a found picture must reach to be accepted", False),
     "pricing.default_margin_percent": ("20", "Default margin used to suggest a sell price", False),
     "pricing.round_to": ("1000", "Round suggested sell prices to this step", False),
     # --- customers / ledger (§221–§222) ---

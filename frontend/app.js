@@ -204,6 +204,9 @@ function toggleFullscreen() {
   else document.exitFullscreen().catch(() => {});
 }
 window.toggleFullscreen = toggleFullscreen;
+// v2.5 — the Windows panel is a kiosk: F11 / Esc must not drop it out of full screen.
+// (The native window is opened full-screen & frameless by the launcher; this only guards the web layer.)
+document.addEventListener("keydown", (e) => { if (e.key === "F11" || (e.key === "Escape" && document.fullscreenElement && !document.querySelector(".modal.open,.sheet.open,dialog[open]"))) { e.preventDefault(); e.stopPropagation(); } }, true);
 document.addEventListener("fullscreenchange", () => { const b = $("#sb-full"); if (b) b.textContent = document.fullscreenElement ? "⤡" : "⤢"; });
 
 
@@ -1433,7 +1436,8 @@ RENDER.products = async () => {
     el("td", {}, p.image_url
       ? el("img", { class: "thumb", src: p.image_url.startsWith("http") ? p.image_url
           : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" })
-      : el("span", { class: "thumb thumb-empty", text: "—" })),
+      : el("button", { class: "thumb thumb-empty thumb-find", title: "یافتن خودکار تصویر", text: "🔍",
+          onclick: async (ev) => { ev.stopPropagation(); ev.target.textContent = "…"; try { const r = await api(`/products/${p.id}/image/find`, { method: "POST" }); toast(r.ok ? `تصویر پیدا شد (${r.source})` : "تصویری پیدا نشد — بعداً در پس‌زمینه دوباره تلاش می‌شود", r.ok ? "ok" : "err"); RENDER.products(); } catch (e) { toast(e.message, "err"); ev.target.textContent = "🔍"; } } })),
     el("td", {}, el("span", {
       // §16 — an internal code is visibly distinct from a real GTIN so staff
       // know it means nothing to external catalogues.
@@ -1446,6 +1450,17 @@ RENDER.products = async () => {
       text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
   const tbl = $("#p-table");
   tbl.innerHTML = "";
+  // v2.5 — pictures are found automatically in the background; show progress + a one-click backfill
+  try {
+    const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+    const st = await api("/products/images/status");
+    let bar = $("#p-images-bar");
+    if (!bar) { bar = el("div", { id: "p-images-bar", class: "muted", style: "display:flex;gap:10px;align-items:center;margin:6px 0" }); tbl.parentElement.insertBefore(bar, tbl); }
+    bar.innerHTML = "";
+    const pend = (st.jobs && st.jobs.PENDING) || 0;
+    bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (pend ? ` · ${fa(pend)} در صف جست‌وجوی پس‌زمینه` : "") + (st.missing ? ` · ${fa(st.missing)} بدون تصویر` : " · همه دارای تصویر ✓") }));
+    if (st.missing) bar.append(el("button", { class: "btn btn-ghost btn-sm", text: "یافتن تصویر همهٔ کالاهای بدون تصویر", onclick: async () => { const r = await api("/products/images/backfill?limit=1000", { method: "POST" }); toast(`${fa(r.queued)} کالا در صف جست‌وجوی تصویر قرار گرفت (پس‌زمینه)`); RENDER.products(); } }));
+  } catch (e) { /* status is cosmetic */ }
   tbl.append(el("thead", {}, el("tr", {},
     el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
     el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }),

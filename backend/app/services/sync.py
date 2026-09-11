@@ -152,6 +152,26 @@ def _handle_price_update(db: Session, payload: dict) -> None:
     res_svc.resolve_market_price(db, payload["barcode"], payload.get("product_id"))
 
 
+@register("PRODUCT_IMAGE")
+def _handle_product_image(db: Session, payload: dict) -> dict | None:
+    """v2.5 — find + store a picture for a product by name (retries with backoff when offline)."""
+    from . import product_images
+    from ..models import Product
+
+    p = db.get(Product, int(payload["product_id"]))
+    if p is None or p.deleted_at is not None:
+        return {"skipped": "PRODUCT_GONE"}
+    if p.image_url:
+        return {"skipped": "ALREADY_HAS_IMAGE"}
+    rep = product_images.find_and_store(db, p)
+    if not rep.get("ok"):
+        if rep.get("reason") == "NO_CANDIDATES" and rep.get("tried", 0) == 0:
+            # most likely offline → let the backoff retry later
+            raise RuntimeError("IMAGE_LOOKUP_NO_SOURCE_REACHED")
+        return rep
+    return rep
+
+
 @register("EXTERNAL_LOOKUP")
 def _handle_lookup(db: Session, payload: dict) -> None:
     from . import resolvers as res_svc

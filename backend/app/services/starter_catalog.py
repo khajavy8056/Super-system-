@@ -2,10 +2,13 @@
 
 The bundled ``data/starter_catalog.csv`` is a generic, offline, licence-free
 list of common Iranian supermarket lines (category → sub-category → product,
-default unit). It intentionally carries **no manufacturer barcodes**: GTINs
-must come from the shop's own scanning or from a CSV the shop provides (same
-columns) — inventing barcodes would corrupt the resolver. Items with no
-barcode receive an ``INT-`` internal code (§16).
+default unit). Since v2.5 every line carries a **valid EAN-13 in the GS1
+"restricted circulation" range** (``200…`` + check digit): it is scannable by
+any 1D scanner and prints as a real barcode label, but by GS1 rules it is
+store-internal and never clashes with a manufacturer GTIN. Real manufacturer
+codes are still attached on first scan/receipt ("has_own_barcode"). Barcode
+lookups (OpenFoodFacts) skip the 20–29 prefixes so no wrong picture is fetched.
+Pictures for every starter line are looked up in the background by name.
 
 Import is idempotent: a product with the same normalised name in the same
 category is skipped, so re-running never duplicates. Products are created as
@@ -109,7 +112,7 @@ def import_csv(db: Session, text: str | None = None, *, user=None, dry_run: bool
                 created += 1
                 existing_names.add(key)
                 continue
-            catalog.create_product(
+            _p = catalog.create_product(
                 db, barcode=barcode, name=name, user=user,
                 brand_id=_brand(db, row.get("brand", ""), brand_cache),
                 category_id=cat_id,
@@ -119,6 +122,11 @@ def import_csv(db: Session, text: str | None = None, *, user=None, dry_run: bool
             )
             existing_names.add(key)
             created += 1
+            try:
+                from . import product_images
+                product_images.enqueue(db, _p.id, user_id=user.id if user else None)   # v2.5 pictures in background
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001 — one bad row must not abort the batch
             errors.append({"line": i, "name": name, "error": str(exc)})
     return {"ok": True, "created": created, "skipped": skipped, "errors": errors,

@@ -44,7 +44,7 @@ public final class InstallService extends Service {
         if (Build.VERSION.SDK_INT >= 26) { NotificationChannel ch = new NotificationChannel(CH, "نصب اولیهٔ سامانه", NotificationManager.IMPORTANCE_LOW); ch.setSound(null, null); nm.createNotificationChannel(ch); }
         startForeground(NID, build(percent(), false));
         // the real work (starter catalogue import) happens once, early, on a worker thread
-        Api.bg(() -> { try { if ("1".equals(Prefs.get("install_starter", "")) && Db.count("products") == 0) Db.importStarter(this); } catch (Exception ignore) {} Prefs.set("install_work_done", "1"); });
+        Api.bg(() -> { try { if ("1".equals(Prefs.get("install_starter", "")) && Db.count("products") == 0) { Db.importStarter(this); Images.kick(); } } catch (Exception ignore) {} Prefs.set("install_work_done", "1"); });
         tick = () -> {
             int pc = percent();
             if (progress() >= 1 && "1".equals(Prefs.get("install_work_done", ""))) { finish(); return; }

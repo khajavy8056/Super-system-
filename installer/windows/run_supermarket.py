@@ -217,6 +217,22 @@ def open_native_window(url: str, base: Path, log, on_closed):
             win.events.closed += on_closed
         except Exception:  # noqa: BLE001 - older pywebview
             pass
+        if kiosk:
+            # v2.5 — belt and braces: some pywebview/WebView2 builds ignore the
+            # ``fullscreen=`` constructor flag on the first frame; toggling once
+            # the window exists guarantees a true full-screen, chrome-less panel.
+            def _force_fullscreen():
+                try:
+                    import time as _t
+                    _t.sleep(0.6)
+                    if not getattr(win, "fullscreen", True):
+                        win.toggle_fullscreen()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                win.events.loaded += lambda *_: threading.Thread(target=_force_fullscreen, daemon=True).start()
+            except Exception:  # noqa: BLE001
+                pass
         icon = backend_dir().parent / "installer" / "windows" / "icon.ico"
         if not icon.exists():
             icon = Path(getattr(sys, "_MEIPASS", ".")) / "icon.ico"

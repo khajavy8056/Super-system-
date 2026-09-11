@@ -54,6 +54,7 @@ public class AppActivity extends Activity {
         if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
         Lic.recheckIfDue();
         Sync.watchNetwork(this);
+        Images.kick();   // v2.5: pending product-picture lookups (standalone) resume whenever the app opens
         getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (!Ui.dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);

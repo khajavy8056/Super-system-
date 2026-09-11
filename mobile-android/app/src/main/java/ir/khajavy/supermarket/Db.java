@@ -145,7 +145,7 @@ public final class Db extends SQLiteOpenHelper {
                 String cat = f[0].trim() + (f[1].trim().isEmpty() ? "" : " / " + f[1].trim()); if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
                 long id = -counter("pid"); JSONObject p = new JSONObject();
                 try { p.put("id", id); p.put("name", f[2].trim()); p.put("barcode", f.length > 6 && !f[6].trim().isEmpty() ? f[6].trim() : "INT-L" + pad5(-id)); p.put("unit_id", units.get(unit)); p.put("unit_name", unit); p.put("category_id", cats.get(cat)); p.put("category_name", cat); if (!f[3].trim().isEmpty()) p.put("brand_name", f[3].trim()); p.put("min_stock_alert", f.length > 5 && !f[5].trim().isEmpty() ? Double.parseDouble(f[5].trim()) : 0); p.put("is_active", true); p.put("_local", true); p.put("has_own_barcode", f.length > 6 && !f[6].trim().isEmpty()); } catch (Exception ignore) {}
-                putProduct(p, true); n++;
+                putProduct(p, true); n++; try { kv("imgq_" + id, "0"); } catch (Exception ignore) {}   // v2.5: picture looked up in the background
             }
             try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
             kv("starter_imported", "1"); d.setTransactionSuccessful();

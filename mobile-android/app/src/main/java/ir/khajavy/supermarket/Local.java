@@ -125,7 +125,7 @@ public final class Local {
         {"pos.tax_rate", "0", "درصد مالیات صندوق"}, {"pos.currency", "IRT", "واحد پول: IRT تومان | IRR ریال"}, {"pos.coupon_enabled", "true", "کوپن در صندوق فعال باشد"}, {"pos.print_after_checkout", "false", "چاپ خودکار رسید پس از ثبت (روی گوشی: اشتراک‌گذاری متن رسید)"}, {"pos.allow_negative_stock", "false", "اجازهٔ موجودی منفی"}, {"pos.allocation_policy", "FEFO", "سیاست برداشت بچ: FEFO | FIFO | MANUAL"},
         {"expiry.block_sale", "true", "جلوگیری از فروش کالای منقضی"}, {"expiry.days.three", "3", "آستانهٔ ۳ روز"}, {"expiry.days.seven", "7", "آستانهٔ ۷ روز"}, {"expiry.days.thirty", "30", "آستانهٔ ۳۰ روز"},
         {"inventory.default_min_stock", "5", "حداقل موجودی پیش‌فرض کالای جدید"}, {"inventory.low_stock_alert", "true", "هشدار کمبود در داشبورد"}, {"stocktake.require_approval", "true", "اعمال اختلاف انبارگردانی نیاز به تأیید مدیر دارد"},
-        {"products.autofill_requires_confirm", "true", "تکمیل خودکار مشخصات باید تأیید شود"}, {"pricing.default_margin_percent", "20", "درصد سود پیشنهادی برای قیمت فروش"}, {"pricing.round_to", "1000", "گرد کردن قیمت پیشنهادی"},
+        {"products.autofill_requires_confirm", "true", "تکمیل خودکار مشخصات باید تأیید شود"}, {"images.auto_find", "true", "یافتن خودکار تصویر کالا (بر اساس نام/برند/بارکد) هنگام ثبت"}, {"images.web_fallback", "true", "در نبود نتیجه از OpenFoodFacts/ویکی‌مدیا، جست‌وجوی تصویر وب بدون کلید (DuckDuckGo) هم استفاده شود"}, {"pricing.default_margin_percent", "20", "درصد سود پیشنهادی برای قیمت فروش"}, {"pricing.round_to", "1000", "گرد کردن قیمت پیشنهادی"},
         {"barcode.scanner.min_interval_ms", "30", "حداقل فاصلهٔ کلید برای تشخیص اسکنر"},
         {"customers.default_credit_limit", "0", "سقف اعتبار پیش‌فرض مشتری (۰ = نامحدود)"}, {"ledger.block_over_limit", "true", "جلوگیری از فروش نسیهٔ بیش از سقف"},
         {"marketing.coupon_prefix", "SM", "پیشوند کد کوپن"}, {"marketing.max_discount_percent", "50", "سقف درصد تخفیف کوپن"},
@@ -262,7 +262,9 @@ public final class Local {
     }
     static Object products(String method, String[] seg, JSONObject b) throws Exception {
         if (seg.length > 1 && ("categories".equals(seg[1]) || "brands".equals(seg[1]))) { String t = seg[1]; if ("POST".equals(method)) exec("INSERT INTO " + t + "(name) VALUES(?)", b.optString("name")); return arr(rows("SELECT * FROM " + t + " ORDER BY name")); }
-        if (seg.length == 1) { if ("POST".equals(method)) { JSONObject p = Db.localProduct(b.optString("barcode"), b.optString("name"), b.has("unit_id") ? b.optLong("unit_id") : null); return p; } return arr(Db.searchProducts("", 500)); }
+        if (seg.length > 1 && "images".equals(seg[1])) { if (seg.length > 2 && "backfill".equals(seg[2])) return obj("queued", Images.backfill(), "missing", Images.missing()); int total = count("products"); return obj("total", total, "missing", Images.missing(), "with_image", total - Images.missing(), "jobs", obj("PENDING", Images.queued()), "auto_find", "true".equals(setting("images.auto_find", "true")), "web_fallback", "true".equals(setting("images.web_fallback", "true"))); }
+        if (seg.length > 3 && "image".equals(seg[2]) && "find".equals(seg[3])) { JSONObject rep = Images.findNow(Ui.ctx, Long.parseLong(seg[1])); return rep; }
+        if (seg.length == 1) { if ("POST".equals(method)) { JSONObject p = Db.localProduct(b.optString("barcode"), b.optString("name"), b.has("unit_id") ? b.optLong("unit_id") : null); Images.findLater(p.optLong("id")); return p; } return arr(Db.searchProducts("", 500)); }
         long id = Long.parseLong(seg[1]); JSONObject p = Db.productById(id); if (p == null) throw new Api.ApiError(404, "NOT_FOUND", "کالا نیست");
         if (seg.length == 2) {
             if ("DELETE".equals(method)) { exec("UPDATE products SET is_active=0 WHERE id=?", id); audit("PRODUCT_DELETE", "Product", String.valueOf(id), p, null); return obj("ok", true); }

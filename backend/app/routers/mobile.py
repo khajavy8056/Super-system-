@@ -362,6 +362,13 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
             body = batches_router.ReceiveIn(**op.payload)
             res = batches_router.receive(body, db=db, user=user)  # type: ignore[arg-type]
             return {"id": op.id, "status": "APPLIED", "result": {"batch_id": getattr(res, "id", None) or (res.get("id") if isinstance(res, dict) else None)}}
+        if kind == "PRODUCT_IMAGE_FIND":
+            # v2.5 — a phone found/asked for a picture; the PC looks it up in the background too (so Windows + other phones get it)
+            from ..services import product_images as _pi
+            pid = int(op.payload.get("product_id") or 0)
+            if pid > 0:
+                _pi.enqueue(db, pid, user_id=user.id)
+            return {"id": op.id, "status": "APPLIED", "result": {"queued": pid > 0}}
         if kind == "STOCKTAKE_COUNT":
             body = inventory_router.CountIn(**op.payload)
             inventory_router.count_item(body, db=db, user=user)  # type: ignore[arg-type]

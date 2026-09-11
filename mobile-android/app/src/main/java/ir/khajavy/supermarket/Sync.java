@@ -37,7 +37,7 @@ public final class Sync {
             android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getApplicationContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
             if (cm == null) return;
             cm.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(android.net.Network n) { lastRun = 0; Api.ui(Sync::kick, 1200); }
+                @Override public void onAvailable(android.net.Network n) { lastRun = 0; Api.ui(Sync::kick, 1200); Api.ui(Images::kick, 2500); }
                 @Override public void onLost(android.net.Network n) { lastRun = 0; }
             });
             netWatching = true;
