@@ -46,6 +46,7 @@ log = logging.getLogger("supermarket.images")
 
 UA = "SupermarketSystem/2.5 (+https://github.com/khajavy8056/Super-system-; product-thumbnails)"
 TIMEOUT = 10.0
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 # Persian grocery vocabulary → English search words. Deliberately small and
 # high-precision: it is used to *widen* the query on English sources and to
@@ -137,6 +138,11 @@ def score_title(title: str, name: str, brand: str | None) -> float:
     s = hit / total
     if brand and _normalize_name(brand).lower() in t:
         s += 0.25
+    # words of the product name that are not grocery vocabulary are usually the BRAND («میهن», «کاله»):
+    # a candidate missing them is a different product → strong penalty
+    specific = [w for w in want if w not in FA_EN and not re.fullmatch(r"[a-z0-9]+", w)]
+    if specific and not any(w in t for w in specific):
+        s -= 0.3
     # generic-plant / raw-ingredient / stock-photo penalty for processed goods (رب ≠ بوتهٔ گوجه، شیر ≠ کاسهٔ شیر)
     if any(k in t for k in GENERIC_WORDS):
         s -= 0.35
@@ -279,16 +285,55 @@ def src_duckduckgo(c: httpx.Client, name: str, brand: str | None, **_) -> list[C
 # individually switchable. Torob's terms discourage automated extraction by shops,
 # so it is OFF by default (images.retail.torob=true to enable at your own risk).
 RETAIL_SOURCES: dict[str, dict] = {
-    "digikala": {"url": "https://api.digikala.com/v1/search/", "params": lambda q: {"q": q, "page": 1},
-                 "title_keys": ("title_fa", "title"), "default": True},
-    "okala": {"url": "https://apigateway.okala.com/api/Search/v1/Product/Search", "params": lambda q: {"search": q, "pageSize": 12, "pageNumber": 1},
-              "title_keys": ("name", "productName", "title"), "default": True},
-    "basalam": {"url": "https://search.basalam.com/ai-engine/api/v2.0/product/search", "params": lambda q: {"q": q, "rows": 12},
-                "title_keys": ("name", "title"), "default": True},
-    "torob": {"url": "https://api.torob.com/v4/base-product/search/", "params": lambda q: {"q": q, "query": q, "size": 12, "page": 0, "source": "next_desktop"},
-              "title_keys": ("name1", "name2"), "default": False},
+    # verified live 2026-09-11: data.products[].{title_fa, images.main.url[0], data_layer.brand}
+    "digikala": {"url": "https://api.digikala.com/v1/search/", "params": lambda q: {"q": q, "page": 1}, "default": True},
+    # verified live 2026-09-11: products[].{name, photo.MEDIUM|SMALL}
+    "basalam": {"url": "https://search.basalam.com/ai-engine/api/v2.0/product/search", "params": lambda q: {"q": q, "rows": 12}, "default": True},
+    # needs StoreIds + a bearer token from the web app → not usable keyless; kept for operators who have one (off)
+    "okala": {"url": "https://apigateway.okala.com/api/Search/v1/Product/Search", "params": lambda q: {"search": q, "pageSize": 12, "pageNumber": 1, "StoreIds": 1}, "default": False},
+    # terms discourage automated extraction by shops → off by default
+    "torob": {"url": "https://api.torob.com/v4/base-product/search/", "params": lambda q: {"q": q, "query": q, "size": 12, "page": 0, "source": "next_desktop"}, "default": False},
 }
 _IMG_EXT = re.compile(r"\.(jpe?g|png|webp)(\?|$)", re.I)
+
+
+def _dk_big(url: str) -> str:
+    """Digikala search thumbnails come as 300px; ask the CDN for 600px (same key, no auth)."""
+    return re.sub(r"h_\d+,w_\d+", "h_600,w_600", url)
+
+
+def parse_retail(code: str, j) -> list[tuple[str, str, str | None]]:
+    """(title, image_url, brand) triples from a retail search response — exact shapes first, tolerant walker as fallback."""
+    out: list[tuple[str, str, str | None]] = []
+    try:
+        if code == "digikala":
+            for p in ((j.get("data") or {}).get("products") or []):
+                urls = (((p.get("images") or {}).get("main") or {}).get("url") or [])
+                if p.get("title_fa") and urls:
+                    out.append((p["title_fa"], _dk_big(urls[0]), (p.get("data_layer") or {}).get("brand")))
+        elif code == "basalam":
+            for p in (j.get("products") or []):
+                ph = p.get("photo") or {}
+                url = ph.get("MEDIUM") or ph.get("LARGE") or ph.get("SMALL")
+                if p.get("name") and url:
+                    out.append((p["name"], url, (p.get("vendor") or {}).get("name")))
+        elif code == "torob":
+            for p in (j.get("results") or []):
+                if p.get("name1") and p.get("image_url"):
+                    out.append((p["name1"], p["image_url"], None))
+        elif code == "okala":
+            for p in (j.get("entities") or []):
+                title = p.get("name") or p.get("productName") or p.get("title")
+                img = _first_image_url(p)
+                if title and img:
+                    out.append((title, img, p.get("brandName")))
+    except (AttributeError, TypeError):
+        pass
+    if not out:  # schema drifted → best-effort walker
+        pairs: list[tuple[str, str]] = []
+        _walk_products(j, ("title_fa", "name", "name1", "productName", "title"), pairs)
+        out = [(t, u, None) for t, u in pairs]
+    return out
 
 
 def _walk_products(node, title_keys: tuple[str, ...], out: list[tuple[str, str]], depth: int = 0) -> None:
@@ -315,7 +360,7 @@ def _first_image_url(node, depth: int = 0) -> str | None:
     if isinstance(node, str):
         return node if node.startswith("http") and (_IMG_EXT.search(node) or "/image" in node or "img" in node) else None
     if isinstance(node, dict):
-        for k in ("image_url", "imageUrl", "image", "images", "main", "url", "photo", "thumbnail", "src", "productImage", "picture"):
+        for k in ("image_url", "imageUrl", "image", "images", "main", "url", "photo", "MEDIUM", "thumbnail", "src", "productImage", "picture"):
             if k in node:
                 r = _first_image_url(node[k], depth + 1)
                 if r:
@@ -342,18 +387,16 @@ def src_retail_ir(c: httpx.Client, name: str, brand: str | None, enabled: dict[s
         if not (enabled or {}).get(code, spec["default"]):
             continue
         try:
-            r = c.get(spec["url"], params=spec["params"](q), timeout=TIMEOUT, headers={"Accept": "application/json"})
+            r = c.get(spec["url"], params=spec["params"](q), timeout=TIMEOUT, headers={"Accept": "application/json", "User-Agent": BROWSER_UA})
             if r.status_code != 200:
                 continue
             j = r.json()
         except (httpx.HTTPError, ValueError):
             continue
-        pairs: list[tuple[str, str]] = []
-        _walk_products(j, spec["title_keys"], pairs)
-        for title, url in pairs[:12]:
-            out.append(Candidate(url, f"retail:{code}", title, min(1.0, score_title(title, name, brand) + 0.1), {"packaged": True}))
-        if any(x.score >= 0.75 for x in out):
-            break
+        for title, url, rbrand in parse_retail(code, j)[:12]:
+            full = f"{title} {rbrand}" if rbrand else title
+            out.append(Candidate(url, f"retail:{code}", full, min(1.0, score_title(full, name, brand) + 0.1), {"packaged": True}))
+    # all enabled shops are queried and ranked together — the first shop's "good enough" must not hide another shop's exact pack
     return out
 
 

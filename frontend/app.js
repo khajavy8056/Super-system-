@@ -1475,7 +1475,7 @@ RENDER.products = async () => {
 /* v2.5.1 — picture picker: retail pack photos first, own photo upload as the final word */
 window.pickProductImage = async function pickProductImage(productId, after) {
   const mediaSrc = (u) => (!u ? "" : u.startsWith("http") ? u : `/media/${u.replace(/^\/?media\//, "")}`);
-  openModal(`<div class="modal-wide"><h3>انتخاب تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجو در فروشگاه‌های اینترنتی…</div>
+  openModal(`<div class="modal-wide"><h3>تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجوی خودکار در دیجی‌کالا و باسلام…</div>
     <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label class="btn btn-ghost btn-sm" style="cursor:pointer">📷 عکس خودم (فایل/دوربین)<input id="pi-file" type="file" accept="image/*" capture="environment" style="display:none"></label>
       <input id="pi-url" class="input" placeholder="یا نشانی تصویر را بچسبانید (https://…)" style="flex:1;min-width:220px">
@@ -1496,7 +1496,7 @@ window.pickProductImage = async function pickProductImage(productId, after) {
     const c = await api(`/products/${productId}/image/candidates`);
     const body = $("#pi-body"); body.innerHTML = ""; body.className = "";
     if (c.current) body.append(el("div", { class: "muted", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, el("img", { class: "thumb", src: mediaSrc(c.current), alt: "" }), el("span", { text: "تصویر فعلی" })));
-    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "نتیجه‌ای از منابع اینترنتی نیامد (اینترنت؟). می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
+    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "از دیجی‌کالا/باسلام و منابع دیگر نتیجه‌ای نیامد (اتصال اینترنت رایانه را بررسی کنید). به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
     const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
     for (const x of c.candidates) {
       const src = x.source.startsWith("retail:") ? "فروشگاه " + { digikala: "دیجی‌کالا", okala: "اُکالا", basalam: "باسلام", torob: "ترب" }[x.source.slice(7)] : x.source;
@@ -1508,7 +1508,12 @@ window.pickProductImage = async function pickProductImage(productId, after) {
       card.addEventListener("error", () => card.remove(), true);
       grid.append(card);
     }
-    body.append(el("p", { class: "muted", style: "margin:0 0 8px", text: "روی تصویر درست بزنید. عکس‌های «فروشگاه» عکس بسته‌بندی واقعی هستند." }), grid);
+    const top = c.candidates[0];
+    const auto = el("div", { class: "card", style: "display:flex;gap:12px;align-items:center;padding:10px;margin-bottom:10px" },
+      el("img", { src: top.url, alt: "", style: "width:96px;height:96px;object-fit:contain;background:#fff;border-radius:8px", referrerpolicy: "no-referrer" }),
+      el("div", { style: "flex:1" }, el("div", { text: "پیشنهاد خودکار: " + (top.title || "") }), el("div", { class: "muted", text: "منبع: " + (top.source.startsWith("retail:") ? "فروشگاه " + ({ digikala: "دیجی‌کالا", okala: "اُکالا", basalam: "باسلام", torob: "ترب" }[top.source.slice(7)] || top.source) : top.source) + " · تطابق " + Math.round(top.score * 100) + "٪" })),
+      el("button", { class: "btn btn-primary", text: "✓ همین را بگذار", onclick: async (ev) => { ev.target.disabled = true; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: top.url, source: top.source }) })); } catch (e) { ev.target.disabled = false; toast("دریافت ناموفق؛ گزینهٔ دیگری بزنید", "err"); } } }));
+    body.append(auto, el("p", { class: "muted", style: "margin:0 0 8px", text: "یا یکی از نتایج دیگر را انتخاب کنید. بارگذاری عکس خودتان فقط وقتی لازم است که هیچ‌کدام درست نباشد." }), grid);
   } catch (e) { $("#pi-body").textContent = "خطا: " + e.message; }
 };
 

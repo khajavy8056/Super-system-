@@ -71,7 +71,7 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "images.min_score": ("0.34", "Minimum name-match score (0..1) a found picture must reach to be accepted", False),
     "images.generic_fallback": ("true", "Allow encyclopaedia photos (Wikimedia/Wikipedia) when no packaged retail photo is found", False),
     "images.retail.digikala": ("true", "Retail catalogue source: Digikala (packaged product photos, Persian titles)", False),
-    "images.retail.okala": ("true", "Retail catalogue source: Okala", False),
+    "images.retail.okala": ("false", "Retail catalogue source: Okala (needs StoreIds + bearer token → off unless configured)", False),
     "images.retail.basalam": ("true", "Retail catalogue source: Basalam", False),
     "images.retail.torob": ("false", "Retail catalogue source: Torob (its terms discourage automated extraction — off by default)", False),
     "pricing.default_margin_percent": ("20", "Default margin used to suggest a sell price", False),

@@ -221,3 +221,44 @@ def test_10_candidates_pick_and_upload(_app, db, client251):
     finally:
         pi.find_candidates = orig
         pi.resolvers._fetch_image = orig_fetch
+
+
+# ---------------------------------------------------------------- v2.5.2: parsers against REAL (abridged) live responses, captured 2026-09-11
+DK_REAL = {"status": 200, "data": {"filters": {"categories": {"options": [{"id": 10603, "title_fa": "شیر پرچرب", "title_en": "شیر پرچرب"}]}},
+           "products": [{"id": 9006144, "title_fa": "شیر کم‌چرب کاله - 900 میلی لیتر", "title_en": "",
+                         "data_layer": {"brand": "کاله", "item_category4": "شیر"},
+                         "images": {"main": {"storage_ids": [], "url": ["https://dkstatics-public.digikala.com/digikala-products/f4c3246e9ec7735be3cc8e5746b0a835d470e970_1787417037.jpg?x-oss-process=image/resize,m_lfit,h_300,w_300/quality,q_80"], "thumbnail_url": None}, "list": []}}]}}
+BS_REAL = {"meta": {"count": 36}, "products": [
+    {"id": 49733095, "name": "شیر پرچرب میهن 1 لیتر", "photo": {"MEDIUM": "https://statics.basalam.com/public-215/users/NPMxem/06-29/BSD5.jpg_512X512X70.jpg", "SMALL": "https://statics.basalam.com/public-215/users/NPMxem/06-29/BSD5.jpg_256X256X70.jpg"}, "vendor": {"name": "ریپتون"}, "categoryTitle": "شیر"},
+    {"id": 52697199, "name": "شیرخشک پرچرب میت لهستان مناسب قهوه (1کیلوگرم) وجیسنک", "photo": {"MEDIUM": "https://statics.basalam.com/public-222/users/rAjQ/07-13/vmdR.jpg_512X512X70.jpg"}, "vendor": {"name": "وجیسنک"}}]}
+
+
+def test_11_real_digikala_and_basalam_shapes():
+    dk = pi.parse_retail("digikala", DK_REAL)
+    assert dk and dk[0][0].startswith("شیر کم‌چرب کاله") and "h_600,w_600" in dk[0][1] and dk[0][2] == "کاله"
+    # filter options (title_fa without picture) must NOT leak in as products
+    assert all("digikala-products" in u for _, u, _ in dk)
+    bs = pi.parse_retail("basalam", BS_REAL)
+    assert bs[0][0] == "شیر پرچرب میهن 1 لیتر" and bs[0][1].endswith("512X512X70.jpg")
+    # relevance: the exact pack wins over the powdered-milk-for-coffee listing and over a generic bowl
+    name = "شیر پرچرب ۱ لیتری میهن"
+    s_pack = pi.score_title("شیر پرچرب میهن 1 لیتر ریپتون", name, None)
+    s_powder = pi.score_title("شیرخشک پرچرب میت لهستان مناسب قهوه (1کیلوگرم) وجیسنک", name, None)
+    s_bowl = pi.score_title("Glass of milk in a bowl", name, None)
+    assert s_pack > s_powder > s_bowl and s_pack >= 0.75, (s_pack, s_powder, s_bowl)
+
+
+def test_12_real_shapes_end_to_end(db):
+    def h(req: httpx.Request) -> httpx.Response:
+        u = str(req.url)
+        if "digikala-products" in u or "statics.basalam.com" in u: return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
+        if "api.digikala.com" in u: return httpx.Response(200, json=DK_REAL)
+        if "search.basalam.com" in u: return httpx.Response(200, json=BS_REAL)
+        if "openfoodfacts" in u: return httpx.Response(200, json={"status": 0, "products": []})
+        if "digikala-products" in u or "statics.basalam.com" in u: return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
+        return httpx.Response(200, json={"query": {"pages": {}}})
+    with httpx.Client(transport=httpx.MockTransport(h)) as c:
+        p = _product(db, "شیر پرچرب ۱ لیتری میهن")
+        rep = pi.find_and_store(db, p, client=c, force=True)
+        assert rep["ok"] and rep["source"] in ("retail:basalam", "retail:digikala") and "میهن" in rep["title"], rep
+        db.rollback()

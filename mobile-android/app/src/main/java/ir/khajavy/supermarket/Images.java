@@ -105,11 +105,12 @@ public final class Images {
     }
 
     /* ------------------------------------------------------------ HTTP */
-    static byte[] download(String url, int max) {
+    static byte[] download(String url, int max) { return download(url, max, url.contains("digikala.com") || url.contains("basalam.com") || url.contains("okala.com") || url.contains("torob.com")); }
+    static byte[] download(String url, int max, boolean browserUa) {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection(); c.setConnectTimeout(8000); c.setReadTimeout(12000); c.setInstanceFollowRedirects(true);
-            c.setRequestProperty("User-Agent", UA); c.setRequestProperty("Accept", "image/*,application/json;q=0.9,*/*;q=0.5"); c.setRequestProperty("Accept-Language", "fa,en;q=0.8");
+            c.setRequestProperty("User-Agent", browserUa ? "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36" : UA); c.setRequestProperty("Accept", "image/*,application/json;q=0.9,*/*;q=0.5"); c.setRequestProperty("Accept-Language", "fa,en;q=0.8");
             if (Api.token != null && !Api.token.isEmpty() && Api.base != null && url.startsWith(Api.base)) c.setRequestProperty("Authorization", "Bearer " + Api.token);
             if (c.getResponseCode() != 200) return null;
             try (InputStream in = c.getInputStream(); java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream()) { byte[] b = new byte[16384]; int n; while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > max) return null; } return bo.toByteArray(); }
@@ -132,6 +133,7 @@ public final class Images {
         List<String> want = tokens(name); String[] en = enQuery(name, null).split(" "); double hit = 0, total = want.size() + 0.8 * en.length;
         for (String w : want) if (t.contains(w)) hit++; for (String w : en) if (!w.isEmpty() && t.contains(w)) hit += 0.8;
         double s = total == 0 ? 0 : hit / total; if (brand != null && !brand.isEmpty() && t.contains(Db.norm(brand).toLowerCase())) s += 0.25;
+        boolean anySpecific = false, hitSpecific = false; for (String w : want) { boolean vocab = w.matches("[a-z0-9]+"); for (String[] m : FA_EN) if (m[0].equals(w)) { vocab = true; break; } if (!vocab) { anySpecific = true; if (t.contains(w)) hitSpecific = true; } } if (anySpecific && !hitSpecific) s -= 0.3;
         for (String bad : GENERIC) if (t.contains(bad)) { s -= 0.35; break; }
         boolean pack = t.matches(".*[0-9].*"); if (!pack) for (String pk : PACK) if (t.contains(pk)) { pack = true; break; } if (pack) s += 0.15;
         return Math.max(0, Math.min(1, s));
@@ -162,19 +164,30 @@ public final class Images {
         try { String q = faQuery(name, brand).isEmpty() ? enQuery(name, brand) : faQuery(name, brand); byte[] html = download("https://duckduckgo.com/?iax=images&ia=images&q=" + enc(q), 2 * 1024 * 1024); if (html != null) { java.util.regex.Matcher m = java.util.regex.Pattern.compile("vqd=\"?([\\d-]+)").matcher(new String(html, "UTF-8")); if (m.find()) { JSONObject j = getJson("https://duckduckgo.com/i.js?l=ir-fa&o=json&f=,,,,,&p=1&q=" + enc(q) + "&vqd=" + m.group(1)); JSONArray rs = j == null ? null : j.optJSONArray("results"); for (int i = 0; rs != null && i < Math.min(10, rs.length()); i++) { JSONObject r = rs.optJSONObject(i); String u = r.optString("image", ""); if (u.isEmpty()) continue; double s = score(r.optString("title", ""), name, brand) * 0.85; if (s >= 0.34) out.add(new String[]{u, "duckduckgo", r.optString("title", ""), String.valueOf(s)}); } } } } catch (Exception ignore) {}
         return sort(out);
     }
+    // verified live 2026-09-11 (same parsers as backend/app/services/product_images.py::parse_retail)
     static final String[][] RETAIL = {
         {"digikala", "https://api.digikala.com/v1/search/?page=1&q=", "title_fa,title", "true"},
-        {"okala", "https://apigateway.okala.com/api/Search/v1/Product/Search?pageSize=12&pageNumber=1&search=", "name,productName,title", "true"},
         {"basalam", "https://search.basalam.com/ai-engine/api/v2.0/product/search?rows=12&q=", "name,title", "true"},
+        {"okala", "https://apigateway.okala.com/api/Search/v1/Product/Search?pageSize=12&pageNumber=1&StoreIds=1&search=", "name,productName,title", "false"},
         {"torob", "https://api.torob.com/v4/base-product/search/?size=12&page=0&source=next_desktop&query=", "name1,name2", "false"}};
+    /** exact shapes first; tolerant walker only when the shop changed its schema. Returns [title, url, brand]. */
+    static List<String[]> parseRetail(String code, JSONObject j) {
+        List<String[]> out = new ArrayList<>();
+        try {
+            if ("digikala".equals(code)) { JSONArray ps = j.optJSONObject("data") == null ? null : j.optJSONObject("data").optJSONArray("products"); for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); JSONObject main = p.optJSONObject("images") == null ? null : p.optJSONObject("images").optJSONObject("main"); JSONArray urls = main == null ? null : main.optJSONArray("url"); if (!p.optString("title_fa").isEmpty() && urls != null && urls.length() > 0) out.add(new String[]{p.optString("title_fa"), urls.optString(0).replaceAll("h_\\d+,w_\\d+", "h_600,w_600"), p.optJSONObject("data_layer") == null ? null : p.optJSONObject("data_layer").optString("brand", null)}); } }
+            else if ("basalam".equals(code)) { JSONArray ps = j.optJSONArray("products"); for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); JSONObject ph = p.optJSONObject("photo"); String u = ph == null ? "" : ph.optString("MEDIUM", ph.optString("LARGE", ph.optString("SMALL", ""))); if (!p.optString("name").isEmpty() && !u.isEmpty()) out.add(new String[]{p.optString("name"), u, p.optJSONObject("vendor") == null ? null : p.optJSONObject("vendor").optString("name", null)}); } }
+            else if ("torob".equals(code)) { JSONArray ps = j.optJSONArray("results"); for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); if (!p.optString("name1").isEmpty() && !p.optString("image_url").isEmpty()) out.add(new String[]{p.optString("name1"), p.optString("image_url"), null}); } }
+        } catch (Exception ignore) {}
+        if (out.isEmpty()) { List<String[]> pairs = new ArrayList<>(); walk(j, new String[]{"title_fa", "name", "name1", "productName", "title"}, pairs, 0); for (String[] pr : pairs) out.add(new String[]{pr[0], pr[1], null}); }
+        return out;
+    }
     static void retail(List<String[]> out, String name, String brand) {
         String q = faQuery(name, brand); if (q.isEmpty()) return;
         for (String[] r : RETAIL) {
             if (!"true".equals(Local.setting("images.retail." + r[0], r[3]))) continue;
             JSONObject j = getJson(r[1] + enc(q)); if (j == null) continue;
-            List<String[]> pairs = new ArrayList<>(); walk(j, r[2].split(","), pairs, 0);
-            for (int i = 0; i < Math.min(12, pairs.size()); i++) { String[] pr = pairs.get(i); double s = Math.min(1.0, score(pr[0], name, brand) + 0.1); if (s >= 0.34) out.add(new String[]{pr[1], "retail:" + r[0], pr[0], String.valueOf(s)}); }
-            if (best(out) >= 0.75) return;
+            List<String[]> pairs = parseRetail(r[0], j);
+            for (int i = 0; i < Math.min(12, pairs.size()); i++) { String[] pr = pairs.get(i); String full = pr[2] == null ? pr[0] : pr[0] + " " + pr[2]; double s = Math.min(1.0, score(full, name, brand) + 0.1); if (s >= 0.34) out.add(new String[]{pr[1], "retail:" + r[0], full, String.valueOf(s)}); }
         }
     }
     static void walk(Object node, String[] titleKeys, List<String[]> out, int depth) {
