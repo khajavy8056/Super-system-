@@ -132,7 +132,7 @@ public final class Local {
         {"sms.provider", "", "سرویس پیامک: melipayamak | kavenegar"}, {"sms.send_invoice", "true", "ارسال پیامک فاکتور به محض تأیید"}, {"sms.admin_phone", "", "شمارهٔ مدیر برای گزارش‌ها"}, {"sms.low_stock_alert", "false", "پیامک هشدار کمبود به مدیر"},
         {"printer.paper_width_mm", "58", "عرض کاغذ چاپگر بلوتوث"}, {"printer.header", "", "سربرگ رسید"}, {"printer.footer", "", "پانوشت رسید"},
         {"network.lan_port", "8765", "پورت سرویس LAN همین گوشی (برای گوشی‌های دیگر)"}, {"network.lan_server", "false", "این گوشی سرویس‌دهندهٔ گوشی‌های دیگر باشد"},
-        {"security.session_minutes", "720", "طول نشست (دقیقه)"}, {"security.require_admin_for_void_paid", "true", "ابطال فاکتور پرداخت‌شده رمز مدیر می‌خواهد"},
+        {"security.session_minutes", "720", "طول نشست (دقیقه)"}, {"security.idle_minutes", "30", "قفل خودکار گوشی پس از این مدت بی‌کاری (دقیقه) — نیاز به ورود مجدد"}, {"security.require_admin_for_void_paid", "true", "ابطال فاکتور پرداخت‌شده رمز مدیر می‌خواهد"},
         {"backup.keep", "10", "تعداد نسخهٔ پشتیبان نگه‌داری‌شده"}, {"backup.auto_daily", "true", "پشتیبان‌گیری خودکار روزانه روی گوشی"},
         {"ui.theme", "auto", "پوسته: auto | light | dark"}, {"ui.theme_light_at", "07:00", "ساعت پوستهٔ روشن"}, {"ui.theme_dark_at", "19:00", "ساعت پوستهٔ تیره"},
         {"update.channel", "github", "کانال به‌روزرسانی"}, {"license.auto_recheck", "true", "بررسی خودکار لایسنس"}, {"mobile.sync_interval_seconds", "20", "فاصلهٔ همگام‌سازی"}, {"cloud.provider", "gdrive", "سرویس ابری"}};

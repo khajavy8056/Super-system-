@@ -37,7 +37,7 @@ public class AppActivity extends Activity {
     private final Deque<Screens.Screen> stack = new ArrayDeque<>();
     private Consumer<String> scanCb;
     private final Handler h = new Handler(Looper.getMainLooper());
-    private final Runnable ticker = new Runnable() { @Override public void run() { Sync.kick(); h.postDelayed(this, 20000); } };
+    private final Runnable ticker = new Runnable() { @Override public void run() { if (Session.expired()) { Session.end(); startActivity(new Intent(AppActivity.this, LoginActivity.class)); finish(); return; } Sync.kick(); h.postDelayed(this, 20000); } };
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -48,6 +48,9 @@ public class AppActivity extends Activity {
         LockActivity.top = this;
         if (Api.base.isEmpty() || !Lic.setupDone() || InstallService.running()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
         if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
+        // v2.4: a login is always required; the session ends after 30 minutes without interaction
+        if (Session.expired()) { Session.end(); startActivity(new Intent(this, LoginActivity.class)); finish(); return; }
+        Session.touch();
         if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
         Lic.recheckIfDue();
         Sync.watchNetwork(this);
@@ -76,7 +79,8 @@ public class AppActivity extends Activity {
         bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
         Biometric.prompt(this, "باز کردن سوپری من", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
     }
-    @Override protected void onResume() { super.onResume(); LockActivity.top = this; h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> Notify.checkPcSupport(this)); }
+    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); }
+    @Override protected void onResume() { super.onResume(); LockActivity.top = this; if (Session.expired()) { Session.end(); Ui.toast("نشست پس از ۳۰ دقیقه بی‌کاری بسته شد — دوباره وارد شوید"); startActivity(new Intent(this, LoginActivity.class)); finish(); return; } Session.touch(); h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> Notify.checkPcSupport(this)); }
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }
     @Override protected void onPause() { super.onPause(); h.removeCallbacks(ticker); }
 
@@ -166,7 +170,7 @@ public class AppActivity extends Activity {
         android.widget.Switch sw = new android.widget.Switch(this); sw.setChecked(!Ui.dark); sw.setOnCheckedChangeListener((b, on) -> { Prefs.set("theme_resolved", on ? "light" : "dark"); Prefs.set("theme_mode", on ? "light" : "dark"); recreate(); }); th.addView(sw);
         foot.addView(th);
         foot.addView(Ui.ghost(this, "💬  ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
-        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
         drawer.addView(foot);
         drawerLayer.setVisibility(View.VISIBLE);
     }

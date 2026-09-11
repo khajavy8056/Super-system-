@@ -237,7 +237,7 @@ public class SetupActivity extends Activity {
         Prefs.set("theme_pref", str("theme")); Prefs.set("theme_resolved", "light".equals(str("theme")) ? "light" : "dark".equals(str("theme")) ? "dark" : (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) >= 7 && java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) < 19 ? "light" : "dark"));
         try { JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL); Prefs.set("user_json", u.toString()); Prefs.set("local_admin_hash", Lic.hwid() + ":" + Integer.toHexString((str("admin_username") + "|" + str("admin_password")).hashCode())); } catch (Exception ignore) {}
         Prefs.save(this, "http://standalone.invalid", "", str("store_name"), Prefs.deviceIdStatic() == null ? "local-" + Long.toHexString(System.currentTimeMillis()) : Prefs.deviceIdStatic());
-        Prefs.set("lic_mode", "own");
+        Prefs.set("lic_mode", "own"); Session.start();
         final boolean starter = data.optBoolean("starter");
         boolean fast = "1".equals(Prefs.get("loading_fast", "")) || getIntent().getBooleanExtra("fastload", false);
         long total = fast ? 6000L : 45L * 60L * 1000L;
@@ -286,7 +286,7 @@ public class SetupActivity extends Activity {
     }
 
     void finishSetup(boolean standalone) {
-        Prefs.set("setup_done", "1");
+        Prefs.set("setup_done", "1"); Session.start();   // the wizard itself authenticated the user (PC login or admin creation)
         if (standalone) Prefs.set("first_loading_done", "1");
         startActivity(new Intent(this, AppActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)); finish();
     }
