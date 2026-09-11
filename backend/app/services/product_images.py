@@ -137,10 +137,20 @@ def score_title(title: str, name: str, brand: str | None) -> float:
     s = hit / total
     if brand and _normalize_name(brand).lower() in t:
         s += 0.25
-    # generic-plant / raw-ingredient penalty for processed goods (رب ≠ بوتهٔ گوجه)
-    if any(k in t for k in ("plant", "flower", "field", "farm", "tree", "seedling", "botanical", "illustration", "drawing", "map", "logo")):
+    # generic-plant / raw-ingredient / stock-photo penalty for processed goods (رب ≠ بوتهٔ گوجه، شیر ≠ کاسهٔ شیر)
+    if any(k in t for k in GENERIC_WORDS):
         s -= 0.35
+    # package-photo bonus: retail titles carry pack size / brand / container words
+    if any(k in t for k in PACK_WORDS) or _NUM.search(title or ""):
+        s += 0.15
     return max(0.0, min(1.0, s))
+
+
+GENERIC_WORDS = ("plant", "flower", "field", "farm", "tree", "seedling", "botanical", "illustration", "drawing", "map", "logo",
+                 "glass of", "bowl", "cup of", "pouring", "splash", "cow", "farmer", "harvest", "recipe", "dish", "meal",
+                 "کاسه", "لیوان", "گاو", "مزرعه", "درخت", "بوته", "دستور پخت", "غذا", "نقاشی", "کارتون", "clipart", "vector", "icon")
+PACK_WORDS = ("گرمی", "گرم", "لیتری", "لیتر", "بسته", "قوطی", "بطری", "پاکت", "عددی", "کیلویی", "کیلوگرم", "سی سی", "میلی",
+              "pack", "bottle", "can ", "jar", "box", "bag", "ml", " g ", "kg", "gram", "liter", "litre", "brand")
 
 
 def _client(client: httpx.Client | None) -> tuple[httpx.Client, bool]:
@@ -260,8 +270,96 @@ def src_duckduckgo(c: httpx.Client, name: str, brand: str | None, **_) -> list[C
     return out
 
 
+# --- Iranian retail catalogues (v2.5.1) -------------------------------------------
+# These return *packaged product* photos with Persian titles — exactly what a shop
+# wants on a shelf/POS thumbnail — so they rank right after an exact barcode hit.
+# All are public, keyless search endpoints used by the stores' own web front-ends;
+# schemas are not contractual, therefore results are parsed with a tolerant JSON
+# walker (any object with a Persian title + an image URL) and every source is
+# individually switchable. Torob's terms discourage automated extraction by shops,
+# so it is OFF by default (images.retail.torob=true to enable at your own risk).
+RETAIL_SOURCES: dict[str, dict] = {
+    "digikala": {"url": "https://api.digikala.com/v1/search/", "params": lambda q: {"q": q, "page": 1},
+                 "title_keys": ("title_fa", "title"), "default": True},
+    "okala": {"url": "https://apigateway.okala.com/api/Search/v1/Product/Search", "params": lambda q: {"search": q, "pageSize": 12, "pageNumber": 1},
+              "title_keys": ("name", "productName", "title"), "default": True},
+    "basalam": {"url": "https://search.basalam.com/ai-engine/api/v2.0/product/search", "params": lambda q: {"q": q, "rows": 12},
+                "title_keys": ("name", "title"), "default": True},
+    "torob": {"url": "https://api.torob.com/v4/base-product/search/", "params": lambda q: {"q": q, "query": q, "size": 12, "page": 0, "source": "next_desktop"},
+              "title_keys": ("name1", "name2"), "default": False},
+}
+_IMG_EXT = re.compile(r"\.(jpe?g|png|webp)(\?|$)", re.I)
+
+
+def _walk_products(node, title_keys: tuple[str, ...], out: list[tuple[str, str]], depth: int = 0) -> None:
+    """Tolerant walker: collect (title, image_url) pairs from any JSON shape."""
+    if depth > 8 or len(out) > 40:
+        return
+    if isinstance(node, dict):
+        title = next((str(node[k]) for k in title_keys if isinstance(node.get(k), str) and node[k].strip()), None)
+        if title:
+            img = _first_image_url(node)
+            if img:
+                out.append((title, img))
+                return
+        for v in node.values():
+            _walk_products(v, title_keys, out, depth + 1)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_products(v, title_keys, out, depth + 1)
+
+
+def _first_image_url(node, depth: int = 0) -> str | None:
+    if depth > 4:
+        return None
+    if isinstance(node, str):
+        return node if node.startswith("http") and (_IMG_EXT.search(node) or "/image" in node or "img" in node) else None
+    if isinstance(node, dict):
+        for k in ("image_url", "imageUrl", "image", "images", "main", "url", "photo", "thumbnail", "src", "productImage", "picture"):
+            if k in node:
+                r = _first_image_url(node[k], depth + 1)
+                if r:
+                    return r
+        for k, v in node.items():
+            if "imag" in k.lower() or "photo" in k.lower() or "pic" in k.lower():
+                r = _first_image_url(v, depth + 1)
+                if r:
+                    return r
+    if isinstance(node, list):
+        for v in node[:3]:
+            r = _first_image_url(v, depth + 1)
+            if r:
+                return r
+    return None
+
+
+def src_retail_ir(c: httpx.Client, name: str, brand: str | None, enabled: dict[str, bool] | None = None, **_) -> list[Candidate]:
+    out: list[Candidate] = []
+    q = persian_query(name, brand)
+    if not q:
+        return out
+    for code, spec in RETAIL_SOURCES.items():
+        if not (enabled or {}).get(code, spec["default"]):
+            continue
+        try:
+            r = c.get(spec["url"], params=spec["params"](q), timeout=TIMEOUT, headers={"Accept": "application/json"})
+            if r.status_code != 200:
+                continue
+            j = r.json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        pairs: list[tuple[str, str]] = []
+        _walk_products(j, spec["title_keys"], pairs)
+        for title, url in pairs[:12]:
+            out.append(Candidate(url, f"retail:{code}", title, min(1.0, score_title(title, name, brand) + 0.1), {"packaged": True}))
+        if any(x.score >= 0.75 for x in out):
+            break
+    return out
+
+
 SOURCES = [
     ("openfoodfacts:barcode", src_off_barcode),
+    ("retail-ir", src_retail_ir),
     ("openfoodfacts:search", src_off_search),
     ("wikimedia-commons", src_commons),
     ("wikipedia", src_wikipedia),
@@ -272,15 +370,19 @@ SOURCES = [
 # --- pipeline --------------------------------------------------------------------
 
 def find_candidates(name: str, brand: str | None, barcode: str | None, *, client: httpx.Client | None = None,
-                    web_fallback: bool = True, min_score: float = 0.34) -> list[Candidate]:
+                    web_fallback: bool = True, min_score: float = 0.34, retail: dict[str, bool] | None = None,
+                    generic_fallback: bool = True) -> list[Candidate]:
     c, own = _client(client)
     found: list[Candidate] = []
     try:
         for code, fn in SOURCES:
             if code == "duckduckgo" and not web_fallback:
                 continue
+            # encyclopaedia sources give generic photos (a glass of milk) — only when nothing packaged was found
+            if code in ("wikimedia-commons", "wikipedia") and (not generic_fallback or any(x.score >= 0.5 for x in found)):
+                continue
             try:
-                cands = fn(c, name=name, brand=brand, barcode=barcode)
+                cands = fn(c, name=name, brand=brand, barcode=barcode, enabled=retail)
             except Exception as exc:  # noqa: BLE001 — one source must never break the ladder
                 log.info("image source %s failed: %s", code, exc)
                 cands = []
@@ -317,7 +419,8 @@ def find_and_store(db: Session, product: Product, *, client: httpx.Client | None
         brand = b.name if b else None
     web = setting(db, "images.web_fallback", "true").lower() == "true"
     min_score = float(setting(db, "images.min_score", "0.34") or 0.34)
-    cands = find_candidates(product.name, brand, product.barcode, client=client, web_fallback=web, min_score=min_score)
+    cands = find_candidates(product.name, brand, product.barcode, client=client, web_fallback=web, min_score=min_score,
+                            retail=retail_flags(db), generic_fallback=setting(db, "images.generic_fallback", "true").lower() == "true")
     tried = 0
     for cand in cands[:6]:
         tried += 1
@@ -339,6 +442,48 @@ def find_and_store(db: Session, product: Product, *, client: httpx.Client | None
                 "local_path": product.image_url, "tried": tried}
     return {"ok": False, "reason": "NO_VALID_IMAGE" if cands else "NO_CANDIDATES", "tried": tried,
             "candidates": [{"source": x.source, "score": round(x.score, 2), "title": x.title[:80]} for x in cands[:6]]}
+
+
+def retail_flags(db: Session) -> dict[str, bool]:
+    return {k: setting(db, f"images.retail.{k}", "true" if v["default"] else "false").lower() == "true" for k, v in RETAIL_SOURCES.items()}
+
+
+def list_candidates(db: Session, product: Product, *, client: httpx.Client | None = None, limit: int = 12) -> list[dict]:
+    """For the picker UI: best candidates (URL + title + source + score), nothing stored."""
+    brand = None
+    if product.brand_id:
+        b = db.get(Brand, product.brand_id)
+        brand = b.name if b else None
+    web = setting(db, "images.web_fallback", "true").lower() == "true"
+    cands = find_candidates(product.name, brand, product.barcode, client=client, web_fallback=web, min_score=0.2,
+                            retail=retail_flags(db), generic_fallback=True)
+    return [{"url": x.url, "title": x.title, "source": x.source, "score": round(x.score, 2)} for x in cands[:limit]]
+
+
+def set_image_from_url(db: Session, product: Product, url: str, *, client: httpx.Client | None = None, source: str = "manual") -> dict:
+    """Operator picked a candidate (or pasted a URL): download, validate, store locally, make primary."""
+    report, buf = resolvers._fetch_image(url, client=client)
+    if not (report.get("ok") and buf):
+        return {"ok": False, "reason": report.get("reason", "INVALID_IMAGE")}
+    return set_image_from_bytes(db, product, buf, report, url=url, source=source)
+
+
+def set_image_from_bytes(db: Session, product: Product, buf: bytes, report: dict | None = None, *, url: str = "upload", source: str = "upload") -> dict:
+    if report is None:
+        fmt = resolvers._sniff_format(buf)
+        if fmt is None or len(buf) < resolvers.MIN_IMAGE_BYTES or len(buf) > resolvers.MAX_IMAGE_BYTES:
+            return {"ok": False, "reason": "INVALID_IMAGE"}
+        dims = resolvers._image_dimensions(buf, fmt) or (None, None)
+        report = {"format": fmt, "width": dims[0], "height": dims[1]}
+    rel = resolvers.store_image_locally(product.barcode or f"p{product.id}", buf, report["format"])
+    for old in db.execute(select(ImageAsset).where(ImageAsset.product_id == product.id, ImageAsset.is_primary.is_(True))).scalars():
+        old.is_primary = False
+    db.add(ImageAsset(product_id=product.id, barcode=product.barcode, url=url, local_path=rel, format=report.get("format"),
+                      width=report.get("width"), height=report.get("height"), confidence="HIGH", is_primary=True, status="STORED",
+                      created_at=datetime.utcnow()))
+    product.image_url = _local_media(rel)
+    db.flush()
+    return {"ok": True, "source": source, "local_path": product.image_url, "image_url": product.image_url}
 
 
 def enqueue(db: Session, product_id: int, *, user_id: int | None = None) -> None:

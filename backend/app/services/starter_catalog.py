@@ -3,7 +3,7 @@
 The bundled ``data/starter_catalog.csv`` is a generic, offline, licence-free
 list of common Iranian supermarket lines (category → sub-category → product,
 default unit). Since v2.5 every line carries a **valid EAN-13 in the GS1
-"restricted circulation" range** (``200…`` + check digit): it is scannable by
+"restricted circulation" range** (``2099…`` + check digit — a sub-range a shop is unlikely to have used for its own labels): it is scannable by
 any 1D scanner and prints as a real barcode label, but by GS1 rules it is
 store-internal and never clashes with a manufacturer GTIN. Real manufacturer
 codes are still attached on first scan/receipt ("has_own_barcode"). Barcode

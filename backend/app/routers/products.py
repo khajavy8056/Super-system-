@@ -337,6 +337,47 @@ def find_image_now(product_id: int, force: bool = False, db: Session = Depends(g
     return rep
 
 
+@router.get("/{product_id}/image/candidates")
+def image_candidates(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("products.manage"))):
+    """v2.5.1 — picker: top candidate pictures (retail catalogues first) so the operator chooses the right pack photo."""
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+    return {"product_id": p.id, "name": p.name, "current": p.image_url, "candidates": product_images.list_candidates(db, p)}
+
+
+class _PickBody(BaseModel):
+    url: str
+    source: str = "picked"
+
+
+@router.post("/{product_id}/image/pick")
+def image_pick(product_id: int, body: _PickBody, db: Session = Depends(get_db), user: User = Depends(require_permission("products.manage"))):
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+    rep = product_images.set_image_from_url(db, p, body.url, source=body.source)
+    if not rep.get("ok"):
+        raise HTTPException(status_code=400, detail=rep.get("reason", "INVALID_IMAGE"))
+    db.commit()
+    return rep
+
+
+@router.post("/{product_id}/image/upload")
+async def image_upload(product_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("products.manage"))):
+    """Own photo (camera/gallery/file) — the final guarantee that the thumbnail is the real product."""
+    p = db.get(Product, product_id)
+    if not p or p.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
+    buf = await file.read()
+    rep = product_images.set_image_from_bytes(db, p, buf, source="upload")
+    if not rep.get("ok"):
+        raise HTTPException(status_code=400, detail=rep.get("reason", "INVALID_IMAGE"))
+    db.commit()
+    return rep
+
+
 @router.post("/images/backfill")
 def backfill_images(limit: int = 500, db: Session = Depends(get_db),
                     user: User = Depends(require_permission("products.manage"))):

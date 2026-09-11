@@ -146,3 +146,78 @@ def test_07_api_endpoints(_app):
         with SessionLocal() as s:
             assert s.execute(select(SyncJob).where(SyncJob.idempotency_key == f"product-image:{pid}")).scalar_one_or_none() is not None
         tc.delete(f"/api/products/{pid}", headers=H)
+
+
+# ---------------------------------------------------------------- v2.5.1: packaged photo beats generic photo
+PACK_PNG = _png(color=(200, 40, 40))
+
+
+def handler_v251(req: httpx.Request) -> httpx.Response:
+    u, q = str(req.url), dict(req.url.params)
+    if "openfoodfacts.org/api/v2/product/" in u:
+        return httpx.Response(200, json={"status": 0})
+    if "api.digikala.com/v1/search" in u:
+        # real-world shape (abridged): data.products[].{title_fa, images.main.url[]}
+        return httpx.Response(200, json={"status": 200, "data": {"products": [
+            {"id": 1, "title_fa": "شیر پرچرب میهن حجم 1 لیتر", "images": {"main": {"url": ["https://img.test/pack.png"]}}}]}})
+    if "okala.com" in u or "basalam.com" in u or "torob.com" in u:
+        return httpx.Response(200, json={"entities": []})
+    if "openfoodfacts.org/cgi/search.pl" in u:
+        return httpx.Response(200, json={"products": []})
+    if "commons.wikimedia.org" in u:
+        # the exact failure the operator saw: a generic bowl of milk
+        return httpx.Response(200, json={"query": {"pages": {"1": {"title": "File:Glass of milk in a bowl.jpg",
+                              "imageinfo": [{"thumburl": "https://img.test/bowl.png", "mime": "image/png"}]}}}})
+    if "wikipedia.org" in u:
+        return httpx.Response(200, json={"query": {"pages": {}}})
+    if "duckduckgo.com" in u:
+        return httpx.Response(200, text="<html></html>")
+    if u.endswith("pack.png"): return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
+    if u.endswith("bowl.png"): return httpx.Response(200, content=MILK_PNG, headers={"content-type": "image/png"})
+    return httpx.Response(404)
+
+
+@pytest.fixture()
+def client251():
+    with httpx.Client(transport=httpx.MockTransport(handler_v251), follow_redirects=True) as c:
+        yield c
+
+
+def test_08_retail_pack_photo_beats_generic_bowl(db, client251):
+    p = _product(db, "شیر پرچرب ۱ لیتری")
+    rep = pi.find_and_store(db, p, client=client251, force=True)
+    assert rep["ok"], rep
+    assert rep["source"] == "retail:digikala" and rep["url"].endswith("pack.png"), rep
+    db.rollback()
+
+
+def test_09_generic_scores_low_and_can_be_disabled(db, client251):
+    assert pi.score_title("Glass of milk in a bowl", "شیر پرچرب ۱ لیتری", None) < pi.score_title("شیر پرچرب میهن حجم 1 لیتر", "شیر پرچرب ۱ لیتری", None)
+    # with retail sources off and generic fallback off → honest failure instead of a bowl
+    cands = pi.find_candidates("شیر پرچرب ۱ لیتری", None, None, client=client251, web_fallback=False,
+                               retail={k: False for k in pi.RETAIL_SOURCES}, generic_fallback=False)
+    assert cands == []
+
+
+def test_10_candidates_pick_and_upload(_app, db, client251):
+    tc = _app
+    tok = tc.post("/api/auth/login", data={"username": "admin", "password": "admin123"}).json()["access_token"]
+    H = {"Authorization": f"Bearer {tok}"}
+    pid = tc.post("/api/products", json={"name": "شیر پرچرب ۱ لیتری v251", "has_own_barcode": False}, headers=H).json()["id"]
+    orig = pi.find_candidates
+    pi.find_candidates = lambda *a, **k: orig(*a, **{**k, "client": client251})
+    orig_fetch = pi.resolvers._fetch_image
+    pi.resolvers._fetch_image = lambda url, client=None: orig_fetch(url, client=client251)
+    try:
+        c = tc.get(f"/api/products/{pid}/image/candidates", headers=H).json()
+        assert c["candidates"] and c["candidates"][0]["source"] == "retail:digikala", c
+        r = tc.post(f"/api/products/{pid}/image/pick", json={"url": c["candidates"][0]["url"]}, headers=H)
+        assert r.status_code == 200 and r.json()["image_url"].startswith("/media/products/"), r.text
+        r = tc.post(f"/api/products/{pid}/image/upload", files={"file": ("own.png", PASTE_PNG, "image/png")}, headers=H)
+        assert r.status_code == 200 and r.json()["source"] == "upload", r.text
+        assert tc.get(r.json()["image_url"]).status_code == 200
+        r = tc.post(f"/api/products/{pid}/image/upload", files={"file": ("x.txt", b"not an image at all" * 100, "text/plain")}, headers=H)
+        assert r.status_code == 400
+    finally:
+        pi.find_candidates = orig
+        pi.resolvers._fetch_image = orig_fetch

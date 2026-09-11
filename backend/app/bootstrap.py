@@ -69,6 +69,11 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "images.auto_find": ("true", "Find a product picture automatically (by name/brand/barcode) when a product is saved", False),
     "images.web_fallback": ("true", "Also use keyless web image search (DuckDuckGo) when OpenFoodFacts/Wikimedia have nothing", False),
     "images.min_score": ("0.34", "Minimum name-match score (0..1) a found picture must reach to be accepted", False),
+    "images.generic_fallback": ("true", "Allow encyclopaedia photos (Wikimedia/Wikipedia) when no packaged retail photo is found", False),
+    "images.retail.digikala": ("true", "Retail catalogue source: Digikala (packaged product photos, Persian titles)", False),
+    "images.retail.okala": ("true", "Retail catalogue source: Okala", False),
+    "images.retail.basalam": ("true", "Retail catalogue source: Basalam", False),
+    "images.retail.torob": ("false", "Retail catalogue source: Torob (its terms discourage automated extraction — off by default)", False),
     "pricing.default_margin_percent": ("20", "Default margin used to suggest a sell price", False),
     "pricing.round_to": ("1000", "Round suggested sell prices to this step", False),
     # --- customers / ledger (§221–§222) ---

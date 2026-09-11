@@ -546,7 +546,7 @@ def test_starter_catalog_import_is_zero_stock_and_idempotent(client, auth_header
     # v2.5: starter lines carry valid, scannable EAN-13 codes in the GS1 in-store range (20x),
     # never a (fake) manufacturer GTIN and never the old INT- placeholder.
     b = milk["barcode"]; d = [int(c) for c in b]
-    assert len(d) == 13 and b.startswith("20") and (10 - sum(x * (3 if i % 2 else 1) for i, x in enumerate(d[:12])) % 10) % 10 == d[12]
+    assert len(d) == 13 and b.startswith("2099") and (10 - sum(x * (3 if i % 2 else 1) for i, x in enumerate(d[:12])) % 10) % 10 == d[12]
     detail = client.get(f"/api/products/{milk['id']}/detail", headers=auth_headers).json()
     assert float(detail.get("stock", detail.get("total_stock", 0)) or 0) == 0
     cats = client.get("/api/products/categories", headers=auth_headers).json()

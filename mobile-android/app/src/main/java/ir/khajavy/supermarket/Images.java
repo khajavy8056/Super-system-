@@ -47,6 +47,11 @@ public final class Images {
     static File mediaDir(Context c) { File d = new File(c.getFilesDir(), "media/products"); d.mkdirs(); return d; }
 
     /** Full URL for a product's picture, or null. */
+    /** Load a remote/local URL into an ImageView (async, memory cache only) — used by the picker grid. */
+    public static void bindUrl(android.widget.ImageView iv, String url) {
+        if (url == null || url.isEmpty()) return; Bitmap m = MEM.get(url); if (m != null) { iv.setImageBitmap(m); return; }
+        iv.setTag(url); POOL.execute(() -> { byte[] b = download(url, 4 * 1024 * 1024); Bitmap bm = b == null ? null : decodeScaled(b, 320); if (bm == null) return; MEM.put(url, bm); Api.ui(() -> { if (url.equals(iv.getTag())) iv.setImageBitmap(bm); }); });
+    }
     public static String urlOf(JSONObject p) {
         if (p == null) return null;
         String u = p.isNull("image_url") ? "" : p.optString("image_url", "");
@@ -120,12 +125,15 @@ public final class Images {
     static List<String> tokens(String name) { List<String> out = new ArrayList<>(); String n = Db.norm(name == null ? "" : name).replaceAll("[0-9]+", " "); for (String t : n.split("[\\s\\-_/،,()«»\"']+")) { t = t.trim(); if (t.length() >= 2 && !STOP.contains(t)) out.add(t); } return out; }
     static String faQuery(String name, String brand) { String q = android.text.TextUtils.join(" ", tokens(name)); if (brand != null && !brand.isEmpty() && !q.contains(brand)) q += " " + brand; return q.trim(); }
     static String enQuery(String name, String brand) { StringBuilder sb = new StringBuilder(); for (String t : tokens(name)) { if (t.matches("[a-z0-9]+")) sb.append(t).append(' '); else for (String[] m : FA_EN) if (m[0].equals(t)) { sb.append(m[1]).append(' '); break; } } if (brand != null) sb.append(brand); return sb.toString().trim(); }
+    static final String[] GENERIC = {"plant", "flower", "field", "farm", "tree", "seedling", "botanical", "illustration", "drawing", "map", "logo", "glass of", "bowl", "cup of", "pouring", "splash", "cow", "farmer", "harvest", "recipe", "dish", "meal", "کاسه", "لیوان", "گاو", "مزرعه", "درخت", "بوته", "دستور پخت", "غذا", "نقاشی", "کارتون", "clipart", "vector", "icon"};
+    static final String[] PACK = {"گرمی", "گرم", "لیتری", "لیتر", "بسته", "قوطی", "بطری", "پاکت", "عددی", "کیلویی", "کیلوگرم", "میلی", "pack", "bottle", "jar", "box", "bag", "ml", "kg", "gram", "liter", "litre"};
     static double score(String title, String name, String brand) {
         if (title == null || title.isEmpty()) return 0.25; String t = Db.norm(title).toLowerCase();
         List<String> want = tokens(name); String[] en = enQuery(name, null).split(" "); double hit = 0, total = want.size() + 0.8 * en.length;
         for (String w : want) if (t.contains(w)) hit++; for (String w : en) if (!w.isEmpty() && t.contains(w)) hit += 0.8;
         double s = total == 0 ? 0 : hit / total; if (brand != null && !brand.isEmpty() && t.contains(Db.norm(brand).toLowerCase())) s += 0.25;
-        for (String bad : new String[]{"plant", "flower", "field", "farm", "tree", "seedling", "botanical", "illustration", "drawing", "map", "logo"}) if (t.contains(bad)) { s -= 0.35; break; }
+        for (String bad : GENERIC) if (t.contains(bad)) { s -= 0.35; break; }
+        boolean pack = t.matches(".*[0-9].*"); if (!pack) for (String pk : PACK) if (t.contains(pk)) { pack = true; break; } if (pack) s += 0.15;
         return Math.max(0, Math.min(1, s));
     }
 
@@ -134,19 +142,83 @@ public final class Images {
         List<String[]> out = new ArrayList<>();
         // 1) OFF by barcode
         if (barcode != null && barcode.matches("[0-9]{8,14}") && !barcode.matches("^(02|2[0-9]).*")) { JSONObject j = getJson("https://world.openfoodfacts.org/api/v2/product/" + barcode + ".json?fields=product_name,image_front_url,image_url"); if (j != null && j.optInt("status") == 1) { JSONObject p = j.optJSONObject("product"); String u = p == null ? "" : p.optString("image_front_url", p.optString("image_url", "")); if (!u.isEmpty()) { out.add(new String[]{u, "openfoodfacts:barcode", p.optString("product_name"), "1.0"}); return out; } } }
+        // 1b) Iranian retail catalogues — packaged product photos with Persian titles (v2.5.1)
+        retail(out, name, brand);
+        if (best(out) >= 0.75) return sort(out);
         // 2) OFF text search
         for (String q : new String[]{faQuery(name, brand), enQuery(name, brand)}) { if (q.isEmpty()) continue; JSONObject j = getJson("https://world.openfoodfacts.org/cgi/search.pl?search_simple=1&action=process&json=1&page_size=8&fields=product_name,product_name_fa,brands,image_front_url,image_url&search_terms=" + enc(q)); JSONArray ps = j == null ? null : j.optJSONArray("products"); for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); String u = p.optString("image_front_url", p.optString("image_url", "")); if (u.isEmpty()) continue; String title = p.optString("product_name_fa", "") + " " + p.optString("product_name", "") + " " + p.optString("brands", ""); double s = score(title, name, brand); if (s >= 0.34) out.add(new String[]{u, "openfoodfacts:search", title, String.valueOf(s)}); } if (!out.isEmpty()) break; }
         if (best(out) >= 0.75) return sort(out);
+        boolean generic = "true".equals(Local.setting("images.generic_fallback", "true")); if (!generic || best(out) >= 0.5) { if (!web || best(out) >= 0.5) return sort(out); return ddg(out, name, brand); }
         // 3) Wikimedia Commons
         for (String q : new String[]{faQuery(name, brand), enQuery(name, brand)}) { if (q.isEmpty()) continue; JSONObject j = getJson("https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|mime&iiurlwidth=600&format=json&gsrsearch=" + enc(q + " filetype:bitmap")); JSONObject pages = j == null || j.optJSONObject("query") == null ? null : j.optJSONObject("query").optJSONObject("pages"); if (pages == null) continue; java.util.Iterator<String> it = pages.keys(); boolean any = false; while (it.hasNext()) { JSONObject p = pages.optJSONObject(it.next()); JSONArray ii = p.optJSONArray("imageinfo"); JSONObject i0 = ii == null || ii.length() == 0 ? null : ii.optJSONObject(0); if (i0 == null) continue; String mime = i0.optString("mime", ""), u = i0.optString("thumburl", i0.optString("url", "")); if (u.isEmpty() || !mime.startsWith("image/") || mime.contains("svg")) continue; String title = p.optString("title", "").replace("File:", ""); double s = score(title, name, brand); if (s >= 0.34) { out.add(new String[]{u, "wikimedia-commons", title, String.valueOf(s)}); any = true; } } if (any) break; }
         if (best(out) >= 0.75) return sort(out);
         // 4) Wikipedia page image
         for (String[] lq : new String[][]{{"fa", faQuery(name, null)}, {"en", enQuery(name, null)}}) { if (lq[1].isEmpty()) continue; JSONObject j = getJson("https://" + lq[0] + ".wikipedia.org/w/api.php?action=query&generator=search&gsrlimit=4&prop=pageimages&piprop=thumbnail|name&pithumbsize=600&format=json&gsrsearch=" + enc(lq[1])); JSONObject pages = j == null || j.optJSONObject("query") == null ? null : j.optJSONObject("query").optJSONObject("pages"); if (pages == null) continue; java.util.Iterator<String> it = pages.keys(); boolean any = false; while (it.hasNext()) { JSONObject p = pages.optJSONObject(it.next()); JSONObject th = p.optJSONObject("thumbnail"); if (th == null) continue; String title = p.optString("title", "") + " " + p.optString("pageimage", ""); double s = score(title, name, brand) * 0.9; if (s >= 0.34) { out.add(new String[]{th.optString("source"), "wikipedia:" + lq[0], title, String.valueOf(s)}); any = true; } } if (any) break; }
         if (best(out) >= 0.75 || !web) return sort(out);
+        return ddg(out, name, brand);
+    }
+    static List<String[]> ddg(List<String[]> out, String name, String brand) {
         // 5) DuckDuckGo images (keyless)
         try { String q = faQuery(name, brand).isEmpty() ? enQuery(name, brand) : faQuery(name, brand); byte[] html = download("https://duckduckgo.com/?iax=images&ia=images&q=" + enc(q), 2 * 1024 * 1024); if (html != null) { java.util.regex.Matcher m = java.util.regex.Pattern.compile("vqd=\"?([\\d-]+)").matcher(new String(html, "UTF-8")); if (m.find()) { JSONObject j = getJson("https://duckduckgo.com/i.js?l=ir-fa&o=json&f=,,,,,&p=1&q=" + enc(q) + "&vqd=" + m.group(1)); JSONArray rs = j == null ? null : j.optJSONArray("results"); for (int i = 0; rs != null && i < Math.min(10, rs.length()); i++) { JSONObject r = rs.optJSONObject(i); String u = r.optString("image", ""); if (u.isEmpty()) continue; double s = score(r.optString("title", ""), name, brand) * 0.85; if (s >= 0.34) out.add(new String[]{u, "duckduckgo", r.optString("title", ""), String.valueOf(s)}); } } } } catch (Exception ignore) {}
         return sort(out);
     }
+    static final String[][] RETAIL = {
+        {"digikala", "https://api.digikala.com/v1/search/?page=1&q=", "title_fa,title", "true"},
+        {"okala", "https://apigateway.okala.com/api/Search/v1/Product/Search?pageSize=12&pageNumber=1&search=", "name,productName,title", "true"},
+        {"basalam", "https://search.basalam.com/ai-engine/api/v2.0/product/search?rows=12&q=", "name,title", "true"},
+        {"torob", "https://api.torob.com/v4/base-product/search/?size=12&page=0&source=next_desktop&query=", "name1,name2", "false"}};
+    static void retail(List<String[]> out, String name, String brand) {
+        String q = faQuery(name, brand); if (q.isEmpty()) return;
+        for (String[] r : RETAIL) {
+            if (!"true".equals(Local.setting("images.retail." + r[0], r[3]))) continue;
+            JSONObject j = getJson(r[1] + enc(q)); if (j == null) continue;
+            List<String[]> pairs = new ArrayList<>(); walk(j, r[2].split(","), pairs, 0);
+            for (int i = 0; i < Math.min(12, pairs.size()); i++) { String[] pr = pairs.get(i); double s = Math.min(1.0, score(pr[0], name, brand) + 0.1); if (s >= 0.34) out.add(new String[]{pr[1], "retail:" + r[0], pr[0], String.valueOf(s)}); }
+            if (best(out) >= 0.75) return;
+        }
+    }
+    static void walk(Object node, String[] titleKeys, List<String[]> out, int depth) {
+        if (depth > 8 || out.size() > 40) return;
+        if (node instanceof JSONObject) { JSONObject o = (JSONObject) node; String title = null; for (String k : titleKeys) { Object v = o.opt(k); if (v instanceof String && !((String) v).trim().isEmpty()) { title = (String) v; break; } }
+            if (title != null) { String img = firstImage(o, 0); if (img != null) { out.add(new String[]{title, img}); return; } }
+            java.util.Iterator<String> it = o.keys(); while (it.hasNext()) walk(o.opt(it.next()), titleKeys, out, depth + 1); }
+        else if (node instanceof JSONArray) { JSONArray a = (JSONArray) node; for (int i = 0; i < a.length(); i++) walk(a.opt(i), titleKeys, out, depth + 1); }
+    }
+    static String firstImage(Object node, int depth) {
+        if (depth > 4 || node == null) return null;
+        if (node instanceof String) { String u = (String) node; return u.startsWith("http") && (u.matches("(?i).*\\.(jpe?g|png|webp)(\\?.*)?$") || u.contains("/image") || u.contains("img")) ? u : null; }
+        if (node instanceof JSONObject) { JSONObject o = (JSONObject) node; for (String k : new String[]{"image_url", "imageUrl", "image", "images", "main", "url", "photo", "thumbnail", "src", "productImage", "picture"}) if (o.has(k)) { String r = firstImage(o.opt(k), depth + 1); if (r != null) return r; }
+            java.util.Iterator<String> it = o.keys(); while (it.hasNext()) { String k = it.next(); String lk = k.toLowerCase(); if (lk.contains("imag") || lk.contains("photo") || lk.contains("pic")) { String r = firstImage(o.opt(k), depth + 1); if (r != null) return r; } } }
+        if (node instanceof JSONArray) { JSONArray a = (JSONArray) node; for (int i = 0; i < Math.min(3, a.length()); i++) { String r = firstImage(a.opt(i), depth + 1); if (r != null) return r; } }
+        return null;
+    }
+
+    /** Picker: best candidates without storing anything. */
+    public static JSONArray listCandidates(long productId) {
+        JSONArray arr = new JSONArray(); JSONObject p = Db.productById(productId); if (p == null) return arr;
+        String brand = null; if (!p.isNull("brand_id")) { JSONObject b = Local.one("SELECT name FROM brands WHERE id=?", p.optLong("brand_id")); brand = b == null ? null : b.optString("name"); }
+        for (String[] cd : candidates(p.optString("name"), brand, p.optString("barcode"), "true".equals(Local.setting("images.web_fallback", "true")))) { if (arr.length() >= 12) break; try { JSONObject o = new JSONObject(); o.put("url", cd[0]); o.put("source", cd[1]); o.put("title", cd[2]); o.put("score", Double.parseDouble(cd[3])); arr.put(o); } catch (Exception ignore) {} }
+        return arr;
+    }
+    /** Operator picked a URL (or pasted one): download, validate, store, make primary. */
+    public static JSONObject setFromUrl(Context c, long productId, String url, String source) {
+        JSONObject rep = new JSONObject();
+        try { byte[] buf = download(url, 8 * 1024 * 1024); if (buf == null || buf.length < 1024) { rep.put("ok", false); rep.put("reason", "DOWNLOAD_FAILED"); return rep; } return setFromBytes(c, productId, buf, source); }
+        catch (Exception e) { try { rep.put("ok", false); rep.put("reason", String.valueOf(e)); } catch (Exception ignore) {} return rep; }
+    }
+    /** Own photo (camera/gallery). */
+    public static JSONObject setFromBytes(Context c, long productId, byte[] buf, String source) {
+        JSONObject rep = new JSONObject();
+        try { JSONObject p = Db.productById(productId); if (p == null) { rep.put("ok", false); rep.put("reason", "PRODUCT_GONE"); return rep; }
+            Bitmap bm = decodeScaled(buf, 640); if (bm == null || bm.getWidth() < 64 || bm.getHeight() < 64) { rep.put("ok", false); rep.put("reason", "INVALID_IMAGE"); return rep; }
+            File f = new File(mediaDir(c), (p.optString("barcode", "p" + productId).replaceAll("[^A-Za-z0-9]", "")) + "-" + Long.toHexString(System.currentTimeMillis()) + ".jpg");
+            try (FileOutputStream os = new FileOutputStream(f)) { bm.compress(Bitmap.CompressFormat.JPEG, 88, os); }
+            String url = "file://" + f.getAbsolutePath(); p.put("image_url", url); Db.putProduct(p, p.optBoolean("_local") || productId < 0); MEM.remove(url); Local.exec("DELETE FROM kv WHERE k=?", "imgq_" + productId);
+            if (!Api.standalone() && productId > 0) { try { Api.upload("/products/" + productId + "/image/upload", new String[0][], "file", "photo.jpg", buf, "image/jpeg"); } catch (Exception ignore) {} }
+            rep.put("ok", true); rep.put("source", source); rep.put("image_url", url); return rep; }
+        catch (Exception e) { try { rep.put("ok", false); rep.put("reason", String.valueOf(e)); } catch (Exception ignore) {} return rep; }
+    }
+
     static double best(List<String[]> l) { double b = -1; for (String[] x : l) b = Math.max(b, Double.parseDouble(x[3])); return b; }
     static List<String[]> sort(List<String[]> l) { java.util.Collections.sort(l, (a, b) -> Double.compare(Double.parseDouble(b[3]), Double.parseDouble(a[3]))); List<String[]> out = new ArrayList<>(); java.util.Set<String> seen = new java.util.HashSet<>(); for (String[] x : l) if (seen.add(x[0])) out.add(x); return out; }
 

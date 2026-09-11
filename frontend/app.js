@@ -1434,10 +1434,10 @@ RENDER.products = async () => {
   const { items } = await api("/products?limit=200");
   const rows = items.map((p) => el("tr", {},
     el("td", {}, p.image_url
-      ? el("img", { class: "thumb", src: p.image_url.startsWith("http") ? p.image_url
-          : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" })
-      : el("button", { class: "thumb thumb-empty thumb-find", title: "یافتن خودکار تصویر", text: "🔍",
-          onclick: async (ev) => { ev.stopPropagation(); ev.target.textContent = "…"; try { const r = await api(`/products/${p.id}/image/find`, { method: "POST" }); toast(r.ok ? `تصویر پیدا شد (${r.source})` : "تصویری پیدا نشد — بعداً در پس‌زمینه دوباره تلاش می‌شود", r.ok ? "ok" : "err"); RENDER.products(); } catch (e) { toast(e.message, "err"); ev.target.textContent = "🔍"; } } })),
+      ? el("img", { class: "thumb thumb-find", title: "تغییر تصویر (انتخاب از فروشگاه‌ها یا عکس خودم)", src: p.image_url.startsWith("http") ? p.image_url
+          : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "", onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })
+      : el("button", { class: "thumb thumb-empty thumb-find", title: "انتخاب تصویر", text: "🔍",
+          onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })),
     el("td", {}, el("span", {
       // §16 — an internal code is visibly distinct from a real GTIN so staff
       // know it means nothing to external catalogues.
@@ -1472,6 +1472,46 @@ RENDER.products = async () => {
  * The batch list is the product's price history. Depleted batches are shown
  * in a separate, dimmed section rather than hidden, because deleting them
  * would erase the record of what each purchase actually cost. */
+/* v2.5.1 — picture picker: retail pack photos first, own photo upload as the final word */
+window.pickProductImage = async function pickProductImage(productId, after) {
+  const mediaSrc = (u) => (!u ? "" : u.startsWith("http") ? u : `/media/${u.replace(/^\/?media\//, "")}`);
+  openModal(`<div class="modal-wide"><h3>انتخاب تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجو در فروشگاه‌های اینترنتی…</div>
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label class="btn btn-ghost btn-sm" style="cursor:pointer">📷 عکس خودم (فایل/دوربین)<input id="pi-file" type="file" accept="image/*" capture="environment" style="display:none"></label>
+      <input id="pi-url" class="input" placeholder="یا نشانی تصویر را بچسبانید (https://…)" style="flex:1;min-width:220px">
+      <button class="btn btn-ghost btn-sm" id="pi-url-btn">ثبت نشانی</button>
+      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeModal()">بستن</button></div></div>`);
+  const done = (r) => { toast("تصویر کالا ثبت شد"); closeModal(); if (after) after(r); };
+  $("#pi-file").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    try { const fd = new FormData(); fd.append("file", f); done(await api(`/products/${productId}/image/upload`, { method: "POST", body: fd })); }
+    catch (e) { toast("تصویر نامعتبر: " + e.message, "err"); }
+  });
+  $("#pi-url-btn").addEventListener("click", async () => {
+    const u = $("#pi-url").value.trim(); if (!u) return;
+    try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: u, source: "manual-url" }) })); }
+    catch (e) { toast("دریافت تصویر ناموفق: " + e.message, "err"); }
+  });
+  try {
+    const c = await api(`/products/${productId}/image/candidates`);
+    const body = $("#pi-body"); body.innerHTML = ""; body.className = "";
+    if (c.current) body.append(el("div", { class: "muted", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, el("img", { class: "thumb", src: mediaSrc(c.current), alt: "" }), el("span", { text: "تصویر فعلی" })));
+    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "نتیجه‌ای از منابع اینترنتی نیامد (اینترنت؟). می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
+    const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
+    for (const x of c.candidates) {
+      const src = x.source.startsWith("retail:") ? "فروشگاه " + { digikala: "دیجی‌کالا", okala: "اُکالا", basalam: "باسلام", torob: "ترب" }[x.source.slice(7)] : x.source;
+      const card = el("div", { class: "card", style: "padding:6px;cursor:pointer;text-align:center", title: x.title },
+        el("img", { src: x.url, alt: "", style: "width:100%;height:120px;object-fit:contain;background:#fff;border-radius:6px", loading: "lazy", referrerpolicy: "no-referrer" }),
+        el("div", { class: "muted", style: "font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", text: x.title || "—" }),
+        el("div", { class: "badge " + (x.source.startsWith("retail:") ? "badge-green" : "badge-gray"), text: src }));
+      card.addEventListener("click", async () => { card.style.opacity = ".5"; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: x.url, source: x.source }) })); } catch (e) { card.style.opacity = "1"; toast("دریافت این تصویر ناموفق بود؛ گزینهٔ دیگری را انتخاب کنید", "err"); } });
+      card.addEventListener("error", () => card.remove(), true);
+      grid.append(card);
+    }
+    body.append(el("p", { class: "muted", style: "margin:0 0 8px", text: "روی تصویر درست بزنید. عکس‌های «فروشگاه» عکس بسته‌بندی واقعی هستند." }), grid);
+  } catch (e) { $("#pi-body").textContent = "خطا: " + e.message; }
+};
+
 window.showProductDetail = async function showProductDetail(productId) {
   try {
     const d = await api(`/products/${productId}/detail`);
@@ -1518,7 +1558,10 @@ window.showProductDetail = async function showProductDetail(productId) {
       <div style="margin-top:14px;text-align:left">
         <button class="btn btn-ghost" onclick="closeModal()">بستن</button></div></div>`);
     $("#pd-title").textContent = p.name;
-    $("#pd-body").append(body);
+    const picRow = el("div", { style: "display:flex;gap:10px;align-items:center;margin:4px 0 10px" });
+    if (p.image_url) picRow.append(el("img", { class: "thumb", style: "width:72px;height:72px", src: p.image_url.startsWith("http") ? p.image_url : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" }));
+    picRow.append(el("button", { class: "btn btn-ghost btn-sm", text: p.image_url ? "تغییر تصویر کالا" : "انتخاب تصویر کالا", onclick: () => pickProductImage(p.id, () => showProductDetail(p.id)) }));
+    $("#pd-body").append(picRow, body);
   } catch (e) { toast(e.message, "err"); }
 };
 
