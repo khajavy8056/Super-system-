@@ -37,6 +37,8 @@ import java.util.Locale;
 public final class Ui {
     private Ui() {}
     public static Context ctx;
+    /** foreground activity (set by AppActivity.onResume) — dialogs need an Activity, not the app context. */
+    public static android.app.Activity top;
     public static Typeface FONT, FONT_BOLD;
     private static float density = 2f;
     public static boolean dark = true;
@@ -211,6 +213,22 @@ public final class Ui {
         Window w = d.getWindow();
         if (w != null) { w.setBackgroundDrawableResource(android.R.color.transparent); w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); w.setGravity(Gravity.BOTTOM); w.setWindowAnimations(android.R.style.Animation_InputMethod); w.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); }
         d.show(); return d;
+    }
+    /** v2.5.3 — clear success feedback: green check card (centre), soft sound, auto-dismiss; then `after` (usually go back to the list). */
+    public static void done(Context c, String title, String detail, Runnable after) {
+        Sfx.play("success");
+        if (!(c instanceof android.app.Activity)) c = top;
+        if (c == null || ((android.app.Activity) c).isFinishing()) { toast(title); if (after != null) after.run(); return; }
+        try {
+            Dialog d = new Dialog(c); d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            LinearLayout root = col(c); root.setGravity(Gravity.CENTER_HORIZONTAL); root.setBackground(rounded(dark ? BG2 : Color.WHITE, 0, 24)); root.setPadding(dp(28), dp(26), dp(28), dp(24));
+            TextView ck = text(c, "✓", 34, Color.WHITE, true); ck.setGravity(Gravity.CENTER); ck.setBackground(rounded(GREEN, 0, 40)); ck.setLayoutParams(margin(lp(dp(72), dp(72)), 0, 0, 0, 14)); root.addView(ck);
+            TextView t = h1(c, title); t.setGravity(Gravity.CENTER); root.addView(t);
+            if (detail != null && !detail.isEmpty()) { TextView m = muted(c, detail); m.setGravity(Gravity.CENTER); m.setPadding(0, dp(6), 0, 0); root.addView(m); }
+            d.setContentView(root); Window w = d.getWindow(); if (w != null) { w.setBackgroundDrawableResource(android.R.color.transparent); w.setLayout(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT); w.setDimAmount(0.35f); }
+            d.setCancelable(true); d.setOnDismissListener(x -> { if (after != null) after.run(); }); d.show();
+            Api.ui(() -> { try { if (d.isShowing()) d.dismiss(); } catch (Exception ignore) {} }, 1400);
+        } catch (Exception e) { toast(title); if (after != null) after.run(); }
     }
     public static void confirm(Context c, String msg, Runnable yes) { new AlertDialog.Builder(c).setMessage(msg).setPositiveButton("بله", (d, w) -> yes.run()).setNegativeButton("انصراف", null).show(); }
     public static void prompt(Context c, String title, String hint, boolean numeric, java.util.function.Consumer<String> cb) {

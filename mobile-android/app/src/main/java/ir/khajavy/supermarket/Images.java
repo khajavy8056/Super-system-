@@ -139,11 +139,26 @@ public final class Images {
         return Math.max(0, Math.min(1, s));
     }
 
+    /** v2.6 — barcode → {name,image,unit,category,shop} from Iranian marketplaces whose listing TITLE literally contains the digits (Basalam; Torob optional, exact single hit only). Returns null when not found; never guesses. */
+    public static JSONObject lookupBarcode(String barcode) {
+        String bc = barcode == null ? "" : barcode.replaceAll("[^0-9]", "");
+        if (bc.length() < 8 || bc.matches("^(02|2[0-9]).*")) return null;
+        if ("true".equals(Local.setting("images.retail.basalam", "true"))) { JSONObject j = getJson("https://search.basalam.com/ai-engine/api/v2.0/product/search?rows=12&q=" + bc); JSONArray ps = j == null ? null : j.optJSONArray("products"); int n = 0; JSONObject first = null;
+            for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); if (p == null || !titleHasBarcode(p.optString("name"), bc)) continue; n++; if (first == null) first = p; }
+            if (first != null) { JSONObject ph = first.optJSONObject("photo"); String u = ph == null ? "" : ph.optString("LARGE", ph.optString("MEDIUM", ph.optString("SMALL", ""))); return Api.obj("name", cleanTitle(first.optString("name"), bc), "image", u, "unit", first.optString("mainAttribute", ""), "category", first.optString("categoryTitle", ""), "shop", "basalam", "hits", String.valueOf(n)); } }
+        if ("true".equals(Local.setting("images.retail.torob", "false"))) { JSONObject j = getJson("https://api.torob.com/v4/base-product/search/?size=5&page=0&source=next_desktop&q=" + bc + "&query=" + bc); JSONArray rs = j == null ? null : j.optJSONArray("results"); if (rs != null && rs.length() == 1) { JSONObject r = rs.optJSONObject(0); if (r != null && !r.optString("name1").isEmpty()) return Api.obj("name", r.optString("name1"), "image", r.optString("image_url", ""), "unit", "", "category", "", "shop", "torob", "hits", "1"); } }
+        return null;
+    }
+    static boolean titleHasBarcode(String title, String bc) { return title != null && Db.norm(title).replaceAll("[^0-9]", "").contains(bc); }
+    static String cleanTitle(String title, String bc) { String t = Db.norm(title).replace(bc, " ").replaceAll("(?i)\\b(بارکد|کد|code|barcode)\\s*[:：]?\\s*$", " ").replaceAll("\\s{2,}", " ").trim(); return t.replaceAll("[\\s\\-–—|·,،:]+$", "").trim(); }
+
     /** [url, source, title, score] candidates, best first. */
     static List<String[]> candidates(String name, String brand, String barcode, boolean web) {
         List<String[]> out = new ArrayList<>();
         // 1) OFF by barcode
         if (barcode != null && barcode.matches("[0-9]{8,14}") && !barcode.matches("^(02|2[0-9]).*")) { JSONObject j = getJson("https://world.openfoodfacts.org/api/v2/product/" + barcode + ".json?fields=product_name,image_front_url,image_url"); if (j != null && j.optInt("status") == 1) { JSONObject p = j.optJSONObject("product"); String u = p == null ? "" : p.optString("image_front_url", p.optString("image_url", "")); if (!u.isEmpty()) { out.add(new String[]{u, "openfoodfacts:barcode", p.optString("product_name"), "1.0"}); return out; } } }
+        // 1a) exact barcode in an Iranian marketplace listing title → the real pack, score 1.0 (v2.6)
+        if (barcode != null) { JSONObject bh = lookupBarcode(barcode); if (bh != null && !bh.optString("image").isEmpty()) { out.add(new String[]{bh.optString("image"), "retail:" + bh.optString("shop") + ":barcode", bh.optString("name"), "1.0"}); return out; } }
         // 1b) Iranian retail catalogues — packaged product photos with Persian titles (v2.5.1)
         retail(out, name, brand);
         if (best(out) >= 0.75) return sort(out);

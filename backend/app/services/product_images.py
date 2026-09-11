@@ -192,6 +192,28 @@ def src_off_barcode(c: httpx.Client, barcode: str | None, **_) -> list[Candidate
     return [Candidate(url, "openfoodfacts:barcode", p.get("product_name") or "", 1.0)]
 
 
+def src_retail_barcode(c: httpx.Client, barcode: str | None, enabled: dict[str, bool] | None = None, **_) -> list[Candidate]:
+    """Exact barcode hit on an Iranian marketplace (digits must appear in the listing title) → score 1.0."""
+    from .providers.retail_ir import SHOPS, parse_shop
+    if not barcode or not barcode.isdigit() or len(barcode) < 8 or barcode[:2] in {"02", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29"}:
+        return []
+    out: list[Candidate] = []
+    for code, spec in SHOPS.items():
+        if not (enabled or {}).get(code, spec["default"]):
+            continue
+        try:
+            r = c.get(spec["url"], params=spec["params"](barcode), timeout=TIMEOUT, headers={"Accept": "application/json", "User-Agent": BROWSER_UA})
+            if r.status_code != 200:
+                continue
+            j = r.json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        for h in parse_shop(code, j, barcode):
+            if h.get("image"):
+                out.append(Candidate(h["image"], f"retail:{code}:barcode", h["title"], 1.0, {"packaged": True, "exact": True}))
+    return out
+
+
 def src_off_search(c: httpx.Client, name: str, brand: str | None, **_) -> list[Candidate]:
     out: list[Candidate] = []
     for q in (persian_query(name, brand), english_query(name, brand)):
@@ -402,6 +424,7 @@ def src_retail_ir(c: httpx.Client, name: str, brand: str | None, enabled: dict[s
 
 SOURCES = [
     ("openfoodfacts:barcode", src_off_barcode),
+    ("retail-ir:barcode", src_retail_barcode),
     ("retail-ir", src_retail_ir),
     ("openfoodfacts:search", src_off_search),
     ("wikimedia-commons", src_commons),

@@ -194,6 +194,18 @@ def bootstrap(db: Session) -> None:
 #: Sources registered on first boot. Only openly-licensed, keyless services.
 DEFAULT_SOURCES: list[dict] = [
     {
+        # v2.6 — Iranian GTINs (626…) are almost never in OpenFoodFacts; Basalam
+        # listings carry the barcode in their title, so this answers first and
+        # only when the digits literally match (see providers/retail_ir.py).
+        "code": "retail_ir",
+        "name": "فروشگاه‌های ایرانی — بارکد در عنوان (باسلام؛ ترب اختیاری)",
+        "source_type": "PRODUCT",
+        "priority": 5,
+        "base_url": "https://search.basalam.com/ai-engine/api/v2.0/product/search?q={barcode}",
+        "connection": '{"basalam": true, "torob": false}',
+        "is_active": True,
+    },
+    {
         "code": "openfoodfacts",
         "name": "OpenFoodFacts (ODbL, public, keyless)",
         "source_type": "PRODUCT",

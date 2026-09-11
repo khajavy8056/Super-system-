@@ -4,10 +4,12 @@ from __future__ import annotations
 from .base import BaseProvider, LookupField, ProviderError, ProviderLookup
 from .custom_http import CustomHttpProvider
 from .openfoodfacts import OpenFoodFactsProvider
+from .retail_ir import RetailIrProvider
 
 REGISTRY: dict[str, type[BaseProvider]] = {
     OpenFoodFactsProvider.code: OpenFoodFactsProvider,
     CustomHttpProvider.code: CustomHttpProvider,
+    RetailIrProvider.code: RetailIrProvider,
 }
 
 __all__ = [
@@ -18,4 +20,5 @@ __all__ = [
     "ProviderLookup",
     "OpenFoodFactsProvider",
     "CustomHttpProvider",
+    "RetailIrProvider",
 ]
