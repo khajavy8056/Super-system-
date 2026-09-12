@@ -141,8 +141,18 @@ public final class Images {
 
     /** v2.6 — barcode → {name,image,unit,category,shop} from Iranian marketplaces whose listing TITLE literally contains the digits (Basalam; Torob optional, exact single hit only). Returns null when not found; never guesses. */
     public static JSONObject lookupBarcode(String barcode) {
-        String bc = barcode == null ? "" : barcode.replaceAll("[^0-9]", "");
+        String bc = barcode == null ? "" : Db.norm(barcode).replaceAll("[^0-9]", "");
         if (bc.length() < 8 || bc.matches("^(02|2[0-9]).*")) return null;
+        // v2.7 — 1) بانک کالا on the phone (offline, instant)  2) the PC's bank  3) online identification (remembered afterwards)
+        JSONObject b = Db.bankGet(bc);
+        if (b != null) return Api.obj("name", b.optString("name"), "brand", b.optString("brand"), "image", b.optString("image_url"), "unit", b.optString("unit"), "category", b.optString("category"), "shop", "bank");
+        if (!Api.standalone()) { try { Object r = Api.call("GET", "/bank/lookup/" + bc, null, null); if (r instanceof JSONObject) { JSONObject j = (JSONObject) r; Db.bankPut(j); return Api.obj("name", j.optString("name"), "brand", j.optString("brand"), "image", j.optString("image_url"), "unit", j.optString("unit"), "category", j.optString("category"), "shop", "bank"); } } catch (Exception ignore) {} }
+        JSONObject on = lookupOnline(bc);
+        if (on != null) Db.bankRemember(bc, on.optString("name"), null, on.optString("unit"), on.optString("category"), on.optString("image"), "ONLINE");
+        return on;
+    }
+    static boolean hasNet(android.content.Context ctx) { try { android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getApplicationContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE); android.net.Network n = cm == null ? null : cm.getActiveNetwork(); android.net.NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n); return c != null && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET); } catch (Exception e) { return true; } }
+    static JSONObject lookupOnline(String bc) {
         if ("true".equals(Local.setting("images.retail.basalam", "true"))) { JSONObject j = getJson("https://search.basalam.com/ai-engine/api/v2.0/product/search?rows=12&q=" + bc); JSONArray ps = j == null ? null : j.optJSONArray("products"); int n = 0; JSONObject first = null;
             for (int i = 0; ps != null && i < ps.length(); i++) { JSONObject p = ps.optJSONObject(i); if (p == null || !titleHasBarcode(p.optString("name"), bc)) continue; n++; if (first == null) first = p; }
             if (first != null) { JSONObject ph = first.optJSONObject("photo"); String u = ph == null ? "" : ph.optString("LARGE", ph.optString("MEDIUM", ph.optString("SMALL", ""))); return Api.obj("name", cleanTitle(first.optString("name"), bc), "image", u, "unit", first.optString("mainAttribute", ""), "category", first.optString("categoryTitle", ""), "shop", "basalam", "hits", String.valueOf(n)); } }

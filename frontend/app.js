@@ -1275,7 +1275,43 @@ RENDER.products = async () => {
     </div>
     <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
   </div>
+  <div class="card" style="margin-bottom:14px" id="p-bank-card">
+    <h3>بانک کالا (بارکد ← نام و برند)</h3>
+    <p class="muted" id="p-bank-info">هر بارکدی که یک بار شناسایی یا ثبت شود، در بانک کالا می‌ماند و دفعهٔ بعد — روی رایانه و همهٔ گوشی‌های متصل، حتی بدون اینترنت — فوراً شناخته می‌شود. اگر فهرست بارکد/نام کالا (اکسل یا CSV) دارید، اینجا وارد کنید؛ فقط ستون «بارکد» و «نام» لازم است.</p>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <label class="btn btn-ghost file-btn">انتخاب فایل اکسل/CSV<input type="file" id="p-bank-file" accept=".csv,.tsv,.txt,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" /></label>
+      <span id="p-bank-name" class="muted"></span>
+      <button id="p-bank-up" class="btn btn-ghost">ورود به بانک کالا</button>
+      <a class="btn btn-ghost" id="p-bank-dl" href="#">دریافت خروجی بانک (CSV)</a>
+    </div>
+    <div id="p-bank-out" class="muted" style="margin-top:8px"></div>
+  </div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+
+  const bankStats = () => api("/bank/stats").then((b) => {
+    $("#p-bank-info").textContent += ` اکنون ${(b.total || 0).toLocaleString("fa-IR")} بارکد در بانک است${b.with_image ? ` (${b.with_image.toLocaleString("fa-IR")} مورد با تصویر)` : ""}.`;
+  }).catch(() => {});
+  bankStats();
+  $("#p-bank-file").addEventListener("change", () => { $("#p-bank-name").textContent = ($("#p-bank-file").files[0] || {}).name || ""; });
+  $("#p-bank-up").addEventListener("click", async () => {
+    const f = $("#p-bank-file").files[0];
+    if (!f) { toast("ابتدا فایل را انتخاب کنید", "err"); return; }
+    const fd = new FormData(); fd.append("file", f, f.name);
+    $("#p-bank-out").textContent = "در حال ورود…";
+    try {
+      const r = await api("/bank/import", { method: "POST", body: fd });
+      $("#p-bank-out").textContent = `${r.added} بارکد جدید، ${r.updated} به‌روزرسانی، ${r.skipped} ردیف نامعتبر رد شد.`;
+      toast("بانک کالا به‌روز شد");
+    } catch (e) { $("#p-bank-out").textContent = ""; toast(typeof e.message === "string" ? e.message : "ستون بارکد و نام پیدا نشد", "err"); }
+  });
+  $("#p-bank-dl").addEventListener("click", async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API}/bank/export.csv`, { headers: { Authorization: "Bearer " + state.token } });
+      const blob = await res.blob(); const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "product-bank.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (err) { toast("دریافت خروجی ناموفق بود", "err"); }
+  });
 
   const starterOut = (r) => {
     $("#p-starter-out").textContent = r.ok === false ? (r.message || "خطا")
@@ -1320,7 +1356,7 @@ RENDER.products = async () => {
     if (!code) return;
     const status = $("#p-resolve-status");
     status.className = "muted";
-    status.textContent = "در حال جست‌وجو در منابع…";
+    status.textContent = "در حال شناسایی بارکد…";
     try {
       const r = await api(`/barcode/scan?barcode=${encodeURIComponent(code)}`,
         { method: "POST", body: JSON.stringify({ with_image: true }) });
@@ -1345,25 +1381,27 @@ RENDER.products = async () => {
           (c) => c.local_path && c.local_path === r.image.best_local_path);
         const dim = won && won.validation && won.validation.width
           ? ` · ${won.validation.width}×${won.validation.height}` : "";
-        $("#p-image-meta").textContent =
-          `منبع: ${(won && won.source) || "—"}${dim} · ذخیره‌شدهٔ محلی`;
+        $("#p-image-meta").textContent = `تصویر کالا${dim} · ذخیره‌شدهٔ محلی`;
       }
 
       const tried = (r.sources || []).length;
       const failed = (r.sources || []).filter((x) => !x.ok);
-      if (r.coverage && r.coverage.fields_found) {
+      if (r.origin === "bank" && d.name) {
         status.className = "ok";
-        status.textContent =
-          `${r.coverage.fields_found} فیلد از ${tried} منبع بازیابی شد` +
+        status.textContent = "شناسایی شد (بانک کالا)" + (d.brand ? ` · ${d.brand}` : "") + (r.image && r.image.stored ? " + تصویر" : "") + " — لطفاً بررسی و تأیید کنید.";
+      } else if (r.coverage && r.coverage.fields_found) {
+        status.className = "ok";
+        status.textContent = "شناسایی شد" + (d.brand ? ` · ${d.brand}` : "") +
           (r.coverage.image_found ? " + تصویر" : " (بدون تصویر)") +
-          " — لطفاً بررسی و تأیید کنید.";
+          " — لطفاً بررسی و تأیید کنید. این بارکد از این پس آفلاین هم شناخته می‌شود.";
       } else {
         status.className = "err";
-        // Be explicit about WHY nothing came back; silence here was the old bug.
-        status.textContent = failed.length
-          ? `هیچ داده‌ای یافت نشد. خطای منابع: ${failed.map((f) => `${f.source}=${(f.error || {}).kind}`).join("، ")} — ثبت دستی لازم است.`
-          : (tried ? "منابع پاسخ دادند اما داده‌ای برای این بارکد نداشتند — ثبت دستی لازم است."
-                   : "هیچ منبعی فعال نیست — در تنظیمات یک منبع اضافه کنید یا دستی ثبت کنید.");
+        // Be explicit about WHY nothing came back; silence here was the old bug (no vendor names — v2.7).
+        const kinds = [...new Set(failed.map((f) => (f.error || {}).kind).filter(Boolean))];
+        const net = kinds.some((k) => /NETWORK|TIMEOUT|RATE|HTTP|UNAVAILABLE/.test(k));
+        status.textContent = net
+          ? "اتصال اینترنت برقرار نشد یا سرویس شناسایی در دسترس نیست — نام کالا را دستی وارد کنید؛ برای اسکن‌های بعدی به بانک کالا اضافه می‌شود."
+          : "این بارکد شناسایی نشد — نام کالا را دستی وارد کنید؛ برای اسکن‌های بعدی (و گوشی‌ها) به بانک کالا اضافه می‌شود.";
       }
     } catch (e) {
       status.className = "err"; status.textContent = `خطا در بازیابی: ${e.message}`;
@@ -1475,7 +1513,7 @@ RENDER.products = async () => {
 /* v2.5.1 — picture picker: retail pack photos first, own photo upload as the final word */
 window.pickProductImage = async function pickProductImage(productId, after) {
   const mediaSrc = (u) => (!u ? "" : u.startsWith("http") ? u : `/media/${u.replace(/^\/?media\//, "")}`);
-  openModal(`<div class="modal-wide"><h3>تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجوی خودکار در دیجی‌کالا و باسلام…</div>
+  openModal(`<div class="modal-wide"><h3>تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجوی خودکار تصویر کالا…</div>
     <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label class="btn btn-ghost btn-sm" style="cursor:pointer">📷 عکس خودم (فایل/دوربین)<input id="pi-file" type="file" accept="image/*" capture="environment" style="display:none"></label>
       <input id="pi-url" class="input" placeholder="یا نشانی تصویر را بچسبانید (https://…)" style="flex:1;min-width:220px">
@@ -1496,10 +1534,10 @@ window.pickProductImage = async function pickProductImage(productId, after) {
     const c = await api(`/products/${productId}/image/candidates`);
     const body = $("#pi-body"); body.innerHTML = ""; body.className = "";
     if (c.current) body.append(el("div", { class: "muted", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, el("img", { class: "thumb", src: mediaSrc(c.current), alt: "" }), el("span", { text: "تصویر فعلی" })));
-    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "از دیجی‌کالا/باسلام و منابع دیگر نتیجه‌ای نیامد (اتصال اینترنت رایانه را بررسی کنید). به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
+    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "تصویری برای این کالا پیدا نشد (اتصال اینترنت رایانه را بررسی کنید). به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
     const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
     for (const x of c.candidates) {
-      const src = x.source.startsWith("retail:") ? "فروشگاه " + { digikala: "دیجی‌کالا", okala: "اُکالا", basalam: "باسلام", torob: "ترب" }[x.source.slice(7)] : x.source;
+      const src = x.source.startsWith("retail:") ? "جست‌وجوی آنلاین" : (x.source === "bank" ? "بانک کالا" : "جست‌وجوی تصویر");
       const card = el("div", { class: "card", style: "padding:6px;cursor:pointer;text-align:center", title: x.title },
         el("img", { src: x.url, alt: "", style: "width:100%;height:120px;object-fit:contain;background:#fff;border-radius:6px", loading: "lazy", referrerpolicy: "no-referrer" }),
         el("div", { class: "muted", style: "font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", text: x.title || "—" }),
@@ -1511,7 +1549,7 @@ window.pickProductImage = async function pickProductImage(productId, after) {
     const top = c.candidates[0];
     const auto = el("div", { class: "card", style: "display:flex;gap:12px;align-items:center;padding:10px;margin-bottom:10px" },
       el("img", { src: top.url, alt: "", style: "width:96px;height:96px;object-fit:contain;background:#fff;border-radius:8px", referrerpolicy: "no-referrer" }),
-      el("div", { style: "flex:1" }, el("div", { text: "پیشنهاد خودکار: " + (top.title || "") }), el("div", { class: "muted", text: "منبع: " + (top.source.startsWith("retail:") ? "فروشگاه " + ({ digikala: "دیجی‌کالا", okala: "اُکالا", basalam: "باسلام", torob: "ترب" }[top.source.slice(7)] || top.source) : top.source) + " · تطابق " + Math.round(top.score * 100) + "٪" })),
+      el("div", { style: "flex:1" }, el("div", { text: "پیشنهاد خودکار: " + (top.title || "") }), el("div", { class: "muted", text: "تطابق " + Math.round(top.score * 100) + "٪" })),
       el("button", { class: "btn btn-primary", text: "✓ همین را بگذار", onclick: async (ev) => { ev.target.disabled = true; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: top.url, source: top.source }) })); } catch (e) { ev.target.disabled = false; toast("دریافت ناموفق؛ گزینهٔ دیگری بزنید", "err"); } } }));
     body.append(auto, el("p", { class: "muted", style: "margin:0 0 8px", text: "یا یکی از نتایج دیگر را انتخاب کنید. بارگذاری عکس خودتان فقط وقتی لازم است که هیچ‌کدام درست نباشد." }), grid);
   } catch (e) { $("#pi-body").textContent = "خطا: " + e.message; }
@@ -2257,6 +2295,13 @@ RENDER.users = async () => {
    changing the receipt footer never has to scroll past SMS credentials. */
 /* Persian descriptions for every settings key (§246 — no English leaks in the UI). */
 const SETTING_FA = {
+ "images.auto_find": "یافتن خودکار تصویر کالا هنگام ثبت",
+ "images.web_fallback": "جست‌وجوی تصویر در وب وقتی منابع اصلی نتیجه ندارند",
+ "images.generic_fallback": "استفاده از عکس‌های عمومی وقتی عکس بسته‌بندی پیدا نشود",
+ "images.retail.digikala": "شناسایی و تصویر کالا: منبع فروشگاهی ۱",
+ "images.retail.okala": "شناسایی و تصویر کالا: منبع فروشگاهی ۲ (نیاز به پیکربندی — پیش‌فرض خاموش)",
+ "images.retail.basalam": "شناسایی و تصویر کالا: منبع فروشگاهی ۳",
+ "images.retail.torob": "شناسایی و تصویر کالا: منبع فروشگاهی ۴ (پیش‌فرض خاموش)",
  "pos.tax_rate": "نرخ مالیات (درصد)",
  "pos.allocation_policy": "سیاست انتخاب Batch پیش‌فرض (FIFO/FEFO)",
  "pos.batch_selection_mode": "حالت انتخاب Batch در صندوق (خودکار/پرسش)",

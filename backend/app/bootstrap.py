@@ -183,6 +183,7 @@ def bootstrap(db: Session) -> None:
     # for such a service can add it at runtime as a `custom_http` source
     # without any code change.
     ensure_default_sources(db)
+    ensure_product_bank(db)
 
     # 7. Chart of accounts + current Jalali fiscal year (v1.4 double-entry)
     from .services.accounting import ensure_chart
@@ -198,7 +199,7 @@ DEFAULT_SOURCES: list[dict] = [
         # listings carry the barcode in their title, so this answers first and
         # only when the digits literally match (see providers/retail_ir.py).
         "code": "retail_ir",
-        "name": "فروشگاه‌های ایرانی — بارکد در عنوان (باسلام؛ ترب اختیاری)",
+        "name": "شناسایی آنلاین کالاهای ایرانی — بارکد در عنوان",
         "source_type": "PRODUCT",
         "priority": 5,
         "base_url": "https://search.basalam.com/ai-engine/api/v2.0/product/search?q={barcode}",
@@ -241,3 +242,30 @@ def ensure_default_sources(db: Session) -> None:
             continue
         db.add(ExternalSource(**spec))
     db.flush()
+
+
+def ensure_product_bank(db: Session) -> None:
+    """v2.7 — بانک کالا. Seed once from the bundled ``data/product_bank_seed.csv`` (rows are
+    Open Food Facts entries for Iranian GTINs, ODbL — attribution in README/CHANGELOG) and from the
+    shop's own products; afterwards the bank grows by itself (online hits, confirmed products,
+    imported lists, phones)."""
+    from pathlib import Path
+
+    from .services import product_bank
+
+    flag = db.execute(select(SystemSetting).where(SystemSetting.key == "bank.seeded")).scalar_one_or_none()
+    if flag is not None and flag.value == "2":
+        return
+    seed = Path(__file__).resolve().parent / "data" / "product_bank_seed.csv"
+    try:
+        if seed.exists():
+            product_bank.import_csv_text(db, seed.read_text(encoding="utf-8"), source="SEED")
+        product_bank.seed_from_products(db)
+    except Exception:  # noqa: BLE001 — the bank is a convenience; never block startup
+        db.rollback()
+        return
+    if flag is None:
+        db.add(SystemSetting(key="bank.seeded", value="2", description="v2.7 product bank seeded"))
+    else:
+        flag.value = "2"
+    db.commit()

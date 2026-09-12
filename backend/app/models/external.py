@@ -75,3 +75,17 @@ class MarketPrice(TimestampMixin, Base):
     currency: Mapped[str] = mapped_column(String(8), default="IRR")
     confidence: Mapped[str] = mapped_column(String(16), default="MEDIUM")
     observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class BankItem(Base):
+    """v2.7 — بانک کالا: offline barcode → name/brand/unit/category/image (see services/product_bank.py)."""
+    __tablename__ = "product_bank"
+    barcode: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    brand: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="ONLINE")   # ONLINE | USER | IMPORT | SEED
+    confidence: Mapped[str] = mapped_column(String(16), default="MEDIUM")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)

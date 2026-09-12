@@ -41,7 +41,7 @@ public class AppActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        Prefs.init(this); Db.init(this); Ui.init(this);
+        Prefs.init(this); Db.init(this); Ui.init(this); Api.bg(() -> Db.importBankSeed(this));   // v2.7 bundled barcode bank
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");

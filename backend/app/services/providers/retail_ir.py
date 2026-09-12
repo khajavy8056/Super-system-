@@ -93,7 +93,7 @@ def parse_shop(code: str, j, barcode: str) -> list[dict]:
 
 class RetailIrProvider(BaseProvider):
     code = "retail_ir"
-    name = "فروشگاه‌های ایرانی (باسلام / ترب) — بارکد در عنوان"
+    name = "شناسایی آنلاین کالاهای ایرانی — بارکد در عنوان"
     can_return = ("product", "image")
 
     def _enabled(self) -> dict[str, bool]:

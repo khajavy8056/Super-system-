@@ -28,7 +28,7 @@ public final class Db extends SQLiteOpenHelper {
     /** v2.4: the local API router ({@link Local}) works directly on the database. */
     public static SQLiteDatabase db() { return w(); }
 
-    private Db(Context c) { super(c, "supermarket_native.db", null, 2); }
+    private Db(Context c) { super(c, "supermarket_native.db", null, 3); }   // v2.7: db 3 → bank table
 
     /** v2.4 — full standalone schema: every Windows section has a table on the phone. */
     static final String[] V2 = {
@@ -38,6 +38,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, entry_type TEXT, amount REAL, note TEXT, ref TEXT, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
         "CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS bank(barcode TEXT PRIMARY KEY, name TEXT, brand TEXT, unit TEXT, category TEXT, image_url TEXT, source TEXT, updated_at TEXT)",   // v2.7 بانک کالا
         "CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, symbol TEXT, allow_decimal INTEGER DEFAULT 0, decimals INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT)",
@@ -83,7 +84,7 @@ public final class Db extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
         v2(d);
     }
-    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 2) v2(d); }
+    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 3) v2(d); }   // v2() is idempotent (IF NOT EXISTS / try-ALTER)
 
     /* ---------------- kv ---------------- */
     public static String kv(String k) { try (Cursor c = w().rawQuery("SELECT v FROM kv WHERE k=?", new String[]{k})) { return c.moveToFirst() ? c.getString(0) : null; } }
@@ -102,6 +103,7 @@ public final class Db extends SQLiteOpenHelper {
             JSONArray ps = pull.optJSONArray("products"); if (ps != null) for (int i = 0; i < ps.length(); i++) putProduct(ps.optJSONObject(i), false);
             JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
             JSONArray cs = pull.optJSONArray("customers"); if (cs != null) for (int i = 0; i < cs.length(); i++) putCustomer(cs.optJSONObject(i), false);
+            JSONArray bk = pull.optJSONArray("bank"); if (bk != null) for (int i = 0; i < bk.length(); i++) bankPut(bk.optJSONObject(i));   // v2.7
             if (full) {
                 // temp rows created offline are superseded once the PC has the real ones
                 d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode IN (SELECT barcode FROM products WHERE is_local=0)");
@@ -152,6 +154,55 @@ public final class Db extends SQLiteOpenHelper {
         } catch (Exception ignore) {
         } finally { d.endTransaction(); }
         return n;
+    }
+
+    /* ---------------- v2.7 بانک کالا (barcode → name/brand, offline) ---------------- */
+    static final int[] BANK_RANK = {0};
+    static int bankRank(String src) { return "USER".equals(src) ? 3 : "IMPORT".equals(src) ? 2 : "ONLINE".equals(src) ? 1 : 0; }
+    public static void bankPut(JSONObject j) {
+        if (j == null) return; String bc = norm(j.optString("barcode")).replaceAll("[^0-9]", ""); String name = j.optString("name", "").trim();
+        if (bc.length() < 8 || bc.matches("^(02|2[0-9]).*") || name.isEmpty()) return;
+        JSONObject cur = bankGet(bc); String src = j.optString("source", "ONLINE");
+        if (cur != null && bankRank(src) < bankRank(cur.optString("source"))) {   // never downgrade what the shop confirmed; only fill blanks
+            ContentValues f = new ContentValues();
+            if (cur.optString("brand").isEmpty() && !j.optString("brand").isEmpty()) f.put("brand", j.optString("brand"));
+            if (cur.optString("unit").isEmpty() && !j.optString("unit").isEmpty()) f.put("unit", j.optString("unit"));
+            if (cur.optString("image_url").isEmpty() && !j.optString("image_url").isEmpty()) f.put("image_url", j.optString("image_url"));
+            if (f.size() > 0) w().update("bank", f, "barcode=?", new String[]{bc});
+            return;
+        }
+        ContentValues cv = new ContentValues(); cv.put("barcode", bc); cv.put("name", name); cv.put("brand", j.optString("brand", null)); cv.put("unit", j.optString("unit", null)); cv.put("category", j.optString("category", null));
+        cv.put("image_url", j.optString("image_url", null)); cv.put("source", src); cv.put("updated_at", j.optString("updated_at", now()));
+        w().insertWithOnConflict("bank", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static JSONObject bankGet(String barcode) {
+        String bc = norm(barcode == null ? "" : barcode).replaceAll("[^0-9]", ""); if (bc.isEmpty()) return null;
+        try (Cursor c = w().rawQuery("SELECT barcode,name,brand,unit,category,image_url,source,updated_at FROM bank WHERE barcode=?", new String[]{bc})) {
+            if (!c.moveToFirst()) return null;
+            JSONObject j = new JSONObject();
+            try { j.put("barcode", c.getString(0)); j.put("name", c.getString(1)); j.put("brand", c.isNull(2) ? "" : c.getString(2)); j.put("unit", c.isNull(3) ? "" : c.getString(3)); j.put("category", c.isNull(4) ? "" : c.getString(4)); j.put("image_url", c.isNull(5) ? "" : c.getString(5)); j.put("source", c.getString(6)); j.put("updated_at", c.getString(7)); } catch (Exception ignore) {}
+            return j;
+        }
+    }
+    public static int bankCount() { return count("bank"); }
+    /** v2.7 — import the bundled seed once (idempotent; never overrides higher-ranked rows). */
+    public static int importBankSeed(Context ctx) {
+        if ("1".equals(kv("bank_seeded"))) return 0; int n = 0; SQLiteDatabase d = w(); d.beginTransaction();
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(ctx.getAssets().open("product_bank_seed.csv"), "UTF-8"))) {
+            String line = br.readLine(); // barcode,name,brand,unit,category,image_url
+            while ((line = br.readLine()) != null) { String[] f = line.split(",", -1); if (f.length < 2) continue; bankPut(Api.obj("barcode", f[0].trim(), "name", f[1].trim(), "brand", f.length > 2 ? f[2].trim() : "", "unit", f.length > 3 ? f[3].trim() : "", "category", f.length > 4 ? f[4].trim() : "", "image_url", f.length > 5 ? f[5].trim() : "", "source", "SEED")); n++; }
+            kv("bank_seeded", "1"); d.setTransactionSuccessful();
+        } catch (Exception ignore) {
+        } finally { d.endTransaction(); }
+        return n;
+    }
+    /** v2.7 — remember a barcode↔name pair locally AND tell the PC (store-and-forward), so every device learns it. */
+    public static void bankRemember(String barcode, String name, String brand, String unit, String category, String imageUrl, String source) {
+        JSONObject j = Api.obj("barcode", barcode, "name", name, "brand", brand == null ? "" : brand, "unit", unit == null ? "" : unit, "category", category == null ? "" : category, "image_url", imageUrl == null ? "" : imageUrl, "source", source);
+        String bc = norm(barcode == null ? "" : barcode).replaceAll("[^0-9]", ""); if (bc.length() < 8 || bc.matches("^(02|2[0-9]).*") || name == null || name.trim().isEmpty()) return;
+        JSONObject cur = bankGet(bc); bankPut(j);
+        if (cur != null && cur.optString("name").equals(name.trim()) && bankRank(cur.optString("source")) >= bankRank(source)) return;   // nothing new to share
+        if (!Api.standalone()) Sync.queue("BANK_REMEMBER", j, "بانک کالا " + name, null);
     }
 
     /* ---------------- local reads ---------------- */

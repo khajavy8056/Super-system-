@@ -301,6 +301,8 @@ def create_product(body: ProductIn, db: Session = Depends(get_db),
                    user: User = Depends(require_permission("products.manage"))):
     try:
         p = catalog.create_product(db, barcode=body.barcode, name=body.name, user=user, **body.model_dump(exclude={"barcode", "name"}))
+        from ..services import product_bank as _bank
+        _bank.remember_product(db, p, source="USER")  # v2.7 — the shop's own products teach the bank
         if not p.image_url:
             product_images.enqueue(db, p.id, user_id=user.id)   # v2.5: picture found in the background
         db.commit()
@@ -318,6 +320,8 @@ def update_product(product_id: int, body: ProductPatch, db: Session = Depends(ge
     catalog.update_product(db, p, user=user, **body.model_dump(exclude_none=True))
     if not p.image_url:
         product_images.enqueue(db, p.id, user_id=user.id)
+    from ..services import product_bank as _bank
+    _bank.remember_product(db, p, source="USER")  # v2.7
     db.commit()
     return _out(p)
 
@@ -522,3 +526,84 @@ def quick_price(product_id: int, body: QuickPriceIn, db: Session = Depends(get_d
                 entity_id=product_id, after={"batches": changed})
     db.commit()
     return {"product_id": product_id, "updated": changed}
+
+
+# ---------------------------------------------------------------------------
+# v2.7 — بانک کالا (offline barcode → name/brand bank)
+# ---------------------------------------------------------------------------
+from fastapi.responses import Response  # noqa: E402
+from ..services import product_bank as bank_svc  # noqa: E402
+
+bank_router = APIRouter(prefix="/bank", tags=["bank"])
+
+
+@bank_router.get("/stats")
+def bank_stats(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return bank_svc.stats(db)
+
+
+@bank_router.get("/lookup/{barcode}")
+def bank_lookup(barcode: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    row = bank_svc.lookup(db, barcode)
+    if row is None:
+        raise HTTPException(status_code=404, detail="BANK_MISS")
+    return row
+
+
+class BankRememberIn(BaseModel):
+    barcode: str
+    name: str
+    brand: str | None = None
+    unit: str | None = None
+    category: str | None = None
+    image_url: str | None = None
+
+
+@bank_router.post("/remember")
+def bank_remember(body: BankRememberIn, db: Session = Depends(get_db), user: User = Depends(require_permission("products.manage"))):
+    res = bank_svc.remember(db, body.barcode, body.name, brand=body.brand, unit=body.unit, category=body.category,
+                            image_url=body.image_url, source="USER")
+    if res is None:
+        raise HTTPException(status_code=400, detail="بارکد یا نام معتبر نیست")
+    db.commit()
+    return res
+
+
+@bank_router.post("/import")
+async def bank_import(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(require_permission("products.manage"))):
+    """Import a barcode→name list (CSV/TSV/TXT or Excel .xlsx). Columns may be Persian or English;
+    only «بارکد» and «نام» are required. Rows never overwrite what the shop itself confirmed."""
+    data = await file.read()
+    name = (file.filename or "").lower()
+    if name.endswith((".xlsx", ".xlsm")) or data[:2] == b"PK":
+        res = bank_svc.import_xlsx_bytes(db, data, source="IMPORT")
+    else:
+        text = None
+        for enc in ("utf-8-sig", "utf-16", "cp1256"):
+            try:
+                text = data.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            raise HTTPException(status_code=400, detail="فایل قابل خواندن نیست")
+        res = bank_svc.import_csv_text(db, text, source="IMPORT")
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res)
+    db.commit()
+    write_audit(db, action="BANK_IMPORT", user_id=user.id, entity_type="ProductBank", after=res)
+    db.commit()
+    return res
+
+
+@bank_router.get("/export.csv")
+def bank_export(db: Session = Depends(get_db), _: User = Depends(require_permission("products.manage"))):
+    return Response(content="\ufeff" + bank_svc.export_csv(db), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=product-bank.csv"})
+
+
+@bank_router.post("/seed-from-products")
+def bank_seed(db: Session = Depends(get_db), _: User = Depends(require_permission("products.manage"))):
+    n = bank_svc.seed_from_products(db)
+    db.commit()
+    return {"added": n, **bank_svc.stats(db)}

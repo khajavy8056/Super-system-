@@ -362,6 +362,15 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
             body = batches_router.ReceiveIn(**op.payload)
             res = batches_router.receive(body, db=db, user=user)  # type: ignore[arg-type]
             return {"id": op.id, "status": "APPLIED", "result": {"batch_id": getattr(res, "id", None) or (res.get("id") if isinstance(res, dict) else None)}}
+        if kind == "BANK_REMEMBER":
+            # v2.7 — a phone identified a barcode online (or the operator confirmed a name): teach the PC bank
+            from ..services import product_bank as _bank
+            pl = op.payload
+            res = _bank.remember(db, str(pl.get("barcode") or ""), str(pl.get("name") or ""), brand=pl.get("brand"),
+                                 unit=pl.get("unit"), category=pl.get("category"), image_url=pl.get("image_url"),
+                                 source="USER" if pl.get("source") == "USER" else "ONLINE")
+            db.commit()
+            return {"id": op.id, "status": "APPLIED", "result": {"stored": res is not None}}
         if kind == "PRODUCT_IMAGE_FIND":
             # v2.5 — a phone found/asked for a picture; the PC looks it up in the background too (so Windows + other phones get it)
             from ..services import product_images as _pi
@@ -438,6 +447,8 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                             "current_qty": float(b.current_qty or 0), "unit_sell_price": float(b.sell_price or 0), "sell_price": float(b.sell_price or 0),
                             "consumer_price": float(b.consumer_price or 0), "buy_price": float(b.buy_price or 0), "status": b.status,
                             "updated_at": b.updated_at.isoformat()} for b in batches]
+        from ..services import product_bank as _bank
+        pull["bank"] = _bank.changed_since(db, since, body.limit)   # v2.7 — the phones carry the whole bank offline
         custs = _changed_since(db, Customer, since, body.limit)
         pull["customers"] = [{"id": c.id, "name": c.name, "last_name": c.last_name, "phone": c.phone, "credit_limit": float(c.credit_limit or 0),
                               "updated_at": c.updated_at.isoformat()} for c in custs]

@@ -5,7 +5,7 @@ from .accounting import (Account, CashSession, Cheque, Expense, ExpenseCategory,
 from .base import SoftDeleteMixin, TimestampMixin
 from .catalog import Brand, Category, Product, Unit
 from .enums import *  # noqa: F401,F403
-from .external import ExternalSource, ImageAsset, MarketPrice, ProductResolverResult
+from .external import BankItem, ExternalSource, ImageAsset, MarketPrice, ProductResolverResult
 from .inventory import (ProductBatch, StockMovement, Stocktake, StocktakeItem,
                         StorageLocation, Warehouse)
 from .marketing import Campaign, Coupon, CouponRedemption

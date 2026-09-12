@@ -79,7 +79,7 @@ def test_sync_pull_carries_the_fields_the_phone_db_needs(client, auth_headers):
                     headers=auth_headers)
     assert r.status_code == 200, r.text
     pull = r.json()["pull"]
-    assert set(pull) == {"products", "batches", "customers"}
+    assert set(pull) == {"products", "batches", "customers", "bank"}   # v2.7: + بانک کالا
     if pull["products"]:
         assert {"brand_id", "min_stock_alert", "has_own_barcode", "unit_id", "barcode"} <= set(pull["products"][0])
     if pull["batches"]:

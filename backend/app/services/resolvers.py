@@ -111,6 +111,20 @@ def resolve_barcode(db: Session, barcode: str, *, client: httpx.Client | None = 
                 return {"origin": "cache", "barcode": barcode, "format": fmt,
                         "product": _product_dict(product), "need_manual": False}
 
+    # 2b) v2.7 — product bank: everything ever identified (online hits, confirmed products, imported lists)
+    from . import product_bank
+    bank = product_bank.lookup(db, barcode)
+    if bank:
+        merged_b = {"name": {"chosen": bank["name"], "confidence": bank["confidence"], "conflict": False, "sources": [{"value": bank["name"], "source": "bank"}]}}
+        for k in ("brand", "unit", "category"):
+            if bank.get(k):
+                merged_b[k] = {"chosen": bank[k], "confidence": "LOW" if k != "brand" else bank["confidence"], "conflict": False, "sources": [{"value": bank[k], "source": "bank"}]}
+        return {"origin": "bank", "barcode": barcode, "format": fmt, "need_manual": True, "review_id": None,
+                "merged": merged_b, "image_url": bank.get("image_url"),
+                "sources": [{"source": "bank", "provider": "bank", "ok": True, "error": None,
+                             "fields": {k: v["chosen"] for k, v in merged_b.items()}, "image_url": bank.get("image_url")}],
+                "message": None}
+
     # 3) external providers (multi-source)
     outcomes: list[SourceOutcome] = []
     sources = _active_sources(db, "PRODUCT")
@@ -128,6 +142,15 @@ def resolve_barcode(db: Session, barcode: str, *, client: httpx.Client | None = 
 
     # 7) persist PENDING candidates for human review (BUG-006/007)
     review_id = _persist_candidates(db, barcode, outcomes, merged)
+    # 7b) v2.7 — an exact online identification is remembered in the bank (next scan is offline + instant)
+    mname = next((m.chosen for m in merged if m.field == "name" and m.chosen), None)
+    if mname:
+        img = next((o.lookup.image_url for o in outcomes if o.ok and o.lookup and o.lookup.image_url), None)
+        product_bank.remember(db, barcode, mname,
+                              brand=next((m.chosen for m in merged if m.field == "brand"), None),
+                              unit=next((m.chosen for m in merged if m.field == "unit"), None),
+                              category=next((m.chosen for m in merged if m.field == "category"), None),
+                              image_url=img, source="ONLINE")
 
     any_data = any(o.ok and (o.lookup and (o.lookup.fields or o.lookup.image_url)) for o in outcomes)
     return {

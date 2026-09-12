@@ -302,7 +302,16 @@ def scan_to_draft(barcode: str, body: ScanDraftIn | None = None,
              if info.get("chosen")}
 
     image = None
-    if (body is None or body.with_image) and draft is not None:
+    if result.get("origin") == "bank" and result.get("image_url") and (body is None or body.with_image):
+        # v2.7 — the bank already knows the pack photo: download + validate that one URL only
+        try:
+            rep, buf = resolvers._fetch_image(result["image_url"])
+            if rep.get("ok") and buf:
+                rel = resolvers.store_image_locally(barcode, buf, rep["format"])
+                image = {"stored": True, "best_local_path": rel, "candidates": [{"url": result["image_url"], "source": "bank", "validation": rep, "local_path": rel}]}
+        except Exception as exc:  # noqa: BLE001
+            image = {"stored": False, "best_local_path": None, "note": f"دریافت تصویر ناموفق بود: {type(exc).__name__}"}
+    elif (body is None or body.with_image) and draft is not None:
         try:
             image = resolvers.resolve_image(db, barcode)
         except Exception as exc:  # never let image trouble block the draft
