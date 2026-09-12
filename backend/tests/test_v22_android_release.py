@@ -37,7 +37,7 @@ def test_redesigned_shell_matches_reference_mockups():
     ui = (JAVA / "Ui.java").read_text(encoding="utf-8")
     for k in ("gradient(", "surface(", "hero(", "tile(", "spark(", "avatar(", "cta(", "pill("):
         assert k in ui, k
-    assert "0xFF1B2536" in ui  # deep navy dark background
+    assert "0xFF0F1622" in ui and "0xFFC9A24E" in ui  # v2.8 luxe: midnight navy background + champagne gold
     app = (JAVA / "AppActivity.java").read_text(encoding="utf-8")
     assert "openGroups" in app and "Ui.avatar(" in app and "android.widget.Switch" in app
     for grp in ("فروش و مشتری", "فاکتورها", "کالا و موجودی", "جشنواره و کوپن"):
