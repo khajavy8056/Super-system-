@@ -22,15 +22,42 @@ import java.nio.charset.StandardCharsets;
  */
 public final class SmsLocal {
     private SmsLocal() {}
-    static final String[] KEYS = {"sms.provider", "sms.melipayamak_mode", "sms.username", "sms.password", "sms.sender", "sms.melipayamak_body_id", "sms.api_key", "sms.send_invoice", "sms.template.invoice", "sms.admin_phone", "sms.phone_fallback"};
+    static final String[] KEYS = {"sms.provider", "sms.melipayamak_mode", "sms.username", "sms.password", "sms.sender", "sms.melipayamak_body_id", "sms.api_key", "sms.send_invoice", "sms.template.invoice", "sms.admin_phone", "sms.phone_fallback", "sms.sim.enabled", "sms.sim.sub_id", "sms.sim.split", "sms.sim.delivery"};
     static final String DEFAULT_TEMPLATE = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}\nاز خرید شما سپاسگزاریم";
 
     public static String get(String k, String def) { String v = Prefs.get("sms_" + k, ""); return v.isEmpty() ? def : v; }
     public static void set(String k, String v) { Prefs.set("sms_" + k, v == null ? "" : v); }
-    public static boolean configured() { String p = get("sms.provider", ""); if ("melipayamak".equals(p)) return !get("sms.username", "").isEmpty() && !get("sms.password", "").isEmpty() && ("pattern".equals(get("sms.melipayamak_mode", "line")) ? !get("sms.melipayamak_body_id", "").isEmpty() : !get("sms.sender", "").isEmpty()); if ("kavenegar".equals(p)) return !get("sms.api_key", "").isEmpty(); return false; }
+    /* ---------------- v2.8: SIM card of this phone ---------------- */
+    public static boolean simEnabled() { return "true".equals(get("sms.sim.enabled", "false")); }
+    public static boolean simPermitted(android.content.Context c) { return c.checkSelfPermission(android.Manifest.permission.SEND_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+    /** [subId, label, number] for every active SIM (needs READ_PHONE_STATE for names; falls back to slot numbers). */
+    public static java.util.List<String[]> sims(android.content.Context c) {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        try {
+            android.telephony.SubscriptionManager sm = (android.telephony.SubscriptionManager) c.getSystemService(android.content.Context.TELEPHONY_SUBSCRIPTION_SERVICE);
+            java.util.List<android.telephony.SubscriptionInfo> l = sm == null ? null : sm.getActiveSubscriptionInfoList();
+            if (l != null) for (android.telephony.SubscriptionInfo si : l) out.add(new String[]{String.valueOf(si.getSubscriptionId()), "سیم‌کارت " + Ui.fa(String.valueOf(si.getSimSlotIndex() + 1)) + (si.getCarrierName() == null ? "" : " · " + si.getCarrierName()), si.getNumber() == null ? "" : si.getNumber()});
+        } catch (Exception ignore) {}
+        if (out.isEmpty()) out.add(new String[]{"-1", "سیم‌کارت پیش‌فرض گوشی", ""});
+        return out;
+    }
+    public static String simLabel(android.content.Context c) { String id = get("sms.sim.sub_id", "-1"); for (String[] s : sims(c)) if (s[0].equals(id)) return s[1]; return "سیم‌کارت پیش‌فرض گوشی"; }
+    /** Send through the carrier network of the chosen SIM. Long Persian texts are split into a multipart message automatically. */
+    static String sendViaSim(String phone, String text) throws Exception {
+        android.content.Context c = Ui.ctx; if (c == null) throw new Exception("برنامه آماده نیست");
+        if (!simPermitted(c)) throw new Exception("اجازهٔ ارسال پیامک داده نشده — در تنظیمات → پیامک اجازه بدهید");
+        int sub = -1; try { sub = Integer.parseInt(get("sms.sim.sub_id", "-1")); } catch (Exception ignore) {}
+        android.telephony.SmsManager sm = sub >= 0 ? android.telephony.SmsManager.getSmsManagerForSubscriptionId(sub) : android.telephony.SmsManager.getDefault();
+        String to = phone.startsWith("0") || phone.startsWith("+") ? phone : "0" + phone;
+        java.util.ArrayList<String> parts = sm.divideMessage(text);
+        if (parts.size() == 1) sm.sendTextMessage(to, null, text, null, null); else sm.sendMultipartTextMessage(to, null, parts, null, null);
+        return "sim:" + sub + ":" + parts.size();
+    }
+    public static boolean configured() {
+        if (simEnabled()) return true; String p = get("sms.provider", ""); if ("melipayamak".equals(p)) return !get("sms.username", "").isEmpty() && !get("sms.password", "").isEmpty() && ("pattern".equals(get("sms.melipayamak_mode", "line")) ? !get("sms.melipayamak_body_id", "").isEmpty() : !get("sms.sender", "").isEmpty()); if ("kavenegar".equals(p)) return !get("sms.api_key", "").isEmpty(); return false; }
     public static boolean sendInvoiceOn() { return !"false".equals(get("sms.send_invoice", "true")); }
     /** which side texts the customer for this sale. */
-    public static boolean phoneShouldSend() { return Api.standalone() || (!Api.online && "true".equals(get("sms.phone_fallback", "false"))); }
+    public static boolean phoneShouldSend() { return simEnabled() || Api.standalone() || (!Api.online && "true".equals(get("sms.phone_fallback", "false"))); }
 
     public static String renderInvoice(String invoiceNo, double amount) {
         String t = get("sms.template.invoice", DEFAULT_TEMPLATE);
@@ -66,6 +93,7 @@ public final class SmsLocal {
     /* ---------------- providers (identical wire format to the PC) ---------------- */
     public static String send(String phone, String text) throws Exception {
         String p = get("sms.provider", "");
+        if (simEnabled()) return sendViaSim(phone, text);
         if ("melipayamak".equals(p)) return melipayamak(phone, text);
         if ("kavenegar".equals(p)) return kavenegar(phone, text);
         throw new Exception("سرویس پیامک انتخاب نشده");
@@ -107,6 +135,23 @@ public final class SmsLocal {
             String txt = bo.toString("UTF-8"); if (code >= 400) throw new Exception("HTTP " + code + " " + txt.substring(0, Math.min(120, txt.length())));
             return txt;
         } finally { c.disconnect(); }
+    }
+
+    /* ---------------- v2.8: PC outbox → this phone's SIM ---------------- */
+    /** When the PC's SMS provider is «phone» and this device is the designated sender, fetch PENDING messages, send them from the SIM and report back. */
+    public static synchronized int relayPcOutbox() {
+        if (!simEnabled() || Api.standalone() || !Api.online) return 0; int sent = 0;
+        try {
+            Object r = Api.call("GET", "/sms/outbox?device_id=" + Api.q(Prefs.deviceIdStatic()), null, null);
+            JSONArray rows = r instanceof JSONArray ? (JSONArray) r : ((JSONObject) r).optJSONArray("messages"); if (rows == null) return 0;
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject m = rows.optJSONObject(i); JSONObject rep = new JSONObject(); rep.put("id", m.optLong("id"));
+                try { rep.put("response", sendViaSim(m.optString("phone"), m.optString("text"))); rep.put("status", "SENT"); sent++; }
+                catch (Exception e) { rep.put("status", "RETRYING"); rep.put("error", String.valueOf(e.getMessage())); }
+                try { Api.call("POST", "/sms/outbox/report", rep.toString(), "application/json"); } catch (Exception ignore) {}
+            }
+        } catch (Exception ignore) {}
+        return sent;
     }
 
     /** the same 8-step tutorial the PC shows (routers/sms.py:guide), for offline phones. */

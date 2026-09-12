@@ -2316,7 +2316,7 @@ const SETTING_FA = {
  "expiry.days.seven": "آستانهٔ هشدار: ۷ روز",
  "expiry.days.thirty": "آستانهٔ هشدار: ۳۰ روز",
  "barcode.scanner.min_interval_ms": "حداقل فاصلهٔ کلیدها برای تشخیص بارکدخوان (میلی‌ثانیه)",
- "sms.provider": "سرویس پیامک: melipayamak | kavenegar | file | خالی=غیرفعال",
+ "sms.provider": "سرویس پیامک: phone (سیم‌کارت گوشی متصل) | melipayamak | kavenegar | file | خالی=غیرفعال",
  "sms.send_invoice": "ارسال خودکار پیامک فاکتور به مشتری (مستقل از چاپ رسید)",
  "sms.send_immediately": "ارسال فوری به محض تأیید فاکتور (در غیر این صورت با نوبت صف)",
  "sms.username": "نام کاربری پنل پیامک",

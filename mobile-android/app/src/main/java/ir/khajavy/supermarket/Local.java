@@ -206,19 +206,26 @@ public final class Local {
         journal("RETURN", "مرجوعی " + r.optString("local_no"), refund, "Return:" + r.optString("local_no") + ":" + itemId, new String[][]{{"4000", String.valueOf(refund), "0"}, {payAcc(r.optString("payment")), "0", String.valueOf(refund)}, {"1200", String.valueOf(qty * it.optDouble("unit_buy_price")), "0"}, {"5000", "0", String.valueOf(qty * it.optDouble("unit_buy_price"))}});
         audit("RETURN", "Invoice", r.optString("local_no"), null, b); return obj("ok", true, "refund_amount", refund, "movement_type", "RETURN_IN");
     }
+    /** v2.8 — same professional receipt layout as the PC (services/hardware.receipt_text): framed meta, numbered items, highlighted total. */
     static String receipt(JSONObject inv) {
-        StringBuilder sb = new StringBuilder(); String store = Prefs.get("store_name", "فروشگاه"); String hdr = setting("printer.header", "");
-        sb.append(center(store)).append('\n'); if (!hdr.isEmpty()) sb.append(center(hdr)).append('\n'); String addr = setting("store.address", ""); if (!addr.isEmpty()) sb.append(center(addr)).append('\n'); String tel = setting("store.phone", ""); if (!tel.isEmpty()) sb.append(center("تلفن: " + tel)).append('\n');
-        sb.append("--------------------------------\n").append("فاکتور: ").append(inv.optString("invoice_number")).append('\n').append("تاریخ: ").append(Ui.jdate(inv.optString("created_at"))).append('\n').append("صندوق‌دار: ").append(inv.optString("cashier")).append('\n');
-        if (!inv.optString("customer_name").isEmpty()) sb.append("مشتری: ").append(inv.optString("customer_name")).append('\n');
-        sb.append("--------------------------------\n"); JSONArray its = inv.optJSONArray("items");
-        for (int i = 0; its != null && i < its.length(); i++) { JSONObject it = its.optJSONObject(i); sb.append(it.optString("name")).append('\n').append("  ").append(Ui.num(it.optDouble("qty"))).append(" × ").append(Ui.money(it.optDouble("unit_sell_price"))).append(it.optDouble("discount") > 0 ? " − " + Ui.money(it.optDouble("discount")) : "").append(" = ").append(Ui.money(it.optDouble("subtotal"))).append('\n'); }
-        sb.append("--------------------------------\n").append("جمع: ").append(Ui.money(inv.optDouble("subtotal"))).append('\n'); if (inv.optDouble("discount") > 0) sb.append("تخفیف: ").append(Ui.money(inv.optDouble("discount"))).append('\n'); if (inv.optDouble("tax") > 0) sb.append("مالیات: ").append(Ui.money(inv.optDouble("tax"))).append('\n');
-        sb.append("قابل پرداخت: ").append(Ui.money(inv.optDouble("total_amount"))).append('\n').append("پرداخت: ").append(Screens.Screen.label(inv.optString("payment_method"), Screens.Screen.PAY)).append('\n');
-        if ("VOID".equals(inv.optString("status"))) sb.append("*** باطل شده ***\n");
-        sb.append("--------------------------------\n").append(center(setting("store.receipt_note", "از خرید شما سپاسگزاریم"))).append('\n'); String ft = setting("printer.footer", ""); if (!ft.isEmpty()) sb.append(center(ft)).append('\n');
+        final int W = 32; StringBuilder sb = new StringBuilder(); String store = Prefs.get("store_name", "فروشگاه"); String hdr = setting("printer.header", "");
+        String thin = rep('─', W), thick = rep('═', W), dots = rep('·', W);
+        sb.append(center("◆  " + store + "  ◆")).append('\n'); if (!hdr.isEmpty()) sb.append(center(hdr)).append('\n'); String addr = setting("store.address", ""); if (!addr.isEmpty()) sb.append(center(addr)).append('\n'); String tel = setting("store.phone", ""); if (!tel.isEmpty()) sb.append(center(Ui.fa(tel))).append('\n');
+        sb.append(thick).append('\n').append(kv("شمارهٔ فاکتور", Ui.fa(inv.optString("invoice_number")), W)).append('\n').append(kv("تاریخ و ساعت", Ui.jdate(inv.optString("created_at")), W)).append('\n');
+        if (!inv.optString("cashier").isEmpty()) sb.append(kv("صندوق‌دار", inv.optString("cashier"), W)).append('\n');
+        if (!inv.optString("customer_name").isEmpty()) sb.append(kv("مشتری", inv.optString("customer_name"), W)).append('\n');
+        sb.append(thin).append('\n').append(kv("شرح کالا", "مبلغ", W)).append('\n').append(dots).append('\n'); JSONArray its = inv.optJSONArray("items");
+        for (int i = 0; its != null && i < its.length(); i++) { JSONObject it = its.optJSONObject(i); sb.append(Ui.fa(String.valueOf(i + 1))).append(". ").append(it.optString("name")).append('\n').append(kv("   " + Ui.num(it.optDouble("qty")) + " × " + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("unit_sell_price")))), Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("subtotal")))), W)).append('\n'); if (it.optDouble("discount") > 0) sb.append(kv("   تخفیف", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("discount")))), W)).append('\n'); }
+        sb.append(thin).append('\n').append(kv("تعداد اقلام: " + Ui.fa(String.valueOf(its == null ? 0 : its.length())), "", W)).append('\n').append(kv("جمع کل", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("subtotal")))), W)).append('\n');
+        if (inv.optDouble("discount") > 0) sb.append(kv("تخفیف فاکتور", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("discount")))), W)).append('\n'); if (inv.optDouble("tax") > 0) sb.append(kv("مالیات", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("tax")))), W)).append('\n');
+        sb.append(thick).append('\n').append(kvFill("قابل پرداخت", Ui.money(inv.optDouble("total_amount")), W, '.')).append('\n').append(thick).append('\n').append(kv("روش پرداخت", Screens.Screen.label(inv.optString("payment_method"), Screens.Screen.PAY), W)).append('\n');
+        if ("VOID".equals(inv.optString("status"))) sb.append(center("*** باطل شده ***")).append('\n');
+        sb.append(thin).append('\n'); String ft = setting("printer.footer", ""); if (!ft.isEmpty()) sb.append(center(ft)).append('\n'); sb.append(center(setting("store.receipt_note", "از خرید شما سپاسگزاریم"))).append('\n').append(center("منتظر دیدار دوبارهٔ شما هستیم")).append('\n').append(thin).append('\n').append(center("سوپری من · supery")).append('\n');
         return sb.toString();
     }
+    static String rep(char ch, int n) { StringBuilder b = new StringBuilder(); for (int i = 0; i < n; i++) b.append(ch); return b.toString(); }
+    static String kv(String l, String v, int w) { return kvFill(l, v, w, ' '); }
+    static String kvFill(String l, String v, int w, char f) { int pad = w - l.length() - v.length(); return l + rep(f, Math.max(1, pad)) + v; }
     static String center(String s) { int w = 32; if (s.length() >= w) return s; int pad = (w - s.length()) / 2; StringBuilder b = new StringBuilder(); for (int i = 0; i < pad; i++) b.append(' '); return b + s; }
 
     /* ===================== customers + ledger ===================== */

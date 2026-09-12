@@ -155,6 +155,7 @@ public final class AdminScreens {
         }
         interface Get { String v(String k); } interface Set { void v(String k, String val); }
         void form(LinearLayout out, Get g, Set s) {
+            simCard(out, g, s);   // v2.8 — the phone's own SIM card, first choice for small shops (no panel, no sign-up)
             LinearLayout f = Ui.card(c, "سرویس و حساب"); out.addView(f);
             final String[] prov = {g.v("sms.provider")}; final String[] mode = {g.v("sms.melipayamak_mode").isEmpty() ? "line" : g.v("sms.melipayamak_mode")};
             LinearLayout pr = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { pr.removeAllViews(); for (String[] p : new String[][]{{"melipayamak", "ملی‌پیامک"}, {"kavenegar", "کاوه‌نگار"}, {"", "خاموش"}}) pr.addView(Ui.chip(c, p[1], p[0].equals(prov[0]), () -> { prov[0] = p[0]; rd[0].run(); })); }; rd[0].run(); f.addView(Ui.label(c, "سرویس پیامک")); f.addView(Ui.chips(c, pr));
@@ -167,6 +168,24 @@ public final class AdminScreens {
             au.addView(Ui.muted(c, "چاپ رسید را می‌توانید در «تنظیمات → صندوق» خاموش کنید؛ پیامک همچنان می‌رود. مشتری باید شمارهٔ موبایل داشته باشد (مشتری آزاد پیامک نمی‌گیرد)."));
             out.addView(Ui.primary(c, "ذخیرهٔ تنظیمات پیامک", () -> { s.v("sms.provider", prov[0]); s.v("sms.melipayamak_mode", mode[0]); s.v("sms.username", Ui.str(user)); s.v("sms.password", Ui.str(pass)); s.v("sms.sender", Db.norm(Ui.str(sender))); s.v("sms.melipayamak_body_id", Db.norm(Ui.str(bodyId))); s.v("sms.api_key", Ui.str(api)); s.v("sms.admin_phone", Db.norm(Ui.str(admin))); s.v("sms.send_invoice", inv.isChecked() ? "true" : "false"); s.v("sms.phone_fallback", fb.isChecked() ? "true" : "false"); Ui.done(Ui.ctx, "ذخیره شد", null, null); load(); }));
             out.addView(Ui.ghost(c, "تست اتصال (اعتبار پنل)", () -> { if (Api.standalone() || !Api.online) Api.bg(() -> { try { String cr = SmsLocal.melipayamakCredit(); Api.ui(() -> Ui.toast("اتصال برقرار است · اعتبار: " + Ui.fa(cr))); } catch (Exception e) { Api.ui(() -> Ui.toast("خطا: " + e.getMessage())); } }); else post("/sms/test-connection", null, r -> Ui.toast(s((JSONObject) r, "detail", s((JSONObject) r, "status")))); }));
+        }
+        /** v2.8 — send invoice SMS from the SIM card of this phone (opt-in). Standalone: the phone sends. Paired: the PC hands its outbox to this phone. */
+        void simCard(LinearLayout out, Get g, Set s) {
+            LinearLayout sc = Ui.card(c, "ارسال با سیم‌کارت همین گوشی"); out.addView(sc);
+            sc.addView(Ui.muted(c, "بدون پنل و بدون ثبت‌نام: پیامک فاکتور مستقیماً از سیم‌کارت گوشی می‌رود (هزینهٔ هر پیامک طبق تعرفهٔ اپراتور شما). برای متن‌های بلند چند پیامک مصرف می‌شود."));
+            boolean on = "true".equals(SmsLocal.get("sms.sim.enabled", "false"));
+            android.widget.Switch sw = new android.widget.Switch(c); sw.setText("ارسال پیامک از طریق سیم‌کارت این گوشی"); sw.setTypeface(Ui.FONT); sw.setTextColor(Ui.TEXT); sw.setChecked(on); sc.addView(sw);
+            LinearLayout simRow = Ui.col(c); sc.addView(simRow);
+            Runnable[] draw = new Runnable[1]; draw[0] = () -> { simRow.removeAllViews(); if (!sw.isChecked()) return;
+                if (!SmsLocal.simPermitted(c)) { simRow.addView(Ui.note(c, "اجازهٔ ارسال پیامک لازم است", "اندروید برای ارسال پیامک از سیم‌کارت اجازهٔ شما را می‌خواهد. با تأیید، فقط پیامک‌های فاکتور/یادآوری فروشگاه فرستاده می‌شوند.")); simRow.addView(Ui.primary(c, "اجازه دادن", () -> a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS, android.Manifest.permission.READ_PHONE_STATE}, 9))); return; }
+                simRow.addView(Ui.label(c, "کدام سیم‌کارت؟")); LinearLayout ch = Ui.row(c); simRow.addView(ch); final String[] cur = {SmsLocal.get("sms.sim.sub_id", "-1")}; Runnable[] rc = new Runnable[1];
+                rc[0] = () -> { ch.removeAllViews(); for (String[] si : SmsLocal.sims(c)) ch.addView(Ui.chip(c, si[1] + (si[2].isEmpty() ? "" : " · " + Ui.fa(si[2])), si[0].equals(cur[0]), () -> { cur[0] = si[0]; SmsLocal.set("sms.sim.sub_id", si[0]); rc[0].run(); })); }; rc[0].run();
+                LinearLayout tr = Ui.row(c); simRow.addView(tr); EditText tp = Ui.input(c, "شمارهٔ آزمایشی (خودتان)", true); tr.addView(tp);
+                simRow.addView(Ui.ghost(c, "ارسال پیامک آزمایشی از سیم‌کارت", () -> { String ph = Db.norm(Ui.str(tp)); if (ph.length() < 10) { Ui.toast("شماره را کامل وارد کنید"); return; } Api.bg(() -> { try { SmsLocal.sendViaSim(ph, "پیامک آزمایشی «" + Prefs.get("store_name", "سوپری من") + "» — ارسال از سیم‌کارت با موفقیت فعال است."); Api.ui(() -> Ui.done(a, "ارسال شد", "پیامک آزمایشی از " + SmsLocal.simLabel(c) + " رفت", null)); } catch (Exception e) { Api.ui(() -> Ui.toast("خطا: " + e.getMessage())); } }); }));
+                if (!Api.standalone()) simRow.addView(Ui.muted(c, "حالت متصل به رایانه: اگر در رایانه «سرویس پیامک = گوشی» انتخاب شود، پیامک‌های صف رایانه هم از همین سیم‌کارت فرستاده می‌شوند (گوشی باید روشن و متصل باشد)."));
+            };
+            sw.setOnCheckedChangeListener((b, v) -> { SmsLocal.set("sms.sim.enabled", v ? "true" : "false"); if (!Api.standalone()) s.v("sms.sim.enabled", v ? "true" : "false"); if (v && !SmsLocal.simPermitted(c)) a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS, android.Manifest.permission.READ_PHONE_STATE}, 9); draw[0].run(); });
+            a.permCb = () -> draw[0].run(); draw[0].run();
         }
         void guide(LinearLayout out, boolean local) {
             out.addView(Ui.note(c, "چه کارهایی باید در پنل ملی‌پیامک انجام دهید؟", "این آموزش دقیقاً همان مراحل نسخهٔ رایانه است. پس از انجام هر مرحله، مقادیر را در تب «تنظیمات» وارد کنید."));

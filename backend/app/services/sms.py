@@ -54,6 +54,15 @@ def get_setting(db: Session, key: str, default: str) -> str:
     return row.value if row else default
 
 
+def _set_setting(db: Session, key: str, value: str) -> None:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    if row is None:
+        db.add(SystemSetting(key=key, value=value, description="v2.8 phone SIM sender state", is_secret=False))
+    else:
+        row.value = value
+    db.flush()
+
+
 # --- Providers ----------------------------------------------------------------
 
 MELIPAYAMAK_BASE = "https://rest.payamak-panel.com/api/SendSMS"
@@ -190,7 +199,15 @@ def _send_fail(db: Session, phone: str, text: str) -> str:
     raise SmsProviderError("ALWAYS_FAIL", "test provider")
 
 
+def _send_phone(db: Session, phone: str, text: str) -> str:
+    """v2.8 — provider «phone»: the message is NOT sent here. A paired Android device that
+    has «ارسال با سیم‌کارت» enabled pulls PENDING rows from /sms/outbox, sends them through
+    its SIM and reports back. Raising HANDOFF keeps the row PENDING without a retry."""
+    raise SmsProviderError("HANDOFF", "در انتظار ارسال از سیم‌کارت گوشی")
+
+
 PROVIDERS = {
+    "phone": _send_phone,
     "melipayamak": _send_melipayamak,
     "kavenegar": _send_kavenegar,
     "file": _send_file,
@@ -277,6 +294,12 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
     if sender is None:
         summary["skipped"] = len(messages)
         summary["reason"] = f"UNKNOWN_PROVIDER:{provider_code}"
+        return summary
+
+    if provider_code == "phone":
+        # nothing to do on the PC — the phone drains the outbox itself
+        summary["skipped"] = len(messages)
+        summary["reason"] = "PHONE_SIM_HANDOFF"
         return summary
 
     for msg in messages:
@@ -443,5 +466,47 @@ def retry_message(db: Session, sms_id: int) -> "SmsMessage":
 
 def test_connection(db: Session) -> dict:
     """§177 — provider connectivity test. Never sends a real SMS to a customer."""
+    if get_setting(db, "sms.provider", "").strip() == "phone":
+        seen = get_setting(db, "sms.phone_last_seen", "")
+        dev = get_setting(db, "sms.phone_device", "")
+        ok = bool(seen) and (datetime.utcnow() - datetime.fromisoformat(seen)).total_seconds() < 15 * 60
+        return {"status": "OK" if ok else "WARN", "provider": "phone",
+                "message": (f"گوشی ارسال‌کننده ({dev or 'نامشخص'}) متصل است" if ok else
+                            "هنوز هیچ گوشی‌ای صف را نگرفته — در اپ موبایل «ارسال با سیم‌کارت» را روشن کنید و گوشی متصل بماند")}
     from .diagnostics import check_sms
     return check_sms(db)
+
+
+# --- v2.8: outbox for the phone SIM sender ------------------------------------------
+
+def outbox_for_phone(db: Session, device_id: str, limit: int = 20) -> list[dict]:
+    """PENDING/RETRYING rows for the SIM sender; also records which device is draining."""
+    _set_setting(db, "sms.phone_last_seen", datetime.utcnow().isoformat(timespec="seconds"))
+    if device_id:
+        _set_setting(db, "sms.phone_device", device_id)
+    if get_setting(db, "sms.provider", "").strip() != "phone":
+        return []
+    rows = db.execute(select(SmsMessage).where(SmsMessage.status.in_(["PENDING", "RETRYING"]))
+                      .order_by(SmsMessage.id.asc()).limit(limit)).scalars().all()
+    return [{"id": m.id, "phone": m.phone, "text": m.text} for m in rows]
+
+
+def outbox_report(db: Session, *, sms_id: int, status: str, response: str | None, error: str | None) -> SmsMessage | None:
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None or msg.status == "SENT":
+        return msg
+    if status == "SENT":
+        msg.status = "SENT"
+        msg.sent_at = datetime.utcnow()
+        msg.provider_response = response
+        msg.error_message = None
+        _audit(db, "SMS_SENT", msg, "phone")
+    else:
+        msg.retry_count = (msg.retry_count or 0) + 1
+        msg.error_message = (error or "")[:500]
+        max_retries = int(get_setting(db, "sms.max_retries", "5") or 5)
+        msg.status = "FAILED" if msg.retry_count >= max_retries else "RETRYING"
+        if msg.status == "FAILED":
+            _audit(db, "SMS_FAILED", msg, "phone", error=msg.error_message)
+    db.flush()
+    return msg

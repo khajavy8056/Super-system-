@@ -46,53 +46,88 @@ def _fa_date(dt) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
 
 
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def _fa_num(n) -> str:
+    return f"{n:,.0f}".translate(_FA_DIGITS)
+
+
 def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
                  columns: int = 32, store: dict | None = None,
-                 currency_label: str = "تومان") -> str:
-    """Persian thermal receipt (§17, §243). ``columns`` follows the paper width
-    (§180): 32 for 58 mm, 42 for 76 mm, 48 for 80 mm."""
+                 currency_label: str = "تومان", note: str = "") -> str:
+    """Persian thermal receipt (§17, §243) — v2.8 professional layout.
+
+    ``columns`` follows the paper width (§180): 32 for 58 mm, 42 for 76 mm, 48 for 80 mm.
+    Layout: store block → framed invoice meta → item table (name / qty×price / amount)
+    → totals block with a highlighted «قابل پرداخت» → payment → footer + note.
+    Digits are Persian; every line is exactly ≤ W characters so ESC/POS never wraps.
+    """
     W = max(24, int(columns))
     store = store or {}
     lines: list[str] = []
-    sep = "-" * W
+    thin = "─" * W
+    thick = "═" * W
+    dots = "·" * W
 
-    def kv(label: str, value: str) -> str:
+    def kv(label: str, value: str, fill: str = " ") -> str:
         pad = W - len(label) - len(value)
-        return f"{label}{' ' * max(1, pad)}{value}"
+        return f"{label}{fill * max(1, pad)}{value}"
 
+    def center(t: str) -> str:
+        return t[:W].center(W)
+
+    # ── store block ────────────────────────────────────────────────────────
     if store.get("name"):
-        lines.append(store["name"].center(W))
+        lines.append(center(f"◆  {store['name']}  ◆"))
     if header:
-        lines.append(header.center(W))
+        lines.append(center(header))
     for k in ("address", "phone"):
         if store.get(k):
-            lines.append(str(store[k]).center(W))
-    lines.append(sep)
-    lines.append(kv("فاکتور:", invoice.invoice_number))
-    lines.append(kv("تاریخ:", _fa_date(invoice.created_at)))
-    if invoice.customer is not None:
-        lines.append(kv("مشتری:", (invoice.customer.name or "")[: W - 8]))
-    lines.append(sep)
-    for it in invoice.items:
-        name = (it.product.name if it.product else f"#{it.product_id}")[: W - 2]
-        lines.append(name)
-        lines.append(kv(f"  {it.qty:g} × {it.unit_sell_price:,.0f}", f"{it.subtotal:,.0f}"))
+            lines.append(center(str(store[k]).translate(_FA_DIGITS)))
+    lines.append(thick)
+    # ── invoice meta ───────────────────────────────────────────────────────
+    lines.append(kv("شمارهٔ فاکتور", str(invoice.invoice_number).translate(_FA_DIGITS)))
+    lines.append(kv("تاریخ و ساعت", _fa_date(invoice.created_at).translate(_FA_DIGITS)))
+    if invoice.customer is not None and (invoice.customer.name or ""):
+        lines.append(kv("مشتری", (invoice.customer.name or "")[: W - 8]))
+    if getattr(invoice, "cashier", None) is not None and getattr(invoice.cashier, "full_name", None):
+        lines.append(kv("صندوق‌دار", str(invoice.cashier.full_name)[: W - 10]))
+    lines.append(thin)
+    # ── items ──────────────────────────────────────────────────────────────
+    lines.append(kv("شرح کالا", "مبلغ"))
+    lines.append(dots)
+    for n, it in enumerate(invoice.items, 1):
+        name = (it.product.name if it.product else f"#{it.product_id}")
+        num = f"{n}".translate(_FA_DIGITS) + ". "
+        lines.append((num + name)[:W])
+        qty = f"{float(it.qty):g}".translate(_FA_DIGITS)
+        lines.append(kv(f"   {qty} × {_fa_num(it.unit_sell_price)}", _fa_num(it.subtotal)))
         if it.discount:
-            lines.append(kv("  تخفیف خط", f"-{it.discount:,.0f}"))
-    lines.append(sep)
-    lines.append(kv("جمع کل:", f"{invoice.subtotal:,.0f}"))
+            lines.append(kv("   تخفیف", f"-{_fa_num(it.discount)}"))
+    lines.append(thin)
+    # ── totals ─────────────────────────────────────────────────────────────
+    count = sum(1 for _ in invoice.items)
+    lines.append(kv(f"تعداد اقلام: {str(count).translate(_FA_DIGITS)}", ""))
+    lines.append(kv("جمع کل", _fa_num(invoice.subtotal)))
     if invoice.discount:
-        lines.append(kv("تخفیف:", f"-{invoice.discount:,.0f}"))
+        lines.append(kv("تخفیف فاکتور", f"-{_fa_num(invoice.discount)}"))
     if invoice.tax:
-        lines.append(kv("مالیات:", f"{invoice.tax:,.0f}"))
-    lines.append(kv("قابل پرداخت:", f"{invoice.total_amount:,.0f} {currency_label}"))
-    method = {"CASH": "نقدی", "CARD": "کارت", "ACCOUNT": "نسیه (حساب دفتری)",
+        lines.append(kv("مالیات", _fa_num(invoice.tax)))
+    lines.append(thick)
+    lines.append(kv("قابل پرداخت", f"{_fa_num(invoice.total_amount)} {currency_label}", "."))
+    lines.append(thick)
+    method = {"CASH": "نقدی", "CARD": "کارت‌خوان", "ACCOUNT": "نسیه (حساب دفتری)",
               "MIXED": "ترکیبی"}.get(invoice.payment_method, invoice.payment_method)
-    lines.append(kv("روش پرداخت:", method))
-    lines.append(sep)
+    lines.append(kv("روش پرداخت", method))
+    lines.append(thin)
+    # ── footer ─────────────────────────────────────────────────────────────
     if footer:
-        lines.append(footer.center(W))
-    lines.append("از خرید شما سپاسگزاریم".center(W))
+        lines.append(center(footer))
+    lines.append(center(note or "از خرید شما سپاسگزاریم"))
+    lines.append(center("منتظر دیدار دوبارهٔ شما هستیم"))
+    lines.append(thin)
+    lines.append(center("سوپری من · supery"))
     return "\n".join(lines)
 
 
@@ -135,7 +170,8 @@ def render_receipt(db: Session, invoice: Invoice) -> str:
     _RECEIPT_TZ["name"] = get_setting(db, "time.timezone", "Asia/Tehran") or "Asia/Tehran"
     return receipt_text(invoice, header=prof["header"], footer=prof["footer"],
                         columns=prof["columns"], store=prof["store"],
-                        currency_label=prof["currency_label"])
+                        currency_label=prof["currency_label"],
+                        note=get_setting(db, "store.receipt_note", ""))
 
 
 def _printer(db: Session) -> HardwareDevice | None:

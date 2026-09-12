@@ -85,12 +85,17 @@ def visual_rtl(line: str) -> str:
     bidi engine, keeping runs of digits/latin in their natural LTR order."""
     if not has_rtl(line):
         return line
-    tokens = re.findall(r"[0-9A-Za-z.,:/%\-]+|\s+|.", line)
+    tokens = re.findall(r"[0-9۰-۹A-Za-z.,:/%\-×]+|\s+|.", line)
     return "".join(reversed(tokens))
 
 
+# v2.8 — decorative characters used by the professional receipt layout that cp1256
+# cannot encode; mapped to the closest printable ASCII so the frame survives on paper.
+_CP1256_FALLBACK = str.maketrans({"─": "-", "═": "=", "·": ".", "◆": "*", "×": "x", "ٔ": ""})
+
+
 def encode_line(line: str) -> bytes:
-    return visual_rtl(line).encode("cp1256", errors="replace")
+    return visual_rtl(line).translate(_CP1256_FALLBACK).encode("cp1256", errors="replace")
 
 
 @dataclass

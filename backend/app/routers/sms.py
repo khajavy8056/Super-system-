@@ -117,6 +117,12 @@ def guide(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     missing = []
     if not provider:
         missing.append("sms.provider")
+    elif provider == "phone":
+        seen = sms_svc.get_setting(db, "sms.phone_last_seen", "")
+        state["phone_device"] = sms_svc.get_setting(db, "sms.phone_device", "")
+        state["phone_seen"] = seen
+        if not seen:
+            missing.append("phone_not_connected")
     elif provider == "melipayamak":
         if not state["has_username"]:
             missing.append("sms.username")
@@ -140,6 +146,7 @@ def guide(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
         {"n": 5, "title": "شارژ اعتبار", "text": "از «افزایش اعتبار» حداقل مبلغی شارژ کنید؛ بدون اعتبار، ارسال با خطای «اعتبار کافی نیست» (کد ۲) برمی‌گردد."},
         {"n": 6, "title": "تنظیم در همین برنامه", "text": "سرویس پیامک = melipayamak · حالت = pattern یا line · مقادیر بالا را وارد و ذخیره کنید؛ سپس «تست اتصال سرویس پیامک» را بزنید (اعتبار پنل را نشان می‌دهد)."},
         {"n": 7, "title": "پیامک خودکار فاکتور", "text": "«ارسال پیامک فاکتور» روشن باشد. مستقل از پرینتر است: می‌توانید «چاپ خودکار رسید» را خاموش کنید و فقط پیامک برود. به محض تأیید فاکتور برای مشتریِ دارای شمارهٔ موبایل ارسال می‌شود (مشتری آزاد = بدون پیامک)."},
+        {"n": 0, "title": "ساده‌ترین راه: سیم‌کارت گوشی فروشگاه (بدون پنل)", "text": "اگر اپ «سوپری من» را روی گوشی فروشگاه نصب و به همین رایانه متصل کرده‌اید: در اپ → تنظیمات → پیامک، «ارسال پیامک از طریق سیم‌کارت این گوشی» را روشن کنید، سیم‌کارت را انتخاب و اجازهٔ ارسال را بدهید. سپس در رایانه «سرویس پیامک = phone» را انتخاب کنید. از آن پس همهٔ پیامک‌های فاکتور/یادآوری از سیم‌کارت گوشی ارسال می‌شود (هزینه طبق تعرفهٔ اپراتور؛ گوشی باید روشن و متصل باشد). برای حجم بالا یا خطوط خدماتی، ملی‌پیامک/کاوه‌نگار را طبق مراحل زیر راه‌اندازی کنید."},
         {"n": 8, "title": "کاوه‌نگار (جایگزین)", "site": "https://panel.kavenegar.com", "text": "ثبت‌نام → «تنظیمات» → «API Key» را کپی کنید؛ در برنامه: سرویس = kavenegar و کلید API را وارد کنید."},
     ]
     return {"state": state, "steps": steps,
@@ -156,3 +163,27 @@ def templates(db: Session = Depends(get_db), _: User = Depends(require_permissio
                     "value": sms_svc.get_setting(db, key, default),
                     "placeholders": sorted(set(_re.findall(r"{(\w+)}", default)))})
     return out
+
+
+# --- v2.8: outbox handed to the paired phone's SIM card ------------------------------
+
+@router.get("/outbox")
+def outbox(device_id: str = "", db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """PENDING messages for the phone that sends through its SIM (provider «phone»)."""
+    rows = sms_svc.outbox_for_phone(db, device_id)
+    db.commit()
+    return {"messages": rows, "provider": sms_svc.get_setting(db, "sms.provider", "")}
+
+
+class OutboxReport(BaseModel):
+    id: int
+    status: str            # SENT | RETRYING
+    response: str | None = None
+    error: str | None = None
+
+
+@router.post("/outbox/report")
+def outbox_report(body: OutboxReport, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    msg = sms_svc.outbox_report(db, sms_id=body.id, status=body.status, response=body.response, error=body.error)
+    db.commit()
+    return {"id": body.id, "status": msg.status if msg else "UNKNOWN"}

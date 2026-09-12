@@ -623,3 +623,32 @@ html, body { overflow: hidden; }
 .pos-side .pos-suggest { position: absolute; inset-inline: 0; top: 64px; z-index: 40; max-height: min(62vh, 520px);
   overflow-y: auto; box-shadow: 0 18px 48px rgba(0,0,0,.45); border-radius: 14px; margin-top: 0; }
 .pos-side .pos-suggest .sug { padding: 11px 14px; font-size: 14px; }
+
+/* ===== v2.8 — «luxe» palette: midnight navy + emerald primary + champagne gold accent (calm, no glow) ===== */
+:root, [data-theme="dark"] {
+  --bg: #0d1420; --bg2: #121b2a; --card: rgba(24, 34, 52, .86); --border: rgba(201, 162, 78, .14);
+  --text: #f2f0ea; --muted: #97a3b6; --primary: #1f9a83; --primary-h: #17806c; --accent: #c9a24e; --teal: #1f9a83; --gold: #c9a24e;
+  --green: #2fa872; --red: #d64f5a; --amber: #d9962f; --violet: #7a6bd1;
+  --grad: linear-gradient(135deg, #1f9a83 0%, #145e63 100%); --grad-teal: linear-gradient(135deg, #1f9a83 0%, #c9a24e 140%); --grad-green: linear-gradient(135deg, #22855a 0%, #2fa872 100%);
+  --glow-teal: 0 4px 14px rgba(31,154,131,.14); --glow-violet: 0 4px 14px rgba(122,107,209,.14); --glow-green: 0 4px 14px rgba(47,168,114,.14); --glow-red: 0 4px 14px rgba(214,79,90,.12); --glow-amber: 0 4px 14px rgba(217,150,47,.12);
+}
+html[data-theme="light"], [data-theme="light"] {
+  --bg: #f4f1ea; --bg2: #ffffff; --card: rgba(255,255,255,.94); --border: rgba(120, 95, 40, .14);
+  --text: #1a2130; --muted: #6e7787; --primary: #1e8f7a; --primary-h: #176f60; --accent: #b08a3c; --teal: #1e8f7a; --gold: #b08a3c;
+  --green: #1f8f5a; --red: #c8404b; --amber: #b8730a; --violet: #6d5fc0;
+  --grad: linear-gradient(135deg, #1e8f7a 0%, #145e63 100%); --grad-teal: linear-gradient(135deg, #1e8f7a 0%, #b08a3c 140%); --grad-green: linear-gradient(135deg, #1f8f5a 0%, #2fa872 100%);
+}
+.sidebar { background: linear-gradient(180deg, #0f1826, #0b111c); border-inline-end: 1px solid rgba(201,162,78,.12); }
+.sidebar .nav-item.active { background: linear-gradient(90deg, rgba(31,154,131,.22), rgba(201,162,78,.10)); box-shadow: inset 3px 0 0 var(--gold); }
+[data-theme="light"] .sidebar { background: linear-gradient(180deg, #14202f, #0e1622); }
+.card, .dcard { border-color: var(--border); }
+.btn-primary { background: var(--grad); border: 0; }
+.btn-primary:hover { filter: brightness(1.06); }
+.badge-green { background: rgba(47,168,114,.14); color: var(--green); } .badge-red { background: rgba(214,79,90,.14); color: var(--red); }
+.pos-totals .grand { color: var(--gold); }
+h1, h2, h3 { letter-spacing: .1px; }
+.trend .line.sales { stroke: #1f9a83; } .trend .line.profit { stroke: #c9a24e; } .trend .dots circle { stroke: #1f9a83; }
+/* on-screen receipt: paper card with a gold hairline and a real thermal-paper feel */
+.receipt { background: #fffdf8; color: #1a1a1a; border: 1px solid rgba(176,138,60,.35); border-top: 4px solid var(--gold); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 18px 20px; font-size: 13.5px; line-height: 1.75; }
+@media print { .receipt { border: 0; box-shadow: none; max-width: none; font-size: 12px; } }

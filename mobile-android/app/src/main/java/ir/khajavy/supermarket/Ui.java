@@ -55,9 +55,11 @@ public final class Ui {
         dark = isDark;
         // v2.2 palette — follows the user's reference mockups: deep navy dark theme, soft
         // off-white light theme, one calm teal accent, no neon.
-        if (dark) { BG = 0xFF1B2536; BG2 = 0xFF223046; CARD = 0xFF27364B; CARD2 = 0xFF2E3F56; BORDER = 0xFF35475F; TEXT = 0xFFEAF0F7; MUTED = 0xFF93A3B8; }
-        else { BG = 0xFFEDF0F5; BG2 = 0xFFFFFFFF; CARD = 0xFFF7F8FB; CARD2 = 0xFFEEF1F6; BORDER = 0xFFDDE3EC; TEXT = 0xFF1C2433; MUTED = 0xFF6B7789; }
-        TEAL = 0xFF2AA79B; PRIMARY = TEAL; PRIMARY2 = dark ? 0xFF1F8A80 : 0xFF3DBFB2; GREEN = 0xFF2FB673; RED = 0xFFE05252; AMBER = 0xFFE3A03A; GOLD = 0xFFD9A441; VIOLET = 0xFF7C6CE0;
+        // v2.8 «luxe» palette — deep midnight-navy surfaces, ivory light theme, a muted emerald primary
+        // and a champagne-gold accent (hero/avatars/CTA gradient). Still calm: no neon, no glow.
+        if (dark) { BG = 0xFF0F1622; BG2 = 0xFF151E2D; CARD = 0xFF1A2536; CARD2 = 0xFF202E42; BORDER = 0xFF2B3A50; TEXT = 0xFFF2F0EA; MUTED = 0xFF9AA6B8; }
+        else { BG = 0xFFF4F1EA; BG2 = 0xFFFFFFFF; CARD = 0xFFFCFBF8; CARD2 = 0xFFF1EDE4; BORDER = 0xFFE3DDD0; TEXT = 0xFF1A2130; MUTED = 0xFF6E7787; }
+        TEAL = 0xFF1E8F7A; PRIMARY = TEAL; PRIMARY2 = dark ? 0xFF15705F : 0xFF2AA88F; GOLD = 0xFFC9A24E; GREEN = 0xFF2FA872; RED = 0xFFD64F5A; AMBER = 0xFFD9962F; VIOLET = 0xFF7A6BD1;
     }
     public static int dp(float v) { return Math.round(v * density); }
     public static void toast(String s) { if (ctx != null) Api.ui(() -> Toast.makeText(ctx, s, Toast.LENGTH_SHORT).show()); }
@@ -96,7 +98,7 @@ public final class Ui {
     public static GradientDrawable surface(float radius) { return gradient(dark ? CARD2 : BG2, CARD, BORDER, radius); }
     public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(16), dp(14), dp(16), dp(14)); l.setElevation(dark ? 0 : dp(1.5f)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** hero card (dashboard welcome): teal gradient, white text. */
-    public static LinearLayout hero(Context c) { LinearLayout l = col(c); l.setBackground(gradient(PRIMARY2, PRIMARY, 0, 22)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout hero(Context c) { LinearLayout l = col(c); l.setBackground(gradient(dark ? 0xFF1B3A4A : 0xFF1E8F7A, dark ? 0xFF0F5F58 : 0xFF176F60, GOLD & 0x55FFFFFF, 22)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** dashboard tile: rounded icon badge + label + big value (+ optional custom view below). */
     public static LinearLayout tile(Context c, String icon, int accent, String label, String value, View extra) {
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14)); l.setMinimumHeight(dp(118));
@@ -113,7 +115,7 @@ public final class Ui {
         return r;
     }
     /** circular avatar with initials. */
-    public static TextView avatar(Context c, String name, int size) { String s = name == null || name.trim().isEmpty() ? "؟" : name.trim().substring(0, 1); TextView t = text(c, s, size / 2.4f, Color.WHITE, true); t.setGravity(Gravity.CENTER); t.setBackground(gradient(PRIMARY2, PRIMARY, 0, size)); t.setLayoutParams(lp(dp(size), dp(size))); return t; }
+    public static TextView avatar(Context c, String name, int size) { String s = name == null || name.trim().isEmpty() ? "؟" : name.trim().substring(0, 1); TextView t = text(c, s, size / 2.4f, Color.WHITE, true); t.setGravity(Gravity.CENTER); t.setBackground(gradient(GOLD, 0xFFA8853A, 0, size)); t.setLayoutParams(lp(dp(size), dp(size))); return t; }
     /** card containing a single muted note. */
     public static LinearLayout note(Context c, String title, String text) { LinearLayout l = card(c, title); l.addView(muted(c, text)); return l; }
     public static LinearLayout card(Context c, String title) { LinearLayout l = card(c); if (title != null) l.addView(h2(c, title)); return l; }

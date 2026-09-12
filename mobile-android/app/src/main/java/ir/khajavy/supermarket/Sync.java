@@ -88,7 +88,7 @@ public final class Sync {
                 JSONObject pull = res.optJSONObject("pull");
                 if (pull != null) Db.applyPull(pull, cursor == null);
                 if (res.has("cursor")) Db.kv("cursor", res.optString("cursor"));
-                Db.kv("last_sync", Db.now());
+                Db.kv("last_sync", Db.now()); SmsLocal.relayPcOutbox();   // v2.8: PC queue → this SIM
                 // after the first successful sync the local (negative-id) rows have been replaced by the PC's truth
                 if (applied > 0) Db.applyPull(fetchFull(), true);
             }
