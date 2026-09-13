@@ -274,15 +274,26 @@ function can(perm) {
   return (state.user.permissions || []).includes(perm);
 }
 
+/* v2.9 — sidebar grouped into sections (icon badge + label), like a premium back-office. */
+const NAV_GROUPS = [
+  ["فروش", ["pos", "customers", "invoices"]],
+  ["کالا و انبار", ["products", "batches", "inventory"]],
+  ["رشد و تحلیل", ["dashboard", "marketing", "reports", "accounting"]],
+  ["سامانه", ["hardware", "users", "settings", "diagnostics", "support", "audit"]],
+];
 function buildNav() {
   const nav = $("#nav");
   nav.innerHTML = "";
-  NAV.forEach(([key, label, perm, ico]) => {
-    if (!can(perm)) return;
-    const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
-      onclick: () => go(key) });
-    btn.innerHTML = `${icon(ico, 18)}<span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
-    nav.append(btn);
+  const byKey = Object.fromEntries(NAV.map((n) => [n[0], n]));
+  NAV_GROUPS.forEach(([title, keys]) => {
+    const items = keys.map((k) => byKey[k]).filter((n) => n && can(n[2]));
+    if (!items.length) return;
+    const h = el("div", { class: "nav-sec" }); h.textContent = title; nav.append(h);
+    items.forEach(([key, label, perm, ico]) => {
+      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), onclick: () => go(key) });
+      btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
+      nav.append(btn);
+    });
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
 }
@@ -617,7 +628,7 @@ function renderPosCart() {
   if (cpEl) {
     cpEl.innerHTML = posState.couponInfo
       ? (posState.couponInfo.ok
-          ? `<span class="badge badge-green">🎁 ${esc(posState.coupon)} — ${money(posState.couponInfo.discount)}</span>
+          ? `<span class="badge badge-green">${icon("gift", 14)} ${esc(posState.coupon)} — ${money(posState.couponInfo.discount)}</span>
              <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`
           : `<span class="badge badge-red">${esc(posState.couponInfo.message || "کوپن نامعتبر")}</span>
              <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`)

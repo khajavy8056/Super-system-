@@ -29,7 +29,7 @@ public final class DatePicker {
         EditText e = Ui.input(c, hint, true);
         e.setFocusable(false); e.setClickable(true); e.setCursorVisible(false); e.setLongClickable(false);
         e.setCompoundDrawablePadding(Ui.dp(8));
-        e.setHint(hint + "  📅");
+        e.setHint(hint); { Icons.Icon di = Icons.draw("calendar", Ui.GOLD, 2f); di.setBounds(0, 0, Ui.dp(18), Ui.dp(18)); e.setCompoundDrawables(di, null, null, null); e.setCompoundDrawablePadding(Ui.dp(8)); }
         if (initialIso != null && initialIso.length() >= 10) e.setText(fmt(Jalali.toJalali(Integer.parseInt(initialIso.substring(0, 4)), Integer.parseInt(initialIso.substring(5, 7)), Integer.parseInt(initialIso.substring(8, 10)))));
         e.setOnClickListener(v -> open(c, hint, Ui.str(e), j -> e.setText(j == null ? "" : fmt(j))));
         return e;

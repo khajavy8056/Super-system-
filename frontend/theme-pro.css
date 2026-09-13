@@ -652,3 +652,33 @@ h1, h2, h3 { letter-spacing: .1px; }
 .receipt { background: #fffdf8; color: #1a1a1a; border: 1px solid rgba(176,138,60,.35); border-top: 4px solid var(--gold); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 18px 20px; font-size: 13.5px; line-height: 1.75; }
 @media print { .receipt { border: 0; box-shadow: none; max-width: none; font-size: 12px; } }
+
+/* =====================================================================
+   v2.9 «Atelier» — sidebar sections, icon badges, richer surfaces.
+   ===================================================================== */
+:root { --gold: #cba75a; --gold-soft: rgba(203,167,90,.16); --ink: #0c121c; }
+.sidebar { width: 248px; padding: 0 10px 10px; background: linear-gradient(180deg, #0f1826 0%, #0b111b 100%); border-left: 1px solid rgba(203,167,90,.16); }
+[data-theme="light"] .sidebar { background: linear-gradient(180deg, #131c2c, #0d1524); }
+.sidebar .brand { padding: 20px 10px 16px; margin: 0 -10px 6px; border-bottom: 1px solid rgba(255,255,255,.06); background: linear-gradient(135deg, rgba(31,140,120,.28), rgba(203,167,90,.08)); }
+.sidebar .brand-logo { box-shadow: 0 0 0 1px rgba(203,167,90,.45), 0 6px 18px rgba(0,0,0,.35); }
+.nav-sec { font-size: 10.5px; letter-spacing: .6px; color: #7d8aa3; margin: 14px 12px 6px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.nav-sec::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(203,167,90,.35), transparent); }
+.sidebar .nav-item { padding: 8px 10px; margin: 1px 0; border-radius: 12px; font-size: 13px; gap: 10px; color: #cfd6e4; border: 1px solid transparent; transform: none !important; }
+.sidebar .nav-item .nav-ic { width: 30px; height: 30px; border-radius: 9px; display: inline-grid; place-items: center; background: rgba(255,255,255,.05); color: #9fb0c8; transition: background .15s, color .15s; flex: none; }
+.sidebar .nav-item:hover { background: rgba(255,255,255,.05); color: #fff; }
+.sidebar .nav-item:hover .nav-ic { color: var(--gold); }
+.sidebar .nav-item.active { background: linear-gradient(90deg, rgba(31,140,120,.30), rgba(31,140,120,.06)); border-color: rgba(31,140,120,.35); color: #fff; box-shadow: none; }
+.sidebar .nav-item.active .nav-ic { background: linear-gradient(135deg, #1f8c78, #166b5c); color: #fff; box-shadow: 0 0 0 1px rgba(203,167,90,.5); }
+.sidebar .nav-item.active::after { content: ""; position: absolute; inset-inline-end: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
+.sidebar .sidebar-footer { margin: 8px -10px 0; padding: 12px 14px; border-top: 1px solid rgba(255,255,255,.06); }
+.topbar { border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--bg2), color-mix(in srgb, var(--bg2) 85%, var(--bg))); }
+.card { border-radius: 18px; border: 1px solid var(--border); box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 10px 30px rgba(0,0,0,.18); }
+[data-theme="light"] .card { box-shadow: 0 8px 26px rgba(23,30,43,.07); }
+.card h3 { display: flex; align-items: center; gap: 8px; }
+.card h3::before { content: ""; width: 4px; height: 16px; border-radius: 3px; background: linear-gradient(180deg, var(--gold), #a8853a); }
+.btn-primary { background: linear-gradient(135deg, #2aa48c, #1f8c78); border: 1px solid rgba(203,167,90,.35); box-shadow: 0 6px 18px rgba(31,140,120,.28); }
+.pos-btn-pay { background: linear-gradient(135deg, #2aa48c, #166b5c) !important; border: 1px solid rgba(203,167,90,.55) !important; }
+.pos-total, .pos-total b, .grand, .cart-total b { color: var(--gold) !important; }
+.qa { border-radius: 14px; }
+@media (max-width: 1100px) { .sidebar { width: 210px; } }
+@media (max-width: 900px) { .sidebar { width: 64px; } .nav-sec { display: none; } .sidebar .nav-item { justify-content: center; } .sidebar .nav-item.active::after { display: none; } }

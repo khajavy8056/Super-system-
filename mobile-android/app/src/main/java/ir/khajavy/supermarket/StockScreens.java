@@ -202,9 +202,9 @@ public final class StockScreens {
         LinearLayout grid = Ui.col(a); l.addView(grid);
         Dialog[] d = new Dialog[1];
         java.util.function.Consumer<JSONObject> done = (rep) -> Api.ui(() -> { if (rep.optBoolean("ok")) { Ui.done(Ui.ctx, "تصویر کالا ثبت شد", null, null); if (d[0] != null) d[0].dismiss(); after.run(); } else Ui.toast("تصویر نامعتبر: " + rep.optString("reason")); });
-        l.addView(Ui.primary(a, "📷 عکس خودم (دوربین/گالری)", () -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT); i.setType("image/*"); i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        l.addView(Ui.primary(a, "عکس خودم (دوربین / گالری)", () -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT); i.setType("image/*"); i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
             a.pickCb = (uri) -> Api.bg(() -> { try { java.io.InputStream in = a.getContentResolver().openInputStream(uri); java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(); byte[] buf = new byte[8192]; int n; while ((n = in.read(buf)) > 0) bo.write(buf, 0, n); in.close(); done.accept(Images.setFromBytes(a, pid, bo.toByteArray(), "upload")); } catch (Exception e) { Api.ui(() -> Ui.toast("خواندن عکس ناموفق")); } });
-            a.startActivityForResult(android.content.Intent.createChooser(i, "انتخاب عکس کالا"), AppActivity.REQ_PICK); }));
+            Biometric.markInternal(); a.startActivityForResult(android.content.Intent.createChooser(i, "انتخاب عکس کالا"), AppActivity.REQ_PICK); }));
         EditText url = Ui.input(a, "یا نشانی تصویر (https://…)"); l.addView(url);
         l.addView(Ui.small(a, "ثبت نشانی", () -> { String u = Ui.str(url); if (u.isEmpty()) return; Ui.toast("در حال دریافت…"); Api.bg(() -> done.accept(Images.setFromUrl(a, pid, u, "manual-url"))); }));
         d[0] = Ui.sheet(a, "انتخاب تصویر کالا", l);

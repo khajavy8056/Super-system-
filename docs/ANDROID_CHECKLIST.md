@@ -1,4 +1,4 @@
-# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.8.0 (بومی / Native)
+# چک‌لیست کامل برنامهٔ اندروید «سوپری من» — v2.9.0 (بومی / Native)
 
 ## تازه‌های v2.4 — استقلال کامل (وضعیت)
 
@@ -27,7 +27,8 @@
 | پورت از جفت‌سازی/بیکن (نه 8000)، کشف مجدد پس از تغییر IP و تغییر شبکه | DONE (کد + کامپایل + تست بار جفت‌سازی) | `Sync.watchNetwork`, `Api.health`, `test_relay_config_and_pairing_payload` |
 | اتصال از راه دور (رله) + بازگشت خودکار به LAN | DONE (کد + کامپایل + تست رفت‌وبرگشت رله) | `Relay.java`, `relay/server.py`, `relay_client.py` |
 | v2.7 بانک کالا: جدول `bank` (db v3)، بذر از asset، pull.bank از رایانه، `BANK_REMEMBER`، شناسایی آفلاین در «کالای جدید»، بدون نام منابع در UI | DONE (کد + کامپایل + تست سرور) / NOT VERIFIED روی گوشی | `Db.java bankPut/bankGet/bankRemember/importBankSeed`, `Images.lookupBarcode`, `StockScreens.java` |
-| APK 2.8.0 (versionCode 20800) | DONE | `releases/android/SupermarketMobile-2.8.0.apk` + sha256 (همان کلید — نصب روی نسخهٔ قبل) |
+| v2.9 قفل اثر انگشت فقط پس از پس‌زمینهٔ واقعی (نه اسکنر/گالری) + آیکون‌های وکتور + پوستهٔ Atelier | DONE (کد + کامپایل) / NOT VERIFIED روی گوشی | `Biometric.java`, `Icons.java`, `AppActivity.java`, `Ui.java` |
+| APK 2.9.0 (versionCode 20900) | DONE | `releases/android/SupermarketMobile-2.9.0.apk` + sha256 (همان کلید — نصب روی نسخهٔ قبل) |
 | APK 2.3.0 (versionCode 20300) | DONE | `releases/android/SupermarketMobile-2.3.0.apk` + sha256 (کلید جدید — ارتقا از 2.2 یک‌بار حذف/نصب) |
 
 

@@ -44,7 +44,7 @@ public final class Ui {
     public static boolean dark = true;
 
     // palette (calm, no neon — the user's rule)
-    public static int BG, BG2, CARD, CARD2, BORDER, TEXT, MUTED, PRIMARY, PRIMARY2, GREEN, RED, AMBER, VIOLET, TEAL, GOLD;
+    public static int BG, BG2, CARD, CARD2, BORDER, TEXT, MUTED, PRIMARY, PRIMARY2, GREEN, RED, AMBER, VIOLET, TEAL, GOLD, GOLD_LINE, INK;
 
     public static void init(Context c) {
         ctx = c.getApplicationContext(); density = c.getResources().getDisplayMetrics().density;
@@ -57,9 +57,13 @@ public final class Ui {
         // off-white light theme, one calm teal accent, no neon.
         // v2.8 «luxe» palette — deep midnight-navy surfaces, ivory light theme, a muted emerald primary
         // and a champagne-gold accent (hero/avatars/CTA gradient). Still calm: no neon, no glow.
-        if (dark) { BG = 0xFF0F1622; BG2 = 0xFF151E2D; CARD = 0xFF1A2536; CARD2 = 0xFF202E42; BORDER = 0xFF2B3A50; TEXT = 0xFFF2F0EA; MUTED = 0xFF9AA6B8; }
-        else { BG = 0xFFF4F1EA; BG2 = 0xFFFFFFFF; CARD = 0xFFFCFBF8; CARD2 = 0xFFF1EDE4; BORDER = 0xFFE3DDD0; TEXT = 0xFF1A2130; MUTED = 0xFF6E7787; }
-        TEAL = 0xFF1E8F7A; PRIMARY = TEAL; PRIMARY2 = dark ? 0xFF15705F : 0xFF2AA88F; GOLD = 0xFFC9A24E; GREEN = 0xFF2FA872; RED = 0xFFD64F5A; AMBER = 0xFFD9962F; VIOLET = 0xFF7A6BD1;
+        // v2.9 «Atelier» — richer, more expensive read: ink-navy with a warm undertone, cards a
+        // touch lighter than the page, hairlines with a whisper of gold; light theme is warm ivory
+        // with porcelain cards. One emerald primary, champagne gold for emphasis. No neon, no glow.
+        if (dark) { BG = 0xFF0C121C; BG2 = 0xFF121A27; CARD = 0xFF172131; CARD2 = 0xFF1E2A3C; BORDER = 0xFF2A3648; TEXT = 0xFFF3F0E8; MUTED = 0xFF97A3B4; }
+        else { BG = 0xFFF3EFE6; BG2 = 0xFFFFFFFF; CARD = 0xFFFDFCF9; CARD2 = 0xFFF2EEE5; BORDER = 0xFFE2DBCC; TEXT = 0xFF171E2B; MUTED = 0xFF6B7484; }
+        TEAL = 0xFF1F8C78; PRIMARY = TEAL; PRIMARY2 = dark ? 0xFF166B5C : 0xFF2AA48C; GOLD = 0xFFCBA75A; GREEN = 0xFF2FA872; RED = 0xFFD3505B; AMBER = 0xFFD8952E; VIOLET = 0xFF7B6ED0;
+        GOLD_LINE = dark ? 0x3DCBA75A : 0x33B58F3E; INK = dark ? 0xFF0A0F17 : 0xFF171E2B;
     }
     public static int dp(float v) { return Math.round(v * density); }
     public static void toast(String s) { if (ctx != null) Api.ui(() -> Toast.makeText(ctx, s, Toast.LENGTH_SHORT).show()); }
@@ -79,7 +83,7 @@ public final class Ui {
         t.setTextDirection(View.TEXT_DIRECTION_RTL); t.setGravity(Gravity.START); t.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); return t;
     }
     public static TextView h1(Context c, String s) { return text(c, s, 20, TEXT, true); }
-    public static TextView h2(Context c, String s) { TextView t = text(c, s, 16, TEXT, true); t.setPadding(0, 0, 0, dp(6)); return t; }
+    public static TextView h2(Context c, String s) { TextView t = text(c, s, 15.5f, TEXT, true); t.setPadding(0, 0, 0, dp(8)); GradientDrawable dot = rounded(GOLD, 0, 3); dot.setSize(dp(5), dp(16)); t.setCompoundDrawables(null, null, dot, null); t.setCompoundDrawablePadding(dp(8)); return t; }
     public static TextView body(Context c, String s) { return text(c, s, 14, TEXT, false); }
     public static TextView muted(Context c, String s) { return text(c, s, 12, MUTED, false); }
     public static TextView label(Context c, String s) { TextView t = text(c, s, 12, MUTED, false); t.setPadding(0, dp(8), 0, dp(4)); return t; }
@@ -95,16 +99,20 @@ public final class Ui {
     /** soft diagonal gradient (top-right → bottom-left, matches the mockups). */
     public static GradientDrawable gradient(int from, int to, int stroke, float radius) { GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TR_BL, new int[]{from, to}); if (stroke != 0) g.setStroke(dp(1), stroke); g.setCornerRadius(dp(radius)); return g; }
     /** default card surface: subtle gradient, 20dp radius, hairline border. */
-    public static GradientDrawable surface(float radius) { return gradient(dark ? CARD2 : BG2, CARD, BORDER, radius); }
-    public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(16), dp(14), dp(16), dp(14)); l.setElevation(dark ? 0 : dp(1.5f)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static GradientDrawable surface(float radius) { return gradient(dark ? CARD2 : BG2, CARD, dark ? 0xFF2E3B50 : BORDER, radius); }
+    /** premium card: dark surface with a gold hairline — hero sections, totals, the POS pay bar. */
+    public static GradientDrawable luxe(float radius) { GradientDrawable g = gradient(dark ? 0xFF1B2638 : 0xFF1C2433, dark ? 0xFF111A28 : 0xFF0F1622, 0, radius); g.setStroke(dp(1), GOLD_LINE | 0x66000000); return g; }
+    public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(22)); l.setPadding(dp(18), dp(16), dp(18), dp(16)); l.setElevation(dark ? 0 : dp(2.5f)); l.setOutlineSpotShadowColor(0x33000000); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** hero card (dashboard welcome): teal gradient, white text. */
-    public static LinearLayout hero(Context c) { LinearLayout l = col(c); l.setBackground(gradient(dark ? 0xFF1B3A4A : 0xFF1E8F7A, dark ? 0xFF0F5F58 : 0xFF176F60, GOLD & 0x55FFFFFF, 22)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout hero(Context c) { LinearLayout l = col(c); GradientDrawable g = gradient(0xFF1F8C78, dark ? 0xFF10303C : 0xFF135A50, 0, 24); g.setStroke(dp(1), 0x66CBA75A); l.setBackground(g); l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** dashboard tile: rounded icon badge + label + big value (+ optional custom view below). */
     public static LinearLayout tile(Context c, String icon, int accent, String label, String value, View extra) {
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14)); l.setMinimumHeight(dp(118));
-        LinearLayout top = row(c); TextView ic = text(c, icon, 16, accent, true); ic.setGravity(Gravity.CENTER); ic.setBackground(rounded((accent & 0x00FFFFFF) | (dark ? 0x33000000 : 0x1F000000), 0, 12)); ic.setLayoutParams(lp(dp(34), dp(34))); top.addView(ic);
+        LinearLayout top = row(c);
+        if (Icons.has(icon)) top.addView(Icons.badge(c, icon, accent, 36));
+        else { TextView ic = text(c, icon, 16, accent, true); ic.setGravity(Gravity.CENTER); ic.setBackground(rounded((accent & 0x00FFFFFF) | (dark ? 0x33000000 : 0x1F000000), 0, 12)); ic.setLayoutParams(lp(dp(34), dp(34))); top.addView(ic); }
         TextView lb = muted(c, label); lb.setPadding(dp(8), 0, 0, 0); lb.setLayoutParams(weight(1)); top.addView(lb); l.addView(top);
-        TextView v = text(c, value, 19, TEXT, true); v.setPadding(0, dp(10), 0, 0); l.addView(v);
+        TextView v = text(c, value, 20, TEXT, true); v.setPadding(0, dp(12), 0, 0); l.addView(v);
         if (extra != null) l.addView(extra); return l;
     }
     /** tiny sparkline built from views (no canvas needed). */
@@ -139,7 +147,7 @@ public final class Ui {
     /* ---------------- buttons ---------------- */
     public static Button btn(Context c, String s, int fill, int textColor, Runnable onClick) {
         Button b = new Button(c); b.setText(s); b.setAllCaps(false); b.setTypeface(FONT_BOLD); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); b.setTextColor(textColor);
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), fill == PRIMARY ? gradient(PRIMARY2, PRIMARY, 0, 14) : rounded(fill, fill == CARD || fill == BG2 || fill == CARD2 ? BORDER : 0, 14), null));
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), fill == PRIMARY ? gradient(PRIMARY2, PRIMARY, GOLD_LINE, 14) : rounded(fill, fill == CARD || fill == BG2 || fill == CARD2 ? BORDER : 0, 14), null));
         b.setMinHeight(dp(46)); b.setMinimumHeight(dp(46)); b.setPadding(dp(14), 0, dp(14), 0); b.setStateListAnimator(null); b.setElevation(0);
         b.setLayoutParams(margin(match(), 0, 4, 0, 4)); if (onClick != null) b.setOnClickListener(v -> onClick.run()); return b;
     }
@@ -147,12 +155,17 @@ public final class Ui {
     public static Button success(Context c, String s, Runnable r) { return btn(c, s, GREEN, Color.WHITE, r); }
     public static Button danger(Context c, String s, Runnable r) { Button b = btn(c, s, Color.TRANSPARENT, RED, r); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22E05252), rounded(Color.TRANSPARENT, RED, 14), null)); return b; }
     /** big call-to-action (POS «پرداخت»). */
-    public static Button cta(Context c, String s, Runnable r) { Button b = primary(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16); b.setMinHeight(dp(54)); b.setMinimumHeight(dp(54)); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), gradient(PRIMARY2, PRIMARY, 0, 16), null)); return b; }
+    public static Button cta(Context c, String s, Runnable r) { Button b = primary(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16); b.setMinHeight(dp(54)); b.setMinimumHeight(dp(54)); GradientDrawable g = gradient(PRIMARY2, PRIMARY, 0, 16); g.setStroke(dp(1), 0x88CBA75A); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), g, null)); b.setElevation(dp(3)); return b; }
     public static Button ghost(Context c, String s, Runnable r) { return btn(c, s, BG2, TEXT, r); }
     public static Button small(Context c, String s, Runnable r) { Button b = ghost(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); b.setMinHeight(dp(34)); b.setMinimumHeight(dp(34)); b.setLayoutParams(margin(lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT), 4, 2, 0, 2)); return b; }
     public static Button chip(Context c, String s, boolean active, Runnable r) { Button b = small(c, s, r); b.setBackground(rounded(active ? PRIMARY : CARD2, active ? 0 : BORDER, 20)); b.setTextColor(active ? Color.WHITE : TEXT); b.setPadding(dp(14), 0, dp(14), 0); return b; }
     /** icon-less pill chip with a leading glyph (POS: مشتری / کوپن / تخفیف). */
-    public static Button pill(Context c, String glyph, String s, boolean active, Runnable r) { return chip(c, glyph + "  " + s, active, r); }
+    public static Button pill(Context c, String glyph, String s, boolean active, Runnable r) {
+        Button b = chip(c, s, active, r);
+        if (Icons.has(glyph)) { Icons.Icon ic = Icons.draw(glyph, active ? Color.WHITE : MUTED, 2.1f); ic.setBounds(0, 0, dp(16), dp(16)); b.setCompoundDrawables(null, null, ic, null); b.setCompoundDrawablePadding(dp(6)); }
+        else b.setText(glyph + "  " + s);
+        return b;
+    }
 
     /* ---------------- list rows ---------------- */
     /** two-line list row (title / subtitle) with an optional trailing value and click. */
@@ -161,6 +174,7 @@ public final class Ui {
         LinearLayout col = col(c); col.addView(text(c, title, 14, TEXT, true)); if (sub != null && !sub.isEmpty()) { TextView s = muted(c, sub); s.setPadding(0, dp(2), 0, 0); col.addView(s); }
         col.setLayoutParams(weight(1)); r.addView(col);
         if (trailing != null) { TextView t = text(c, trailing, 14, trailingColor == 0 ? TEXT : trailingColor, true); t.setGravity(Gravity.END); t.setPadding(dp(8), 0, 0, 0); r.addView(t); }
+        else if (onClick != null) { ImageView ch = Icons.view(c, "chev", MUTED, 16); ch.setPadding(dp(6), 0, 0, 0); r.addView(ch); }
         if (onClick != null) { r.setClickable(true); r.setOnClickListener(v -> onClick.run()); }
         return r;
     }
@@ -168,7 +182,7 @@ public final class Ui {
     public static android.widget.ImageView thumb(Context c, JSONObject p, int sizeDp) {
         android.widget.ImageView iv = new android.widget.ImageView(c); iv.setLayoutParams(margin(lp(dp(sizeDp), dp(sizeDp)), 0, 0, 10, 0)); iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
         iv.setBackground(rounded((PRIMARY & 0x00FFFFFF) | 0x22000000, 0, 12)); iv.setClipToOutline(true);
-        String n = p == null ? "" : p.optString("name", ""); iv.setImageBitmap(letterTile(n.isEmpty() ? "🛍" : n.substring(0, 1), dp(sizeDp)));
+        String n = p == null ? "" : p.optString("name", ""); iv.setImageBitmap(letterTile(n.isEmpty() ? "•" : n.substring(0, 1), dp(sizeDp)));
         Images.bind(iv, p); return iv;
     }
     static android.graphics.Bitmap letterTile(String ch, int px) {
@@ -187,7 +201,7 @@ public final class Ui {
         TextView vt = text(c, v, 13, vColor == 0 ? TEXT : vColor, true); r.addView(vt); return r;
     }
     /** KPI tile. */
-    public static LinearLayout kpi(Context c, String label, String value, String sub, int accent) {
+    public static LinearLayout kpi(Context c, String label, String value, String sub, int accent) {  // v2.9: accent bar + larger value
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14));
         View bar = new View(c); bar.setBackground(rounded(accent, 0, 2)); bar.setLayoutParams(margin(lp(dp(28), dp(3)), 0, 0, 0, 8)); l.addView(bar);
         l.addView(muted(c, label)); TextView v = text(c, value, 18, TEXT, true); v.setPadding(0, dp(2), 0, 0); l.addView(v);
@@ -224,7 +238,7 @@ public final class Ui {
         try {
             Dialog d = new Dialog(c); d.requestWindowFeature(Window.FEATURE_NO_TITLE);
             LinearLayout root = col(c); root.setGravity(Gravity.CENTER_HORIZONTAL); root.setBackground(rounded(dark ? BG2 : Color.WHITE, 0, 24)); root.setPadding(dp(28), dp(26), dp(28), dp(24));
-            TextView ck = text(c, "✓", 34, Color.WHITE, true); ck.setGravity(Gravity.CENTER); ck.setBackground(rounded(GREEN, 0, 40)); ck.setLayoutParams(margin(lp(dp(72), dp(72)), 0, 0, 0, 14)); root.addView(ck);
+            ImageView ck = Icons.disc(c, "check", GREEN, Color.WHITE, 72); ck.setLayoutParams(margin(lp(dp(72), dp(72)), 0, 0, 0, 14)); root.addView(ck);
             TextView t = h1(c, title); t.setGravity(Gravity.CENTER); root.addView(t);
             if (detail != null && !detail.isEmpty()) { TextView m = muted(c, detail); m.setGravity(Gravity.CENTER); m.setPadding(0, dp(6), 0, 0); root.addView(m); }
             d.setContentView(root); Window w = d.getWindow(); if (w != null) { w.setBackgroundDrawableResource(android.R.color.transparent); w.setLayout(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT); w.setDimAmount(0.35f); }

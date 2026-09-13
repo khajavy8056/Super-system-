@@ -38,27 +38,27 @@ public final class SalesScreens {
             LinearLayout root = Ui.col(c); root.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
             // search row (mockup: rounded input + teal «اسکن» button)
             LinearLayout sr = Ui.row(c);
-            search = Ui.input(c, "🔍  نام یا بارکد کالا…"); search.setLayoutParams(Ui.weight(1)); sr.addView(search);
-            View scanB = Ui.btn(c, "▣ اسکن", Ui.PRIMARY, Color.WHITE, () -> a.scan("اسکن کالا برای فروش", this::onBarcode)); scanB.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(46)), 8, 0, 0, 6)); sr.addView(scanB);
+            search = Ui.input(c, "نام یا بارکد کالا…"); search.setLayoutParams(Ui.weight(1)); { Icons.Icon si = Icons.draw("search", Ui.MUTED, 2f); si.setBounds(0, 0, Ui.dp(18), Ui.dp(18)); search.setCompoundDrawables(null, null, si, null); search.setCompoundDrawablePadding(Ui.dp(8)); } sr.addView(search);
+            android.widget.ImageView scanB = Icons.disc(c, "scan", Ui.PRIMARY, Color.WHITE, 46); scanB.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33FFFFFF), Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, 0x88CBA75A, 14), null)); scanB.setOnClickListener(v -> a.scan("اسکن کالا برای فروش", this::onBarcode)); scanB.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(50), Ui.dp(46)), 8, 0, 0, 6)); sr.addView(scanB);
             root.addView(sr);
             search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (pending != null) h.removeCallbacks(pending); pending = () -> suggest(e.toString().trim()); h.postDelayed(pending, 220); } });
             search.setOnEditorActionListener((v, id, ev) -> { String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
             sugg = Ui.col(c); root.addView(sugg);
             // customer + coupon strip
             LinearLayout cs = Ui.row(c); cs.setPadding(0, Ui.dp(4), 0, Ui.dp(2));
-            cs.addView(Ui.pill(c, "👤", "مشتری", customer != null, this::pickCustomer)); cs.addView(Ui.pill(c, "🎟", "کوپن", coupon != null, this::askCoupon)); cs.addView(Ui.pill(c, "％", "تخفیف", invoiceDiscount > 0, this::askDiscount));
+            cs.addView(Ui.pill(c, "user", "مشتری", customer != null, this::pickCustomer)); cs.addView(Ui.pill(c, "gift", "کوپن", coupon != null, this::askCoupon)); cs.addView(Ui.pill(c, "percent", "تخفیف", invoiceDiscount > 0, this::askDiscount));
             root.addView(Ui.chips(c, cs));
             custTxt = Ui.text(c, "مشتری آزاد", 12, Ui.MUTED, false); custTxt.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); custTxt.setOnClickListener(v -> pickCustomer()); root.addView(custTxt);
             // cart list (scrolls)
             lines = Ui.col(c); android.widget.ScrollView sv = new android.widget.ScrollView(c); sv.addView(lines); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(sv);
             // footer
-            LinearLayout foot = Ui.col(c); foot.setBackground(Ui.surface(20)); foot.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(12)); foot.setElevation(Ui.dp(4));
-            LinearLayout tr = Ui.row(c); LinearLayout tl = Ui.col(c); tl.setLayoutParams(Ui.weight(1)); tl.addView(Ui.muted(c, "مبلغ قابل پرداخت")); cnt = Ui.muted(c, ""); tl.addView(cnt); tr.addView(tl); tot = Ui.text(c, Ui.money(0), 22, Ui.PRIMARY, true); tr.addView(tot); foot.addView(tr);
+            LinearLayout foot = Ui.col(c); foot.setBackground(Ui.luxe(22)); foot.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), Ui.dp(14)); foot.setElevation(Ui.dp(6));
+            LinearLayout tr = Ui.row(c); LinearLayout tl = Ui.col(c); tl.setLayoutParams(Ui.weight(1)); tl.addView(Ui.text(c, "مبلغ قابل پرداخت", 12, 0xCCF3F0E8, false)); cnt = Ui.text(c, "", 12, 0x99F3F0E8, false); tl.addView(cnt); tr.addView(tl); tot = Ui.text(c, Ui.money(0), 24, Ui.GOLD, true); tr.addView(tot); foot.addView(tr);
             LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(8), 0, 0);
-            View hold = Ui.ghost(c, "⏸ نگه‌داشتن", this::hold); hold.setLayoutParams(Ui.margin(Ui.weight(1), 0, 0, 3, 0)); br.addView(hold);
-            View held = Ui.ghost(c, "نگه‌داشته‌ها", () -> a.open(new Held(a), true)); held.setLayoutParams(Ui.margin(Ui.weight(1), 3, 0, 0, 0)); br.addView(held);
+            android.widget.Button hold = Ui.btn(c, "نگه‌داشتن", 0x1AFFFFFF, 0xFFF3F0E8, this::hold); hold.setBackground(Ui.rounded(0x1AFFFFFF, 0x33FFFFFF, 14)); hold.setLayoutParams(Ui.margin(Ui.weight(1), 0, 0, 3, 0)); br.addView(hold);
+            android.widget.Button held = Ui.btn(c, "نگه‌داشته‌ها", 0x1AFFFFFF, 0xFFF3F0E8, () -> a.open(new Held(a), true)); held.setBackground(Ui.rounded(0x1AFFFFFF, 0x33FFFFFF, 14)); held.setLayoutParams(Ui.margin(Ui.weight(1), 3, 0, 0, 0)); br.addView(held);
             foot.addView(br);
-            View pay = Ui.cta(c, "پرداخت  ←", this::pay); pay.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0)); foot.addView(pay);
+            View pay = Ui.cta(c, "پرداخت", this::pay); pay.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0)); foot.addView(pay);
             root.addView(foot);
             return root;
         }

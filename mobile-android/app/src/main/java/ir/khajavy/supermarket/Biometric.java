@@ -21,6 +21,14 @@ public final class Biometric {
     private Biometric() {}
     public static final int REQ_KEYGUARD = 61;
     public static volatile long lastUnlock = System.currentTimeMillis();
+    /** v2.8.1 — set when the app truly leaves the foreground (user switched app / screen off).
+     *  Internal hops (barcode scanner, image picker, share sheet, permission dialogs) do NOT
+     *  count: they were re-prompting for the fingerprint after every scan. */
+    public static volatile long leftAt = 0L;
+    public static volatile boolean internalHop = false;
+    public static void touch() { lastUnlock = System.currentTimeMillis(); }
+    public static void markInternal() { internalHop = true; }
+    public static void onBackground() { if (internalHop) { internalHop = false; return; } leftAt = System.currentTimeMillis(); }
 
     public static boolean available(Context c) {
         try {
@@ -31,7 +39,11 @@ public final class Biometric {
     }
     public static boolean lockEnabled() { return "1".equals(Prefs.get("bio_lock", "")); }
     public static boolean loginEnabled() { return "1".equals(Prefs.get("bio_login", "")); }
-    public static boolean lockDue() { return lockEnabled() && System.currentTimeMillis() - lastUnlock > 30_000L; }
+    /** Lock only when the app was actually in the background for > 60 s. */
+    public static boolean lockDue() {
+        if (!lockEnabled() || leftAt == 0L) return false;
+        boolean due = System.currentTimeMillis() - leftAt > 60_000L; leftAt = 0L; return due;
+    }
 
     public interface Cb { void done(boolean ok); }
 
