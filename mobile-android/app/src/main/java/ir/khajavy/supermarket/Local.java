@@ -495,7 +495,8 @@ public final class Local {
     public static java.io.File backup(android.content.Context c) throws Exception {
         java.io.File dir = new java.io.File(c.getExternalFilesDir(null), "backups"); dir.mkdirs();
         java.io.File src = c.getDatabasePath("supermarket_native.db"); java.io.File out = new java.io.File(dir, "supery-" + Db.now().replace(":", "").replace("T", "-") + ".db");
-        Db.db().execSQL("VACUUM"); try (java.io.InputStream in = new java.io.FileInputStream(src); java.io.OutputStream os = new java.io.FileOutputStream(out)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
+        Db.db().execSQL("VACUUM"); try (android.database.Cursor ck = Db.db().rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null)) { ck.moveToFirst(); } catch (Exception ignore) {}   // v3.3.1: WAL → flush so the copied file is complete
+        try (java.io.InputStream in = new java.io.FileInputStream(src); java.io.OutputStream os = new java.io.FileOutputStream(out)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
         java.io.File[] all = dir.listFiles(); if (all != null && all.length > Integer.parseInt(setting("backup.keep", "10"))) { java.util.Arrays.sort(all, (x, y) -> Long.compare(x.lastModified(), y.lastModified())); for (int i = 0; i < all.length - 10; i++) all[i].delete(); }
         Db.kv("last_backup", Db.now()); audit("BACKUP", "Db", out.getName(), null, null); return out;
     }

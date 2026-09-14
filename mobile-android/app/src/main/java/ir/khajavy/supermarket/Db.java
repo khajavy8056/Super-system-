@@ -115,7 +115,7 @@ public final class Db extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
         d.execSQL("CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
         v2(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
-        d.execSQL("PRAGMA user_version=" + VERSION);
+        try (Cursor c = d.rawQuery("PRAGMA user_version=" + VERSION, null)) { c.moveToFirst(); } catch (Exception ignore) {}
     }
     static final int VERSION = 4;
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 3) v2(d); if (a < 4) { indexes(d); try { rebuildJournalLines(d); } catch (Exception ignore) {} } }   // v2() is idempotent (IF NOT EXISTS / try-ALTER)

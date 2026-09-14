@@ -59,7 +59,8 @@ final class PcImport {
         try {
             pr.at(2, "ساخت پایگاه دادهٔ جدید…");
             d = SQLiteDatabase.openOrCreateDatabase(fresh, null);
-            d.execSQL("PRAGMA journal_mode=OFF"); d.execSQL("PRAGMA synchronous=OFF"); d.execSQL("PRAGMA temp_store=MEMORY"); d.execSQL("PRAGMA cache_size=-16000");
+            // PRAGMAs that return a row must go through rawQuery (execSQL throws "Queries can be performed using rawQuery only")
+            pragma(d, "PRAGMA journal_mode=OFF"); pragma(d, "PRAGMA synchronous=OFF"); pragma(d, "PRAGMA temp_store=MEMORY"); pragma(d, "PRAGMA cache_size=-16000");
             Db.schema(d);
             // ---- carry over what a Windows backup does not contain: device settings, license/kv, local users, bank, audit … ----
             d.execSQL("ATTACH DATABASE ? AS cur", new Object[]{live.getPath()});
@@ -119,7 +120,7 @@ final class PcImport {
             d.execSQL("DETACH DATABASE pc");
             for (String t : new String[]{"products", "batches", "customers", "invoices", "invoice_items", "movements", "expenses", "cheques", "ai_insights", "journal"}) try (Cursor cu = d.rawQuery("SELECT COUNT(*) FROM " + t, null)) { cu.moveToFirst(); out.put(t, cu.getLong(0)); }
             pr.at(94, "بهینه‌سازی نمایه‌ها…");
-            d.execSQL("ANALYZE"); d.execSQL("PRAGMA journal_mode=DELETE");
+            d.execSQL("ANALYZE"); pragma(d, "PRAGMA journal_mode=DELETE");
             d.close(); d = null;
             // ---- atomic swap ----
             pr.at(97, "جایگزینی پایگاه داده…");
@@ -138,6 +139,7 @@ final class PcImport {
             throw new Exception(e instanceof OutOfMemoryError ? "حافظهٔ گوشی برای این فایل کافی نبود" : String.valueOf(e.getMessage()));
         }
     }
+    private static void pragma(SQLiteDatabase d, String sql) { try (Cursor c = d.rawQuery(sql, null)) { c.moveToFirst(); } catch (Exception ignore) {} }
     /** run every statement in ONE transaction (each call is a bounded chunk of the import) */
     private static void tx(SQLiteDatabase d, String... sql) {
         d.beginTransaction(); try { for (String q : sql) d.execSQL(q); d.setTransactionSuccessful(); } finally { d.endTransaction(); }
