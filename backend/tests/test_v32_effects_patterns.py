@@ -20,7 +20,8 @@ def test_measured_effects_are_nonzero_with_percent(client, auth_headers):
     for k in kinds:
         ks = [r for r in measured if r["kind"] == k]
         assert any(abs(float(r["measured_gain"])) > 0 for r in ks), f"{k}: all zero"
-        assert any(r["result"].get("profit_pct") is not None for r in ks), f"{k}: no percent"
+        # percent exists whenever the baseline was not zero (CHURN customers had zero sales before — by definition)
+        assert any(r["result"].get("profit_pct") is not None or r["result"].get("base_profit_per_day") == 0 for r in ks), f"{k}: no percent"
     # daily before/after series exists for chart-able metrics
     assert any(len((r["result"].get("daily") or {}).get("after", [])) >= 1 for r in measured)
     # VELOCITY uses the availability metric and is non-zero
