@@ -758,3 +758,20 @@ h1, h2, h3 { letter-spacing: .1px; }
 .cal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
 .cal { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); font-size: 12.5px; }
 @media (max-width: 1200px) { .predict-kpis, .cal-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* v3.2 — measured effect (percent first) + per-kind evidence charts */
+.ab2 { margin-top: 12px; padding: 14px; border-radius: 14px; background: var(--bg2); border: 1px solid var(--border); border-inline-start: 4px solid var(--accent); }
+.ab2.ok { border-inline-start-color: var(--green); background: linear-gradient(135deg, rgba(47,158,107,.08), transparent), var(--bg2); }
+.ab2.err { border-inline-start-color: var(--red); background: linear-gradient(135deg, rgba(229,72,77,.08), transparent), var(--bg2); }
+.ab2-kpis, .ev-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.ab2-kpis > div, .ev-kpis > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); }
+.ab2-kpis b, .ev-kpis b { font-size: 20px; font-weight: 900; }
+.ab2-kpis b.ok, .ev-kpis b.ok { color: var(--green); }
+.ab2-kpis b.err, .ev-kpis b.err { color: var(--red); }
+.ev-kpis b.warn { color: var(--amber); }
+.ev-kpis { margin: 8px 0; }
+.donut { display: flex; align-items: center; gap: 18px; margin-top: 10px; flex-wrap: wrap; }
+.donut svg { width: 120px; height: 120px; flex: none; }
+.donut .t.big { fill: var(--text); font-size: 13px; font-weight: 900; }
+.ins-detail h4 { margin: 16px 0 6px; }
+@media (max-width: 640px) { .ab2-kpis, .ev-kpis { grid-template-columns: 1fr 1fr; } }

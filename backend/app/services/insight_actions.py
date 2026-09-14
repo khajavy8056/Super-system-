@@ -197,6 +197,24 @@ def act_winback_sms(db, insight, p, user):
     return {"campaign_id": camp.id, "coupons": issued, "sms": sent}
 
 
+def act_visit_sms(db, insight, p, user):
+    """v3.2 — personal «your usual item» reminder to the customers whose visit is due."""
+    sent = 0
+    if not _sms_enabled(db):
+        return {"sms": 0, "skipped": "sms_disabled"}
+    for row in p.get("customers", []):
+        cust = db.get(Customer, row.get("customer_id"))
+        if not cust or not cust.phone:
+            continue
+        item = (row.get("item") or "").strip()
+        txt = (f"{cust.name} عزیز، {_store(db)}: " + (f"«{item}» تازه رسیده و برایتان کنار گذاشته‌ایم؛ " if item else "")
+               + "منتظر دیدارتان هستیم.")
+        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type="Insight", reference_id=insight.id)
+        sent += 1
+    sms_svc.kick_worker()
+    return {"sms": sent}
+
+
 def act_sms_buyers(db, insight, p, user):
     pid = p["product_id"]
     since = _now() - timedelta(days=120)
@@ -281,7 +299,7 @@ ACTIONS = {
     "shelf_note": act_shelf_note, "reorder_note": act_reorder_note, "set_min_stock": act_set_min_stock, "set_price": act_set_price,
     "markdown_ladder": act_markdown_ladder, "vip_coupons": act_vip_coupons, "winback_sms": act_winback_sms, "sms_buyers": act_sms_buyers,
     "bundle_campaign": act_bundle_campaign, "flash_sale": act_flash_sale, "debt_reminders": act_debt_reminders,
-    "enable_nudges": act_enable_nudges, "pos_nudge": act_pos_nudge, "note": act_note,
+    "enable_nudges": act_enable_nudges, "pos_nudge": act_pos_nudge, "note": act_note, "visit_sms": act_visit_sms,
 }
 
 

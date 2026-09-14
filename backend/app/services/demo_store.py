@@ -234,14 +234,29 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             ProductBatch.product_id == d["p"].id, ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).all()
         return float(sum(q for q, _ in rows))
 
-    def restock_if_needed(d: dict, when: datetime):
+    def order(d: dict, day: date):
+        """Place a purchase order. Suppliers deliver the next morning (50 %), in two days (35 %)
+        or three (15 %) — until it arrives the shelf can run empty (real lost sales)."""
+        if d.get("arrives"):
+            return
+        d["arrives"] = day + timedelta(days=rnd.choices([1, 2, 3], weights=[0.5, 0.35, 0.15])[0])
+
+    def morning_restock(d: dict, day: date):
+        """Receive pending deliveries, then decide whether to reorder. The shop reorders when the
+        low-stock alert fires (min_stock_alert) — so an accepted «smart minimum» really changes
+        purchasing (orders go out days earlier); without one the order is placed only when the
+        shelf is (nearly) empty, which is how most small shops actually operate."""
+        d["stock"] = sellable(d, day)
         target = d["demand"] * (8 if d["shelf"] and d["shelf"] < 15 else 21)
-        d["stock"] = sellable(d, when.date())
-        # the shop reorders when the low-stock alert fires (min_stock_alert) — so an accepted
-        # «smart minimum» really changes purchasing behaviour, as it would in a real store
+        if d.get("arrives") and d["arrives"] <= day:
+            d["arrives"] = None
+            receive(d, datetime.combine(day, datetime.min.time()) + timedelta(hours=7, minutes=rnd.randint(0, 50)), max(target - d["stock"], d["demand"] * 5, 6))
+            d["stock"] = sellable(d, day)
         min_alert = float(getattr(d["p"], "min_stock_alert", 0) or 0)
-        if d["stock"] < d["demand"] * 4 or d["stock"] < 3 or (min_alert and d["stock"] <= min_alert):
-            receive(d, when, max(target - d["stock"], d["demand"] * 5, 6))
+        if min_alert and d["stock"] <= min_alert:
+            order(d, day)
+        elif d["stock"] < d["demand"] * 0.6 or d["stock"] < 2:
+            order(d, day)
 
     # ---- opening stock
     t0 = datetime.combine(start, datetime.min.time()) + timedelta(hours=7)
@@ -251,12 +266,14 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     # planted dead stock: two SKUs over-bought 5 months ago
     dead = [by_name["غذای گربه ۱ کیلویی"], by_name["شیرخشک ۴۰۰ گرمی"]]
     for d in dead:
-        d["demand"] = 0.02   # a salesman talked the owner into 60 units; they barely move
+        d["demand"] = 0.006   # a salesman talked the owner into 60 units; they barely move
         d["planted_dead"] = True
+    for cu in customers:   # nobody's "usual basket" contains the dead SKUs
+        cu["fav"] = [x for x in cu["fav"] if not x.get("planted_dead")] or rnd.sample([x for x in products if not x.get("planted_dead")], 6)
 
-    stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0}
+    stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0}
     # effects of manager-accepted suggestions (filled by _manager_reviews); the simulation honours them
-    fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
+    fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "visit_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
     inv_ids_by_day: dict[date, list[int]] = {}
     total_days = days
     day = start
@@ -278,11 +295,10 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 receive(d, datetime.combine(day, datetime.min.time()) + timedelta(hours=9), 60, sup=sups[1])
         # daily restock in the morning
         for d in products:
-            d["stock"] = sellable(d, day)
             if d.get("planted_dead"):
+                d["stock"] = sellable(d, day)
                 continue
-            if rnd.random() < 0.35 or d["stock"] < d["demand"] * 2 or (d["p"].min_stock_alert and d["stock"] <= d["p"].min_stock_alert):
-                restock_if_needed(d, datetime.combine(day, datetime.min.time()) + timedelta(hours=7, minutes=rnd.randint(0, 50)))
+            morning_restock(d, day)
         # customers due today
         due = [c for c in customers if c["next"] <= day and (not c["churn"] or day < c["churn"] or c["c"].id in fx["winback_ids"])]
         rnd.shuffle(due)
@@ -299,6 +315,8 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 n_items += 4
             if cust and cust["c"].id in fx["vip_ids"]:
                 n_items += 1   # the VIP coupon pulls an extra line into the basket
+            if cust and cust.get("nudged_until") and day <= cust["nudged_until"] and rnd.random() < 0.7:
+                n_items += 1   # came for «the usual item» after the personal SMS — and picked one more thing
             pool = products if not cust else (cust["fav"] * 2 + products)
             weights = [max(0.05, x["demand"]) * (1.6 if (x["cat"] in ("نوشیدنی", "بستنی و یخی") and day.month in (6, 7, 8)) else 1.0) for x in pool]
             chosen: dict[int, dict] = {}
@@ -324,15 +342,22 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             items = []
             for x in chosen.values():
                 q = round(rnd.uniform(0.3, 2.2), 3) if x["loose"] else (rnd.choices([1, 2, 3, 6], weights=[0.7, 0.2, 0.07, 0.03])[0])
-                if x["stock"] < q + 1:
-                    restock_if_needed(x, when - timedelta(minutes=30))
-                    if x["stock"] < q + 1:
-                        continue
+                if x["stock"] < q:
+                    # empty shelf: the customer leaves without it (lost sale) and the order goes out today
+                    if not x.get("planted_dead"):
+                        order(x, day)
+                        stats["lost_sales"] += 1
+                    continue
                 items.append((x, q))
             if not items:
                 continue
             cart = [pos_svc.CartItem(product_id=x["p"].id, quantity=D(str(q))) for x, q in items]
-            total_est = sum(x["sell"] * q for x, q in items)
+            # price the cart exactly like the POS does (batch prices change when the manager accepts a
+            # markdown / price fix — paying the catalogue price would make the checkout fail silently)
+            try:
+                total_est = float(sum(l.subtotal for l in pos_svc.validate_cart(db, [pos_svc.CartItem(product_id=x["p"].id, quantity=D(str(q))) for x, q in items])))
+            except Exception:
+                total_est = sum(x["sell"] * q for x, q in items)
             on_credit = bool(cust and cust["credit"] and rnd.random() < 0.35)
             method = "CREDIT" if on_credit else rnd.choices(["CARD", "CASH"], weights=[0.72, 0.28])[0]
             user = rnd.choices(users, weights=user_weights)[0]
@@ -534,6 +559,14 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
                 fx["boosted_products"][ev["product_id"]] = 0.035
             elif r.kind == "VELOCITY" and accepted < 20:
                 take, only = True, ["set_min_stock"]
+            elif r.kind == "VISIT_PATTERN":
+                take = True   # personal «your usual item is in» SMS: the due customers come on time and add a line
+                for x in ev.get("rows", []):
+                    fx["visit_ids"].add(x["customer_id"])
+                for c in customers:
+                    if c["c"].id in fx["visit_ids"]:
+                        c["next"] = min(c["next"], day + timedelta(days=1))
+                        c["nudged_until"] = day + timedelta(days=14)
             if take:
                 try:
                     ins.accept(db, r, user=admin, action_types=only)

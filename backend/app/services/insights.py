@@ -341,7 +341,7 @@ def a_velocity(ctx: Ctx) -> list[Draft]:
             actions=[{"type": "reorder_note", "label": "افزودن به لیست سفارش", "params": {"product_id": pid, "qty": max(reorder, 1)}},
                      {"type": "set_min_stock", "label": "تنظیم حداقل موجودی هوشمند", "params": {"product_id": pid, "min_stock": math.ceil(v * 5)}}],
             expected_gain=lost_per_week * 2,
-            metric={"metric": "stockout_days", "product_id": pid, "window_days": 14, "margin_per_day": round(v * margin)},
+            metric={"metric": "availability", "product_id": pid, "window_days": 14, "margin_per_day": round(v * margin)},
         ))
     out.sort(key=lambda d: (d.priority, -d.expected_gain))
     return out[:10]
@@ -716,16 +716,102 @@ def a_season(ctx: Ctx) -> list[Draft]:
     )]
 
 
+# ----------------------------------------------------------------------------- v3.2 customer purchase-pattern prediction
+WEEKDAY_FA = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه"]
+
+
+def customer_patterns(ctx: Ctx, *, min_visits: int = 5, horizon_days: int = 3) -> list[dict]:
+    """Per-customer rhythm model: median gap between visits (robust to one-off trips), its spread,
+    the usual weekday/hour, the usual basket and the predicted next visit. Returns the customers
+    whose predicted visit falls inside [today − 1, today + horizon] and who have not come yet,
+    sorted by monthly profit — the list a shop owner should message *today*."""
+    visits: dict[int, list[datetime]] = defaultdict(list)
+    totals: dict[int, float] = defaultdict(float)
+    profit: dict[int, float] = defaultdict(float)
+    items: dict[int, Counter] = defaultdict(Counter)
+    for inv_id, inv in ctx.invoices.items():
+        if inv["cust"]:
+            visits[inv["cust"]].append(inv["at"])
+            totals[inv["cust"]] += inv["total"]
+    for l in ctx.lines:
+        if l["cust"]:
+            profit[l["cust"]] += l["profit"]
+            items[l["cust"]][l["pid"]] += 1
+    out = []
+    now = ctx.now_utc
+    for cid, vs in visits.items():
+        days = sorted({v.date() for v in vs})
+        if len(days) < min_visits:
+            continue
+        gaps = [(b - a).days for a, b in zip(days, days[1:]) if (b - a).days > 0]
+        if len(gaps) < 3:
+            continue
+        gaps_s = sorted(gaps)
+        med = gaps_s[len(gaps_s) // 2]
+        mad = sorted(abs(g - med) for g in gaps)[len(gaps) // 2]   # median absolute deviation
+        regularity = max(0.0, 1 - mad / max(1.0, med))              # 1 = clockwork, 0 = random
+        last = days[-1]
+        nxt = last + timedelta(days=med)
+        due_in = (nxt - ctx.today).days
+        if due_in < -1 or due_in > horizon_days:
+            continue
+        if last == ctx.today:
+            continue
+        wd = Counter(v.weekday() for v in vs).most_common(1)[0][0]
+        hour = Counter(((v + timedelta(hours=3, minutes=30)).hour) for v in vs).most_common(1)[0][0]
+        top = [{"product_id": p, "name": _pname(ctx, p), "times": n} for p, n in items[cid].most_common(4)]
+        out.append({"customer_id": cid, "visits": len(days), "typical_gap": med, "regularity": round(regularity, 2),
+                    "last_visit": last.isoformat(), "predicted": nxt.isoformat(), "due_in": due_in,
+                    "usual_weekday": WEEKDAY_FA[wd], "usual_hour": hour, "avg_ticket": round(totals[cid] / len(vs)),
+                    "monthly_profit": round(profit[cid] / (ctx.days / 30)), "usual_items": top})
+    if not out:
+        return []
+    names = {c.id: (f"{c.name} {c.last_name or ''}".strip(), c.phone) for c in ctx.db.execute(select(Customer).where(Customer.id.in_([r["customer_id"] for r in out]))).scalars()}
+    for r in out:
+        r["name"], r["phone"] = names.get(r["customer_id"], (str(r["customer_id"]), None))
+    out.sort(key=lambda r: (-r["regularity"] * r["monthly_profit"]))
+    return out
+
+
+def a_visit_pattern(ctx: Ctx) -> list[Draft]:
+    """«این هفته چه کسی می‌آید؟» — customers whose rhythm says they are due in the next 3 days,
+    with what they usually buy; one tap sends each a personal reminder (with their usual item)."""
+    rows = customer_patterns(ctx)
+    rows = [r for r in rows if r["regularity"] >= 0.35][:30]
+    if len(rows) < 3:
+        return []
+    with_phone = [r for r in rows if r["phone"]]
+    month_profit = sum(r["monthly_profit"] for r in rows)
+    ex = rows[0]
+    body = (f"از روی فاصلهٔ خریدهای هر مشتری، {_fa(len(rows))} مشتری ثابت در ۳ روز آینده نوبت خریدشان است "
+            f"(مثلاً «{ex['name']}» معمولاً هر {_fa(ex['typical_gap'])} روز، {ex['usual_weekday']}‌ها ساعت {_fa(ex['usual_hour'])}، "
+            f"و بیشتر «{ex['usual_items'][0]['name'] if ex['usual_items'] else '—'}» می‌خرد). "
+            f"یک پیامک کوتاه و شخصی درست قبل از نوبتشان — «فلان کالای همیشگی‌تان رسیده» — احتمال آمدن و اندازهٔ سبد را بالا می‌برد. "
+            f"سود ماهانهٔ این گروه: {_money(month_profit)}؛ {_fa(len(with_phone))} نفر شماره دارند.")
+    return [Draft(
+        kind="VISIT_PATTERN", dedupe_key=f"day:{ctx.today.isoformat()}",
+        title=f"{_fa(len(rows))} مشتری ثابت طی ۳ روز آینده می‌آیند — پیامک شخصی بفرستید",
+        body=body, priority=2,
+        evidence={"rows": rows, "monthly_profit": round(month_profit), "with_phone": len(with_phone),
+                  "gap_hist": Counter(min(14, r["typical_gap"]) for r in rows).most_common()},
+        actions=[{"type": "visit_sms", "label": "پیامک شخصی «کالای همیشگی‌تان» به مشتریان در نوبت",
+                  "params": {"customers": [{"customer_id": r["customer_id"], "item": (r["usual_items"][0]["name"] if r["usual_items"] else "")} for r in with_phone]}}],
+        expected_gain=month_profit * 0.12,
+        metric={"metric": "customer_sales", "customer_ids": [r["customer_id"] for r in rows], "window_days": 14},
+    )]
+
+
 ANALYZERS = {
     "CROSS_SELL": a_cross_sell, "EXPIRY_LADDER": a_expiry_ladder, "DEAD_STOCK": a_dead_stock, "VELOCITY": a_velocity,
     "SUPPLIER": a_supplier, "CASHFLOW": a_cashflow, "VIP": a_vip, "CHURN": a_churn, "BASKET_NUDGE": a_basket_nudge,
-    "PRICE_GAP": a_price_gap, "LOSS_PREV": a_loss_prevention, "SEASON": a_season,
+    "PRICE_GAP": a_price_gap, "LOSS_PREV": a_loss_prevention, "SEASON": a_season, "VISIT_PATTERN": a_visit_pattern,
 }
 
 KIND_LABELS = {
     "CROSS_SELL": "هم‌خرید و چیدمان", "EXPIRY_LADDER": "حراج تاریخ انقضا", "DEAD_STOCK": "سرمایهٔ راکد", "VELOCITY": "هشدار اتمام موجودی",
     "SUPPLIER": "امتیاز تأمین‌کننده", "CASHFLOW": "نقدینگی و چک‌ها", "VIP": "مشتریان VIP", "CHURN": "بازگشت مشتری",
     "BASKET_NUDGE": "پیشنهاد پای صندوق", "PRICE_GAP": "قیمت‌گذاری", "LOSS_PREV": "کنترل تقلب", "SEASON": "الگوی هفتگی",
+    "VISIT_PATTERN": "پیش‌بینی خرید مشتری",
 }
 
 
@@ -856,9 +942,64 @@ def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> di
         out_days = sum(1 for day, b in bal_by_day.items() if b <= 0.5 and day not in sold_days)
         lost = out_days * _f(spec.get("margin_per_day"))
         return {"value": out_days, "unit": "روز بدون موجودی", "profit": -lost, "days": days}
+    if m == "availability":
+        # v3.2 — share of days the product was actually on the shelf (reconstructed from movements)
+        # + the profit it made; fewer empty-shelf days ⇒ more units ⇒ more profit (measured, not assumed).
+        pid = spec["product_id"]
+        sold_days = {r[0].date() for r in db.execute(select(Invoice.created_at).join(InvoiceItem, InvoiceItem.invoice_id == Invoice.id)
+                                                     .where(paid, InvoiceItem.product_id == pid)).all()}
+        mv = db.execute(select(StockMovement.created_at, StockMovement.quantity).join(ProductBatch, ProductBatch.id == StockMovement.batch_id)
+                        .where(ProductBatch.product_id == pid, StockMovement.created_at < end).order_by(StockMovement.created_at)).all()
+        bal, idx, out_days = 0.0, 0, 0
+        d0, days = start.date(), max(1, int(round((end - start).total_seconds() / 86400)))
+        for k in range(days):
+            day = d0 + timedelta(days=k)
+            while idx < len(mv) and mv[idx][0].date() <= day:
+                bal += _f(mv[idx][1]); idx += 1
+            if bal <= 0.5 and day not in sold_days:
+                out_days += 1
+        units = db.execute(select(func.coalesce(func.sum(InvoiceItem.qty), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+                           .where(paid, InvoiceItem.product_id == pid)).scalar_one()
+        pr = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+                        .where(paid, InvoiceItem.product_id == pid)).scalar_one()
+        return {"value": round((days - out_days) / days * 100, 1), "unit": "٪ روزهای موجود", "profit": _f(pr), "units": _f(units),
+                "stockout_days": out_days, "days": days}
     if m == "purchase_over_best":
         return {"value": 0.0, "unit": "—", "profit": 0.0}
     return {"value": 0.0, "unit": "—", "profit": 0.0}
+
+
+def _daily_series(db: Session, spec: dict, start: datetime, end: datetime, base: dict) -> dict:
+    """Before/after daily profit of the measured slice (for the charts): 14 days before acceptance
+    and the days since. Returns {"before": [...], "after": [...]} in toman/day."""
+    m = spec.get("metric")
+    try:
+        b_from = datetime.fromisoformat(base["from"]) if base.get("from") else start - timedelta(days=14)
+    except Exception:
+        b_from = start - timedelta(days=14)
+    b_from = max(b_from, start - timedelta(days=14))
+    q = select(func.date(Invoice.created_at), func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id) \
+        .where(Invoice.status == PAID, Invoice.created_at >= b_from, Invoice.created_at < end)
+    if m in ("product_units", "product_profit", "availability", "stockout_days"):
+        q = q.where(InvoiceItem.product_id == spec.get("product_id"))
+    elif m == "attach_rate":
+        q = q.where(InvoiceItem.product_id.in_([spec.get("a"), spec.get("b")]))
+    elif m == "customer_sales":
+        q = q.where(Invoice.customer_id.in_(spec.get("customer_ids") or []))
+    elif m == "avg_basket_size":
+        pass
+    else:
+        return {"before": [], "after": []}
+    by_day = {str(d)[:10]: _f(v) for d, v in db.execute(q.group_by(func.date(Invoice.created_at))).all()}
+    before, after = [], []
+    d = b_from.date()
+    while d < end.date() or (d == end.date() and len(after) == 0):
+        v = round(by_day.get(d.isoformat(), 0.0))
+        (before if datetime.combine(d, datetime.min.time()) < start.replace(hour=0, minute=0, second=0, microsecond=0) else after).append(v)
+        d += timedelta(days=1)
+        if len(before) + len(after) > 60:
+            break
+    return {"before": before, "after": after}
 
 
 def _store_profit_rate(db: Session, start: datetime, end: datetime) -> float:
@@ -908,7 +1049,7 @@ def measure(db: Session, insight: Insight) -> dict | None:
     # is credited to the action. Reported both raw and adjusted; the adjusted one counts.
     ctrl_ratio = 1.0
     if m := spec.get("metric"):
-        if m in ("product_units", "product_profit", "customer_sales", "attach_rate", "receivables_collected", "weekday_sales"):
+        if m in ("product_units", "product_profit", "customer_sales", "attach_rate", "receivables_collected", "weekday_sales", "availability"):
             b_from = datetime.fromisoformat(base["from"]) if base.get("from") else start - timedelta(days=int(base_days))
             sb = _store_profit_rate(db, b_from, start)
             sp = _store_profit_rate(db, start, end)
@@ -931,8 +1072,16 @@ def measure(db: Session, insight: Insight) -> dict | None:
         bv, pv = _f(base.get("value")), _f(post.get("value"))
         change_pct = round(((pv / elapsed) - (bv / base_days)) / (bv / base_days) * 100, 1) if bv else None
     gain = adj_gain if enough else 0.0
+    # v3.2 — growth in percent (what managers actually quote): profit rate after vs. before,
+    # and the same after removing the store-wide trend (the honest number).
+    profit_pct = round((post_rate - base_rate) / abs(base_rate) * 100, 1) if base_rate else None
+    profit_pct_adj = round((post_rate - base_rate * ctrl_ratio) / abs(base_rate * ctrl_ratio) * 100, 1) if base_rate else None
     insight.result = json.dumps({"window_days": wd, "elapsed_days": round(elapsed, 1), "from": start.isoformat(), "to": end.isoformat(),
                                  "enough_data": enough, "change_pct": change_pct, "control_ratio": round(ctrl_ratio, 3),
+                                 "profit_pct": profit_pct, "profit_pct_adj": profit_pct_adj,
+                                 "base_value": base.get("value"), "post_value": post.get("value"),
+                                 "base_profit_per_day": round(base_rate), "post_profit_per_day": round(post_rate),
+                                 "daily": _daily_series(db, spec, start, end, base),
                                  "raw_gain": round(raw_gain), "adjusted_gain": round(adj_gain),
                                  "projected_month": round(adj_gain / elapsed * 30) if enough else None,
                                  "base_rate_per_day": round(base_rate, 2), "post_rate_per_day": round(post_rate, 2), **post}, ensure_ascii=False)

@@ -60,6 +60,7 @@ public final class Screens {
             case "notifications": return new Notifications(a);
             case "insights": return new InsightScreens.Feed(a);
             case "insightsPlan": return new InsightScreens.Plan(a);
+            case "insightsCustomers": return new InsightScreens.Customers(a);
             case "backup": return new InsightScreens.Backup(a);
         }
         return null;

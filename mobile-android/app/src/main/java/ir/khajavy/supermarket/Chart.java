@@ -90,6 +90,48 @@ final class Chart {
         return v;
     }
 
+    /** v3.2 — horizontal bars with a custom unit label (counts, percents) instead of money. */
+    static View bars(Context c, List<String> labels, List<Double> values, List<Integer> colors, String unit) {
+        final int rowH = Ui.dp(30);
+        View v = new View(c) {
+            final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), t = new Paint(Paint.ANTI_ALIAS_FLAG);
+            { t.setTextSize(Ui.dp(11)); t.setTypeface(Ui.FONT); }
+            @Override protected void onDraw(Canvas cv) {
+                float W = getWidth(); double max = 1; for (double d : values) max = Math.max(max, Math.abs(d));
+                float lw = W * 0.42f;
+                for (int i = 0; i < values.size(); i++) {
+                    float y = i * rowH + Ui.dp(5); double val = values.get(i); float w = (float) ((W - lw - Ui.dp(70)) * Math.abs(val) / max);
+                    t.setColor(Ui.TEXT); t.setTextAlign(Paint.Align.RIGHT); String lb = labels.get(i); while (lb.length() > 3 && t.measureText(lb + "…") > lw - Ui.dp(6)) lb = lb.substring(0, lb.length() - 1); if (!lb.equals(labels.get(i))) lb += "…"; cv.drawText(lb, W - Ui.dp(2), y + Ui.dp(14), t);
+                    p.setStyle(Paint.Style.FILL); p.setColor(val >= 0 ? (colors != null && colors.get(i) != null ? colors.get(i) : Ui.TEAL) : Ui.RED);
+                    android.graphics.RectF rc = new android.graphics.RectF(W - lw - Ui.dp(8) - w, y, W - lw - Ui.dp(8), y + Ui.dp(20)); cv.drawRoundRect(rc, Ui.dp(6), Ui.dp(6), p);
+                    t.setColor(Ui.MUTED); cv.drawText(Ui.num(Math.round(val * 10) / 10.0) + " " + unit, W - lw - Ui.dp(12) - w, y + Ui.dp(14), t);
+                }
+            }
+        };
+        v.setLayoutParams(Ui.lp(android.view.ViewGroup.LayoutParams.MATCH_PARENT, rowH * Math.max(1, values.size()) + Ui.dp(10)));
+        return v;
+    }
+
+    /** v3.2 — donut (share) chart with a centre label and a legend row. */
+    static View donut(Context c, List<String> labels, List<Double> values, List<Integer> colors, String centre) {
+        android.widget.LinearLayout row = Ui.row(c); row.setPadding(0, Ui.dp(8), 0, 0);
+        View v = new View(c) {
+            final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), t = new Paint(Paint.ANTI_ALIAS_FLAG);
+            { t.setTextSize(Ui.dp(12)); t.setTypeface(Ui.FONT_BOLD); t.setColor(Ui.TEXT); t.setTextAlign(Paint.Align.CENTER); p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(Ui.dp(14)); p.setStrokeCap(Paint.Cap.BUTT); }
+            @Override protected void onDraw(Canvas cv) {
+                float S = Math.min(getWidth(), getHeight()), r = S / 2 - Ui.dp(10); float cx = getWidth() / 2f, cy = getHeight() / 2f;
+                android.graphics.RectF rc = new android.graphics.RectF(cx - r, cy - r, cx + r, cy + r);
+                double total = 0; for (double d : values) total += Math.max(0, d); if (total <= 0) total = 1; float start = -90;
+                for (int i = 0; i < values.size(); i++) { float sweep = (float) (Math.max(0, values.get(i)) / total * 360); p.setColor(colors.get(i)); cv.drawArc(rc, start, Math.max(0, sweep - 1.5f), false, p); start += sweep; }
+                cv.drawText(centre, cx, cy + Ui.dp(4), t);
+            }
+        };
+        v.setLayoutParams(Ui.lp(Ui.dp(120), Ui.dp(120)));
+        android.widget.LinearLayout lg = Ui.col(c); lg.setLayoutParams(Ui.weight(1)); lg.setPadding(Ui.dp(12), 0, 0, 0);
+        for (int i = 0; i < labels.size(); i++) { android.widget.LinearLayout li = Ui.row(c); View dot = new View(c); dot.setBackground(Ui.rounded(colors.get(i), 0, 5)); dot.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(10), Ui.dp(10)), 0, 0, 6, 0)); li.addView(dot); li.addView(Ui.muted(c, labels.get(i))); lg.addView(li); }
+        row.addView(v); row.addView(lg); return row;
+    }
+
     static double[] arr(List<Double> l) { double[] a = new double[l.size()]; for (int i = 0; i < a.length; i++) a[i] = l.get(i) == null ? Double.NaN : l.get(i); return a; }
     static List<Double> nulls(int n) { List<Double> l = new ArrayList<>(); for (int i = 0; i < n; i++) l.add(null); return l; }
 }

@@ -6,7 +6,7 @@
   const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
   const pct = (x) => fa(Math.round((Number(x) || 0) * 100)) + "٪";
   const KIND_ICON = { CROSS_SELL: "gift", EXPIRY_LADDER: "clock", DEAD_STOCK: "warehouse", VELOCITY: "trend", SUPPLIER: "inbox", CASHFLOW: "cash",
-    VIP: "star", CHURN: "user", BASKET_NUDGE: "pos", PRICE_GAP: "tag", LOSS_PREV: "shield", SEASON: "chart" };
+    VIP: "star", CHURN: "user", BASKET_NUDGE: "pos", PRICE_GAP: "tag", LOSS_PREV: "shield", SEASON: "chart", VISIT_PATTERN: "user" };
   const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
   const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"] };
   const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
@@ -30,8 +30,8 @@
   // ---------------------------------------------------------------- shared card
   function gainLine(i) {
     if (i.status === "MEASURED" || (i.status === "ACCEPTED" && i.measured_gain != null)) {
-      const g = Number(i.measured_gain || 0);
-      return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} اثر واقعی: ${money(Math.abs(g))}</span>`;
+      const g = Number(i.measured_gain || 0), r = i.result || {}, gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
+      return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}اثر واقعی: ${money(Math.abs(g))}</span>`;
     }
     const fc = (i.evidence || {}).forecast;
     if (fc && Number(fc.gain_month) > 0) return `<span class="ins-gain muted">پیش‌بینی سود ماهانه: <b>${money(fc.gain_month)}</b> <span class="ins-band">(${money(fc.low_month)} تا ${money(fc.high_month)}) · اطمینان ${CONF[fc.confidence] || "—"}</span>`;
@@ -74,20 +74,103 @@
     return `<div class="kv">${flat.map(([k, v]) => `<div><span class="muted">${esc(k)}</span><b>${typeof v === "number" ? fa(v.toLocaleString("en-US")) : esc(String(v))}</b></div>`).join("")}</div>`;
   }
 
+  const METRIC_L = { product_units: "تعداد فروش", product_profit: "سود کالا", customer_sales: "فروش این مشتریان", attach_rate: "نرخ هم‌خرید", avg_basket_size: "میانگین فاکتور", receivables_collected: "وصولی", void_rate: "نرخ ابطال", weekday_sales: "فروش روز اوج", purchase_over_best: "اضافه‌پرداخت خرید", availability: "روزهای موجود بودن", stockout_days: "روزهای بدون موجودی" };
+  const PALETTE = ["#3dd6c4", "#7c5cff", "#f5a524", "#e5484d", "#2f9e6b", "#3b82f6", "#d946ef", "#0ea5e9"];
+  const pctTxt = (v, d = 1) => (v == null ? "—" : (v >= 0 ? "+" : "−") + fa(Math.abs(Number(v)).toFixed(d)) + "٪");
+
+  /** v3.2 — measured effect: percent growth first, then toman, then the daily before/after chart. */
   function abBlock(i) {
     if (!i.baseline) return "";
     const b = i.baseline, r = i.result || {};
-    const L = { product_units: "تعداد فروش", product_profit: "سود کالا", customer_sales: "فروش این مشتریان", attach_rate: "نرخ همراهی", avg_basket_size: "میانگین اقلام سبد", receivables_collected: "وصولی", void_rate: "نرخ ابطال", weekday_sales: "فروش روز اوج", purchase_over_best: "اضافه‌پرداخت خرید" };
     const kind = (i.metric || {}).metric;
-    const f = (v) => (v == null ? "—" : (/rate/.test(kind) ? pct(v) : /units|basket/.test(kind) ? fa(Number(v).toFixed(1)) : money(v)));
-    return `<div class="ab">
-      <div class="ab-col"><span class="muted">قبل (${fa(b.days || 30)} روز)</span><b>${f(b.value)}</b><span class="muted">${b.from ? faDateTime(b.from, false) : ""}</span></div>
-      <div class="ab-arrow">${i.measured_gain == null ? "…" : (Number(i.measured_gain) >= 0 ? "▲" : "▼")}</div>
-      <div class="ab-col"><span class="muted">بعد (${fa(r.days || 0)} روز)</span><b>${f(r.value)}</b><span class="muted">${r.to ? faDateTime(r.to, false) : "در جریان"}</span></div>
-      <div class="ab-sum ${Number(i.measured_gain) >= 0 ? "ok" : "err"}">${i.measured_gain == null ? "اندازه‌گیری هنوز داده کافی ندارد" : `اثر بر سود: ${money(i.measured_gain)}`}${r.change_pct != null ? ` (${fa(r.change_pct)}٪ تغییر ${L[kind] || ""})` : ""}</div>
+    const f = (v) => (v == null ? "—" : (/rate/.test(kind) ? pct(v) : /availability/.test(kind) ? fa(v) + "٪" : /units|basket|stockout/.test(kind) ? fa(Number(v).toFixed(1)) : money(v)));
+    const g = Number(i.measured_gain || 0), growth = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
+    const pending = i.measured_gain == null;
+    const daily = r.daily || {}, bef = daily.before || [], aft = daily.after || [];
+    const chart = (bef.length + aft.length) >= 4 ? svgLine([
+      { name: "سود روزانه — قبل", color: "#8a94a6", points: [...bef, ...aft.map(() => null)], area: true },
+      { name: "سود روزانه — بعد از اجرا", color: g >= 0 ? "#2f9e6b" : "#e5484d", points: [...bef.map(() => null), ...aft], area: true, width: 2.6 },
+    ], { labels: [...bef.map((_, k) => (k === 0 ? "قبل" : null)), ...aft.map((_, k) => (k === 0 ? "اجرا ▶" : k === aft.length - 1 ? "امروز" : null))], height: 150 }) : "";
+    return `<div class="ab2 ${pending ? "" : g >= 0 ? "ok" : "err"}">
+      <div class="ab2-kpis">
+        <div><span class="muted">رشد سود</span><b class="${growth == null ? "" : growth >= 0 ? "ok" : "err"}">${pending ? "…" : pctTxt(growth)}</b><span class="muted">${r.control_ratio && r.control_ratio !== 1 ? `پس از حذف روند فروشگاه (${fa(Math.round((r.control_ratio - 1) * 100))}٪)` : "نسبت به قبل از اجرا"}</span></div>
+        <div><span class="muted">اثر بر سود</span><b class="${pending ? "" : g >= 0 ? "ok" : "err"}">${pending ? "در حال سنجش" : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
+        <div><span class="muted">${METRIC_L[kind] || "شاخص"} — قبل</span><b>${f(b.value)}</b><span class="muted">${fa(b.window_days || b.days || 28)} روز · ${money(Math.round(r.base_profit_per_day || 0))}/روز</span></div>
+        <div><span class="muted">${METRIC_L[kind] || "شاخص"} — بعد</span><b>${f(r.value)}</b><span class="muted">${fa(r.elapsed_days || 0)} روز · ${money(Math.round(r.post_profit_per_day || 0))}/روز${r.change_pct != null ? ` · ${pctTxt(r.change_pct)}` : ""}</span></div>
+      </div>
+      ${chart}
+      ${pending ? `<p class="muted">برای سنجش دقیق حداقل یک روز فروش پس از اجرا لازم است.</p>` : ""}
     </div>`;
   }
 
+  /** v3.2 — evidence rendered per kind with charts instead of raw JSON. */
+  function evidenceBlock(i) {
+    const ev = i.evidence || {}, k = i.kind;
+    const parts = [];
+    if (k === "VELOCITY") {
+      const cover = Number(ev.days_cover || 0);
+      parts.push(`<div class="ev-kpis"><div><span class="muted">سرعت فروش</span><b>${fa((ev.velocity_per_day * 7).toFixed(1))}</b><span class="muted">عدد در هفته</span></div><div><span class="muted">موجودی</span><b>${fa(ev.stock)}</b><span class="muted">${fa(ev.sale_days)} روز فروش از ۲۸</span></div><div><span class="muted">پوشش</span><b class="${cover <= 2 ? "err" : "warn"}">${fa(cover)} روز</b></div><div><span class="muted">سفارش پیشنهادی</span><b class="ok">${fa(ev.reorder_qty)}</b><span class="muted">عدد (۲ هفته)</span></div></div>`);
+      parts.push(svgBars([{ label: "موجودی فعلی", value: Number(ev.stock), color: "#e5484d" }, { label: "فروش ۲ هفته", value: Number(ev.velocity_per_day) * 14, color: "#8a94a6" }, { label: "بعد از سفارش", value: Number(ev.stock) + Number(ev.reorder_qty), color: "#2f9e6b" }], { unit: "عدد" }));
+    } else if (k === "DEAD_STOCK") {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">تعداد راکد</span><b>${fa(ev.qty)}</b></div><div><span class="muted">سرمایهٔ قفل‌شده</span><b class="err">${money(ev.locked_value)}</b></div><div><span class="muted">عمر در انبار</span><b>${fa(ev.age_days)} روز</b></div><div><span class="muted">فروش ۶۰ روز</span><b>${fa(ev.sold_60d)}</b></div></div>`);
+      parts.push(svgBars([{ label: "قفل در این کالا", value: Number(ev.locked_value), color: "#e5484d" }, { label: "کل کالاهای راکد", value: Number(ev.total_locked), color: "#f5a524" }]));
+    } else if (k === "EXPIRY_LADDER") {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
+      if (Array.isArray(ev.ladder)) parts.push(svgBars(ev.ladder.map((l, n) => ({ label: `از روز ${fa(l.from_day)} — ${fa(l.percent)}٪ تخفیف`, value: Number(l.price), color: PALETTE[n % PALETTE.length] }))));
+    } else if (k === "CROSS_SELL") {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">هم‌خرید</span><b>${fa(ev.pair_count)}</b><span class="muted">از ${fa(ev.invoices)} فاکتور</span></div><div><span class="muted">اطمینان</span><b>${pct(ev.confidence)}</b></div><div><span class="muted">ضریب هم‌خرید</span><b class="ok">${fa(ev.lift)}×</b></div><div><span class="muted">پشتیبانی</span><b>${pct(ev.support)}</b></div></div>`);
+      parts.push(donut([{ label: "با هم", value: Number(ev.pair_count), color: "#3dd6c4" }, { label: "جدا", value: Math.max(0, Number(ev.invoices) - Number(ev.pair_count)), color: "#2a3140" }], `${pct(Number(ev.pair_count) / Math.max(1, Number(ev.invoices)))} فاکتورها`));
+    } else if (k === "CASHFLOW" && Array.isArray(ev.timeline)) {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">فروش روزانه</span><b>${money(ev.avg_daily_sales)}</b></div><div><span class="muted">هزینه + خرید روزانه</span><b>${money(Number(ev.expense_daily) + Number(ev.purchase_daily))}</b></div><div><span class="muted">کمترین مانده</span><b class="err">${money(ev.lowest)}</b><span class="muted">${esc(ev.lowest_day || "")}</span></div><div><span class="muted">چک‌های صادره</span><b>${fa(Array.isArray(ev.cheques_out) ? ev.cheques_out.length : ev.cheques_out)}</b></div></div>`);
+      parts.push(svgLine([{ name: "ماندهٔ نقد پیش‌بینی‌شده", color: "#f5a524", points: ev.timeline.map((t) => Number(t.balance)), area: true }], { labels: ev.timeline.map((t, n) => (n % 6 === 0 ? faMonthDay(t.day) : null)), height: 160 }));
+    } else if (k === "VIP" && Array.isArray(ev.rows)) {
+      parts.push(donut([{ label: `${fa(ev.rows.length)} مشتری برتر`, value: Number(ev.profit_share), color: "#f5a524" }, { label: "بقیهٔ مشتریان", value: 1 - Number(ev.profit_share), color: "#2a3140" }], `${pct(ev.profit_share)} سود`));
+      parts.push(svgBars(ev.rows.slice(0, 8).map((r, n) => ({ label: r.name, value: Number(r.profit), color: PALETTE[n % PALETTE.length] }))));
+    } else if (k === "CHURN" && Array.isArray(ev.rows)) {
+      parts.push(svgBars(ev.rows.slice(0, 8).map((r) => ({ label: `${r.name} — ${fa(r.silent_days)} روز غایب (معمولاً هر ${fa(r.typical_gap)})`, value: Number(r.monthly_profit), color: "#e5484d" }))));
+    } else if (k === "VISIT_PATTERN" && Array.isArray(ev.rows)) {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">در نوبت خرید</span><b>${fa(ev.rows.length)}</b><span class="muted">مشتری</span></div><div><span class="muted">شماره دارند</span><b>${fa(ev.with_phone)}</b></div><div><span class="muted">سود ماهانهٔ گروه</span><b class="ok">${money(ev.monthly_profit)}</b></div></div>`);
+      parts.push(visitTable(ev.rows.slice(0, 12)));
+    } else if (k === "BASKET_NUDGE" && Array.isArray(ev.rules)) {
+      parts.push(svgBars(ev.rules.slice(0, 8).map((r, n) => ({ label: `${r.if_name} ← ${r.then_name}`, value: Number(r.confidence) * 100, color: PALETTE[n % PALETTE.length] })), { unit: "٪" }));
+    } else if (k === "SEASON" && ev.weekday_avg) {
+      parts.push(svgBars(Object.entries(ev.weekday_avg).map(([d, v], n) => ({ label: d, value: Number(v), color: d === ev.peak ? "#f5a524" : "#3b82f6" }))));
+    } else if (k === "SUPPLIER" && Array.isArray(ev.table)) {
+      parts.push(svgBars(ev.table.map((r) => ({ label: r.name, value: Number(r.score), color: r.score >= 70 ? "#2f9e6b" : r.score >= 50 ? "#f5a524" : "#e5484d" })), { unit: "امتیاز" }));
+    } else if (k === "PRICE_GAP") {
+      parts.push(`<div class="ev-kpis"><div><span class="muted">قیمت خرید</span><b>${money(ev.buy)}</b></div><div><span class="muted">قیمت فروش فعلی</span><b class="err">${money(ev.sell || ev.sell_price)}</b></div>${ev.margin != null ? `<div><span class="muted">حاشیه</span><b class="err">${pct(ev.margin)}</b></div>` : ""}${ev.consumer ? `<div><span class="muted">قیمت مصرف‌کننده</span><b>${money(ev.consumer)}</b></div>` : ""}</div>`);
+    } else if (k === "LOSS_PREV" && Array.isArray(ev.peers)) {
+      parts.push(svgBars(ev.peers.map((r) => ({ label: r.name, value: Number(r.void_rate) * 100, color: r.user_id === (ev.row || {}).user_id ? "#e5484d" : "#8a94a6" })), { unit: "٪ ابطال" }));
+    }
+    parts.push(evidenceTable(ev));
+    return parts.join("");
+  }
+
+  function donut(slices, centerText) {
+    const total = slices.reduce((a, s) => a + Math.max(0, s.value), 0) || 1; let acc = 0; const R = 44, C = 2 * Math.PI * R;
+    const segs = slices.map((s) => { const frac = Math.max(0, s.value) / total, off = acc; acc += frac; return `<circle r="${R}" cx="60" cy="60" fill="none" stroke="${s.color}" stroke-width="16" stroke-dasharray="${(frac * C).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-off * C).toFixed(2)}" transform="rotate(-90 60 60)"/>`; }).join("");
+    return `<div class="donut"><svg viewBox="0 0 120 120">${segs}<text x="60" y="64" text-anchor="middle" class="t big">${esc(centerText || "")}</text></svg><div class="legend">${slices.map((s) => `<span class="lg"><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")}</div></div>`;
+  }
+
+  function visitTable(rows) {
+    return `<div class="table-wrap"><table class="tbl"><thead><tr><th>مشتری</th><th>نوبت بعدی</th><th>معمولاً</th><th>خرید همیشگی</th><th>سود ماهانه</th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${esc(r.name)}</b><div class="muted">${fa(r.visits)} خرید · هر ${fa(r.typical_gap)} روز · نظم ${pct(r.regularity)}</div></td><td>${r.due_in <= 0 ? `<span class="badge ok">امروز</span>` : `<span class="badge">${fa(r.due_in)} روز دیگر</span>`}<div class="muted">${faMonthDay(r.predicted)}</div></td><td>${esc(r.usual_weekday)}‌ها ساعت ${fa(r.usual_hour)}</td><td>${(r.usual_items || []).slice(0, 3).map((x) => esc(x.name)).join("، ")}</td><td>${money(r.monthly_profit)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  // ---------------------------------------------------------------- v3.2 customer purchase-pattern view
+  RENDER.insightsCustomers = async () => {
+    const v = $("#view");
+    v.innerHTML = `<div class="ins-wrap"><section class="ins-hero"><h2 style="margin:0">پیش‌بینی خرید مشتریان</h2><p class="muted">از فاصلهٔ خریدهای هر مشتری ثابت، نوبت بعدی‌اش پیش‌بینی می‌شود؛ درست قبل از نوبت، با یک پیامک شخصی («کالای همیشگی‌تان رسیده») صدایش کنید.</p><div id="vc-kpis" class="ins-kpis"></div></section><div class="card" id="vc-chart"></div><div class="card" id="vc-table">در حال تحلیل…</div></div>`;
+    $("#topbar-actions").innerHTML = "";
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "هوش فروشگاه", onclick: () => go("insights") }));
+    const d = await api("/insights/customers/patterns?days=7");
+    const rows = d.rows || [];
+    const today = rows.filter((r) => r.due_in <= 0).length, wk = rows.length, withPhone = rows.filter((r) => r.phone).length;
+    $("#vc-kpis").innerHTML = `<div class="ins-kpi"><span class="muted">در نوبت امروز</span><b class="ok">${fa(today)}</b><span class="muted">مشتری</span></div><div class="ins-kpi"><span class="muted">۷ روز آینده</span><b>${fa(wk)}</b><span class="muted">مشتری ثابت</span></div><div class="ins-kpi"><span class="muted">قابل پیامک</span><b>${fa(withPhone)}</b><span class="muted">شماره دارند</span></div><div class="ins-kpi"><span class="muted">سود ماهانهٔ این گروه</span><b>${money(rows.reduce((a, r) => a + Number(r.monthly_profit || 0), 0))}</b></div>`;
+    const byDay = {}; rows.forEach((r) => { const k = Math.max(0, r.due_in); byDay[k] = (byDay[k] || 0) + 1; });
+    $("#vc-chart").innerHTML = `<h3>چند مشتری در هر روز نوبتشان است؟</h3>` + svgBars([0, 1, 2, 3, 4, 5, 6, 7].map((k) => ({ label: k === 0 ? "امروز" : `${fa(k)} روز دیگر`, value: byDay[k] || 0, color: PALETTE[k % PALETTE.length] })), { unit: "نفر" });
+    $("#vc-table").innerHTML = rows.length ? visitTable(rows) : `<div class="muted">هنوز الگوی منظمی پیدا نشده — با ثبت مشتری روی فاکتورها، این صفحه پر می‌شود.</div>`;
+  };
+  if (typeof NAV !== "undefined" && !NAV.some((n) => n[0] === "insightsCustomers")) NAV.push(["insightsCustomers", "پیش‌بینی خرید مشتریان", "reports.view", "user"]);
 
   // ---------------------------------------------------------------- v3.1 forecast / planning
   function svgLine(series, opts) {
@@ -115,7 +198,7 @@
     const lw = 220;
     return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${rows.map((r, i) => {
       const w = (W - lw - 110) * Math.abs(r.value) / max, yy = 8 + i * 30;
-      return `<text x="${W - 4}" y="${yy + 15}" class="t" text-anchor="end">${esc(r.label)}</text><rect x="${W - lw - 8 - w}" y="${yy}" width="${w}" height="20" rx="6" fill="${r.value >= 0 ? (r.color || "#3dd6c4") : "#e5484d"}"/><text x="${W - lw - 14 - w}" y="${yy + 15}" class="t" text-anchor="end">${moneyShort(r.value)}</text>`;
+      return `<text x="${W - 4}" y="${yy + 15}" class="t" text-anchor="end">${esc(r.label)}</text><rect x="${W - lw - 8 - w}" y="${yy}" width="${w}" height="20" rx="6" fill="${r.value >= 0 ? (r.color || "#3dd6c4") : "#e5484d"}"/><text x="${W - lw - 14 - w}" y="${yy + 15}" class="t" text-anchor="end">${opts && opts.unit ? fa(Math.round(r.value * 10) / 10) + " " + opts.unit : moneyShort(r.value)}</text>`;
     }).join("")}</svg></div>`;
   }
   function moneyShort(v) { v = Number(v) || 0; const a = Math.abs(v); const s = a >= 1e9 ? fa((v / 1e9).toFixed(1)) + " میلیارد" : a >= 1e6 ? fa((v / 1e6).toFixed(1)) + " میلیون" : a >= 1e3 ? fa(Math.round(v / 1e3)) + " هزار" : fa(Math.round(v)); return s; }
@@ -177,7 +260,7 @@
       ${abBlock(i)}
       ${predictBlock(i)}
       <h4>اقدام‌ها</h4><ul class="ins-list">${(i.actions || []).map((a) => `<li>${esc(a.label)}</li>`).join("") || "<li class='muted'>—</li>"}</ul>
-      <h4>شواهد (از داده‌های خود فروشگاه)</h4>${evidenceTable(i.evidence || {})}
+      <h4>شواهد (از داده‌های خود فروشگاه)</h4>${evidenceBlock(i)}
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
         ${(i.status === "NEW" || i.status === "SNOOZED") && can("settings.manage") ? `<button class="btn btn-primary" id="ins-acc">اجرا کن</button>` : ""}
         <button class="btn" onclick="closeModal()">بستن</button></div>
@@ -219,6 +302,7 @@
     $("#topbar-actions").innerHTML = "";
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "تحلیل دوباره", onclick: async () => { toast("در حال تحلیل داده‌ها…"); const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created)} پیشنهاد جدید، ${fa(r.refreshed)} به‌روزرسانی`); RENDER.insights(); } }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
     const [s, list] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=80`)]);
     if (!list.length && insTab === "NEW" && !s.accepted && !s.open) {

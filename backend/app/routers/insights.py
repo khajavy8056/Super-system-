@@ -82,6 +82,15 @@ def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permissi
     return {"ok": True, "calibration": forecast.learn(db)}
 
 
+@router.get("/customers/patterns")
+def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v3.2 — per-customer purchase rhythm: who is due in the next `days` days, their usual weekday,
+    hour and items (for the customer-prediction screen on Windows and Android)."""
+    ctx = svc._load_ctx(db, 180)
+    rows = svc.customer_patterns(ctx, horizon_days=days)
+    return {"today": ctx.today.isoformat(), "horizon_days": days, "rows": rows}
+
+
 @router.get("/{insight_id}")
 def get_insight(insight_id: int, narrate: bool = False, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     row = _get(db, insight_id)
