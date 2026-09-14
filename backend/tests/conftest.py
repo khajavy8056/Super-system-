@@ -12,7 +12,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP / 'test.db'}"
 os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-for-hs256"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin123"
-os.environ.setdefault("SUPERMARKET_LICENSE_GATE", "0")  # v1.5: gate tested explicitly in test_v1_5_license_setup.py
+os.environ.setdefault("SUPERMARKET_LICENSE_GATE", "0")
+os.environ.setdefault("SUPERMARKET_ONLINE_LOOKUPS", "1")  # v3.4: online lookups are off in production; legacy tests exercise them explicitly  # v1.5: gate tested explicitly in test_v1_5_license_setup.py
 
 from fastapi.testclient import TestClient  # noqa: E402
 

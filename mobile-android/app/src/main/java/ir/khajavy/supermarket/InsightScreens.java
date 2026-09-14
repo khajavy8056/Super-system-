@@ -281,6 +281,42 @@ public final class InsightScreens {
         View heroKpi(String l, String v) { LinearLayout t = Ui.col(c); t.setLayoutParams(Ui.weight(1)); t.addView(Ui.text(c, v, 15, 0xFFFFFFFF, true)); t.addView(Ui.text(c, l, 11, 0xCCFFFFFF, false)); return t; }
     }
 
+
+    /* ---------------- v3.4 — بانک محصولات (catalog.pack from the PC / a file) ---------------- */
+    public static final class CatalogScreen extends Screens.Screen {
+        CatalogScreen(AppActivity a) { super(a); }
+        public String key() { return "catalog"; } public String title() { return "بانک محصولات"; }
+        public void load() {
+            clear();
+            JSONObject inf = Catalog.info(a);
+            LinearLayout info = Ui.card(c, "بانک محصولات فروشگاه (نام + دسته + تصویر، آفلاین)");
+            info.addView(Ui.body(c, "بانک محصولات روی رایانهٔ ویندوز از پوشهٔ اکسل و تصاویر شما ساخته می‌شود و به‌صورت یک فایل (catalog.pack) به گوشی می‌آید. بعد از دریافت، اسکن هر بارکد نام و تصویر کالا را بدون اینترنت نشان می‌دهد. تصاویر در حافظهٔ خصوصی برنامه می‌مانند و در گالری دیده نمی‌شوند."));
+            if (inf.optBoolean("exists")) info.addView(Ui.kv(c, "وضعیت", Ui.fa(String.valueOf(inf.optInt("items"))) + " کالا · " + Ui.fa(String.valueOf(inf.optInt("images"))) + " تصویر · " + Ui.fa(String.format(java.util.Locale.US, "%.1f", inf.optLong("bytes") / 1048576.0)) + " MB · " + Ui.jdate(new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date(inf.optLong("at")))), 0));
+            else info.addView(Ui.kv(c, "وضعیت", "هنوز دریافت نشده", 0xFFB45309));
+            body.addView(info);
+            LinearLayout act = Ui.card(c, "دریافت");
+            if (!Api.standalone()) act.addView(Ui.primary(c, "دریافت از رایانه (شبکهٔ داخلی)", () -> run(pr -> Catalog.fetchFromPc(a, pr))));
+            act.addView(Ui.ghost(c, "انتخاب فایل catalog.pack از گوشی…", this::pick));
+            act.addView(Ui.muted(c, Api.standalone() ? "روی رایانه: تنظیمات → بانک محصولات → «دانلود برای کپی روی گوشی»؛ فایل را با کابل/بلوتوث/تلگرام به گوشی بفرستید و اینجا انتخاب کنید." : "رایانه باید روشن و روی همان وای‌فای باشد. اگر روی رایانه هنوز «وارد کردن از پوشه» انجام نشده، اول همان را انجام دهید."));
+            body.addView(act);
+        }
+        void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); a.pickCb = uri -> run(pr -> { java.io.InputStream in = a.getContentResolver().openInputStream(uri); long len = -1; try (android.database.Cursor cu = a.getContentResolver().query(uri, null, null, null, null)) { if (cu != null && cu.moveToFirst()) { int ix = cu.getColumnIndex(android.provider.OpenableColumns.SIZE); if (ix >= 0) len = cu.getLong(ix); } } catch (Exception ignore) {} return Catalog.importFrom(a, in, len, pr); }); Biometric.markInternal(); a.startActivityForResult(Intent.createChooser(i, "انتخاب فایل بانک محصولات"), AppActivity.REQ_PICK); }
+        interface Job { JSONObject run(Catalog.Progress pr) throws Exception; }
+        void run(Job job) {
+            final android.app.Dialog[] dlg = new android.app.Dialog[1]; final android.widget.ProgressBar bar = new android.widget.ProgressBar(c, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(100); bar.setIndeterminate(true);
+            final TextView st = Ui.body(c, "در حال شروع…"); LinearLayout l = Ui.col(c); l.addView(st); l.addView(bar); l.addView(Ui.muted(c, "بسته به حجم تصاویر ممکن است چند دقیقه طول بکشد. برنامه را نبندید."));
+            dlg[0] = Ui.sheet(c, "دریافت بانک محصولات", l); dlg[0].setCancelable(false);
+            Thread t = new Thread(() -> {
+                try {
+                    JSONObject rep = job.run((phase, done, total) -> Api.ui(() -> { if ("download".equals(phase)) { st.setText("دریافت فایل… " + Ui.fa(String.valueOf(done / 1024)) + (total > 0 ? " از " + Ui.fa(String.valueOf(total / 1024)) + " MB" : " MB")); if (total > 0) { bar.setIndeterminate(false); bar.setProgress((int) (done * 100L / total)); } } else { st.setText("ثبت کالاها… " + Ui.fa(String.valueOf(done)) + (total > 0 ? " از " + Ui.fa(String.valueOf(total)) : "")); if (total > 0) { bar.setIndeterminate(false); bar.setProgress((int) (done * 100L / total)); } } }));
+                    Api.ui(() -> { try { dlg[0].dismiss(); } catch (Exception ignore) {} Sfx.play("ok"); Ui.done(Ui.ctx, "بانک محصولات دریافت شد", Ui.fa(String.valueOf(rep.optInt("items"))) + " کالا و " + Ui.fa(String.valueOf(rep.optInt("images"))) + " تصویر" + (rep.optInt("created") > 0 ? " · " + Ui.fa(String.valueOf(rep.optInt("created"))) + " کالای جدید به فهرست اضافه شد" : ""), null); load(); });
+                } catch (Throwable e) {
+                    Api.ui(() -> { try { dlg[0].dismiss(); } catch (Exception ignore) {} new android.app.AlertDialog.Builder(c).setTitle("دریافت انجام نشد").setMessage(e.getMessage() == null ? String.valueOf(e) : e.getMessage()).setPositiveButton("باشه", null).show(); });
+                }
+            }, "catalog-import"); t.setDaemon(true); t.start();
+        }
+    }
+
     /* ---------------- Backup (create / share / import) ---------------- */
     public static final class Backup extends Screens.Screen {
         Backup(AppActivity a) { super(a); }

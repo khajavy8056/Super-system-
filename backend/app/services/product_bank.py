@@ -194,7 +194,7 @@ def _xlsx_rows(data: bytes) -> list[list]:
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         ws = wb.worksheets[0]
         return [list(r) for r in ws.iter_rows(values_only=True)]
-    except ImportError:
+    except Exception:  # not installed, or a minimal/odd workbook openpyxl refuses → plain zip reader
         pass
     import xml.etree.ElementTree as ET
     import zipfile

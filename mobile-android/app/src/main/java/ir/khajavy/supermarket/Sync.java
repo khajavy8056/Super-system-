@@ -89,6 +89,7 @@ public final class Sync {
                 if (pull != null) Db.applyPull(pull, cursor == null);
                 if (res.has("cursor")) Db.kv("cursor", res.optString("cursor"));
                 Db.kv("last_sync", Db.now()); SmsLocal.relayPcOutbox();   // v2.8: PC queue → this SIM
+                autoCatalog();   // v3.4: pull the PC's catalog.pack when it is newer than ours (max once an hour)
                 // after the first successful sync the local (negative-id) rows have been replaced by the PC's truth
                 if (applied > 0) Db.applyPull(fetchFull(), true);
             }
@@ -113,6 +114,17 @@ public final class Sync {
     }
 
     /** Whole catalogue (no cursor) — used after local rows were replayed so temp ids vanish. */
+    static long lastCatalogCheck = 0;
+    static void autoCatalog() {
+        if (Api.standalone() || Ui.ctx == null || System.currentTimeMillis() - lastCatalogCheck < 3600_000L) return;
+        lastCatalogCheck = System.currentTimeMillis();
+        try {
+            Object r = Api.call("GET", "/catalog/pack/info", null, null); if (!(r instanceof JSONObject)) return; JSONObject j = (JSONObject) r;
+            if (!j.optBoolean("exists")) return;
+            String v = j.optString("version", ""); if (v.isEmpty() || v.equals(Db.kv("catalog_version"))) return;
+            Catalog.fetchFromPc(Ui.ctx, null); Notify.progressDone(Ui.ctx, "بانک محصولات به‌روز شد", Ui.fa(j.optString("items", "")) + " کالا از رایانه دریافت شد");
+        } catch (Throwable e) { android.util.Log.w("Sync", "catalog: " + e); }
+    }
     private static JSONObject fetchFull() {
         try {
             JSONObject body = new JSONObject(); body.put("push", new JSONArray()); body.put("pull", true); body.put("limit", 2000);

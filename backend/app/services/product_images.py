@@ -435,9 +435,18 @@ SOURCES = [
 
 # --- pipeline --------------------------------------------------------------------
 
+def online_enabled() -> bool:
+    """v3.4 — online picture search (retail sites / OFF / DuckDuckGo) is OFF: the shop's own catalogue
+    folder is the picture source. Re-enable only for tests with SUPERMARKET_ONLINE_LOOKUPS=1."""
+    import os
+    return os.environ.get("SUPERMARKET_ONLINE_LOOKUPS", "0") == "1"
+
+
 def find_candidates(name: str, brand: str | None, barcode: str | None, *, client: httpx.Client | None = None,
                     web_fallback: bool = True, min_score: float = 0.34, retail: dict[str, bool] | None = None,
                     generic_fallback: bool = True) -> list[Candidate]:
+    if not online_enabled():
+        return []
     c, own = _client(client)
     found: list[Candidate] = []
     try:
@@ -554,6 +563,8 @@ def set_image_from_bytes(db: Session, product: Product, buf: bytes, report: dict
 
 def enqueue(db: Session, product_id: int, *, user_id: int | None = None) -> None:
     """Queue the background lookup (drained by the sync worker every 15 s; retries with backoff when offline)."""
+    if not online_enabled():
+        return
     from . import sync as sync_svc
     if setting(db, "images.auto_find", "true").lower() != "true":
         return
@@ -571,6 +582,8 @@ def enqueue(db: Session, product_id: int, *, user_id: int | None = None) -> None
 
 def backfill(db: Session, *, limit: int = 500, user_id: int | None = None) -> dict:
     """Queue every active product without a picture (starter catalogue, imports, old data)."""
+    if not online_enabled():
+        return {"queued": 0, "reason": "OFFLINE_MODE"}
     rows = db.execute(select(Product.id).where(Product.deleted_at.is_(None), Product.is_active.is_(True),
                                                (Product.image_url.is_(None)) | (Product.image_url == "")).limit(limit)).scalars().all()
     for pid in rows:

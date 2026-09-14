@@ -1295,43 +1295,10 @@ RENDER.products = async () => {
     </div>
     <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
   </div>
-  <div class="card" style="margin-bottom:14px" id="p-bank-card">
-    <h3>بانک کالا (بارکد ← نام و برند)</h3>
-    <p class="muted" id="p-bank-info">هر بارکدی که یک بار شناسایی یا ثبت شود، در بانک کالا می‌ماند و دفعهٔ بعد — روی رایانه و همهٔ گوشی‌های متصل، حتی بدون اینترنت — فوراً شناخته می‌شود. اگر فهرست بارکد/نام کالا (اکسل یا CSV) دارید، اینجا وارد کنید؛ فقط ستون «بارکد» و «نام» لازم است.</p>
-    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-      <label class="btn btn-ghost file-btn">انتخاب فایل اکسل/CSV<input type="file" id="p-bank-file" accept=".csv,.tsv,.txt,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" /></label>
-      <span id="p-bank-name" class="muted"></span>
-      <button id="p-bank-up" class="btn btn-ghost">ورود به بانک کالا</button>
-      <a class="btn btn-ghost" id="p-bank-dl" href="#">دریافت خروجی بانک (CSV)</a>
-    </div>
-    <div id="p-bank-out" class="muted" style="margin-top:8px"></div>
-  </div>
+  <div id="p-catalog-holder"></div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
 
-  const bankStats = () => api("/bank/stats").then((b) => {
-    $("#p-bank-info").textContent += ` اکنون ${(b.total || 0).toLocaleString("fa-IR")} بارکد در بانک است${b.with_image ? ` (${b.with_image.toLocaleString("fa-IR")} مورد با تصویر)` : ""}.`;
-  }).catch(() => {});
-  bankStats();
-  $("#p-bank-file").addEventListener("change", () => { $("#p-bank-name").textContent = ($("#p-bank-file").files[0] || {}).name || ""; });
-  $("#p-bank-up").addEventListener("click", async () => {
-    const f = $("#p-bank-file").files[0];
-    if (!f) { toast("ابتدا فایل را انتخاب کنید", "err"); return; }
-    const fd = new FormData(); fd.append("file", f, f.name);
-    $("#p-bank-out").textContent = "در حال ورود…";
-    try {
-      const r = await api("/bank/import", { method: "POST", body: fd });
-      $("#p-bank-out").textContent = `${r.added} بارکد جدید، ${r.updated} به‌روزرسانی، ${r.skipped} ردیف نامعتبر رد شد.`;
-      toast("بانک کالا به‌روز شد");
-    } catch (e) { $("#p-bank-out").textContent = ""; toast(typeof e.message === "string" ? e.message : "ستون بارکد و نام پیدا نشد", "err"); }
-  });
-  $("#p-bank-dl").addEventListener("click", async (e) => {
-    e.preventDefault();
-    try {
-      const res = await fetch(`${API}/bank/export.csv`, { headers: { Authorization: "Bearer " + state.token } });
-      const blob = await res.blob(); const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob); a.download = "product-bank.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    } catch (err) { toast("دریافت خروجی ناموفق بود", "err"); }
-  });
+  renderCatalogFolderCard($("#p-catalog-holder"), { compact: true });
 
   const starterOut = (r) => {
     $("#p-starter-out").textContent = r.ok === false ? (r.message || "خطا")
@@ -1508,16 +1475,14 @@ RENDER.products = async () => {
       text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
   const tbl = $("#p-table");
   tbl.innerHTML = "";
-  // v2.5 — pictures are found automatically in the background; show progress + a one-click backfill
+  // v3.4 — pictures come from the shop's own catalogue folder (Settings → بانک محصولات); just show the count
   try {
     const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
     const st = await api("/products/images/status");
     let bar = $("#p-images-bar");
     if (!bar) { bar = el("div", { id: "p-images-bar", class: "muted", style: "display:flex;gap:10px;align-items:center;margin:6px 0" }); tbl.parentElement.insertBefore(bar, tbl); }
     bar.innerHTML = "";
-    const pend = (st.jobs && st.jobs.PENDING) || 0;
-    bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (pend ? ` · ${fa(pend)} در صف جست‌وجوی پس‌زمینه` : "") + (st.missing ? ` · ${fa(st.missing)} بدون تصویر` : " · همه دارای تصویر ✓") }));
-    if (st.missing) bar.append(el("button", { class: "btn btn-ghost btn-sm", text: "یافتن تصویر همهٔ کالاهای بدون تصویر", onclick: async () => { const r = await api("/products/images/backfill?limit=1000", { method: "POST" }); toast(`${fa(r.queued)} کالا در صف جست‌وجوی تصویر قرار گرفت (پس‌زمینه)`); RENDER.products(); } }));
+    bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (st.missing ? ` · ${fa(st.missing)} بدون تصویر — از «بانک محصولات» (اکسل + پوشهٔ pic) وارد کنید` : " · همه دارای تصویر") }));
   } catch (e) { /* status is cosmetic */ }
   tbl.append(el("thead", {}, el("tr", {},
     el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
@@ -1554,7 +1519,7 @@ window.pickProductImage = async function pickProductImage(productId, after) {
     const c = await api(`/products/${productId}/image/candidates`);
     const body = $("#pi-body"); body.innerHTML = ""; body.className = "";
     if (c.current) body.append(el("div", { class: "muted", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, el("img", { class: "thumb", src: mediaSrc(c.current), alt: "" }), el("span", { text: "تصویر فعلی" })));
-    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "تصویری برای این کالا پیدا نشد (اتصال اینترنت رایانه را بررسی کنید). به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
+    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "تصویری در بانک محصولات برای این کالا نیست — از پوشهٔ بانک محصولات وارد کنید یا عکس خودتان را بارگذاری کنید. به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
     const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
     for (const x of c.candidates) {
       const src = x.source.startsWith("retail:") ? "جست‌وجوی آنلاین" : (x.source === "bank" ? "بانک کالا" : "جست‌وجوی تصویر");
@@ -2421,6 +2386,7 @@ const SET_CATEGORIES = [
   { id: "network",  label: "شبکه",            prefixes: ["network."] },
   { id: "security", label: "امنیت",           prefixes: ["security."] },
   { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."], panel: "backup" },
+  { id: "catalog",  label: "بانک محصولات (اکسل + تصاویر)", prefixes: [], panel: "catalog" },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
   { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
@@ -2447,6 +2413,98 @@ RENDER.settings = async () => {
   });
   renderSettingsPanel(SET_CATEGORIES[0], allRows);
 };
+
+
+/* ---------- v3.4 — «بانک محصولات» از پوشه: Excel + pic folders → products, images, catalog.pack ---------- */
+const CATALOG_HELP = `پوشهٔ بانک محصولات را باز کنید و کل پوشه‌های خود را (با همان ساختار) داخل آن کپی کنید:
+هر پوشه یک فایل اکسل با ستون‌های «نام محصول | دسته | زیر دسته | بارکد | تصویر ۱ | تصویر ۲ | تصویر ۳» و یک پوشهٔ «pic» با تصاویر همان اکسل.
+سپس «وارد کردن» را بزنید. عکس‌های اکسل با نام .jpg نوشته شده باشند ولی فایل واقعی .webp باشد هم مشکلی نیست. اجرای دوباره، فقط موارد جدید/تغییرکرده را به‌روز می‌کند.`;
+
+async function renderCatalogFolderCard(holder, opts = {}) {
+  if (!holder) return;
+  const fa = (n) => String(n ?? 0).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  const mb = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " KB";
+  const card = el("div", { class: "card", id: "catalog-card", style: "margin-bottom:14px" });
+  holder.innerHTML = ""; holder.append(card);
+  card.innerHTML = `<h3>بانک محصولات فروشگاه (اکسل + تصاویر، کاملاً آفلاین)</h3>
+    <p class="muted" style="white-space:pre-line">${CATALOG_HELP}</p>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="muted">پوشه:</span><code id="cat-root" dir="ltr" style="user-select:all"></code>
+      <button id="cat-open" class="btn btn-ghost btn-sm">باز کردن پوشه</button>
+    </div>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <button id="cat-scan" class="btn btn-ghost">بررسی پوشه (بدون تغییر)</button>
+      <button id="cat-import" class="btn btn-primary">وارد کردن محصولات و تصاویر</button>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="cat-replace"/> تصاویر قبلی کالاها هم با تصویر پوشه جایگزین شود</label>
+    </div>
+    <div id="cat-progress" style="margin-top:10px;display:none"><div class="muted" id="cat-prog-text"></div><div style="height:8px;background:var(--border,#ddd);border-radius:4px;overflow:hidden;margin-top:4px"><div id="cat-prog-bar" style="height:100%;width:0;background:var(--primary,#3b82f6)"></div></div></div>
+    <div id="cat-out" class="muted" style="margin-top:8px"></div>
+    <hr style="margin:12px 0;border:0;border-top:1px solid var(--border,#eee)"/>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <b>بستهٔ گوشی (catalog.pack):</b> <span id="cat-pack" class="muted">—</span>
+      <a id="cat-pack-dl" class="btn btn-ghost btn-sm" href="#">دانلود برای کپی روی گوشی</a>
+      <button id="cat-pack-build" class="btn btn-ghost btn-sm">ساخت دوبارهٔ بسته</button>
+    </div>
+    <p class="muted" style="margin:6px 0 0">گوشی‌های همراه (اندروید) در تنظیمات → «بانک محصولات» → «دریافت از رایانه» همین بسته را از طریق شبکهٔ داخلی می‌گیرند؛ یا فایل را با کابل/بلوتوث روی گوشی کپی و از همان صفحه انتخاب کنید.</p>`;
+  let timer = null;
+  const showResult = (r) => {
+    if (!r) return;
+    const out = $("#cat-out"); out.innerHTML = "";
+    if (r.error) { out.append(el("span", { class: "err", text: r.error })); return; }
+    const line = `${fa(r.sheets)} فایل اکسل · ${fa(r.rows)} محصول (${fa(r.with_image)} با تصویر، ${fa(r.without_image)} بدون تصویر)` +
+      (r.created !== undefined ? ` → ${fa(r.created)} جدید، ${fa(r.updated)} به‌روزرسانی، ${fa(r.images)} تصویر ذخیره شد · ${fa(r.seconds)} ثانیه` : "") +
+      (r.duplicates ? ` · ${fa(r.duplicates)} بارکد تکراری ادغام شد` : "") + (r.at ? ` · آخرین اجرا: ${new Date(r.at).toLocaleString("fa-IR")}` : "");
+    out.append(el("div", { text: line }));
+    if (r.errors && r.errors.length) out.append(el("div", { class: "err", text: "خطاها: " + r.errors.join(" | ") }));
+    if (r.missing && r.missing.length) {
+      const det = el("details", {}, el("summary", { text: `تصاویر پیدا نشده (${fa(r.missing.length)} مورد اول)` }));
+      const ul = el("ul", { style: "max-height:200px;overflow:auto;font-size:12px" });
+      r.missing.forEach((m) => ul.append(el("li", { text: `${m.name} — ${m.barcode} — ${(m.images || []).join(", ") || "بدون نام تصویر"} (${m.sheet})` })));
+      det.append(ul); out.append(det);
+    }
+    if (r.pack) $("#cat-pack").textContent = `${fa(r.pack.items)} محصول، ${fa(r.pack.images)} تصویر، ${mb(r.pack.bytes)}`;
+  };
+  const refresh = async () => {
+    let st; try { st = await api("/catalog/folder"); } catch (e) { $("#cat-out").textContent = e.message; return; }
+    $("#cat-root").textContent = st.root;
+    $("#cat-pack").textContent = st.pack && st.pack.exists ? `${mb(st.pack.bytes)} · ${new Date(st.pack.at).toLocaleString("fa-IR")}` : "هنوز ساخته نشده";
+    const j = st.job || {};
+    const prog = $("#cat-progress");
+    if (j.running) {
+      prog.style.display = ""; $("#cat-import").disabled = true;
+      const pct = j.total ? Math.round(j.done * 100 / j.total) : 0;
+      $("#cat-prog-text").textContent = j.total ? `در حال وارد کردن ${fa(j.done)} از ${fa(j.total)} — ${j.current || ""}` : "در حال خواندن پوشه…";
+      $("#cat-prog-bar").style.width = pct + "%";
+      if (!timer) timer = setInterval(refresh, 1500);
+    } else {
+      prog.style.display = "none"; $("#cat-import").disabled = false;
+      if (timer) { clearInterval(timer); timer = null; if (st.result) { toast("وارد کردن بانک محصولات تمام شد"); if (RENDER.products && location.hash.includes("products")) setTimeout(() => RENDER.products(), 300); } }
+      if (j.error) $("#cat-out").innerHTML = `<span class="err">خطا: ${j.error}</span>`;
+      else showResult(st.result || st.last);
+    }
+  };
+  $("#cat-open").addEventListener("click", async () => { try { await api("/catalog/folder/open", { method: "POST" }); } catch (e) { toast("پوشه را دستی باز کنید: " + $("#cat-root").textContent, "err"); } });
+  $("#cat-scan").addEventListener("click", async () => {
+    $("#cat-out").textContent = "در حال بررسی پوشه…";
+    try { showResult(await api("/catalog/folder/scan", { method: "POST", body: JSON.stringify({}) })); } catch (e) { $("#cat-out").innerHTML = `<span class="err">${e.message}</span>`; }
+  });
+  $("#cat-import").addEventListener("click", async () => {
+    try { const r = await api("/catalog/folder/import", { method: "POST", body: JSON.stringify({ replace_images: $("#cat-replace").checked }) }); if (r.started === false) toast("وارد کردن قبلی هنوز در جریان است"); }
+    catch (e) { toast(e.message, "err"); }
+    refresh();
+  });
+  $("#cat-pack-build").addEventListener("click", async () => { $("#cat-pack").textContent = "در حال ساخت…"; try { const r = await api("/catalog/pack/build", { method: "POST" }); $("#cat-pack").textContent = `${fa(r.items)} محصول، ${fa(r.images)} تصویر، ${mb(r.bytes)}`; toast("بسته ساخته شد"); } catch (e) { toast(e.message, "err"); refresh(); } });
+  $("#cat-pack-dl").addEventListener("click", async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API}/catalog/pack`, { headers: { Authorization: "Bearer " + state.token } });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const blob = await res.blob(); const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "catalog.pack"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (err) { toast(String(err.message || err), "err"); }
+  });
+  await refresh();
+}
 
 async function renderSettingsPanel(cat, allRows) {
   const body = $("#set-body");
@@ -2524,6 +2582,7 @@ async function renderSettingsPanel(cat, allRows) {
   }
 
   if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
+  if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
   if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });

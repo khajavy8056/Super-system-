@@ -60,7 +60,7 @@ executables = [
 
 setup(
     name="SupermarketSystem",
-    version="3.3.1",
+    version="3.4.0",
     description="Supermarket ERP / Smart Inventory / POS — standalone server",
     options={"build_exe": build_options},
     executables=executables,

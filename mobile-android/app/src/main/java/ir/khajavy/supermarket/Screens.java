@@ -62,6 +62,7 @@ public final class Screens {
             case "insightsPlan": return new InsightScreens.Plan(a);
             case "insightsCustomers": return new InsightScreens.Customers(a);
             case "backup": return new InsightScreens.Backup(a);
+            case "catalog": return new InsightScreens.CatalogScreen(a);
         }
         return null;
     }

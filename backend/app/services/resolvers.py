@@ -125,9 +125,11 @@ def resolve_barcode(db: Session, barcode: str, *, client: httpx.Client | None = 
                              "fields": {k: v["chosen"] for k, v in merged_b.items()}, "image_url": bank.get("image_url")}],
                 "message": None}
 
-    # 3) external providers (multi-source)
+    # 3) external providers (multi-source) — v3.4: OFF unless SUPERMARKET_ONLINE_LOOKUPS=1 (tests).
+    # The shop's own catalogue (Settings → بانک محصولات) is the identification source; unknown codes are typed once.
+    from .product_images import online_enabled
     outcomes: list[SourceOutcome] = []
-    sources = _active_sources(db, "PRODUCT")
+    sources = _active_sources(db, "PRODUCT") if online_enabled() else []
     for source in sources:
         provider = _instantiate(source)
         try:

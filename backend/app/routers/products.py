@@ -607,3 +607,133 @@ def bank_seed(db: Session = Depends(get_db), _: User = Depends(require_permissio
     n = bank_svc.seed_from_products(db)
     db.commit()
     return {"added": n, **bank_svc.stats(db)}
+
+
+# ---------------------------------------------------------------------------
+# v3.4 — «بانک محصولات» از پوشه (the shop's own Excel + pictures) and catalog.pack for phones
+# ---------------------------------------------------------------------------
+import threading as _th  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+
+from fastapi.responses import FileResponse  # noqa: E402
+
+from ..services import catalog_folder  # noqa: E402
+
+catalog_router = APIRouter(prefix="/catalog", tags=["catalog"])
+_JOB: dict = {"running": False, "done": 0, "total": 0, "current": "", "result": None, "error": None, "started": None}
+_LOCK = _th.Lock()
+
+
+class FolderIn(BaseModel):
+    root: str | None = None
+    replace_images: bool = False
+
+
+@catalog_router.get("/folder")
+def catalog_folder_status(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    root = catalog_folder.default_root()
+    root.mkdir(parents=True, exist_ok=True)
+    pk = catalog_folder.pack_path()
+    return {"root": str(root), "exists": root.is_dir(), "last": catalog_folder.last_state(db), "job": {k: v for k, v in _JOB.items() if k != "result"},
+            "result": _JOB.get("result"), "pack": {"exists": pk.is_file(), "bytes": pk.stat().st_size if pk.is_file() else 0,
+                                                    "at": __import__("datetime").datetime.fromtimestamp(pk.stat().st_mtime).isoformat(timespec="seconds") if pk.is_file() else None}}
+
+
+@catalog_router.post("/folder/scan")
+def catalog_folder_scan(body: FolderIn | None = None, _: User = Depends(require_permission("products.manage"))):
+    """Dry run: what would be imported (sheets, rows, pictures found / missing)."""
+    root = _P(body.root) if body and body.root else catalog_folder.default_root()
+    res = catalog_folder.scan(root)
+    res.pop("_rows", None)
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@catalog_router.post("/folder/import")
+def catalog_folder_import(body: FolderIn | None = None, user: User = Depends(require_permission("products.manage"))):
+    """Start the import in the background (thousands of rows + pictures); poll GET /catalog/folder."""
+    with _LOCK:
+        if _JOB["running"]:
+            return {"started": False, "reason": "RUNNING", **{k: v for k, v in _JOB.items() if k != "result"}}
+        _JOB.update({"running": True, "done": 0, "total": 0, "current": "", "result": None, "error": None, "started": __import__("time").time()})
+    root = _P(body.root) if body and body.root else catalog_folder.default_root()
+    replace = bool(body and body.replace_images)
+    uid = user.id
+
+    def _run():
+        from ..database import SessionLocal
+        try:
+            with SessionLocal() as s:
+                def prog(done, total, cur):
+                    _JOB.update({"done": done, "total": total, "current": cur})
+                res = catalog_folder.import_folder(s, root, replace_images=replace, progress=prog, user_id=uid)
+                if res.get("error"):
+                    _JOB["error"] = res["error"]
+                else:
+                    try:
+                        pk = catalog_folder.export_pack(s, catalog_folder.pack_path())
+                        res["pack"] = pk
+                    except Exception as exc:  # pragma: no cover
+                        res["pack_error"] = str(exc)
+                    write_audit(s, action="CATALOG_FOLDER_IMPORT", user_id=uid, entity_type="Catalog", after={k: v for k, v in res.items() if k != "missing"})
+                    s.commit()
+                _JOB["result"] = res
+        except Exception as exc:  # never leave the job stuck
+            _JOB["error"] = str(exc)
+        finally:
+            _JOB["running"] = False
+
+    _th.Thread(target=_run, name="catalog-import", daemon=True).start()
+    return {"started": True, "root": str(root)}
+
+
+@catalog_router.post("/pack/build")
+def catalog_pack_build(db: Session = Depends(get_db), _: User = Depends(require_permission("products.manage"))):
+    """(Re)build catalog.pack from the current products + stored pictures."""
+    return catalog_folder.export_pack(db, catalog_folder.pack_path())
+
+
+@catalog_router.get("/pack")
+def catalog_pack_download(_: User = Depends(get_current_user)):
+    """The phone (or the operator, to copy it onto a phone) downloads the pack. Paired phones use this on the LAN."""
+    pk = catalog_folder.pack_path()
+    if not pk.is_file():
+        raise HTTPException(status_code=404, detail="بستهٔ کاتالوگ هنوز ساخته نشده — ابتدا «وارد کردن از پوشه» را اجرا کنید")
+    return FileResponse(str(pk), media_type="application/octet-stream", filename="catalog.pack")
+
+
+@catalog_router.get("/pack/info")
+def catalog_pack_info(_: User = Depends(get_current_user)):
+    pk = catalog_folder.pack_path()
+    if not pk.is_file():
+        return {"exists": False}
+    idx = catalog_folder.read_pack_index(pk)
+    import sqlite3 as _s, tempfile as _t
+    with _t.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        f.write(idx["db"]); tmp = f.name
+    try:
+        con = _s.connect(tmp)
+        meta = dict(con.execute("SELECT k, v FROM meta").fetchall())
+        con.close()
+    finally:
+        _P(tmp).unlink(missing_ok=True)
+    return {"exists": True, **meta, "bytes": pk.stat().st_size, "images": len(idx["index"]), "items": int(meta.get("items", 0) or 0)}
+
+
+@catalog_router.post("/folder/open")
+def catalog_folder_open(_: User = Depends(require_permission("products.manage"))):
+    """Open the catalogue folder in the OS file manager (desktop install only)."""
+    import subprocess, sys
+    root = catalog_folder.default_root()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", str(root)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(root)])
+        else:
+            subprocess.Popen(["xdg-open", str(root)])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "root": str(root)}

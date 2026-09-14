@@ -144,7 +144,7 @@ app.add_middleware(
 
 API = "/api"
 for r in (
-    auth.router, products.router, products.unit_router, products.bank_router, batches.router, customers.router,
+    auth.router, products.router, products.unit_router, products.bank_router, products.catalog_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,

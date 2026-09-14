@@ -60,6 +60,7 @@ a = Analysis(
         "multipart", "python_multipart",
         # v1.7 pairing QR PNG fallback (qrcode + Pillow PNG plugin)
         "qrcode", "qrcode.image.pil", "PIL", "PIL.Image", "PIL.PngImagePlugin",
+        "openpyxl", "openpyxl.cell", "openpyxl.styles", "openpyxl.reader.excel", "et_xmlfile",   # v3.4 catalog folder import
         # v1.3 native desktop window (pywebview on WebView2). pythonnet/clr
         # is loaded dynamically by pywebview's edgechromium backend.
     ] + _optional_desktop_hiddenimports(),
