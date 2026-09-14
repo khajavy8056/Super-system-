@@ -12,6 +12,15 @@ from .models import Permission, Role, SystemSetting, User
 from .security import PERMISSIONS, ROLE_PRESETS, hash_password
 
 DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
+    # v3.0 store intelligence
+    "insights.enabled": ("true", "Store intelligence engine on/off", False),
+    "insights.interval_hours": ("6", "How often the local analyzers re-run (hours)", False),
+    "insights.pos_nudges": ("false", "Show whisper-suggestions at the POS (enabled by accepting the BASKET_NUDGE insight)", False),
+    "ai.provider": ("", "Cloud narrator: '' (local templates) | openai_compatible", False),
+    "ai.base_url": ("", "OpenAI-compatible base URL (e.g. https://api.openai.com/v1, https://openrouter.ai/api/v1, http://127.0.0.1:11434/v1)", False),
+    "ai.api_key": ("", "API key for the narrator endpoint", True),
+    "ai.model": ("", "Model name (e.g. gpt-4o-mini, llama3)", False),
+    "ai.timeout_seconds": ("25", "Narrator request timeout", False),
     "pos.tax_rate": ("0", "Tax rate in percent applied at checkout", False),
     "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID", False),
     "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID", False),

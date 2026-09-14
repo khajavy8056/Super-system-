@@ -52,6 +52,7 @@
         <activity android:name=".LoginActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".SetupActivity" android:exported="false" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden" />
         <activity android:name=".LockActivity" android:exported="false" android:launchMode="singleTask" />
+        <provider android:name=".BackupProvider" android:authorities="ir.khajavy.supermarket.backup" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".InstallService" android:exported="false" android:foregroundServiceType="dataSync" />
         <receiver android:name=".Notify$Checker" android:exported="true">
             <intent-filter>

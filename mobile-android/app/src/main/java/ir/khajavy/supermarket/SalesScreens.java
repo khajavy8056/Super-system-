@@ -123,6 +123,18 @@ public final class SalesScreens {
             total -= invoiceDiscount; if (total < 0) total = 0;
             tot.setText(Ui.money(total)); cnt.setText(Ui.num(cart.size()) + " قلم · " + Ui.num(n) + " واحد" + (invoiceDiscount > 0 ? " · تخفیف فاکتور " + Ui.money(invoiceDiscount) : "") + (coupon != null ? " · کوپن " + coupon : ""));
             custTxt.setText(customer == null ? "مشتری آزاد (بدون ثبت)" : "مشتری: " + customer.optString("name") + " " + Screens.Screen.s(customer, "last_name") + " · " + Ui.fa(customer.optString("phone")));
+            nudge();
+        }
+        /* v3.0 — real-time upsell line for the cashier ("customer bought X → offer Y?"), fed by the store-intelligence rules */
+        long nudgeSeq = 0;
+        void nudge() {
+            if (cart.isEmpty()) return; JSONArray ids = new JSONArray(); for (JSONObject l : cart) ids.put(l.optLong("product_id")); final long seq = ++nudgeSeq;
+            JSONObject nb = new JSONObject(); try { nb.put("product_ids", ids); } catch (Exception ignore) {}
+            Api.post("/insights/nudges", nb, r -> { if (seq != nudgeSeq) return; JSONArray n = r instanceof JSONArray ? (JSONArray) r : new JSONArray(); if (n.length() == 0) return;
+                LinearLayout bar = Ui.row(c); bar.setBackground(Ui.rounded(0x1ACBA75A, 0x55CBA75A, 14)); bar.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8)); bar.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8)); bar.setGravity(Gravity.CENTER_VERTICAL);
+                bar.addView(Icons.view(c, "star", Ui.GOLD, 18)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0);
+                for (int i = 0; i < n.length(); i++) { JSONObject x = n.optJSONObject(i); TextView t = Ui.text(c, "مشتری «" + x.optString("because") + "» خرید — «" + x.optString("name") + "» هم پیشنهاد بده؟", 12.5f, Ui.TEXT, i == 0); t.setOnClickListener(v -> get("/products/" + x.optLong("product_id"), pr -> add((JSONObject) pr, null))); tc.addView(t); }
+                bar.addView(tc); lines.addView(bar, 0); }, e -> {});
         }
         View qbtn(String s, Runnable r) { TextView t = Ui.text(c, s, 18, "+".equals(s) ? Color.WHITE : Ui.TEXT, true); t.setGravity(Gravity.CENTER); t.setBackground(Ui.rounded("+".equals(s) ? Ui.PRIMARY : Ui.CARD2, "+".equals(s) ? 0 : Ui.BORDER, 10)); t.setLayoutParams(Ui.lp(Ui.dp(36), Ui.dp(34))); t.setOnClickListener(v -> r.run()); return t; }
         static void set(JSONObject o, String k, double v) { try { o.put(k, v); } catch (Exception ignore) {} }

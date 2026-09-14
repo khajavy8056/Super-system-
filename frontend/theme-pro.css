@@ -682,3 +682,62 @@ h1, h2, h3 { letter-spacing: .1px; }
 .qa { border-radius: 14px; }
 @media (max-width: 1100px) { .sidebar { width: 210px; } }
 @media (max-width: 900px) { .sidebar { width: 64px; } .nav-sec { display: none; } .sidebar .nav-item { justify-content: center; } .sidebar .nav-item.active::after { display: none; } }
+
+/* ===================================================================
+   v3.0 — Store Intelligence («هوش فروشگاه»)
+   Calm palette, no neon: soft indigo accent, quiet greens/reds.
+   =================================================================== */
+.dcard-ins { grid-column: span 12; background: linear-gradient(135deg, rgba(124,92,255,.10), transparent 55%), var(--card); border: 1px solid var(--border); }
+.ins-dash { display: grid; grid-template-columns: 280px 1fr; gap: 18px; align-items: stretch; }
+.ins-dash-big { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 14px; background: var(--bg2); border: 1px solid var(--border); }
+.ins-dash-big b { font-size: 26px; font-weight: 900; letter-spacing: -.5px; }
+.ins-dash-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ins-dash-row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.ins-dash-row:hover { border-color: var(--accent); }
+.ins-dash-row b { white-space: nowrap; }
+@media (max-width: 1100px) { .ins-dash { grid-template-columns: 1fr; } .ins-dash-list { grid-template-columns: 1fr; } }
+
+.ins-wrap { display: flex; flex-direction: column; gap: 16px; }
+.ins-hero { border-radius: 20px; padding: 18px 20px; background: linear-gradient(135deg, rgba(124,92,255,.14), rgba(61,214,196,.06) 60%, transparent), var(--card); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.ins-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.ins-kpi { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 14px; background: var(--bg2); border: 1px solid var(--border); }
+.ins-kpi b { font-size: 22px; font-weight: 900; }
+.ins-bars { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 22px; margin-top: 14px; }
+.ins-bar { display: grid; grid-template-columns: 150px 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
+.ins-bar i { display: block; height: 8px; border-radius: 6px; background: linear-gradient(90deg, var(--accent), var(--primary)); min-width: 4px; }
+.ins-bar i.neg { background: var(--red); opacity: .7; }
+@media (max-width: 1200px) { .ins-kpis { grid-template-columns: repeat(2, 1fr); } .ins-bars { grid-template-columns: 1fr; } }
+
+.ins-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+.ins-card { border-radius: 18px; padding: 16px; background: var(--card); border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; border-inline-start: 4px solid var(--accent); }
+.ins-card.ins-urgent { border-inline-start-color: var(--red); }
+.ins-card.ins-vip, .ins-card.ins-cross_sell, .ins-card.ins-basket_nudge { border-inline-start-color: var(--green); }
+.ins-card.ins-cashflow, .ins-card.ins-supplier, .ins-card.ins-price_gap { border-inline-start-color: var(--amber); }
+.ins-card header, .ins-detail header { display: flex; align-items: flex-start; gap: 10px; }
+.ins-head { flex: 1; min-width: 0; }
+.ins-head h4, .ins-detail h3 { margin: 2px 0 0; font-size: 15px; font-weight: 800; line-height: 1.5; }
+.ins-kind { font-size: 11.5px; color: var(--muted); font-weight: 700; }
+.ins-ic { display: inline-flex; width: 38px; height: 38px; border-radius: 12px; align-items: center; justify-content: center; background: rgba(124,92,255,.12); color: var(--accent); flex: none; }
+.ins-body { margin: 0; font-size: 13.5px; line-height: 1.9; color: var(--text); opacity: .92; }
+.ins-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; }
+.ins-gain { font-weight: 800; }
+.ins-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+.ins-detail { max-width: 760px; }
+.ins-detail h4 { margin: 16px 0 6px; font-size: 14px; }
+.ins-narr { padding: 14px 16px; border-radius: 14px; background: linear-gradient(135deg, rgba(124,92,255,.10), transparent), var(--bg2); border: 1px solid var(--border); line-height: 2; font-size: 14px; }
+.ins-list { padding-inline-start: 18px; line-height: 2; margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kv div { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--border); font-size: 12.5px; }
+.ab { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; padding: 14px; border-radius: 14px; background: var(--bg2); border: 1px solid var(--border); margin-top: 12px; }
+.ab-col { display: flex; flex-direction: column; gap: 2px; text-align: center; }
+.ab-col b { font-size: 20px; font-weight: 900; }
+.ab-arrow { font-size: 22px; color: var(--accent); }
+.ab-sum { grid-column: 1 / -1; text-align: center; font-weight: 800; padding-top: 8px; border-top: 1px dashed var(--border); }
+
+.pos-nudge { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-radius: 12px; background: linear-gradient(90deg, rgba(124,92,255,.12), transparent); border: 1px dashed var(--accent); font-size: 13px; margin-bottom: 6px; }
+.pos-nudge .nudge-ic { color: var(--accent); display: inline-flex; }
+.pos-nudge .nudge-txt { color: var(--muted); font-weight: 700; }
+.nudge-chip { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.nudge-chip:hover { border-color: var(--accent); background: rgba(124,92,255,.10); }
+.demo-box { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: linear-gradient(135deg, rgba(61,214,196,.08), transparent), var(--bg2); }
+.demo-box p { margin: 6px 0 10px; }

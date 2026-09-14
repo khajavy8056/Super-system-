@@ -25,6 +25,9 @@ public final class Db extends SQLiteOpenHelper {
     private static Db I;
     public static synchronized void init(Context c) { if (I == null) I = new Db(c.getApplicationContext()); }
     private static SQLiteDatabase w() { return I.getWritableDatabase(); }
+    /** v3.0: close before a restore replaces the file; the next db() call reopens and re-runs onOpen(). */
+    public static synchronized void shutdown() { try { if (I != null) I.close(); } catch (Exception ignore) {} }
+    @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} }
     /** v2.4: the local API router ({@link Local}) works directly on the database. */
     public static SQLiteDatabase db() { return w(); }
 

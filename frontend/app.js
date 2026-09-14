@@ -330,6 +330,7 @@ RENDER.dashboard = async () => {
   v.innerHTML = `
     <div id="dash-alarms"></div>
     <div class="dash">
+      <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
         <h3>${icon("trend", 18)} فروش امروز</h3>
         <div class="gauge" style="--p:${gaugePct}">
@@ -395,6 +396,7 @@ RENDER.dashboard = async () => {
       <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
     </div>`;
   renderStocktakeAlarms("#dash-alarms");
+  if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
 };
 
 /* Smooth SVG area chart: sales + profit for the last N days. */
@@ -522,6 +524,7 @@ function systemCard(title, sys) {
 }
 
 const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null };
+window.posState = posState;   // v3.0: shared with insights.js (POS whisper-suggestions)
 
 /* ---------------------------------------------------------------------------
  * v1.6 — Parked ("held") invoices. A customer steps away → the cashier parks the
@@ -634,6 +637,7 @@ function renderPosCart() {
              <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`)
       : `<span class="muted">بدون کوپن (F9)</span>`;
   }
+  if (window.PosNudges) PosNudges.refresh();   // v3.0 whisper-suggestions (only when enabled in settings)
   $("#pos-customer").innerHTML = posState.customer
     ? `👤 ${esc(posState.customer.name)} ${posState.customer.phone ? "· " + esc(posState.customer.phone) : ""} <button class="btn btn-sm" onclick="posClearCustomer()">✕</button>`
     : `<span class="muted">بدون مشتری (F8)</span>`;
@@ -718,6 +722,7 @@ RENDER.pos = async () => {
           <div id="pos-suggest" class="pos-suggest hidden"></div>
           <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
           <div id="pos-customer" class="pos-customer"></div>
+          <div id="pos-nudge" class="pos-nudge hidden"></div>
           <div id="pos-coupon-state" class="pos-customer"></div>
           <div id="pos-totals" class="pos-totals"></div>
           <div class="pos-actions">
@@ -2411,12 +2416,13 @@ const SET_CATEGORIES = [
   { id: "drawer",   label: "کشوی پول",        prefixes: ["printer.drawer."] },
   { id: "network",  label: "شبکه",            prefixes: ["network."] },
   { id: "security", label: "امنیت",           prefixes: ["security."] },
-  { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."] },
+  { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."], panel: "backup" },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
   { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
   { id: "mobile",   label: "موبایل (اندروید)", prefixes: [], panel: "mobile" },
   { id: "cloud",    label: "همگام‌سازی ابری (اینترنت)", prefixes: ["cloud."], panel: "cloud" },
+  { id: "ai",       label: "هوش فروشگاه",     prefixes: ["insights.", "ai."], panel: "ai" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
 ];
 
@@ -2513,6 +2519,8 @@ async function renderSettingsPanel(cat, allRows) {
     return;
   }
 
+  if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
+  if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });
     card.innerHTML = `<h3>درباره سامانه</h3><div id="about-box" class="muted">…</div>`;

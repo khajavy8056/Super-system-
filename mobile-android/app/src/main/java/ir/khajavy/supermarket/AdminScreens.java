@@ -108,6 +108,7 @@ public final class AdminScreens {
             if ("store".equals(id)) { body.addView(Ui.ghost(c, "ویرایش مشخصات فروشگاه و لوگو", () -> a.route("store"))); }
             if ("theme".equals(id)) { body.addView(Ui.ghost(c, "پوسته: خودکار ۰۷:۰۰ روشن / ۱۹:۰۰ تیره — تغییر", () -> { LinearLayout l = Ui.col(c); Dialog[] d = new Dialog[1]; for (String[] t : new String[][]{{"auto", "خودکار (۰۷:۰۰ / ۱۹:۰۰)"}, {"light", "روشن"}, {"dark", "تیره"}}) l.addView(Ui.ghost(c, t[1], () -> { d[0].dismiss(); put("/settings/theme", j("theme", t[0]), x -> { Ui.done(Ui.ctx, "ذخیره شد", null, null); Screens.loadConfig(a); load(); }); })); d[0] = Ui.sheet(c, "پوسته", l); })); }
             if ("license".equals(id)) body.addView(Ui.ghost(c, "وضعیت لایسنس", () -> a.route("license")));
+            if ("backup".equals(id)) body.addView(Ui.primary(c, "پشتیبان‌گیری و بازیابی از فایل", () -> a.route("backup")));
             if ("mobile".equals(id)) body.addView(Ui.ghost(c, "دستگاه‌ها و همگام‌سازی", () -> a.route("sync")));
             if ("cloud".equals(id)) body.addView(Ui.ghost(c, "وضعیت همگام‌سازی ابری", () -> a.route("cloud")));
             if ("update".equals(id)) body.addView(Ui.ghost(c, "بررسی به‌روزرسانی", () -> get("/system/update/check", r -> { JSONObject u = (JSONObject) r; Ui.toast(s(u, "message", s(u, "status")) + " · نسخهٔ فعلی " + Ui.fa(s(u, "current_version"))); })));

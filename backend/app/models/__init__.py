@@ -1,5 +1,5 @@
 """Aggregate all models so ``Base.metadata`` is fully populated."""
-from . import accounting, catalog, external, inventory, marketing, sales, sync, system, user  # noqa: F401
+from . import accounting, catalog, external, insights, inventory, marketing, sales, sync, system, user  # noqa: F401
 from .accounting import (Account, CashSession, Cheque, Expense, ExpenseCategory,
                          FiscalPeriod, JournalEntry, JournalLine, Supplier)
 from .base import SoftDeleteMixin, TimestampMixin
@@ -9,6 +9,7 @@ from .external import BankItem, ExternalSource, ImageAsset, MarketPrice, Product
 from .inventory import (ProductBatch, StockMovement, Stocktake, StocktakeItem,
                         StorageLocation, Warehouse)
 from .marketing import Campaign, Coupon, CouponRedemption
+from .insights import Insight
 from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
 from .sales import (Customer, CustomerLedgerEntry, Invoice, InvoiceItem,
@@ -51,6 +52,7 @@ __all__ = [
     "AuditLog",
     "Counter",
     "Notification",
+    "Insight",
     "SystemSetting",
     "SupportTicket",
     "SupportMessage",

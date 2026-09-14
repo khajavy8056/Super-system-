@@ -51,6 +51,7 @@ public final class Local {
                 case "audit": return audit(q);
                 case "hardware": return hardware(method, seg, b);
                 case "diagnostics": return diagnostics(method, seg, q);
+                case "insights": return Insights.handle(method, seg, q, b);
                 case "system": return obj("status", "ok", "message", "نسخهٔ گوشی " + Version.NAME + " — به‌روزرسانی از GitHub Releases", "current_version", Version.NAME);
                 case "sms": return sms(method, seg, b);
                 case "mobile": if ("devices".equals(seg[1])) return new JSONArray(); break;
@@ -471,6 +472,20 @@ public final class Local {
         Db.db().execSQL("VACUUM"); try (java.io.InputStream in = new java.io.FileInputStream(src); java.io.OutputStream os = new java.io.FileOutputStream(out)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
         java.io.File[] all = dir.listFiles(); if (all != null && all.length > Integer.parseInt(setting("backup.keep", "10"))) { java.util.Arrays.sort(all, (x, y) -> Long.compare(x.lastModified(), y.lastModified())); for (int i = 0; i < all.length - 10; i++) all[i].delete(); }
         Db.kv("last_backup", Db.now()); audit("BACKUP", "Db", out.getName(), null, null); return out;
+    }
+    /** Replace the phone database with a backup file (SQLite produced by backup()). A safety copy is taken first. */
+    public static void restore(android.content.Context c, java.io.InputStream in) throws Exception {
+        java.io.File tmp = new java.io.File(c.getCacheDir(), "restore.db");
+        try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
+        byte[] head = new byte[16]; try (java.io.InputStream t = new java.io.FileInputStream(tmp)) { t.read(head); }
+        if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست"); }
+        android.database.sqlite.SQLiteDatabase chk = android.database.sqlite.SQLiteDatabase.openDatabase(tmp.getPath(), null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY);
+        try { android.database.Cursor cu = chk.rawQuery("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('products','invoices','batches')", null); cu.moveToFirst(); int n = cu.getInt(0); cu.close(); if (n < 3) throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست"); } finally { chk.close(); }
+        backup(c); // safety copy of the current data
+        Db.shutdown(); java.io.File dst = c.getDatabasePath("supermarket_native.db"); for (String sfx : new String[]{"-wal", "-shm", "-journal"}) new java.io.File(dst.getPath() + sfx).delete();
+        try (java.io.InputStream i2 = new java.io.FileInputStream(tmp); java.io.OutputStream os = new java.io.FileOutputStream(dst)) { byte[] buf = new byte[65536]; int n; while ((n = i2.read(buf)) > 0) os.write(buf, 0, n); }
+        tmp.delete(); Db.db(); // reopen → runs migrations (adds ai_insights etc. if missing)
+        Db.kv("last_restore", Db.now()); audit("RESTORE", "Db", "import", null, null);
     }
     public static int bootstrapUnits() { seedUsers(); return count("units"); }
 

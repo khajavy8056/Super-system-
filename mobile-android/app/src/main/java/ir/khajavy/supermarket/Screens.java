@@ -58,10 +58,12 @@ public final class Screens {
             case "device": return new Device(a);
             case "about": return new About(a);
             case "notifications": return new Notifications(a);
+            case "insights": return new InsightScreens.Feed(a);
+            case "backup": return new InsightScreens.Backup(a);
         }
         return null;
     }
-    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}};
+    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"backup", "settings.manage"}};
     public static boolean allowed(String key) {
         String need = null; for (String[] p : PERMS) if (p[0].equals(key)) need = p[1];
         if (need == null) return true;
@@ -139,6 +141,8 @@ public final class Screens {
             JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
             body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.TEAL, "فروش امروز", Ui.money(d(sales, "today")), wk.length > 0 ? Ui.spark(c, wk, Ui.TEAL) : null), Ui.tile(c, "receipt", Ui.GREEN, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), null)));
             body.addView(Ui.grid2(c, Ui.tile(c, "tag", Ui.VIOLET, "کالاها", Ui.num(d(inv, "product_count")), null), Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null)));
+            // v3.0 — store intelligence: measured profit impact of executed suggestions
+            InsightScreens.dashboardCard(this, body, a);
             // 3-4 month / profit
             body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", Ui.money(d(profit, "today")), Ui.money(d(profit, "month")), Ui.VIOLET)));
             // 5-6 inventory / low stock

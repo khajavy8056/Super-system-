@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -126,7 +127,15 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Cannot restore into an in-memory database")
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp)
+        head = file.file.read(2)
+        if head == b"\x1f\x8b":  # v3.0: gzip-compressed backup (e.g. the bundled demo store) is accepted too
+            import gzip
+            file.file.seek(0)
+            with gzip.open(file.file, "rb") as gz:
+                shutil.copyfileobj(gz, tmp, 1 << 20)
+        else:
+            tmp.write(head)
+            shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
     try:
@@ -165,6 +174,71 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     db.commit()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
             "safety_backup": str(safety)}
+
+
+# ---------------------------------------------------------------------------
+# v3.0 — Backup panel: download a backup file, load the bundled demo store.
+# ---------------------------------------------------------------------------
+def _demo_backup_path() -> Path | None:
+    """The bundled one-year demo store. Shipped gzip-compressed (``demo_store.db.gz``, ~15 MB) and
+    inflated once into the data dir on first use; a plain ``demo_store.db`` is honoured as well."""
+    import sys as _sys
+    roots = (settings.data_dir / "demo", Path(__file__).resolve().parents[2] / "demo", Path(__file__).resolve().parents[3] / "demo",
+             Path(_sys.executable).resolve().parent / "demo")  # frozen Windows build: next to the exe
+    for root in roots:
+        if (root / "demo_store.db").exists():
+            return root / "demo_store.db"
+    for root in roots:
+        gz = root / "demo_store.db.gz"
+        if gz.exists():
+            import gzip, shutil as _sh
+            out_dir = settings.data_dir / "demo"; out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / "demo_store.db"; tmp = out.with_suffix(".tmp")
+            with gzip.open(gz, "rb") as src, open(tmp, "wb") as dst:
+                _sh.copyfileobj(src, dst, 1 << 20)
+            tmp.replace(out)
+            return out
+    return None
+
+
+@router.get("/backups/{name}/download")
+def download_backup(name: str, db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    if "/" in name or "\\" in name or not name.endswith(".db"):
+        raise HTTPException(status_code=400, detail="BAD_NAME")
+    f = settings.data_dir / "backups" / name
+    if not f.exists():
+        raise HTTPException(status_code=404, detail="BACKUP_NOT_FOUND")
+    return FileResponse(str(f), media_type="application/octet-stream", filename=name)
+
+
+@router.post("/backup/download")
+def backup_and_download(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """One click: make a fresh backup and stream it (for USB / Telegram / phone)."""
+    res = backup(db, user)
+    p = Path(res["path"])
+    return FileResponse(str(p), media_type="application/octet-stream", filename=p.name)
+
+
+@router.get("/demo")
+def demo_info(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    from ..services import demo_store
+    p = _demo_backup_path()
+    return {"available": p is not None, "size": p.stat().st_size if p else 0, "is_demo": demo_store.is_demo(db)}
+
+
+@router.post("/demo/load")
+def demo_load(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """Replace the live database with the bundled one-year demo store (a safety backup is taken first)."""
+    p = _demo_backup_path()
+    if not p:
+        raise HTTPException(status_code=404, detail="DEMO_NOT_BUNDLED")
+    class _F:  # minimal UploadFile stand-in for restore()
+        filename = p.name
+        file = open(p, "rb")
+    try:
+        return restore(_F(), db, user)  # type: ignore[arg-type]
+    finally:
+        _F.file.close()
 
 
 # ---------------------------------------------------------------------------

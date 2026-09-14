@@ -42,8 +42,7 @@ from .routers import (
     users,
     warehouses,
     support,
-    cloud,
-)
+    cloud, insights)
 
 logger = logging.getLogger("supermarket.errors")
 logger.setLevel(logging.ERROR)
@@ -111,7 +110,11 @@ async def lifespan(app: FastAPI):
         discovery_svc.start(SessionLocal, settings.PORT)  # v2.1: phone re-finds the PC when its IP changes
     from .services import relay_client as relay_svc
     relay_svc.start_worker(SessionLocal)  # v2.3: outbound connection to the optional online relay
+    from .services import insights as insights_svc
+    if os.environ.get("SUPERMARKET_INSIGHTS_WORKER", "1") not in ("0", "false", "off"):
+        insights_svc.start_worker(SessionLocal)  # v3.0: store intelligence (local analytics + A/B measurement)
     yield
+    insights_svc.stop_worker()
     relay_svc.stop_worker()
     discovery_svc.stop()
     sms_svc.stop_worker()
@@ -146,12 +149,15 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
-    setup.router, mobile.router, support.router, cloud.router,
+    setup.router, mobile.router, support.router, cloud.router, insights.router,
 ):
     app.include_router(r, prefix=API)
 
 # system router is intentionally unprefixed for /health
 app.include_router(system.router)
+# v3.0: the same endpoints are also reachable on the authenticated API surface
+# (/api/system/backups, /backup, /restore, /demo, /demo/load) for the Backup panel + phones.
+app.include_router(system.router, prefix=API + "/system", include_in_schema=False)
 # ...but the update endpoints belong on the normal authenticated API surface
 app.include_router(system.update_router, prefix="/api")
 

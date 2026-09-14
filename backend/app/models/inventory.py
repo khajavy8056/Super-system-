@@ -48,6 +48,7 @@ class ProductBatch(TimestampMixin, Base):
 
     # Future multi-branch/warehouse support (§145–147), optional in v1.
     warehouse_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # v3.0: supplier scorecard
     location_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)

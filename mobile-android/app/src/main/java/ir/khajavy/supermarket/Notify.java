@@ -67,6 +67,7 @@ public final class Notify {
 
     /** local (SQLite) checks — work in standalone AND paired mode, no network needed. */
     public static void checkLocal(Context c) {
+        if (Api.standalone()) Insights.tick();   // v3.0: local store-intelligence run (≤ every 6 h) + markdown ladder steps
         try {
             String day = Db.now().substring(0, 10);
             if (!day.equals(Prefs.get("notif_expiry_day", ""))) {

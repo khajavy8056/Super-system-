@@ -289,6 +289,7 @@ def receive_batch(
         consumer_price=consumer_price if consumer_price is not None else (effective_sell or buy_price),
         sell_price=effective_sell if effective_sell is not None else (consumer_price or buy_price),
         supplier_price=supplier_price,
+        supplier_id=supplier_id,
         discount=discount or Decimal("0"),
         tax=tax or Decimal("0"),
         production_date=production_date,

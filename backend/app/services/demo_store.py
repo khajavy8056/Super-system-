@@ -1,0 +1,559 @@
+"""v3.0 — «فروشگاه نمونه»: generate one realistic year of a neighbourhood
+supermarket through the REAL service layer, then back-date the timestamps.
+
+Why through the service layer: checkout allocates batches, writes movements,
+profit per line, ledger entries, payments, coupons; receiving writes batches,
+movements and payables. So every report, the intelligence engine and the
+A/B measurer see exactly what a real shop would have produced — nothing is
+faked in the reports layer.
+
+Realism knobs (deterministic, seeded):
+  * ~120 products in 14 categories with real Iranian buy/sell prices (toman)
+  * weekday curve (Thursday/Friday peak), monthly seasonality (Ramadan-ish dip,
+    Nowruz spike, summer beverages), hour-of-day curve
+  * 140 named customers with habits (regulars, VIP whales, churned ones), ~35 % of
+    invoices are registered customers, some on credit
+  * 4 cashiers; one has a mildly elevated void rate (so LOSS_PREV fires)
+  * 3 suppliers with different price/shelf-life quality (SUPPLIER)
+  * intentionally planted situations the engine must find:
+      - a perishable batch received too big (EXPIRY_LADDER)
+      - two dead-stock SKUs bought 5 months ago (DEAD_STOCK)
+      - a fast mover with low stock (VELOCITY)
+      - one SKU priced under cost (PRICE_GAP)
+      - strong basket pairs (bread↔cheese, tea↔sugar, chips↔soda …) (CROSS_SELL)
+      - issued cheques clustering next month (CASHFLOW)
+  * ~6 % of registered customers stop coming 40–70 days before "today" (CHURN)
+
+`generate(db, days=365)` returns a summary; `generate_backup_file(path)` builds
+a standalone .db you can import from Settings → Backup.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import random
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import select, text, update
+from sqlalchemy.orm import Session
+
+from ..models import (Brand, Category, Cheque, Customer, CustomerLedgerEntry, Expense, ExpenseCategory, Invoice, InvoiceItem,
+                      Payment, Product, ProductBatch, Return, StockMovement, Supplier, Unit, User)
+from . import accounting as acc_svc
+from . import catalog
+from . import pos as pos_svc
+from .audit import write_audit
+
+log = logging.getLogger("supermarket.demo")
+
+D = Decimal
+
+# --------------------------------------------------------------------------- catalogue
+# (category, [(name, brand, buy, sell, consumer, perishable_days|None, base_daily_demand)])
+CATALOG = {
+    "لبنیات": [("شیر کم‌چرب ۱ لیتری", "کاله", 32000, 38000, 39000, 12, 9.0), ("ماست ۹۰۰ گرمی", "میهن", 48000, 56000, 58000, 20, 6.5),
+             ("پنیر سفید ۴۰۰ گرمی", "کاله", 62000, 72000, 74000, 40, 5.0), ("دوغ ۱.۵ لیتری", "عالیس", 30000, 36000, 37000, 25, 4.0),
+             ("خامه ۲۰۰ گرمی", "پگاه", 26000, 31000, 32000, 15, 2.2), ("کره ۱۰۰ گرمی", "میهن", 42000, 49000, 50000, 60, 2.8)],
+    "نان و شیرینی": [("نان تست ۵۰۰ گرمی", "سه‌نان", 38000, 45000, 46000, 7, 6.0), ("کیک صبحانه", "شیرین‌عسل", 12000, 15000, 15000, 90, 5.5),
+                 ("بیسکویت ساقه طلایی", "مینو", 20000, 25000, 25000, 180, 4.5), ("کلوچه نادری", "نادری", 9000, 12000, 12000, 60, 4.0)],
+    "نوشیدنی": [("نوشابه کولا ۱.۵ لیتری", "زمزم", 22000, 28000, 29000, 240, 7.0), ("نوشابه پرتقالی ۳۰۰ سی‌سی", "کوکاکولا", 11000, 15000, 15000, 240, 6.0),
+              ("آب معدنی ۱.۵ لیتری", "دماوند", 8000, 12000, 12000, 365, 9.0), ("آبمیوه سان‌استار ۱ لیتری", "سان‌استار", 45000, 55000, 56000, 180, 2.5),
+              ("ماءالشعیر لیمو", "ایستک", 18000, 24000, 25000, 240, 3.5), ("چای کیسه‌ای ۱۰۰ عددی", "گلستان", 95000, 115000, 118000, None, 2.0),
+              ("قهوه فوری ۵۰ گرمی", "نسکافه", 120000, 145000, 150000, None, 1.2)],
+    "تنقلات": [("چیپس سرکه نمکی", "مزمز", 22000, 28000, 28000, 120, 6.5), ("پفک نمکی", "مینو", 14000, 18000, 18000, 120, 6.0),
+             ("پاپ‌کرن پنیری", "چی‌توز", 18000, 23000, 23000, 120, 3.0), ("تخمه آفتابگردان ۲۰۰ گرمی", "مزمز", 35000, 42000, 43000, 150, 2.5),
+             ("شکلات تلخ ۸۰٪", "فرمند", 28000, 35000, 35000, 240, 2.0), ("آدامس نعنایی", "بایودنت", 8000, 11000, 11000, 365, 3.5)],
+    "خواربار": [("برنج ایرانی ۵ کیلویی", "طبیعت", 620000, 690000, 700000, None, 0.9), ("روغن آفتابگردان ۱.۸ لیتری", "لادن", 165000, 185000, 190000, None, 1.6),
+              ("قند شکسته ۱ کیلویی", "شاهسوند", 58000, 66000, 67000, None, 2.2), ("شکر ۹۰۰ گرمی", "شاهسوند", 42000, 48000, 49000, None, 3.0),
+              ("ماکارونی ۷۰۰ گرمی", "مانا", 28000, 34000, 35000, None, 3.2), ("رب گوجه ۸۰۰ گرمی", "چین‌چین", 58000, 68000, 69000, None, 2.0),
+              ("تن ماهی ۱۸۰ گرمی", "طبیعت", 68000, 79000, 80000, None, 2.6), ("عدس ۹۰۰ گرمی", "خشکپاک", 60000, 70000, 72000, None, 1.2),
+              ("لوبیا چیتی ۹۰۰ گرمی", "خشکپاک", 95000, 110000, 112000, None, 0.9), ("نمک تصفیه‌شده", "گلها", 9000, 12000, 12000, None, 1.6),
+              ("زعفران ۱ گرمی", "سحرخیز", 140000, 165000, 170000, None, 0.5), ("سس مایونز ۴۵۰ گرمی", "دلپذیر", 55000, 64000, 65000, 180, 2.0),
+              ("سس کچاپ ۴۰۰ گرمی", "بیژن", 38000, 45000, 46000, 180, 1.8)],
+    "پروتئین": [("تخم‌مرغ ۲۰ عددی", "تلاونگ", 130000, 148000, 150000, 25, 3.6), ("سوسیس آلمانی ۵۰۰ گرمی", "کاله", 98000, 115000, 118000, 30, 1.8),
+              ("کالباس خشک ۳۰۰ گرمی", "سولیکو", 110000, 128000, 130000, 30, 1.2), ("مرغ منجمد ۱.۸ کیلویی", "پروتئین گستر", 260000, 295000, 300000, 120, 1.0)],
+    "میوه و سبزی": [("سیب زرد (کیلو)", "", 38000, 48000, 0, 14, 4.0), ("موز (کیلو)", "", 75000, 90000, 0, 6, 4.5), ("گوجه‌فرنگی (کیلو)", "", 25000, 34000, 0, 5, 4.0),
+                ("خیار (کیلو)", "", 22000, 30000, 0, 6, 3.6), ("سیب‌زمینی (کیلو)", "", 18000, 25000, 0, 30, 3.5), ("پیاز (کیلو)", "", 16000, 22000, 0, 30, 3.0),
+                ("لیمو ترش (کیلو)", "", 60000, 75000, 0, 12, 1.2)],
+    "بهداشتی": [("شامپو ۴۰۰ میلی", "پرژک", 68000, 82000, 84000, None, 1.6), ("صابون ۱۲۵ گرمی", "گلنار", 14000, 18000, 18000, None, 2.8),
+              ("خمیردندان ۱۰۰ میلی", "پونه", 38000, 46000, 47000, None, 1.8), ("دستمال کاغذی ۳۰۰ برگ", "تنو", 42000, 50000, 51000, None, 4.0),
+              ("پوشک سایز ۴", "مای‌بیبی", 280000, 320000, 325000, None, 0.6), ("نوار بهداشتی", "مای‌لیدی", 45000, 54000, 55000, None, 1.2)],
+    "شوینده": [("مایع ظرفشویی ۱ لیتری", "پریل", 52000, 62000, 63000, None, 2.4), ("پودر لباسشویی ۵۰۰ گرمی", "پرسیل", 48000, 57000, 58000, None, 1.8),
+             ("مایع دستشویی ۵۰۰ میلی", "اکتیو", 40000, 48000, 49000, None, 1.6), ("سفیدکننده ۱ لیتری", "وایتکس", 22000, 28000, 28000, None, 1.4)],
+    "کنسرو و آماده": [("کنسرو لوبیا", "دلپذیر", 38000, 45000, 46000, None, 1.6), ("کنسرو ذرت", "مهرام", 42000, 50000, 51000, None, 1.2),
+                  ("نودل فوری", "الیت", 12000, 15000, 15000, 180, 3.8), ("سوپ آماده", "الیت", 18000, 22000, 22000, 240, 1.0)],
+    "صبحانه": [("عسل ۵۰۰ گرمی", "خوانسار", 190000, 220000, 225000, None, 0.7), ("مربا آلبالو", "شانا", 48000, 56000, 57000, None, 0.9),
+             ("کره بادام‌زمینی", "شیررضا", 85000, 98000, 100000, None, 0.7), ("غلات صبحانه", "نستله", 95000, 110000, 112000, None, 0.8),
+             ("حلوا شکری", "عقاب", 32000, 38000, 39000, None, 1.6)],
+    "بستنی و یخی": [("بستنی وانیلی ۱ لیتری", "میهن", 65000, 78000, 80000, 180, 1.4), ("بستنی چوبی", "دومینو", 12000, 16000, 16000, 180, 4.2),
+                ("یخ در بهشت", "میهن", 9000, 12000, 12000, 180, 2.0)],
+    "سیگار و متفرقه": [("کبریت", "توکلی", 2000, 3000, 3000, None, 1.5), ("باتری قلمی ۴ عددی", "سونی", 45000, 55000, 56000, None, 0.6),
+                   ("کیسه زباله رول", "پاکنام", 25000, 30000, 30000, None, 1.8), ("فندک", "", 6000, 9000, 9000, None, 1.2)],
+    "بچه و حیوانات": [("شیرخشک ۴۰۰ گرمی", "نان", 250000, 285000, 290000, None, 0.4), ("غذای گربه ۱ کیلویی", "رفلکس", 180000, 210000, 215000, None, 0.3)],
+}
+
+# basket affinity pairs (name fragments) with probability that the second joins when the first is in
+PAIRS = [("نان تست", "پنیر سفید", 0.55), ("چای کیسه‌ای", "قند شکسته", 0.5), ("چیپس", "نوشابه کولا", 0.45), ("پفک", "نوشابه پرتقالی", 0.4),
+         ("ماکارونی", "رب گوجه", 0.6), ("شیر کم‌چرب", "کیک صبحانه", 0.35), ("مرغ منجمد", "روغن آفتابگردان", 0.3), ("تخم‌مرغ", "نان تست", 0.35),
+         ("سیب‌زمینی", "پیاز", 0.5), ("خیار", "گوجه‌فرنگی", 0.55), ("پودر لباسشویی", "سفیدکننده", 0.35), ("شامپو", "صابون", 0.3),
+         ("بستنی چوبی", "آب معدنی", 0.3), ("نودل فوری", "سس کچاپ", 0.35), ("زعفران", "برنج ایرانی", 0.4)]
+
+FIRST = ["علی", "محمد", "حسین", "رضا", "مهدی", "امیر", "سعید", "مریم", "فاطمه", "زهرا", "نرگس", "سارا", "لیلا", "نسرین", "مینا", "پریسا", "حمید", "مجید", "بهرام", "کامران", "الهام", "شیرین", "سمیرا", "احمد", "ناصر", "فرهاد", "نیما", "آرش", "پویا", "شهاب"]
+LAST = ["احمدی", "محمدی", "رضایی", "کریمی", "موسوی", "حسینی", "جعفری", "صادقی", "نوری", "کاظمی", "رحیمی", "قاسمی", "اکبری", "عباسی", "بهرامی", "شریفی", "نظری", "زارعی", "سلطانی", "یوسفی"]
+
+SUPPLIERS = [("پخش سراسری کاله", 0.00, 0.05), ("پخش مهرگان", 0.06, 0.30), ("بنکداری حاج‌قاسم", 0.02, 0.10)]   # (name, price premium, short-life share)
+
+MONTH_FACTOR = {1: 1.02, 2: 0.98, 3: 1.28, 4: 0.92, 5: 0.96, 6: 1.06, 7: 1.10, 8: 1.08, 9: 1.00, 10: 0.97, 11: 0.95, 12: 1.03}   # Gregorian; March = Nowruz shopping
+WEEKDAY_FACTOR = {0: 0.92, 1: 0.90, 2: 0.95, 3: 1.22, 4: 1.28, 5: 0.98, 6: 0.90}   # Mon..Sun; Thu/Fri peak (Iranian weekend)
+HOURS = [(8, 0.03), (9, 0.05), (10, 0.07), (11, 0.08), (12, 0.08), (13, 0.06), (14, 0.05), (15, 0.05), (16, 0.07), (17, 0.09), (18, 0.11), (19, 0.12), (20, 0.09), (21, 0.05)]
+
+
+def _rng(seed: int) -> random.Random:
+    return random.Random(seed)
+
+
+def _fix_created(db: Session, table: str, ids: list[int], at: datetime) -> None:
+    if not ids:
+        return
+    db.execute(text(f"UPDATE {table} SET created_at=:at WHERE id IN ({','.join(str(i) for i in ids)})"), {"at": at})
+
+
+def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None) -> dict:
+    """Build the demo store. Idempotent guard: refuses if the DB already has > 50 invoices."""
+    rnd = _rng(seed)
+    n_inv = db.execute(select(Invoice.id).limit(51)).all()
+    if len(n_inv) > 50:
+        raise RuntimeError("DEMO_ON_NONEMPTY_DB")
+    today = datetime.utcnow().date()
+    start = today - timedelta(days=days)
+
+    admin = db.execute(select(User).order_by(User.id)).scalars().first()
+    from ..security import hash_password
+    cashiers = []
+    for uname, full in (("cashier1", "سمیه رستگار"), ("cashier2", "امیرحسین کیانی"), ("cashier3", "مهسا توکلی")):
+        u = db.execute(select(User).where(User.username == uname)).scalar_one_or_none()
+        if not u:
+            u = User(username=uname, full_name=full, password_hash=hash_password("1234"), is_active=True)
+            db.add(u)
+            db.flush()
+            try:
+                from ..models import Role
+                cashier_role = db.execute(select(Role).where(Role.name.in_(["cashier", "CASHIER", "صندوقدار"]))).scalars().first()
+                if cashier_role:
+                    u.roles.append(cashier_role)
+            except Exception:
+                pass
+        cashiers.append(u)
+    users = [admin] + cashiers
+    user_weights = [0.15, 0.35, 0.30, 0.20]
+
+    # ---- master data
+    unit_piece = db.execute(select(Unit).where(Unit.name.in_(["عدد", "piece"]))).scalars().first()
+    unit_kg = db.execute(select(Unit).where(Unit.name.in_(["کیلوگرم", "kg"]))).scalars().first()
+    if not unit_piece:
+        unit_piece = Unit(name="عدد", symbol="عدد", allow_decimal=False, decimals=0); db.add(unit_piece); db.flush()
+    if not unit_kg:
+        unit_kg = Unit(name="کیلوگرم", symbol="kg", allow_decimal=True, decimals=3); db.add(unit_kg); db.flush()
+    sups = []
+    for name, prem, short in SUPPLIERS:
+        s = db.execute(select(Supplier).where(Supplier.name == name)).scalar_one_or_none() or Supplier(name=name, phone="021-" + str(rnd.randint(44000000, 88999999)), is_active=True)
+        db.add(s); db.flush(); sups.append((s, prem, short))
+    products: list[dict] = []
+    bc = 6260000000000 + seed * 100
+    for cat_name, items in CATALOG.items():
+        cat = db.execute(select(Category).where(Category.name == cat_name)).scalar_one_or_none() or Category(name=cat_name, is_active=True)
+        db.add(cat); db.flush()
+        for name, brand, buy, sell, cons, shelf, demand in items:
+            b = None
+            if brand:
+                b = db.execute(select(Brand).where(Brand.name == brand)).scalar_one_or_none() or Brand(name=brand, is_active=True)
+                db.add(b); db.flush()
+            bc += 7
+            code = str(bc)
+            code += str((10 - sum((3 if i % 2 else 1) * int(d) for i, d in enumerate(code[::-1]))) % 10)  # not a real GTIN check but scannable
+            loose = "(کیلو)" in name
+            p = db.execute(select(Product).where(Product.name == name)).scalar_one_or_none()
+            if not p:
+                p = catalog.create_product(db, barcode=None if loose else code[:13], name=name, user=admin, brand_id=b.id if b else None,
+                                           category_id=cat.id, unit_id=(unit_kg if loose else unit_piece).id, has_own_barcode=not loose,
+                                           min_stock_alert=0)
+            products.append({"p": p, "buy": buy, "sell": sell, "cons": cons, "shelf": shelf, "demand": demand, "loose": loose, "stock": 0.0, "cat": cat_name})
+    by_name = {d["p"].name: d for d in products}
+
+    # ---- customers (140): habits
+    customers = []
+    for i in range(140):
+        nm, ln = rnd.choice(FIRST), rnd.choice(LAST)
+        phone = "0912" + str(rnd.randint(1000000, 9999999)) if i % 7 else None
+        c = Customer(name=nm, last_name=ln, phone=phone, credit_enabled=(i % 5 == 0), credit_limit=D(2_000_000 if i % 5 == 0 else 0), is_active=True)
+        db.add(c); db.flush()
+        kind = "vip" if i < 12 else "regular" if i < 90 else "occasional"
+        gap = {"vip": rnd.uniform(1.5, 3.5), "regular": rnd.uniform(4, 9), "occasional": rnd.uniform(14, 40)}[kind]
+        churn_day = None
+        if kind == "regular" and rnd.random() < 0.10:
+            churn_day = today - timedelta(days=rnd.randint(40, 75))
+        customers.append({"c": c, "kind": kind, "gap": gap, "next": start + timedelta(days=rnd.uniform(0, gap)), "churn": churn_day, "credit": i % 5 == 0,
+                          "fav": rnd.sample(products, 6)})
+
+    # ---- expense categories
+    exp_cats = {}
+    all_cats = db.execute(select(ExpenseCategory)).scalars().all()
+    for nm, alts in (("اجاره", ["اجاره"]), ("برق و گاز", ["آب، برق، گاز و تلفن", "برق"]), ("حقوق", ["حقوق و دستمزد", "حقوق"]),
+                     ("حمل", ["حمل و نقل", "حمل"]), ("متفرقه", ["سایر", "متفرقه"])):
+        exp_cats[nm] = next((c for a in alts for c in all_cats if a in c.name), all_cats[0])
+
+    # ---- helpers
+    pending_expiry: list[tuple[int, date]] = []
+
+    def receive(d: dict, when: datetime, qty: float, *, sup=None, shelf_override=None, price_mult=1.0):
+        sup = sup or rnd.choices(sups, weights=[0.5, 0.25, 0.25])[0]
+        s, prem, short = sup
+        buy = round(d["buy"] * (1 + prem) * price_mult / 100) * 100
+        exp = None
+        if d["shelf"]:
+            life = shelf_override or (int(d["shelf"] * rnd.uniform(0.45, 0.7)) if rnd.random() < short else int(d["shelf"] * rnd.uniform(0.8, 1.2)))
+            exp = (when + timedelta(days=max(2, life))).date()
+        # The POS filters expired batches against the REAL clock, so historical batches are received
+        # without an expiry and get their (back-dated) expiry stamped at the end of the simulation.
+        b = catalog.receive_batch(db, product=d["p"], quantity_received=D(str(round(qty, 3 if d["loose"] else 0))), buy_price=D(buy),
+                                  consumer_price=D(d["cons"]) if d["cons"] else None, sell_price=D(d["sell"]), expiry_date=None,
+                                  received_at=when, user=admin, paid_from="PAYABLE" if rnd.random() < 0.6 else "CASH", supplier_id=s.id)
+        d["stock"] += float(b.quantity_received)
+        db.flush()
+        _fix_created(db, "product_batches", [b.id], when)
+        if exp:
+            pending_expiry.append((b.id, exp))
+        db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='ProductBatch' AND reference_id=:bid"), {"at": when, "bid": b.id})
+        return b
+
+    def sellable(d: dict, on: date) -> float:
+        """Stock the POS would actually allocate: ACTIVE batches not expired on that day."""
+        rows = db.execute(select(ProductBatch.current_qty, ProductBatch.expiry_date).where(
+            ProductBatch.product_id == d["p"].id, ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).all()
+        return float(sum(q for q, _ in rows))
+
+    def restock_if_needed(d: dict, when: datetime):
+        target = d["demand"] * (8 if d["shelf"] and d["shelf"] < 15 else 21)
+        d["stock"] = sellable(d, when.date())
+        # the shop reorders when the low-stock alert fires (min_stock_alert) — so an accepted
+        # «smart minimum» really changes purchasing behaviour, as it would in a real store
+        min_alert = float(getattr(d["p"], "min_stock_alert", 0) or 0)
+        if d["stock"] < d["demand"] * 4 or d["stock"] < 3 or (min_alert and d["stock"] <= min_alert):
+            receive(d, when, max(target - d["stock"], d["demand"] * 5, 6))
+
+    # ---- opening stock
+    t0 = datetime.combine(start, datetime.min.time()) + timedelta(hours=7)
+    for d in products:
+        receive(d, t0, d["demand"] * (7 if d["shelf"] and d["shelf"] < 15 else 20))
+
+    # planted dead stock: two SKUs over-bought 5 months ago
+    dead = [by_name["غذای گربه ۱ کیلویی"], by_name["شیرخشک ۴۰۰ گرمی"]]
+    for d in dead:
+        d["demand"] = 0.02   # a salesman talked the owner into 60 units; they barely move
+        d["planted_dead"] = True
+
+    stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0}
+    # effects of manager-accepted suggestions (filled by _manager_reviews); the simulation honours them
+    fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
+    inv_ids_by_day: dict[date, list[int]] = {}
+    total_days = days
+    day = start
+    while day <= today:
+        di = (day - start).days
+        if progress and di % 30 == 0:
+            progress(di / total_days)
+        if di in (total_days - 45, total_days - 20):
+            db.commit()
+            _manager_reviews(db, day, admin, products, customers, fx, stats, by_name)
+        month_f = MONTH_FACTOR[day.month]
+        wd_f = WEEKDAY_FACTOR[day.weekday()]
+        growth = 1 + 0.18 * (di / total_days)   # the store grows ~18 % over the year
+        n_today = max(20, int(rnd.gauss(invoices_per_day * month_f * wd_f * growth, 8)))
+        if day == today:
+            n_today = int(n_today * 0.55)
+        if di == total_days - 150:
+            for d in dead:
+                receive(d, datetime.combine(day, datetime.min.time()) + timedelta(hours=9), 60, sup=sups[1])
+        # daily restock in the morning
+        for d in products:
+            d["stock"] = sellable(d, day)
+            if d.get("planted_dead"):
+                continue
+            if rnd.random() < 0.35 or d["stock"] < d["demand"] * 2 or (d["p"].min_stock_alert and d["stock"] <= d["p"].min_stock_alert):
+                restock_if_needed(d, datetime.combine(day, datetime.min.time()) + timedelta(hours=7, minutes=rnd.randint(0, 50)))
+        # customers due today
+        due = [c for c in customers if c["next"] <= day and (not c["churn"] or day < c["churn"] or c["c"].id in fx["winback_ids"])]
+        rnd.shuffle(due)
+        for k in range(n_today):
+            hour = rnd.choices([h for h, _ in HOURS], weights=[w for _, w in HOURS])[0]
+            when = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour, minutes=rnd.randint(0, 59), seconds=rnd.randint(0, 59)) - timedelta(hours=3, minutes=30)
+            cust = None
+            if due and rnd.random() < 0.55:
+                cust = due.pop()
+                cust["next"] = day + timedelta(days=max(1, rnd.gauss(cust["gap"], cust["gap"] * 0.3)))
+            # basket
+            n_items = max(1, int(rnd.lognormvariate(1.1, 0.55)))
+            if cust and cust["kind"] == "vip":
+                n_items += 4
+            if cust and cust["c"].id in fx["vip_ids"]:
+                n_items += 1   # the VIP coupon pulls an extra line into the basket
+            pool = products if not cust else (cust["fav"] * 2 + products)
+            weights = [max(0.05, x["demand"]) * (1.6 if (x["cat"] in ("نوشیدنی", "بستنی و یخی") and day.month in (6, 7, 8)) else 1.0) for x in pool]
+            chosen: dict[int, dict] = {}
+            for _ in range(n_items):
+                x = rnd.choices(pool, weights=weights)[0]
+                chosen[x["p"].id] = x
+            for a, b, prob in PAIRS:
+                if any(a in x["p"].name for x in chosen.values()) and rnd.random() < prob:
+                    y = by_name.get(next((n for n in by_name if b in n), ""), None)
+                    if y:
+                        chosen[y["p"].id] = y
+            # accepted CROSS_SELL / nudges: shelf move + cashier whisper lift the attach rate
+            for (pa, pb), lift in fx["pair_boost"].items():
+                if pa in chosen and pb not in chosen and rnd.random() < lift:
+                    yb = next((x for x in products if x["p"].id == pb), None)
+                    if yb:
+                        chosen[pb] = yb
+            for pid, lift in fx["boosted_products"].items():
+                if pid not in chosen and rnd.random() < lift:
+                    yb = next((x for x in products if x["p"].id == pid), None)
+                    if yb:
+                        chosen[pid] = yb
+            items = []
+            for x in chosen.values():
+                q = round(rnd.uniform(0.3, 2.2), 3) if x["loose"] else (rnd.choices([1, 2, 3, 6], weights=[0.7, 0.2, 0.07, 0.03])[0])
+                if x["stock"] < q + 1:
+                    restock_if_needed(x, when - timedelta(minutes=30))
+                    if x["stock"] < q + 1:
+                        continue
+                items.append((x, q))
+            if not items:
+                continue
+            cart = [pos_svc.CartItem(product_id=x["p"].id, quantity=D(str(q))) for x, q in items]
+            total_est = sum(x["sell"] * q for x, q in items)
+            on_credit = bool(cust and cust["credit"] and rnd.random() < 0.35)
+            method = "CREDIT" if on_credit else rnd.choices(["CARD", "CASH"], weights=[0.72, 0.28])[0]
+            user = rnd.choices(users, weights=user_weights)[0]
+            coupon_obj = None
+            if cust and cust["c"].id in (fx["vip_ids"] | fx["winback_ids"]) and rnd.random() < 0.6:
+                from ..models import Coupon
+                coupon_obj = db.execute(select(Coupon).where(Coupon.customer_id == cust["c"].id, Coupon.status == "ACTIVE",
+                                                             Coupon.used_count < Coupon.usage_limit)).scalars().first()
+                if coupon_obj and coupon_obj.valid_until and coupon_obj.valid_until < when:
+                    coupon_obj = None
+            inv_disc = None
+            if coupon_obj:
+                # coupon validity is judged against the simulated day (the service uses the wall clock),
+                # so the discount is applied as an invoice discount and the coupon is consumed for real.
+                inv_disc = D(str(round(total_est * float(coupon_obj.discount_value) / 100))) if coupon_obj.discount_type == "PERCENT" else D(str(coupon_obj.discount_value))
+            pay_amt = round(total_est - float(inv_disc or 0))
+            sp = db.begin_nested()
+            try:
+                inv = pos_svc.checkout(db, items=cart, payments=[{"method": "CREDIT" if on_credit else method, "amount": str(pay_amt)}],
+                                       user=user, customer_id=cust["c"].id if cust else None, tax_rate=D(0), invoice_discount=inv_disc)
+                if coupon_obj:
+                    from ..models import CouponRedemption
+                    coupon_obj.used_count += 1
+                    if coupon_obj.used_count >= coupon_obj.usage_limit:
+                        coupon_obj.status = "USED"
+                    db.add(CouponRedemption(coupon_id=coupon_obj.id, invoice_id=inv.id, customer_id=cust["c"].id, amount=inv_disc, created_at=when))
+                sp.commit()
+            except Exception as exc:  # stock race etc.
+                sp.rollback()
+                log.warning("demo checkout skipped: %s", exc)
+                continue
+            for x, q in items:
+                x["stock"] -= float(q)
+            db.flush()
+            # back-date everything the checkout wrote
+            db.execute(text("UPDATE invoices SET created_at=:at, paid_at=:at, updated_at=:at WHERE id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE invoice_items SET created_at=:at WHERE invoice_id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE payments SET created_at=:at WHERE invoice_id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE coupon_redemptions SET created_at=:at WHERE invoice_id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='Invoice' AND reference_id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE customer_ledger_entries SET created_at=:at WHERE invoice_id=:id"), {"at": when, "id": inv.id})
+            db.execute(text("UPDATE audit_logs SET created_at=:at WHERE entity_type='Invoice' AND entity_id=:id"), {"at": when, "id": inv.id})
+            stats["invoices"] += 1; stats["lines"] += len(items); stats["sales"] += float(inv.total_amount)
+            if on_credit:
+                stats["credit"] += 1
+            inv_ids_by_day.setdefault(day, []).append(inv.id)
+            # voids: cashier2 has an elevated rate (planted LOSS_PREV)
+            vr = 0.045 if user.username == "cashier2" else 0.008
+            if rnd.random() < vr:
+                sp = db.begin_nested()
+                try:
+                    pos_svc.void_invoice(db, invoice=inv, user=user, reason="اشتباه صندوق‌دار")
+                    db.flush()
+                    for x, q in items:
+                        x["stock"] += float(q)
+                    db.execute(text("UPDATE audit_logs SET created_at=:at WHERE action='SALE_VOIDED' AND entity_id=:id"), {"at": when + timedelta(minutes=3), "id": inv.id})
+                    stats["voids"] += 1
+                    sp.commit()
+                except Exception as exc:
+                    sp.rollback(); log.warning("void skipped: %s", exc)
+            elif rnd.random() < 0.012:
+                sp = db.begin_nested()
+                try:
+                    it = db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == inv.id)).scalars().first()
+                    if it:
+                        pos_svc.process_return(db, invoice=inv, invoice_item=it, qty=D(1) if not it.qty < 1 else it.qty, user=user, reason="معیوب")
+                        db.flush()
+                        db.execute(text("UPDATE returns SET created_at=:at WHERE invoice_id=:id"), {"at": when + timedelta(hours=rnd.randint(1, 30)), "id": inv.id})
+                        stats["returns"] += 1
+                    sp.commit()
+                except Exception as exc:
+                    sp.rollback(); log.warning("return skipped: %s", exc)
+        # credit settlements: customers pay their tab every ~2 weeks
+        if day.day in (1, 15):
+            from . import ledger as ledger_svc
+            for cu in customers:
+                if not cu["credit"]:
+                    continue
+                last = db.execute(select(CustomerLedgerEntry).where(CustomerLedgerEntry.customer_id == cu["c"].id).order_by(CustomerLedgerEntry.id.desc())).scalars().first()
+                if last and float(last.balance_after) > 0 and rnd.random() < 0.8:
+                    amt = float(last.balance_after) * rnd.choice([1.0, 1.0, 0.6])
+                    sp = db.begin_nested()
+                    try:
+                        e = ledger_svc.post_entry(db, customer_id=cu["c"].id, entry_type="PAYMENT", amount=D(str(round(amt))), method="CASH", note="تسویهٔ دوره‌ای", user_id=admin.id)
+                        db.flush()
+                        _fix_created(db, "customer_ledger_entries", [e.id], datetime.combine(day, datetime.min.time()) + timedelta(hours=10))
+                        sp.commit()
+                    except Exception as exc:
+                        sp.rollback(); log.warning("settlement skipped: %s", exc)
+        # monthly expenses + cheques
+        if day.day == 1:
+            when = datetime.combine(day, datetime.min.time()) + timedelta(hours=9)
+            for nm, amt in (("اجاره", 45_000_000), ("حقوق", 38_000_000), ("برق و گاز", rnd.randint(4_000_000, 9_000_000)), ("حمل", rnd.randint(1_500_000, 3_500_000)), ("متفرقه", rnd.randint(800_000, 2_500_000))):
+                sp = db.begin_nested()
+                try:
+                    e = acc_svc.record_expense(db, category_id=exp_cats[nm].id, amount=D(amt), expense_date=day, paid_from="BANK" if nm in ("اجاره", "حقوق") else "CASH", description=f"{nm} ماهانه", user=admin)
+                    db.flush(); _fix_created(db, "acc_expenses", [e.id], when); sp.commit()
+                except Exception as exc:
+                    sp.rollback(); log.warning("expense skipped: %s", exc)
+            # issued cheques to suppliers (planted: next month has a cluster)
+            n_ch = 2 if day.month != today.month else 4
+            for j in range(n_ch):
+                s, _, _ = rnd.choice(sups)
+                due_d = day + timedelta(days=rnd.randint(25, 55)) if day.month != today.month else today + timedelta(days=rnd.randint(6, 26))
+                sp = db.begin_nested()
+                try:
+                    ch = acc_svc.record_cheque(db, direction="ISSUED", number=str(rnd.randint(100000, 999999)), amount=D(rnd.randint(35, 120) * 1_000_000),
+                                               due_date=due_d, bank_name=rnd.choice(["ملت", "ملی", "صادرات", "پاسارگاد"]), party_type="SUPPLIER", party_id=s.id,
+                                               party_name=s.name, description="بابت خرید کالا", issue_date=day, user=admin)
+                    db.flush(); _fix_created(db, "acc_cheques", [ch.id], when); sp.commit()
+                except Exception as exc:
+                    sp.rollback(); log.warning("cheque skipped: %s", exc)
+        if di % 30 == 0:
+            db.commit()
+        day += timedelta(days=1)
+
+    def stamp_expiries():
+        # historical expiry dates; whatever is still on the shelf and past its date becomes EXPIRED (the waste the engine will talk about)
+        for bid, exp in pending_expiry:
+            db.execute(text("UPDATE product_batches SET expiry_date=:e WHERE id=:id"), {"e": exp, "id": bid})
+        pending_expiry.clear()
+        db.execute(text("UPDATE product_batches SET status='EXPIRED' WHERE expiry_date IS NOT NULL AND expiry_date < :t AND current_qty > 0 AND status='ACTIVE'"), {"t": today})
+        db.flush()
+
+    stamp_expiries()
+
+    # ---- planted end-state situations
+    now = datetime.utcnow()
+    # 1) perishable over-receipt → EXPIRY_LADDER
+    yog = by_name["ماست ۹۰۰ گرمی"]
+    receive(yog, now - timedelta(days=2), 140, shelf_override=9)
+    # 2) fast mover nearly out → VELOCITY
+    water = by_name["آب معدنی ۱.۵ لیتری"]
+    db.execute(update(ProductBatch).where(ProductBatch.product_id == water["p"].id, ProductBatch.status == "ACTIVE").values(current_qty=D(0)))
+    receive(water, now - timedelta(hours=5), 14)
+    # 3) priced under cost → PRICE_GAP
+    tuna = by_name["تن ماهی ۱۸۰ گرمی"]
+    db.execute(update(ProductBatch).where(ProductBatch.product_id == tuna["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(69000)))
+    # 4) consumer-price violation
+    tea = by_name["چای کیسه‌ای ۱۰۰ عددی"]
+    db.execute(update(ProductBatch).where(ProductBatch.product_id == tea["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(124000)))
+    stamp_expiries()
+    db.commit()
+    try:
+        write_audit(db, action="DEMO_STORE_GENERATED", entity_type="System", entity_id=None, after={"days": days, **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}})
+        db.commit()
+    except Exception:
+        db.rollback()
+    return {"days": days, "products": len(products), "customers": len(customers), **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
+
+
+def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dict, stats: dict, by_name: dict) -> None:
+    """Replay what a real manager did on `day`: run the engine with the clock set to that day,
+    accept the sensible suggestions through the real accept() (baseline frozen, actions executed),
+    and register the behavioural consequences the rest of the simulation must honour."""
+    from . import insights as ins
+    from ..models import Insight
+    clock = datetime.combine(day, datetime.min.time()) + timedelta(hours=6, minutes=30)   # 10:00 Tehran
+    ins.set_clock(clock)
+    try:
+        ins.run(db)
+        db.commit()
+        rows = db.execute(select(Insight).where(Insight.status == "NEW")).scalars().all()
+        accepted = 0
+        for r in rows:
+            ev = json.loads(r.evidence or "{}")
+            take, only = False, None
+            if r.kind == "CROSS_SELL" and accepted < 12:
+                take = True
+                prods = ev.get("products") or []
+                a, b = (prods[0]["id"], prods[1]["id"]) if len(prods) == 2 else (None, None)
+                if a and b:
+                    fx["pair_boost"][(a, b)] = 0.22
+                    fx["pair_boost"][(b, a)] = 0.12
+            elif r.kind == "BASKET_NUDGE":
+                take = True
+                for rule in ev.get("rules", [])[:12]:
+                    fx["pair_boost"][(rule["if"], rule["then"])] = max(fx["pair_boost"].get((rule["if"], rule["then"]), 0), 0.10)
+            elif r.kind == "VIP":
+                take = True
+                fx["vip_ids"] |= {x["customer_id"] for x in ev.get("rows", [])}
+            elif r.kind == "CHURN":
+                take = True
+                ids = {x["customer_id"] for x in ev.get("rows", [])}
+                fx["winback_ids"] |= ids
+                for c in customers:
+                    if c["c"].id in ids:
+                        c["churn"] = None
+                        c["next"] = day + timedelta(days=random.Random(c["c"].id).randint(2, 9))
+                        c["gap"] *= 1.3   # they come back, a bit less often than before
+            elif r.kind == "PRICE_GAP" and ev.get("margin") is not None:
+                take = True   # under-cost tuna → priced properly; unit demand dips slightly
+                fx["boosted_products"][ev["product_id"]] = 0.0
+                d = next((x for x in products if x["p"].id == ev["product_id"]), None)
+                if d:
+                    d["demand"] *= 0.93
+            elif r.kind == "DEAD_STOCK":
+                take = True   # bundle + shelf move: the dead stock starts to move slowly
+                fx["boosted_products"][ev["product_id"]] = 0.035
+            elif r.kind == "VELOCITY" and accepted < 20:
+                take, only = True, ["set_min_stock"]
+            if take:
+                try:
+                    ins.accept(db, r, user=admin, action_types=only)
+                    accepted += 1
+                except Exception as exc:
+                    db.rollback()
+                    log.warning("demo accept skipped %s: %s", r.kind, exc)
+        # demo-store prices after PRICE_GAP acceptance are already changed by the real action.
+        db.execute(text("UPDATE ai_insights SET created_at=:t, updated_at=:t, last_seen_at=:t WHERE created_at > :t"), {"t": clock})
+        db.execute(text("UPDATE campaigns SET created_at=:t WHERE created_at > :t"), {"t": clock})
+        db.execute(text("UPDATE coupons SET created_at=:t WHERE created_at > :t"), {"t": clock})
+        db.execute(text("UPDATE notifications SET created_at=:t WHERE created_at > :t"), {"t": clock})
+        db.execute(text("UPDATE audit_logs SET created_at=:t WHERE created_at > :t"), {"t": clock})
+        db.commit()
+        stats["accepted_insights"] += accepted
+        log.warning("demo manager review on %s: %d suggestions accepted", day, accepted)
+    finally:
+        ins.set_clock(None)
+
+
+def is_demo(db: Session) -> bool:
+    from ..models import AuditLog
+    return db.execute(select(AuditLog.id).where(AuditLog.action == "DEMO_STORE_GENERATED").limit(1)).first() is not None

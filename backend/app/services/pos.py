@@ -42,6 +42,7 @@ from .audit import write_audit
 from .units import QuantityError, to_qty, validate_for_unit
 
 ZERO = Decimal("0")
+EPS_QTY = Decimal("0.0005")
 CENT = Decimal("0.01")
 
 
@@ -362,13 +363,16 @@ def _atomic_deduct(db: Session, batch_id: int, qty: Decimal) -> None:
         update(ProductBatch)
         .where(
             ProductBatch.id == batch_id,
-            ProductBatch.current_qty >= qty,
+            # v3.0: loose-weight residues live as binary floats in SQLite (0.10499999…),
+            # while the allocator reads them quantised to 3 dp (0.105). A sub-gram
+            # tolerance keeps the atomic guard honest without ever overselling a unit.
+            ProductBatch.current_qty >= qty - EPS_QTY,
             ProductBatch.status == "ACTIVE",
         )
         .values(
-            current_qty=ProductBatch.current_qty - qty,
+            current_qty=case((ProductBatch.current_qty - qty <= EPS_QTY, 0), else_=ProductBatch.current_qty - qty),
             status=case(
-                (ProductBatch.current_qty - qty == 0, "SOLD_OUT"),
+                (ProductBatch.current_qty - qty <= EPS_QTY, "SOLD_OUT"),
                 else_="ACTIVE",
             ),
         )
