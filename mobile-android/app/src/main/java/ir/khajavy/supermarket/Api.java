@@ -68,9 +68,14 @@ public final class Api {
                     }
                 }
                 MAIN.post(() -> { if (err != null) err.err(e); else Ui.toast(e.getMessage()); });
+            } catch (Throwable t) {   // v3.3: a bug/OOM inside a local handler must surface as an error card, never kill the app
+                ApiError e = new ApiError(500, "LOCAL", t instanceof OutOfMemoryError ? "حافظهٔ گوشی کافی نبود" : "خطای داخلی: " + t);
+                MAIN.post(() -> { if (err != null) err.err(e); else Ui.toast(e.getMessage()); });
             }
         });
     }
+    /** v3.3: background work that must never take the app down. */
+    public static void bg(Runnable r) { POOL.execute(() -> { try { r.run(); } catch (Throwable t) { android.util.Log.w("Api", "bg task failed: " + t); } }); }
 
     /* ---------------- blocking (call from a worker thread) ---------------- */
     public static Object call(String method, String path, String body, String contentType) throws ApiError {
@@ -197,7 +202,6 @@ public final class Api {
     }
 
     /* ---------------- helpers ---------------- */
-    public static void bg(Runnable r) { POOL.execute(r); }
     public static void ui(Runnable r) { MAIN.post(r); }
     public static void ui(Runnable r, long delayMs) { MAIN.postDelayed(r, delayMs); }
 

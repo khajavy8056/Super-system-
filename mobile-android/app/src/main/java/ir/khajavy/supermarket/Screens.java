@@ -122,6 +122,7 @@ public final class Screens {
         Home(AppActivity a) { super(a); }
         public String key() { return "home"; } public String title() { return "داشبورد"; }
         public boolean autoRefresh() { return true; }
+        private long loadGen = 0;
         public void load() {
             clear();
             LinearLayout hero = Ui.hero(c);
@@ -131,9 +132,13 @@ public final class Screens {
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
             quick.addView(qb("plus", "فروش جدید", () -> a.route("pos"))); quick.addView(qb("scan", "اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("truck", "ورود کالا", () -> a.route("receive")));
             hero.addView(quick); body.addView(hero);
-            double[] loc = Db.todayStats();
-            body.addView(Ui.empty(c, "در حال دریافت داشبورد…"));
-            get("/reports/dashboard", r -> { JSONObject d = (JSONObject) r; body.removeViewAt(body.getChildCount() - 1); render(d, loc); });
+            final double[] loc = Db.todayStats();
+            final View ph = Ui.empty(c, "در حال دریافت داشبورد…"); body.addView(ph);
+            // v3.3: never hang forever — if the report takes > 12 s (very large store / busy workers) show a retry card
+            final boolean[] done = {false}; final long gen = ++loadGen;
+            Api.ui(() -> { if (!done[0] && gen == loadGen && ph.getParent() == body) { body.removeView(ph); LinearLayout cd = Ui.card(c, "داشبورد آماده نشد"); cd.addView(Ui.body(c, "گزارش داشبورد بیش از حد طول کشید. اگر تازه پشتیبان بزرگی را بازیابی کرده‌اید، یک بار دیگر تلاش کنید.")); cd.addView(Ui.primary(c, "تلاش دوباره", this::load)); body.addView(cd); } }, 12000);
+            Api.get("/reports/dashboard", r -> { done[0] = true; if (gen != loadGen) return; body.removeView(ph); try { render((JSONObject) r, loc); } catch (Throwable e) { body.addView(Ui.empty(c, "خطا در نمایش داشبورد: " + e.getMessage())); } },
+                e -> { done[0] = true; if (gen != loadGen) return; body.removeView(ph); LinearLayout cd = Ui.card(c, e.offline() ? "رایانه در دسترس نیست" : "خطا در داشبورد"); cd.addView(Ui.body(c, e.getMessage())); cd.addView(Ui.primary(c, "تلاش دوباره", this::load)); body.addView(cd); });
         }
         static String greeting() { int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); return h < 12 ? "صبح بخیر" : h < 17 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر"; }
         private View qb(String icon, String s, Runnable r) { LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER); t.setBackground(Ui.rounded(0x26FFFFFF, 0x33FFFFFF, 16)); t.setPadding(0, Ui.dp(10), 0, Ui.dp(8)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.addView(Icons.view(c, icon, 0xFFFFFFFF, 20)); TextView l = Ui.text(c, s, 11.5f, 0xFFFFFFFF, true); l.setPadding(0, Ui.dp(4), 0, 0); t.addView(l); t.setClickable(true); t.setOnClickListener(v -> r.run()); return t; }
@@ -152,7 +157,7 @@ public final class Screens {
             body.addView(Ui.grid2(c, Ui.kpi(c, "ارزش موجودی", Ui.money(d(inv, "value")), Ui.num(d(inv, "product_count")) + " کالا", Ui.AMBER), Ui.kpi(c, "کمبود / بدون موجودی", Ui.fa(low + " / " + none), null, low + none > 0 ? Ui.RED : Ui.GREEN)));
             // 7 expiry
             LinearLayout ex = Ui.card(c, "انقضا"); int te = 0; String[][] EK = {{"EXPIRED", "منقضی"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "۳ روز"}, {"EXPIRING_7_DAYS", "۷ روز"}, {"EXPIRING_30_DAYS", "۳۰ روز"}};
-            LinearLayout er = Ui.row(c); for (String[] k : EK) { int n = exp == null || exp.optJSONArray(k[0]) == null ? 0 : exp.optJSONArray(k[0]).length(); te += n; LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1)); col.addView(Ui.text(c, Ui.fa(String.valueOf(n)), 17, n > 0 ? ("EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER) : Ui.TEXT, true)); col.addView(Ui.muted(c, k[1])); er.addView(col); }
+            LinearLayout er = Ui.row(c); for (String[] k : EK) { int n = exp == null || exp.optJSONArray(k[0]) == null ? 0 : Math.max(exp.optInt("total_" + k[0]), exp.optJSONArray(k[0]).length()); te += n; LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1)); col.addView(Ui.text(c, Ui.fa(String.valueOf(n)), 17, n > 0 ? ("EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER) : Ui.TEXT, true)); col.addView(Ui.muted(c, k[1])); er.addView(col); }
             ex.addView(er); if (te == 0) ex.addView(Ui.muted(c, "هیچ کالایی نزدیک انقضا نیست")); ex.setOnClickListener(v -> a.open(new AdminScreens.Reports(a, 3), true)); body.addView(ex);
             // 8 receivables
             LinearLayout rc = Ui.card(c, "مطالبات و بدهکاران"); rc.addView(Ui.kv(c, "بدهی مشتریان", Ui.money(d(rec, "customer_debt")), Ui.AMBER)); rc.addView(Ui.kv(c, "تعداد بدهکار", Ui.num(d(rec, "debtor_count")), 0)); rc.addView(Ui.kv(c, "فاکتور در انتظار پرداخت", Ui.num(d(rec, "pending_count")) + " · " + Ui.money(d(rec, "pending_amount")), 0)); rc.setOnClickListener(v -> a.route("customers")); body.addView(rc);

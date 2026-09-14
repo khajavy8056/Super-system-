@@ -24,14 +24,41 @@ import java.util.UUID;
 public final class Db extends SQLiteOpenHelper {
     private static Db I;
     public static synchronized void init(Context c) { if (I == null) I = new Db(c.getApplicationContext()); }
-    private static SQLiteDatabase w() { return I.getWritableDatabase(); }
+    /** v3.3: set while a restore swaps the database file; every access waits instead of reopening a half-written file. */
+    static volatile boolean swapping = false;
+    private static SQLiteDatabase w() { while (swapping) { try { Thread.sleep(50); } catch (InterruptedException ignore) {} } return I.getWritableDatabase(); }
+    public static java.io.File file(Context c) { return c.getDatabasePath("supermarket_native.db"); }
     /** v3.0: close before a restore replaces the file; the next db() call reopens and re-runs onOpen(). */
     public static synchronized void shutdown() { try { if (I != null) I.close(); } catch (Exception ignore) {} }
-    @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} }
+    @Override public void onConfigure(SQLiteDatabase d) { super.onConfigure(d); try { d.enableWriteAheadLogging(); } catch (Exception ignore) {} }   // v3.3: readers never block on a long write (restore/import)
+    @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} try { indexes(d); } catch (Exception ignore) {} }
+    /** v3.3 — indexes for stores with years of history (tens of thousands of invoices): every dashboard /
+     *  report query is now a range scan on an index instead of a full-table scan. Idempotent. */
+    static final String[] V4_INDEX = {
+        "CREATE INDEX IF NOT EXISTS ix_inv_at ON invoices(at)", "CREATE INDEX IF NOT EXISTS ix_inv_status_at ON invoices(status, at)", "CREATE INDEX IF NOT EXISTS ix_inv_cust ON invoices(customer_id, at)",
+        "CREATE INDEX IF NOT EXISTS ix_inv_paystat ON invoices(payment_status)", "CREATE INDEX IF NOT EXISTS ix_ii_pid ON invoice_items(product_id)",
+        "CREATE INDEX IF NOT EXISTS ix_b_p_status ON batches(product_id, status)", "CREATE INDEX IF NOT EXISTS ix_b_status_exp ON batches(status, expiry_date)",
+        "CREATE INDEX IF NOT EXISTS ix_led_cust ON ledger(customer_id)", "CREATE INDEX IF NOT EXISTS ix_jr_status_date ON journal(status, date)", "CREATE INDEX IF NOT EXISTS ix_jr_ref ON journal(ref)",
+        "CREATE INDEX IF NOT EXISTS ix_mv_pid ON movements(product_id)", "CREATE INDEX IF NOT EXISTS ix_mv_at ON movements(created_at)", "CREATE INDEX IF NOT EXISTS ix_ai_status ON ai_insights(status)",
+        "CREATE INDEX IF NOT EXISTS ix_p_name ON products(is_active, name)", "CREATE INDEX IF NOT EXISTS ix_c_phone ON customers(phone)",
+        "CREATE TABLE IF NOT EXISTS journal_lines(jid INTEGER, code TEXT, debit REAL, credit REAL)", "CREATE INDEX IF NOT EXISTS ix_jl_code ON journal_lines(code, jid)", "CREATE INDEX IF NOT EXISTS ix_jl_jid ON journal_lines(jid)",
+    };
+    static void indexes(SQLiteDatabase d) { for (String q : V4_INDEX) { try { d.execSQL(q); } catch (Exception ignore) {} } }
+    /** v3.3 — account balances are summed in SQL from journal_lines (one row per posting line) instead of
+     *  parsing the JSON of every journal row in Java; this fills the table once for journals written before 3.3. */
+    static void rebuildJournalLines(SQLiteDatabase d) {
+        try (Cursor n = d.rawQuery("SELECT (SELECT COUNT(*) FROM journal_lines), (SELECT COUNT(*) FROM journal)", null)) { if (n.moveToFirst() && (n.getLong(0) > 0 || n.getLong(1) == 0)) return; }
+        android.database.sqlite.SQLiteStatement st = d.compileStatement("INSERT INTO journal_lines(jid,code,debit,credit) VALUES(?,?,?,?)");
+        d.beginTransaction();
+        try (Cursor c = d.rawQuery("SELECT id, lines FROM journal", null)) {
+            while (c.moveToNext()) { try { JSONArray ls = new JSONArray(c.getString(1)); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); st.clearBindings(); st.bindLong(1, c.getLong(0)); st.bindString(2, l.optString("code")); st.bindDouble(3, l.optDouble("debit")); st.bindDouble(4, l.optDouble("credit")); st.executeInsert(); } } catch (Exception ignore) {} }
+            d.setTransactionSuccessful();
+        } finally { d.endTransaction(); st.close(); }
+    }
     /** v2.4: the local API router ({@link Local}) works directly on the database. */
     public static SQLiteDatabase db() { return w(); }
 
-    private Db(Context c) { super(c, "supermarket_native.db", null, 3); }   // v2.7: db 3 → bank table
+    private Db(Context c) { super(c, "supermarket_native.db", null, VERSION); }   // v2.7: db 3 → bank table · v3.3: db 4 → indexes + journal_lines
 
     /** v2.4 — full standalone schema: every Windows section has a table on the phone. */
     static final String[] V2 = {
@@ -74,20 +101,24 @@ public final class Db extends SQLiteOpenHelper {
         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM units", null)) { if (c.moveToFirst() && c.getInt(0) == 0) { Object[][] us = {{"عدد", "عدد", 0, 0}, {"کیلوگرم", "kg", 1, 3}, {"گرم", "g", 1, 0}, {"لیتر", "L", 1, 2}, {"بسته", "بسته", 0, 0}, {"کارتن", "کارتن", 0, 0}, {"متر", "m", 1, 2}}; for (Object[] u : us) d.execSQL("INSERT INTO units(name,symbol,allow_decimal,decimals,is_active) VALUES(?,?,?,?,1)", u); } }
     }
 
-    @Override public void onCreate(SQLiteDatabase d) {
-        d.execSQL("CREATE TABLE products(id INTEGER PRIMARY KEY, barcode TEXT, name TEXT, sku TEXT, unit_id INTEGER, category_id INTEGER, brand_id INTEGER, min_stock_alert REAL DEFAULT 0, image_url TEXT, is_active INTEGER DEFAULT 1, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
-        d.execSQL("CREATE INDEX ix_p_bc ON products(barcode)");
-        d.execSQL("CREATE TABLE batches(id INTEGER PRIMARY KEY, product_id INTEGER, batch_number TEXT, current_qty REAL, sell_price REAL, consumer_price REAL, buy_price REAL, expiry_date TEXT, status TEXT, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
-        d.execSQL("CREATE INDEX ix_b_p ON batches(product_id)");
-        d.execSQL("CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT, last_name TEXT, phone TEXT, credit_limit REAL, is_local INTEGER DEFAULT 0, json TEXT)");
-        d.execSQL("CREATE TABLE invoices(local_no TEXT PRIMARY KEY, total REAL, item_count INTEGER, payment TEXT, at TEXT, synced INTEGER DEFAULT 0, invoice_number TEXT, json TEXT)");
-        d.execSQL("CREATE TABLE ops(id TEXT PRIMARY KEY, type TEXT, payload TEXT, label TEXT, local_no TEXT, created_at TEXT, last_error TEXT)");
-        d.execSQL("CREATE TABLE cache(path TEXT PRIMARY KEY, json TEXT, at TEXT)");
-        d.execSQL("CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT)");
-        d.execSQL("CREATE TABLE conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
-        v2(d);
+    @Override public void onCreate(SQLiteDatabase d) { schema(d); }
+    /** v3.3: full phone schema on any SQLiteDatabase (also used by {@link PcImport} to build a fresh file off-line). */
+    static void schema(SQLiteDatabase d) {
+        d.execSQL("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, barcode TEXT, name TEXT, sku TEXT, unit_id INTEGER, category_id INTEGER, brand_id INTEGER, min_stock_alert REAL DEFAULT 0, image_url TEXT, is_active INTEGER DEFAULT 1, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_p_bc ON products(barcode)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS batches(id INTEGER PRIMARY KEY, product_id INTEGER, batch_number TEXT, current_qty REAL, sell_price REAL, consumer_price REAL, buy_price REAL, expiry_date TEXT, status TEXT, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_b_p ON batches(product_id)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY, name TEXT, last_name TEXT, phone TEXT, credit_limit REAL, is_local INTEGER DEFAULT 0, json TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS invoices(local_no TEXT PRIMARY KEY, total REAL, item_count INTEGER, payment TEXT, at TEXT, synced INTEGER DEFAULT 0, invoice_number TEXT, json TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, type TEXT, payload TEXT, label TEXT, local_no TEXT, created_at TEXT, last_error TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS cache(path TEXT PRIMARY KEY, json TEXT, at TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
+        v2(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
+        d.execSQL("PRAGMA user_version=" + VERSION);
     }
-    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 3) v2(d); }   // v2() is idempotent (IF NOT EXISTS / try-ALTER)
+    static final int VERSION = 4;
+    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 3) v2(d); if (a < 4) { indexes(d); try { rebuildJournalLines(d); } catch (Exception ignore) {} } }   // v2() is idempotent (IF NOT EXISTS / try-ALTER)
 
     /* ---------------- kv ---------------- */
     public static String kv(String k) { try (Cursor c = w().rawQuery("SELECT v FROM kv WHERE k=?", new String[]{k})) { return c.moveToFirst() ? c.getString(0) : null; } }
@@ -95,7 +126,8 @@ public final class Db extends SQLiteOpenHelper {
     private static long counter(String k) { long n = 0; String v = kv(k); if (v != null) n = Long.parseLong(v); n++; kv(k, String.valueOf(n)); return n; }
 
     /* ---------------- cache ---------------- */
-    public static void cachePut(String path, String json) { ContentValues cv = new ContentValues(); cv.put("path", path); cv.put("json", json); cv.put("at", now()); w().insertWithOnConflict("cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE); }
+    public static void cachePut(String path, String json) { try { cachePut0(path, json); } catch (Throwable ignore) {} }   // v3.3: never let a cache write (e.g. during a restore) kill the request thread
+    private static void cachePut0(String path, String json) { ContentValues cv = new ContentValues(); cv.put("path", path); cv.put("json", json); cv.put("at", now()); w().insertWithOnConflict("cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE); }
     public static String cacheGet(String path) { try (Cursor c = w().rawQuery("SELECT json FROM cache WHERE path=?", new String[]{path})) { return c.moveToFirst() ? c.getString(0) : null; } }
 
     /* ---------------- catalogue merge from PC ---------------- */
@@ -234,7 +266,8 @@ public final class Db extends SQLiteOpenHelper {
     }
     public static List<JSONObject> stockRows() {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = w().rawQuery("SELECT p.id, p.name, p.barcode, p.min_stock_alert, IFNULL((SELECT SUM(current_qty) FROM batches b WHERE b.product_id=p.id AND b.status='ACTIVE'),0) FROM products p WHERE p.is_active=1 ORDER BY p.name", null)) {
+        // v3.3: one grouped join (index ix_b_p_status) instead of a correlated sub-query per product
+        try (Cursor c = w().rawQuery("SELECT p.id, p.name, p.barcode, p.min_stock_alert, IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0) FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1 GROUP BY p.id ORDER BY p.name", null)) {
             while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("product_id", c.getLong(0)); o.put("name", c.getString(1)); o.put("barcode", c.getString(2)); o.put("min_stock_alert", c.getDouble(3)); o.put("total_stock", c.getDouble(4)); } catch (Exception ignore) {} out.add(o); }
         }
         return out;
@@ -309,19 +342,19 @@ public final class Db extends SQLiteOpenHelper {
     }
     public static double[] todayStats() {  // {count, total, unsynced}
         String day = now().substring(0, 10);
-        try (Cursor c = w().rawQuery("SELECT COUNT(*), IFNULL(SUM(total),0), (SELECT COUNT(*) FROM invoices WHERE synced=0) FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { return c.moveToFirst() ? new double[]{c.getDouble(0), c.getDouble(1), c.getDouble(2)} : new double[]{0, 0, 0}; }
+        try (Cursor c = w().rawQuery("SELECT COUNT(*), IFNULL(SUM(total),0), (SELECT COUNT(*) FROM invoices WHERE synced=0) FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { return c.moveToFirst() ? new double[]{c.getDouble(0), c.getDouble(1), c.getDouble(2)} : new double[]{0, 0, 0}; }
     }
 
     /** sales totals for the last 7 days (oldest first) — dashboard sparkline. */
     public static double[] weekSales() {
         double[] out = new double[7]; java.util.Calendar cal = java.util.Calendar.getInstance();
-        for (int i = 6; i >= 0; i--) { String day = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH)); try (Cursor c = w().rawQuery("SELECT IFNULL(SUM(total),0) FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { out[i] = c.moveToFirst() ? c.getDouble(0) : 0; } cal.add(java.util.Calendar.DAY_OF_MONTH, -1); }
+        for (int i = 6; i >= 0; i--) { String day = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH)); try (Cursor c = w().rawQuery("SELECT IFNULL(SUM(total),0) FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { out[i] = c.moveToFirst() ? c.getDouble(0) : 0; } cal.add(java.util.Calendar.DAY_OF_MONTH, -1); }
         return out;
     }
     /** "name|qty" of today's best sellers (from local invoice JSON). */
     public static String[] topSellingToday(int n) {
         java.util.Map<String, Double> m = new java.util.HashMap<>(); String day = now().substring(0, 10);
-        try (Cursor c = w().rawQuery("SELECT json FROM invoices WHERE substr(at,1,10)=?", new String[]{day})) { while (c.moveToNext()) { try { JSONArray it = new JSONObject(c.getString(0)).optJSONArray("items"); for (int i = 0; it != null && i < it.length(); i++) { JSONObject x = it.optJSONObject(i); String k = x.optString("name"); m.put(k, (m.containsKey(k) ? m.get(k) : 0) + x.optDouble("quantity", 0)); } } catch (Exception ignore) {} } }
+        try (Cursor c = w().rawQuery("SELECT json FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { while (c.moveToNext()) { try { JSONArray it = new JSONObject(c.getString(0)).optJSONArray("items"); for (int i = 0; it != null && i < it.length(); i++) { JSONObject x = it.optJSONObject(i); String k = x.optString("name"); m.put(k, (m.containsKey(k) ? m.get(k) : 0) + x.optDouble("quantity", 0)); } } catch (Exception ignore) {} } }
         java.util.List<java.util.Map.Entry<String, Double>> l = new java.util.ArrayList<>(m.entrySet()); java.util.Collections.sort(l, (x, y) -> Double.compare(y.getValue(), x.getValue()));
         String[] out = new String[Math.min(n, l.size())]; for (int i = 0; i < out.length; i++) out[i] = l.get(i).getKey() + "|" + Ui.num(l.get(i).getValue()); return out;
     }

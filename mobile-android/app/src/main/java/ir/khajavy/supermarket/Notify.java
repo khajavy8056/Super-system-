@@ -62,6 +62,17 @@ public final class Notify {
         } catch (Throwable ignore) {}
     }
 
+    /** v3.3: ongoing progress notification (restore / import) — survives the screen being left. */
+    public static final int ID_PROGRESS = 7710;
+    public static void progress(Context c, String title, String text, int pct) {
+        try { channels(c); Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH_SYSTEM) : new Notification.Builder(c);
+            b.setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle(title).setContentText(text).setOngoing(true).setOnlyAlertOnce(true).setProgress(100, pct, false).setColor(Ui.TEAL);
+            ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).notify(ID_PROGRESS, b.build()); } catch (Throwable ignore) {}
+    }
+    public static void progressDone(Context c, String title, String text) {
+        try { ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(ID_PROGRESS); show(c, CH_SYSTEM, ID_PROGRESS + 1, title, text, "backup", "note"); } catch (Throwable ignore) {}
+    }
+
     /* ---------------- checks ---------------- */
     public static void supportReply(Context c, int n) { show(c, CH_SUPPORT, ID_SUPPORT, "پاسخ جدید از پشتیبانی", Ui.fa(String.valueOf(n)) + " پاسخ جدید دریافت شد — برای مشاهده لمس کنید", "support", "alert"); }
 

@@ -92,16 +92,23 @@ public final class Insights {
     static final class Frame {
         final List<JSONObject> lines = new ArrayList<>(); final Map<Long, JSONObject> inv = new HashMap<>(); final Map<Long, JSONObject> prod = new HashMap<>();
         final Map<Long, Set<Long>> basket = new HashMap<>();
+        // v3.3: per-product aggregates computed once (velocity()/margin() used to rescan every line per call → O(batches × lines))
+        private final Map<Long, double[]> agg = new HashMap<>();   // {qty28, profit90, qty90}
+        private final String s28;
         Frame(int days) {
-            String since = daysAgo(days);
-            for (JSONObject i : Local.rows("SELECT rowid AS id, * FROM invoices WHERE status<>'VOID' AND at>=?", since)) inv.put(i.optLong("id"), i);
-            for (JSONObject l : Local.rows("SELECT ii.*, i.at, i.customer_id, i.user FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.status<>'VOID' AND i.at>=?", since)) { lines.add(l); basket.computeIfAbsent(l.optLong("inv"), k -> new HashSet<>()).add(l.optLong("product_id")); }
-            for (JSONObject p : Local.rows("SELECT * FROM products WHERE is_active<>0")) prod.put(p.optLong("id"), p);
+            String since = daysAgo(days); s28 = daysAgo(28);
+            // only the columns the analyzers read — keeps a 180-day frame of a busy store well inside the phone's heap
+            for (JSONObject i : Local.rows("SELECT rowid AS id, at, total, customer_id, user, status FROM invoices WHERE status<>'VOID' AND at>=?", since)) inv.put(i.optLong("id"), i);
+            for (JSONObject l : Local.rows("SELECT ii.inv, ii.product_id, ii.qty, ii.unit_sell_price, ii.unit_buy_price, ii.discount, ii.subtotal, i.at, i.customer_id FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.status<>'VOID' AND i.at>=?", since)) {
+                lines.add(l); basket.computeIfAbsent(l.optLong("inv"), k -> new HashSet<>()).add(l.optLong("product_id"));
+                double[] a = agg.computeIfAbsent(l.optLong("product_id"), k -> new double[3]); double q = l.optDouble("qty"); if (l.optString("at").compareTo(s28) >= 0) a[0] += q; a[1] += profit(l); a[2] += q;
+            }
+            for (JSONObject p : Local.rows("SELECT id, name, barcode, min_stock_alert, category_id, image_url FROM products WHERE is_active<>0")) prod.put(p.optLong("id"), p);
         }
         String name(long pid) { JSONObject p = prod.get(pid); return p == null ? ("کالا #" + pid) : p.optString("name"); }
         double profit(JSONObject l) { return (l.optDouble("unit_sell_price") - l.optDouble("unit_buy_price")) * l.optDouble("qty") - l.optDouble("discount"); }
-        double velocity(long pid, int days) { double q = 0; String since = daysAgo(days); for (JSONObject l : lines) if (l.optLong("product_id") == pid && l.optString("at").compareTo(since) >= 0) q += l.optDouble("qty"); return q / days; }
-        double margin(long pid) { double p = 0, q = 0; for (JSONObject l : lines) if (l.optLong("product_id") == pid) { p += profit(l); q += l.optDouble("qty"); } return q > 0 ? p / q : 0; }
+        double velocity(long pid, int days) { if (days == 28) { double[] a = agg.get(pid); return a == null ? 0 : a[0] / 28; } double q = 0; String since = daysAgo(days); for (JSONObject l : lines) if (l.optLong("product_id") == pid && l.optString("at").compareTo(since) >= 0) q += l.optDouble("qty"); return q / days; }
+        double margin(long pid) { double[] a = agg.get(pid); return a == null || a[2] <= 0 ? 0 : a[1] / a[2]; }
     }
 
     public static JSONObject run() throws Exception {

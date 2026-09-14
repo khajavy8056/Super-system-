@@ -60,7 +60,8 @@ public final class Local {
                 case "support": return support(method, seg, b);
             }
         } catch (Api.ApiError e) { throw e;
-        } catch (Exception e) { throw new Api.ApiError(500, "LOCAL", "خطای داخلی گوشی: " + e.getMessage()); }
+        } catch (OutOfMemoryError e) { throw new Api.ApiError(500, "LOCAL", "حافظهٔ گوشی برای این گزارش کافی نبود — بازهٔ کوتاه‌تری انتخاب کنید");   // v3.3: never crash the app
+        } catch (Throwable e) { throw new Api.ApiError(500, "LOCAL", "خطای داخلی گوشی: " + e.getMessage()); }
         throw new Api.ApiError(404, "NOT_FOUND", "این بخش روی گوشی در دسترس نیست: " + path);
     }
 
@@ -345,14 +346,19 @@ public final class Local {
     static String accName(String code) { for (String[] a : ACCOUNTS) if (a[0].equals(code)) return a[1]; return code; }
     /** lines: {code, debit, credit} */
     public static void journal(String kind, String desc, double total, String ref, String[][] lines) {
-        try { if (ref != null && one("SELECT id FROM journal WHERE ref=?", ref) != null) return; JSONArray ls = new JSONArray(); for (String[] l : lines) { JSONObject o = new JSONObject(); o.put("code", l[0]); o.put("name", accName(l[0])); o.put("debit", Double.parseDouble(l[1])); o.put("credit", Double.parseDouble(l[2])); ls.put(o); } JSONObject n = one("SELECT IFNULL(MAX(number),0)+1 AS n FROM journal"); exec("INSERT INTO journal(number,date,description,kind,status,total,lines,ref) VALUES(?,?,?,?,'POSTED',?,?,?)", n.optInt("n"), Db.now(), desc, kind, total, ls.toString(), ref); } catch (Exception ignore) {}
+        try { if (ref != null && one("SELECT id FROM journal WHERE ref=?", ref) != null) return; JSONArray ls = new JSONArray(); for (String[] l : lines) { JSONObject o = new JSONObject(); o.put("code", l[0]); o.put("name", accName(l[0])); o.put("debit", Double.parseDouble(l[1])); o.put("credit", Double.parseDouble(l[2])); ls.put(o); } JSONObject n = one("SELECT IFNULL(MAX(number),0)+1 AS n FROM journal"); exec("INSERT INTO journal(number,date,description,kind,status,total,lines,ref) VALUES(?,?,?,?,'POSTED',?,?,?)", n.optInt("n"), Db.now(), desc, kind, total, ls.toString(), ref); JSONObject jid = one("SELECT id FROM journal WHERE ref=? ORDER BY id DESC LIMIT 1", ref); if (jid == null) jid = one("SELECT MAX(id) AS id FROM journal"); for (String[] l : lines) exec("INSERT INTO journal_lines(jid,code,debit,credit) VALUES(?,?,?,?)", jid.optLong("id"), l[0], Double.parseDouble(l[1]), Double.parseDouble(l[2])); } catch (Exception ignore) {}
     }
     /** sale posting — called from Db.localSale. */
     public static void postSale(String no, double total, double cogs, JSONArray pays) {
         try { List<String[]> ls = new ArrayList<>(); for (int i = 0; pays != null && i < pays.length(); i++) { JSONObject p = pays.optJSONObject(i); if (p.optDouble("amount") <= 0) continue; ls.add(new String[]{payAcc(p.optString("method")), String.valueOf(p.optDouble("amount")), "0"}); } ls.add(new String[]{"4000", "0", String.valueOf(total)}); if (cogs > 0) { ls.add(new String[]{"5000", String.valueOf(cogs), "0"}); ls.add(new String[]{"1200", "0", String.valueOf(cogs)}); } journal("SALE", "فروش " + no, total, "Invoice:" + no, ls.toArray(new String[0][])); } catch (Exception ignore) {}
     }
     static void reverseJournal(String ref, String desc) { try { JSONObject j = one("SELECT * FROM journal WHERE ref=? AND status='POSTED'", ref); if (j == null) return; JSONArray ls = new JSONArray(j.optString("lines", "[]")); List<String[]> rev = new ArrayList<>(); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); rev.add(new String[]{l.optString("code"), String.valueOf(l.optDouble("credit")), String.valueOf(l.optDouble("debit"))}); } exec("UPDATE journal SET status='REVERSED' WHERE id=?", j.optLong("id")); journal("REVERSAL", desc, j.optDouble("total"), ref + ":rev" + System.currentTimeMillis(), rev.toArray(new String[0][])); } catch (Exception ignore) {} }
-    static double acc(String code, String from, String to) { double d = 0; for (JSONObject j : rows("SELECT lines FROM journal WHERE status='POSTED'" + (from == null ? "" : " AND date>=?") + (to == null ? "" : " AND date<=?"), from == null ? (to == null ? new Object[0] : new Object[]{to + "T23:59:59"}) : (to == null ? new Object[]{from} : new Object[]{from, to + "T23:59:59"}))) { try { JSONArray ls = new JSONArray(j.optString("lines", "[]")); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); if (l.optString("code").equals(code) || (code.endsWith("000") && l.optString("code").startsWith(code.substring(0, 1)))) d += l.optDouble("debit") - l.optDouble("credit"); } } catch (Exception ignore) {} } return d; }
+    /** v3.3: balance of an account (or of a whole class when code ends in 000) — a single indexed SQL SUM over journal_lines. */
+    static double acc(String code, String from, String to) {
+        List<Object> a = new ArrayList<>(); String w = code.endsWith("000") ? "l.code LIKE ?" : "l.code=?"; a.add(code.endsWith("000") ? code.substring(0, 1) + "%" : code);
+        if (from != null) { w += " AND j.date>=?"; a.add(from); } if (to != null) { w += " AND j.date<=?"; a.add(to + "T23:59:59"); }
+        JSONObject r = one("SELECT IFNULL(SUM(l.debit-l.credit),0) AS d FROM journal_lines l JOIN journal j ON j.id=l.jid WHERE j.status='POSTED' AND " + w, a.toArray()); return r == null ? 0 : r.optDouble("d");
+    }
     static Object accounting(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
         String what = seg[1]; String m0 = Jalali.daysAgoIso(30);
         switch (what) {
@@ -381,17 +387,29 @@ public final class Local {
         String what = seg[1]; String today = Jalali.todayIso();
         switch (what) {
             case "dashboard": {
-                JSONObject d = new JSONObject(); JSONObject sales = new JSONObject(); JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE substr(at,1,10)=? AND status<>'VOID'", today); sales.put("today", t.optDouble("s")); sales.put("invoice_count_today", t.optInt("n")); JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND status<>'VOID'", Jalali.daysAgoIso(30)); sales.put("month", m.optDouble("s")); d.put("sales", sales);
-                JSONObject inv = new JSONObject(); inv.put("product_count", Db.count("products")); JSONObject iv = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE status='ACTIVE'"); inv.put("value", iv.optDouble("v")); int low = 0, none = 0; for (JSONObject r : Db.stockRows()) { if (r.optDouble("total_stock") <= 0) none++; else if (r.optDouble("total_stock") <= r.optDouble("min_stock_alert")) low++; } inv.put("low_stock_count", low); inv.put("no_stock_count", none); d.put("inventory", inv);
-                JSONObject rec = new JSONObject(); double debt = 0; int dn = 0; for (JSONObject c : rows("SELECT customer_id, SUM(CASE WHEN entry_type IN ('CHARGE','ADJUSTMENT_DEBIT') THEN amount ELSE -amount END) AS b FROM ledger GROUP BY customer_id")) if (c.optDouble("b") > 0.5) { debt += c.optDouble("b"); dn++; } rec.put("customer_debt", debt); rec.put("debtor_count", dn); JSONObject pn = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE payment_status='PENDING' AND status<>'VOID'"); rec.put("pending_count", pn.optInt("n")); rec.put("pending_amount", pn.optDouble("s")); d.put("receivables", rec);
-                d.put("expiry", expiryBuckets()); JSONObject pr = new JSONObject(); JSONObject tp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE substr(i.at,1,10)=? AND i.status<>'VOID'", today); JSONObject mp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.at>=? AND i.status<>'VOID'", Jalali.daysAgoIso(30)); pr.put("today", tp.optDouble("p")); pr.put("month", mp.optDouble("p")); d.put("profit", pr);
-                JSONArray top = new JSONArray(); for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS revenue FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.status<>'VOID' AND i.at>=? GROUP BY ii.product_id ORDER BY revenue DESC LIMIT 5", Jalali.daysAgoIso(30))) { JSONObject p = Db.productById(r.optLong("product_id")); r.put("name", p == null ? "کالا" : p.optString("name")); top.put(r); } d.put("top_products", top);
-                JSONArray trend = new JSONArray(); for (int i = 6; i >= 0; i--) { String day = Jalali.daysAgoIso(i); JSONObject s = one("SELECT IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE substr(at,1,10)=? AND status<>'VOID'", day); JSONObject o = new JSONObject(); o.put("date", day); o.put("label", Ui.jdate(day)); o.put("sales", s.optDouble("s")); o.put("count", s.optInt("n")); trend.put(o); } d.put("trend", trend);
-                JSONArray ri = new JSONArray(); for (JSONObject r : rows("SELECT rowid AS id,* FROM invoices ORDER BY at DESC LIMIT 5")) { JSONObject o = new JSONObject(); o.put("invoice_number", r.optString("invoice_number").isEmpty() || r.isNull("invoice_number") ? r.optString("local_no") : r.optString("invoice_number")); o.put("created_at", r.optString("at")); o.put("total", r.optDouble("total")); o.put("status", r.optString("status", "PAID")); ri.put(o); } d.put("recent_invoices", ri);
+                // v3.3: every block is one set-based, index-backed query (at-range instead of substr(), GROUP BY instead of
+                // per-row loops) so a store with years of history renders in well under a second on a phone.
+                String t0 = today, t1 = today + "T99", m30 = Jalali.daysAgoIso(30);
+                JSONObject d = new JSONObject(); JSONObject sales = new JSONObject();
+                JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID'", t0, t1); sales.put("today", t.optDouble("s")); sales.put("invoice_count_today", t.optInt("n"));
+                JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND status<>'VOID'", m30); sales.put("month", m.optDouble("s")); d.put("sales", sales);
+                JSONObject inv = new JSONObject(); inv.put("product_count", Db.count("products"));
+                JSONObject iv = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE status='ACTIVE'"); inv.put("value", iv.optDouble("v"));
+                JSONObject ls = one("SELECT SUM(q<=0) AS none, SUM(q>0 AND q<=ms) AS low FROM (SELECT p.min_stock_alert AS ms, IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0) AS q FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1 GROUP BY p.id)");
+                inv.put("low_stock_count", ls == null ? 0 : ls.optInt("low")); inv.put("no_stock_count", ls == null ? 0 : ls.optInt("none")); d.put("inventory", inv);
+                JSONObject rec = new JSONObject(); JSONObject dbt = one("SELECT COUNT(*) AS n, IFNULL(SUM(b),0) AS s FROM (SELECT SUM(CASE WHEN entry_type IN ('CHARGE','ADJUSTMENT_DEBIT') THEN amount ELSE -amount END) AS b FROM ledger GROUP BY customer_id) WHERE b>0.5");
+                rec.put("customer_debt", dbt == null ? 0 : dbt.optDouble("s")); rec.put("debtor_count", dbt == null ? 0 : dbt.optInt("n")); JSONObject pn = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE payment_status='PENDING' AND status<>'VOID'"); rec.put("pending_count", pn.optInt("n")); rec.put("pending_amount", pn.optDouble("s")); d.put("receivables", rec);
+                d.put("expiry", expiryBuckets(40)); JSONObject pr = new JSONObject();
+                JSONObject tp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.at<? AND i.status<>'VOID'", t0, t1);
+                JSONObject mp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.status<>'VOID'", m30); pr.put("today", tp.optDouble("p")); pr.put("month", mp.optDouble("p")); d.put("profit", pr);
+                JSONArray top = new JSONArray(); for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS revenue, (SELECT name FROM products p WHERE p.id=ii.product_id) AS name FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.status<>'VOID' AND i.at>=? GROUP BY ii.product_id ORDER BY revenue DESC LIMIT 5", m30)) { if (r.isNull("name")) r.put("name", "کالا"); top.put(r); } d.put("top_products", top);
+                java.util.Map<String, JSONObject> byDay = new java.util.HashMap<>(); for (JSONObject r : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND status<>'VOID' GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6))) byDay.put(r.optString("d"), r);
+                JSONArray trend = new JSONArray(); for (int i = 6; i >= 0; i--) { String day = Jalali.daysAgoIso(i); JSONObject s = byDay.get(day); JSONObject o = new JSONObject(); o.put("date", day); o.put("label", Ui.jdate(day)); o.put("sales", s == null ? 0 : s.optDouble("s")); o.put("count", s == null ? 0 : s.optInt("n")); trend.put(o); } d.put("trend", trend);
+                JSONArray ri = new JSONArray(); for (JSONObject r : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices ORDER BY at DESC LIMIT 5")) { JSONObject o = new JSONObject(); o.put("invoice_number", r.optString("invoice_number").isEmpty() || r.isNull("invoice_number") ? r.optString("local_no") : r.optString("invoice_number")); o.put("created_at", r.optString("at")); o.put("total", r.optDouble("total")); o.put("status", r.optString("status", "PAID")); ri.put(o); } d.put("recent_invoices", ri);
                 JSONObject sys = new JSONObject(); sys.put("version", Version.NAME); sys.put("status", "OK"); android.os.StatFs st = new android.os.StatFs(android.os.Environment.getDataDirectory().getPath()); sys.put("disk_free_gb", Math.round(st.getAvailableBytes() / 1e8) / 10.0); sys.put("sync_queued", Db.opCount()); sys.put("sync_failed", 0); d.put("system", sys);
-                JSONObject sms = new JSONObject(); sms.put("configured", SmsLocal.configured()); int pend = 0; JSONArray sq = SmsLocal.queue(); for (int i = 0; i < sq.length(); i++) if (!"SENT".equals(sq.optJSONObject(i).optString("status"))) pend++; sms.put("pending", pend); d.put("sms", sms);
+                JSONObject sms = new JSONObject(); sms.put("configured", SmsLocal.configured()); sms.put("pending", SmsLocal.pendingCount()); d.put("sms", sms);
                 JSONObject ac = new JSONObject(); ac.put("cash", acc("1010", null, null)); ac.put("bank", acc("1020", null, null) + acc("1030", null, null)); ac.put("payables", -acc("2100", null, null)); d.put("accounting", ac); d.put("pricing", obj("price_conflict_count", 0)); return d; }
-            case "sales": { String from = q.optString("start", today), to = q.optString("end", today); String grp = q.optString("group", "daily"); JSONObject o = new JSONObject(); JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE substr(at,1,10) BETWEEN ? AND ? AND status<>'VOID'", from, to); o.put("total_sales", t.optDouble("s")); o.put("invoice_count", t.optInt("n")); JSONArray g = new JSONArray(); if ("product".equals(grp)) { for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS total FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE substr(i.at,1,10) BETWEEN ? AND ? AND i.status<>'VOID' GROUP BY ii.product_id ORDER BY total DESC", from, to)) { JSONObject p = Db.productById(r.optLong("product_id")); r.put("name", p == null ? "کالا" : p.optString("name")); g.put(r); } } else for (JSONObject r : rows("SELECT substr(at,1,10) AS date, COUNT(*) AS invoice_count, SUM(total) AS total FROM invoices WHERE substr(at,1,10) BETWEEN ? AND ? AND status<>'VOID' GROUP BY date ORDER BY date", from, to)) g.put(r); o.put("groups", g); return o; }
+            case "sales": { String from = q.optString("start", today), to = q.optString("end", today); String grp = q.optString("group", "daily"); JSONObject o = new JSONObject(); JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<?||'T99' AND status<>'VOID'", from, to); o.put("total_sales", t.optDouble("s")); o.put("invoice_count", t.optInt("n")); JSONArray g = new JSONArray(); if ("product".equals(grp)) { for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS total FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.at>=? AND i.at<?||'T99' AND i.status<>'VOID' GROUP BY ii.product_id ORDER BY total DESC", from, to)) { JSONObject p = Db.productById(r.optLong("product_id")); r.put("name", p == null ? "کالا" : p.optString("name")); g.put(r); } } else for (JSONObject r : rows("SELECT substr(at,1,10) AS date, COUNT(*) AS invoice_count, SUM(total) AS total FROM invoices WHERE at>=? AND at<?||'T99' AND status<>'VOID' GROUP BY date ORDER BY date", from, to)) g.put(r); o.put("groups", g); return o; }
             case "cashiers": { JSONArray a = new JSONArray(); for (JSONObject r : rows("SELECT IFNULL(user,'—') AS username, COUNT(*) AS invoice_count, SUM(total) AS total_sales, SUM(discount) AS total_discount FROM invoices WHERE status<>'VOID' GROUP BY user")) { JSONObject p = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE IFNULL(i.user,'—')=? AND i.status<>'VOID'", r.optString("username")); r.put("profit", p.optDouble("p")); a.put(r); } return a; }
             case "inventory": { JSONArray a = new JSONArray(); for (JSONObject r : Db.stockRows()) { JSONObject v = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE product_id=? AND status='ACTIVE'", r.optLong("product_id")); r.put("total_qty", r.optDouble("total_stock")); r.put("value_at_cost", v.optDouble("v")); a.put(r); } return a; }
             case "expiry": return expiryBuckets();
@@ -404,12 +422,20 @@ public final class Local {
         }
         throw new Api.ApiError(404, "NOT_FOUND", "");
     }
-    static JSONObject expiryBuckets() throws Exception {
+    static JSONObject expiryBuckets() throws Exception { return expiryBuckets(300); }
+    /** v3.3: buckets computed in SQL (julianday) on an indexed range; each bucket is capped so a huge store never
+     *  builds thousands of JSON rows for a dashboard card. `total_*` counts are always exact. */
+    static JSONObject expiryBuckets(int perBucket) throws Exception {
         JSONObject o = new JSONObject(); String[] keys = {"EXPIRED", "EXPIRING_TODAY", "EXPIRING_3_DAYS", "EXPIRING_7_DAYS", "EXPIRING_30_DAYS"}; for (String k : keys) o.put(k, new JSONArray());
-        String today = Jalali.todayIso(); java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US); long t0 = f.parse(today).getTime();
-        for (JSONObject bt : rows("SELECT * FROM batches WHERE status='ACTIVE' AND current_qty>0 AND expiry_date IS NOT NULL AND expiry_date<>'' ORDER BY expiry_date")) { long days; try { days = Math.round((f.parse(bt.optString("expiry_date").substring(0, 10)).getTime() - t0) / 86400000.0); } catch (Exception e) { continue; } String k = days < 0 ? "EXPIRED" : days == 0 ? "EXPIRING_TODAY" : days <= 3 ? "EXPIRING_3_DAYS" : days <= 7 ? "EXPIRING_7_DAYS" : days <= 30 ? "EXPIRING_30_DAYS" : null; if (k == null) continue; JSONObject p = Db.productById(bt.optLong("product_id")); bt.put("product_name", p == null ? "" : p.optString("name")); bt.put("barcode", p == null ? "" : p.optString("barcode")); bt.put("days_left", days); o.optJSONArray(k).put(bt); }
+        String today = Jalali.todayIso(); String until = plusDaysIso(today, 30);
+        for (JSONObject bt : rows("SELECT b.*, p.name AS product_name, p.barcode AS barcode, CAST(julianday(substr(b.expiry_date,1,10))-julianday(?) AS INTEGER) AS days FROM batches b LEFT JOIN products p ON p.id=b.product_id WHERE b.status='ACTIVE' AND b.current_qty>0 AND b.expiry_date IS NOT NULL AND b.expiry_date<>'' AND substr(b.expiry_date,1,10)<=? ORDER BY b.expiry_date", today, until)) {
+            if (bt.isNull("days")) continue; long days = bt.optLong("days"); String k = days < 0 ? "EXPIRED" : days == 0 ? "EXPIRING_TODAY" : days <= 3 ? "EXPIRING_3_DAYS" : days <= 7 ? "EXPIRING_7_DAYS" : "EXPIRING_30_DAYS";
+            o.put("total_" + k, o.optInt("total_" + k) + 1); JSONArray a = o.getJSONArray(k); if (a.length() >= perBucket) continue;
+            bt.put("days_left", days); bt.put("quantity", bt.optDouble("current_qty")); bt.put("product_id", bt.optLong("product_id")); a.put(bt);
+        }
         return o;
     }
+    static String plusDaysIso(String day, int n) { try { java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US); return f.format(new java.util.Date(f.parse(day).getTime() + n * 86400000L)); } catch (Exception e) { return day; } }
 
     /* ===================== hardware / diagnostics / sms / support ===================== */
     static Object hardware(String method, String[] seg, JSONObject b) throws Exception {
@@ -452,7 +478,7 @@ public final class Local {
             case "dispatch": return obj("sent", SmsLocal.flush());
             case "test-connection": try { return obj("status", "OK", "message", "اعتبار پنل: " + SmsLocal.melipayamakCredit(), "detail", "اتصال برقرار است"); } catch (Exception e) { throw new Api.ApiError(502, "SMS", "خطا: " + e.getMessage()); }
             case "templates": { JSONArray a = new JSONArray(); String[][] T = {{"invoice", "sms.template.invoice", "{store} {invoice} {amount} {currency}"}, {"coupon", "sms.template.coupon", "{store} {code} {until}"}, {"debt_reminder", "sms.template.debt_reminder", "{customer} {store} {amount} {currency}"}, {"low_stock", "sms.template.low_stock", "{store} {count} {items}"}, {"daily_report", "sms.template.daily_report", "{store} {date} {invoices} {sales} {profit} {debt} {currency}"}}; for (String[] t : T) { JSONObject o = new JSONObject(); o.put("kind", t[0]); o.put("key", t[1]); o.put("value", setting(t[1], "invoice".equals(t[0]) ? SmsLocal.DEFAULT_TEMPLATE : "")); o.put("placeholders", new JSONArray(java.util.Arrays.asList(t[2].split(" ")))); a.put(o); } return a; }
-            case "daily-report": { String adm = setting("sms.admin_phone", Prefs.get("store_mobile", "")); if (adm.isEmpty()) throw new Api.ApiError(400, "NO_PHONE", "شمارهٔ مدیر تنظیم نشده"); JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE substr(at,1,10)=? AND status<>'VOID'", Jalali.todayIso()); JSONObject p = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE substr(i.at,1,10)=? AND i.status<>'VOID'", Jalali.todayIso()); double debt = 0; for (JSONObject c : rows("SELECT SUM(CASE WHEN entry_type IN ('CHARGE','ADJUSTMENT_DEBIT') THEN amount ELSE -amount END) AS b FROM ledger GROUP BY customer_id")) if (c.optDouble("b") > 0) debt += c.optDouble("b"); String txt = setting("sms.template.daily_report", "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}").replace("{store}", Prefs.get("store_name", "فروشگاه")).replace("{date}", Jalali.todayLong()).replace("{invoices}", Ui.num(t.optInt("n"))).replace("{sales}", Ui.num(t.optDouble("s"))).replace("{profit}", Ui.num(p.optDouble("p"))).replace("{debt}", Ui.num(debt)).replace("{currency}", Ui.currencyLabel); SmsLocal.enqueueAndSend(adm, txt, "daily"); return obj("ok", true); }
+            case "daily-report": { String adm = setting("sms.admin_phone", Prefs.get("store_mobile", "")); if (adm.isEmpty()) throw new Api.ApiError(400, "NO_PHONE", "شمارهٔ مدیر تنظیم نشده"); JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<?||'T99' AND status<>'VOID'", Jalali.todayIso(), Jalali.todayIso()); JSONObject p = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.at>=? AND i.at<?||'T99' AND i.status<>'VOID'", Jalali.todayIso(), Jalali.todayIso()); double debt = 0; for (JSONObject c : rows("SELECT SUM(CASE WHEN entry_type IN ('CHARGE','ADJUSTMENT_DEBIT') THEN amount ELSE -amount END) AS b FROM ledger GROUP BY customer_id")) if (c.optDouble("b") > 0) debt += c.optDouble("b"); String txt = setting("sms.template.daily_report", "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}").replace("{store}", Prefs.get("store_name", "فروشگاه")).replace("{date}", Jalali.todayLong()).replace("{invoices}", Ui.num(t.optInt("n"))).replace("{sales}", Ui.num(t.optDouble("s"))).replace("{profit}", Ui.num(p.optDouble("p"))).replace("{debt}", Ui.num(debt)).replace("{currency}", Ui.currencyLabel); SmsLocal.enqueueAndSend(adm, txt, "daily"); return obj("ok", true); }
         }
         if (seg.length > 2 && "retry".equals(seg[2])) { SmsLocal.retry(seg[1]); return obj("ok", true); }
         throw new Api.ApiError(404, "NOT_FOUND", "");
@@ -476,28 +502,40 @@ public final class Local {
     /** Replace the phone database with a backup file. Accepts a phone backup (backup()), a Windows
      *  backup (PC schema → converted by {@link PcImport}), and either of them gzip-compressed
      *  (the bundled demo store is a .gz). A safety copy is taken first. Returns a short summary. */
-    public static JSONObject restore(android.content.Context c, java.io.InputStream in0) throws Exception {
+    public static JSONObject restore(android.content.Context c, java.io.InputStream in0) throws Exception { return restore(c, in0, (p, m) -> {}); }
+    /** v3.3: progress-reporting variant (percent 0..100 + Persian step label); heavy work never touches the live file until the end. */
+    public static JSONObject restore(android.content.Context c, java.io.InputStream in0, PcImport.Progress pr) throws Exception {
+        android.os.PowerManager.WakeLock wl = null;
+        try { android.os.PowerManager pm = (android.os.PowerManager) c.getSystemService(android.content.Context.POWER_SERVICE); wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "supery:restore"); wl.acquire(10 * 60 * 1000L); } catch (Exception ignore) {}
         java.io.File tmp = new java.io.File(c.getCacheDir(), "restore.db");
-        java.io.InputStream in = new java.io.BufferedInputStream(in0, 1 << 16); in.mark(4); byte[] h2 = new byte[2]; int got = in.read(h2); in.reset();
-        if (got == 2 && (h2[0] & 0xff) == 0x1f && (h2[1] & 0xff) == 0x8b) in = new java.util.zip.GZIPInputStream(in, 1 << 16);
-        try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
-        byte[] head = new byte[16]; try (java.io.InputStream t = new java.io.FileInputStream(tmp)) { t.read(head); }
-        if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست (باید فایل .db یا .db.gz خروجی «سوپری من» یا نسخهٔ ویندوز باشد)"); }
-        boolean phone = PcImport.isPhoneBackup(tmp), pc = !phone && PcImport.isPcBackup(tmp);
-        if (!phone && !pc) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست"); }
-        backup(c); // safety copy of the current data
-        JSONObject summary = new JSONObject();
-        if (pc) {
-            summary = PcImport.run(tmp); summary.put("source", "windows");
-            tmp.delete();
-        } else {
-            Db.shutdown(); java.io.File dst = c.getDatabasePath("supermarket_native.db"); for (String sfx : new String[]{"-wal", "-shm", "-journal"}) new java.io.File(dst.getPath() + sfx).delete();
-            try (java.io.InputStream i2 = new java.io.FileInputStream(tmp); java.io.OutputStream os = new java.io.FileOutputStream(dst)) { byte[] buf = new byte[65536]; int n; while ((n = i2.read(buf)) > 0) os.write(buf, 0, n); }
-            tmp.delete(); Db.db(); // reopen → runs migrations (adds ai_insights etc. if missing)
-            summary.put("source", "phone");
-        }
-        Db.kv("last_restore", Db.now()); audit("RESTORE", "Db", pc ? "import-windows" : "import", null, null);
-        return summary;
+        try {
+            pr.at(0, "خواندن فایل…");
+            java.io.InputStream in = new java.io.BufferedInputStream(in0, 1 << 16); in.mark(4); byte[] h2 = new byte[2]; int got = in.read(h2); in.reset();
+            if (got == 2 && (h2[0] & 0xff) == 0x1f && (h2[1] & 0xff) == 0x8b) in = new java.util.zip.GZIPInputStream(in, 1 << 16);
+            try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
+            byte[] head = new byte[16]; try (java.io.InputStream t = new java.io.FileInputStream(tmp)) { t.read(head); }
+            if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست (باید فایل .db یا .db.gz خروجی «سوپری من» یا نسخهٔ ویندوز باشد)");
+            boolean phone = PcImport.isPhoneBackup(tmp), pc = !phone && PcImport.isPcBackup(tmp);
+            if (!phone && !pc) throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست");
+            pr.at(1, "نسخهٔ امن از داده‌های فعلی…");
+            backup(c); // safety copy of the current data
+            JSONObject summary;
+            if (pc) { summary = PcImport.run(c, tmp, pr); summary.put("source", "windows"); }
+            else {
+                pr.at(50, "جایگزینی پایگاه داده…");
+                java.io.File dst = Db.file(c);
+                Db.swapping = true;
+                try { Db.shutdown(); for (String sfx : new String[]{"-wal", "-shm", "-journal"}) new java.io.File(dst.getPath() + sfx).delete(); if (!tmp.renameTo(dst)) { try (java.io.InputStream i2 = new java.io.FileInputStream(tmp); java.io.OutputStream os = new java.io.FileOutputStream(dst)) { byte[] buf = new byte[65536]; int n; while ((n = i2.read(buf)) > 0) os.write(buf, 0, n); } } }
+                finally { Db.swapping = false; }
+                pr.at(80, "به‌روزرسانی ساختار…");
+                Db.db(); // reopen → runs migrations (adds ai_insights / indexes / journal_lines if missing)
+                try { Db.rebuildJournalLines(Db.db()); } catch (Exception ignore) {}
+                summary = new JSONObject(); summary.put("source", "phone"); for (String t : new String[]{"products", "invoices", "customers"}) summary.put(t, count(t));
+            }
+            Db.kv("last_restore", Db.now()); audit("RESTORE", "Db", pc ? "import-windows" : "import", null, null);
+            pr.at(100, "انجام شد");
+            return summary;
+        } finally { tmp.delete(); try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception ignore) {} }
     }
     public static int bootstrapUnits() { seedUsers(); return count("units"); }
 

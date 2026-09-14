@@ -300,6 +300,26 @@ public final class InsightScreens {
         }
         void share(java.io.File f) { try { android.net.Uri u = BackupProvider.uri(a, f); Intent i = new Intent(Intent.ACTION_SEND); i.setType("application/octet-stream"); i.putExtra(Intent.EXTRA_STREAM, u); i.putExtra(Intent.EXTRA_SUBJECT, "پشتیبان سوپری من — " + f.getName()); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); Biometric.markInternal(); a.startActivity(Intent.createChooser(i, "ارسال فایل پشتیبان")); } catch (Exception e) { Ui.toast("اشتراک‌گذاری ممکن نشد: " + e.getMessage()); } }
         void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); a.pickCb = uri -> restore(() -> { try { return a.getContentResolver().openInputStream(uri); } catch (Exception e) { return null; } }); Biometric.markInternal(); a.startActivityForResult(Intent.createChooser(i, "انتخاب فایل پشتیبان"), AppActivity.REQ_PICK); }
-        void restore(java.util.function.Supplier<java.io.InputStream> src) { Ui.toast("در حال بازیابی…"); Api.bg(() -> { try (java.io.InputStream in = src.get()) { if (in == null) throw new Exception("فایل خوانده نشد"); org.json.JSONObject r = Local.restore(a, in); String msg = "windows".equals(r.optString("source")) ? "نسخهٔ ویندوز وارد شد: " + Ui.fa(String.valueOf(r.optInt("invoices"))) + " فاکتور، " + Ui.fa(String.valueOf(r.optInt("products"))) + " کالا، " + Ui.fa(String.valueOf(r.optInt("customers"))) + " مشتری." : "داده‌ها از فایل پشتیبان بارگذاری شدند."; Api.ui(() -> { Sfx.play("ok"); Screens.loadConfig(a); Ui.done(Ui.ctx, "بازیابی انجام شد", msg, () -> a.route("home")); }); } catch (Exception e) { Api.ui(() -> Ui.toast("بازیابی ناموفق: " + e.getMessage())); } }); }
+        void restore(java.util.function.Supplier<java.io.InputStream> src) {
+            // v3.3: dedicated thread (never one of the 4 API workers the screens depend on), a modal progress sheet
+            // with the current step, a system notification while it runs, and a clear error instead of a crash.
+            final android.app.Dialog[] dlg = new android.app.Dialog[1]; final android.widget.ProgressBar bar = new android.widget.ProgressBar(c, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(100); bar.setIndeterminate(false);
+            final TextView step = Ui.body(c, "آماده‌سازی…"); final TextView pct = Ui.muted(c, "۰٪");
+            LinearLayout box = Ui.col(c); box.setPadding(Ui.dp(4), Ui.dp(6), Ui.dp(4), Ui.dp(6)); box.addView(step); box.addView(bar); box.addView(pct); box.addView(Ui.muted(c, "برنامه را نبندید؛ داده‌های فعلی تا پایان موفقیت‌آمیز دست‌نخورده می‌مانند."));
+            try { dlg[0] = Ui.sheet(c, "در حال بازیابی", box); dlg[0].setCancelable(false); dlg[0].setCanceledOnTouchOutside(false); } catch (Exception ignore) {}
+            final long[] lastN = {0};
+            Thread t = new Thread(() -> {
+                try (java.io.InputStream in = src.get()) {
+                    if (in == null) throw new Exception("فایل خوانده نشد");
+                    org.json.JSONObject r = Local.restore(a, in, (p, m) -> { Api.ui(() -> { bar.setProgress(p); step.setText(m); pct.setText(Ui.fa(String.valueOf(p)) + "٪"); }); if (System.currentTimeMillis() - lastN[0] > 1500) { lastN[0] = System.currentTimeMillis(); Notify.progress(a, "بازیابی پشتیبان", m, p); } });
+                    Notify.progressDone(a, "بازیابی انجام شد", "windows".equals(r.optString("source")) ? Ui.fa(String.valueOf(r.optInt("invoices"))) + " فاکتور وارد شد" : "داده‌ها بارگذاری شدند");
+                    String msg = "windows".equals(r.optString("source")) ? "نسخهٔ ویندوز وارد شد: " + Ui.fa(String.valueOf(r.optInt("invoices"))) + " فاکتور، " + Ui.fa(String.valueOf(r.optInt("products"))) + " کالا، " + Ui.fa(String.valueOf(r.optInt("customers"))) + " مشتری." : "داده‌ها از فایل پشتیبان بارگذاری شدند.";
+                    Api.ui(() -> { try { if (dlg[0] != null) dlg[0].dismiss(); } catch (Exception ignore) {} Sfx.play("ok"); Screens.loadConfig(a); Ui.done(Ui.ctx, "بازیابی انجام شد", msg, () -> a.route("home")); });
+                } catch (Throwable e) {
+                    Notify.progressDone(a, "بازیابی ناموفق", String.valueOf(e.getMessage()));
+                    Api.ui(() -> { try { if (dlg[0] != null) dlg[0].dismiss(); } catch (Exception ignore) {} Ui.toast("بازیابی ناموفق: " + e.getMessage()); load(); });
+                }
+            }, "restore"); t.setPriority(Thread.NORM_PRIORITY + 1); t.start();
+        }
     }
 }

@@ -75,8 +75,44 @@ def init_db() -> None:
     # units.allow_decimal". Any column present in the models but missing in
     # the database is now added in place (additive only, data preserved).
     _reconcile_schema()
+    _ensure_indexes()
     with SessionLocal() as db:
         bootstrap(db)
+
+
+# v3.3 — indexes for stores with years of history (tens of thousands of invoices).
+# Every dashboard / report / insight query becomes an index range scan. Idempotent, never fatal.
+PERF_INDEXES = (
+    ("ix_perf_inv_created", "invoices", "created_at"),
+    ("ix_perf_inv_status_created", "invoices", "status, created_at"),
+    ("ix_perf_inv_customer", "invoices", "customer_id, created_at"),
+    ("ix_perf_ii_product", "invoice_items", "product_id"),
+    ("ix_perf_pb_status_exp", "product_batches", "status, expiry_date"),
+    ("ix_perf_pb_product_status", "product_batches", "product_id, status"),
+    ("ix_perf_sm_created", "stock_movements", "created_at"),
+    ("ix_perf_ai_status", "ai_insights", "status"),
+    ("ix_perf_led_customer_created", "customer_ledger_entries", "customer_id, created_at"),
+)
+
+
+def _ensure_indexes() -> list[str]:
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger("supermarket.db")
+    made: list[str] = []
+    try:
+        tables = set(inspect(engine).get_table_names())
+        with engine.begin() as conn:
+            for name, table, cols in PERF_INDEXES:
+                if table not in tables:
+                    continue
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"))
+                made.append(name)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.error("index creation failed: %s", exc)
+    return made
 
 
 def _reconcile_schema() -> list[str]:

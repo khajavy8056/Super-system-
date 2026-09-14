@@ -67,6 +67,8 @@ public final class SmsLocal {
     /* ---------------- queue ---------------- */
     public static JSONArray queue() { try { String j = Db.kv("sms_queue"); return j == null ? new JSONArray() : new JSONArray(j); } catch (Exception e) { return new JSONArray(); } }
     static void save(JSONArray q) { Db.kv("sms_queue", q.toString()); }
+    /** v3.3: number of not-yet-sent messages (cheap; the queue is capped, but never parse it on the dashboard path if empty). */
+    public static int pendingCount() { try { String j = Db.kv("sms_queue"); if (j == null || j.length() < 3) return 0; JSONArray q = new JSONArray(j); int n = 0; for (int i = 0; i < q.length(); i++) if (!"SENT".equals(q.optJSONObject(i).optString("status"))) n++; return n; } catch (Exception e) { return 0; } }
     public static void enqueue(String phone, String text, String ref) {
         if (phone == null || phone.trim().isEmpty()) return;
         JSONArray q = queue(); try { JSONObject m = new JSONObject(); m.put("id", "s" + System.currentTimeMillis()); m.put("phone", Db.norm(phone.trim())); m.put("text", text); m.put("ref", ref == null ? "" : ref); m.put("status", "PENDING"); m.put("tries", 0); m.put("at", Db.now()); q.put(m); } catch (Exception ignore) {}
