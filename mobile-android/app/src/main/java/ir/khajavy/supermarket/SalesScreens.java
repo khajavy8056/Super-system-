@@ -193,11 +193,11 @@ public final class SalesScreens {
                 if (credit) { if (paidAmt > 0) { p.put("method", "CASH"); p.put("amount", paidAmt); pays.put(p); } JSONObject cr = new JSONObject(); cr.put("method", "CREDIT"); cr.put("amount", total - paidAmt); pays.put(cr); } else { p.put("method", method); p.put("amount", total); pays.put(p); }
                 body.put("payments", pays); if (customer != null) { body.put("customer_id", customer.optLong("id")); body.put("customer_phone", customer.optString("phone")); body.put("customer_name", customer.optString("name")); }
                 if (coupon != null) body.put("coupon_code", coupon); if (invoiceDiscount > 0) body.put("invoice_discount", invoiceDiscount); body.put("open_drawer", false);
-                // local-first: apply on the phone immediately, then push
+                String ph = smsPhone != null && !smsPhone.isEmpty() ? smsPhone : (customer == null ? "" : customer.optString("phone"));
+                if (!ph.isEmpty()) { body.put("customer_phone", ph); if (customer == null) { body.put("customer_name", "مشتری " + ph); { JSONObject cu = Db.customerByPhone(ph); if (cu == null) cu = Db.localCustomer("مشتری " + ph, ph); body.put("customer_id", cu.optLong("id")); } } }   // v3.1: always file the number in the customer book (phone + PC) so the next visit is recognised
+                // local-first: apply on the phone immediately (with the phone-book customer attached), then push
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
                 // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
-                String ph = smsPhone != null && !smsPhone.isEmpty() ? smsPhone : (customer == null ? "" : customer.optString("phone"));
-                if (!ph.isEmpty()) { body.put("customer_phone", ph); if (customer == null) { body.put("customer_name", "مشتری " + ph); if (Api.standalone()) { JSONObject cu = Db.customerByPhone(ph); if (cu == null) cu = Db.localCustomer("مشتری " + ph, ph); body.put("customer_id", cu.optLong("id")); } } }
                 if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) SmsLocal.enqueueAndSend(ph, SmsLocal.renderInvoice(no, total), no); else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
                 smsPhone = null;
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
@@ -275,7 +275,7 @@ public final class SalesScreens {
             LinearLayout l = Ui.col(a); EditText name = Ui.input(a, "نام *"); EditText last = Ui.input(a, "نام خانوادگی"); EditText phone = Ui.input(a, "موبایل", true); phone.setInputType(android.text.InputType.TYPE_CLASS_PHONE); EditText addr = Ui.input(a, "آدرس"); EditText limit = Ui.input(a, "سقف اعتبار (۰ = بدون سقف)", true);
             if (prefill.matches("[0-9۰-۹]+")) phone.setText(prefill); else name.setText(prefill);
             l.addView(name); l.addView(last); l.addView(phone); l.addView(addr); l.addView(limit); Dialog[] d = new Dialog[1];
-            l.addView(Ui.primary(a, "ثبت مشتری", () -> { if (Ui.str(name).isEmpty()) { Ui.toast("نام لازم است"); return; } d[0].dismiss(); JSONObject b = Api.obj("name", Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); try { b.put("credit_enabled", true); b.put("credit_limit", Ui.numVal(limit, 0)); } catch (Exception ignore) {} JSONObject local = Db.localCustomer(Ui.str(name), Db.norm(Ui.str(phone))); Sync.queue("CUSTOMER_CREATE", b, "مشتری " + Ui.str(name), null); Ui.done(Ui.ctx, "مشتری ثبت شد", null, null); cb.accept(local); }));
+            l.addView(Ui.primary(a, "ثبت مشتری", () -> { if (Ui.str(name).isEmpty() && Db.norm(Ui.str(phone)).isEmpty()) { Ui.toast("نام یا شماره موبایل لازم است"); return; } d[0].dismiss(); JSONObject b = Api.obj("name", Ui.str(name).isEmpty() ? "مشتری " + Db.norm(Ui.str(phone)) : Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); try { b.put("credit_enabled", true); b.put("credit_limit", Ui.numVal(limit, 0)); } catch (Exception ignore) {} JSONObject local = Db.localCustomer(Ui.str(name), Db.norm(Ui.str(phone))); Sync.queue("CUSTOMER_CREATE", b, "مشتری " + Ui.str(name), null); Ui.done(Ui.ctx, "مشتری ثبت شد", null, null); cb.accept(local); }));
             d[0] = Ui.sheet(a, "مشتری جدید", l);
         }
     }

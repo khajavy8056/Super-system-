@@ -149,7 +149,9 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
             raise HTTPException(status_code=400, detail=f"Backup file failed integrity check: {integrity}")
         if not _REQUIRED_TABLES <= tables:
             missing = _REQUIRED_TABLES - tables
-            raise HTTPException(status_code=400, detail=f"File is not a system backup (missing tables: {sorted(missing)})")
+            if {"batches", "kv", "ops"} <= tables:   # v3.1: a phone (سوپری من) backup picked on the PC
+                raise HTTPException(status_code=400, detail="این فایل پشتیبان نسخهٔ موبایل است؛ آن را در اپ موبایل (تنظیمات ← پشتیبان) بازیابی کنید.")
+            raise HTTPException(status_code=400, detail=f"این فایل پشتیبان سیستم نیست (جدول‌های {sorted(missing)} وجود ندارد)")
 
         # Safety backup of the current state before overwriting it.
         backup_dir = settings.data_dir / "backups"

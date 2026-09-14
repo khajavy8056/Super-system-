@@ -992,7 +992,7 @@ function posDiscountModal() {
 function posCustomerModal() {
   openModal(`<h3>مشتری</h3>
     <label>شماره موبایل</label><input id="cust-phone" autocomplete="off" />
-    <label>نام (برای مشتری جدید)</label><input id="cust-name" autocomplete="off" />
+    <label>نام (اختیاری — برای مشتری جدید)</label><input id="cust-name" autocomplete="off" />
     <button id="cust-save" class="btn btn-primary btn-block" style="margin-top:14px">انتخاب / ایجاد</button>`);
   $("#cust-save").addEventListener("click", async () => {
     const phone = $("#cust-phone").value.trim();
@@ -1003,8 +1003,7 @@ function posCustomerModal() {
       if (phone) {
         try { c = await api(`/customers/phone/${encodeURIComponent(phone)}`); } catch (e) { c = null; }
       }
-      if (!c && name) c = await api("/customers", { method: "POST", body: JSON.stringify({ name: name || phone, phone: phone || null }) });
-      if (!c && phone) { toast("مشتری یافت نشد؛ نام را هم وارد کنید", "err"); return; }
+      if (!c) c = await api("/customers", { method: "POST", body: JSON.stringify({ name: name || null, phone: phone || null }) });
       posState.customer = c; closeModal(); renderPosCart();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -1026,7 +1025,9 @@ function posCheckoutModal() {
     ${posState.customer
       ? `<p class="muted">مشتری: ${esc(posState.customer.name)}${
           posState.customer.balance ? ` — مانده فعلی ${money(posState.customer.balance)}` : ""}</p>`
-      : `<p class="muted">مشتری آزاد — برای فروش نسیه ابتدا مشتری را انتخاب کنید (F4).</p>`}
+      : `<p class="muted">مشتری آزاد — برای فروش نسیه ابتدا مشتری را انتخاب کنید (F4).</p>
+         <label>شماره موبایل برای پیامک فاکتور <span class="muted">(اختیاری — به‌طور خودکار در دفتر مشتریان ذخیره می‌شود)</span></label>
+         <input id="pay-phone" inputmode="tel" placeholder="0912…" autocomplete="off" />`}
     <div id="pay-account" class="hidden" style="margin-top:8px">
       <p class="muted">این مبلغ به‌عنوان <strong>بدهی</strong> در حساب دفتری مشتری ثبت می‌شود
         و وجهی دریافت نمی‌گردد.</p>
@@ -1054,6 +1055,7 @@ function posCheckoutModal() {
   $("#btn-pay").addEventListener("click", () => doCheckout(total));
   $("#pay-cash").focus();
   $("#pay-cash").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCheckout(total); } });
+  const pp = $("#pay-phone"); if (pp) pp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCheckout(total); } });
 }
 
 async function doCheckout(total) {
@@ -1076,6 +1078,8 @@ async function doCheckout(total) {
                                            quantity: i.quantity, discount: i.discount || 0 })),
         payments,
         customer_id: posState.customer ? posState.customer.id : null,
+        // v3.1: a phone typed only for the SMS is enough — the backend files it in the customer book
+        customer_phone: !posState.customer && $("#pay-phone") && $("#pay-phone").value.trim() ? $("#pay-phone").value.trim() : null,
         invoice_discount: posState.invoiceDiscount || 0,
         coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
     });

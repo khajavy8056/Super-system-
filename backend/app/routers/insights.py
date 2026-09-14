@@ -69,13 +69,33 @@ def report(db: Session = Depends(get_db), _: User = Depends(require_permission("
     return {"summary": s, "open": open_rows, "narrative": ai_narrator.weekly_report(db, s, open_rows), "generated_at": datetime.utcnow().isoformat()}
 
 
+@router.get("/plan")
+def plan(horizon: int = Query(90, ge=14, le=365), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v3.1 — profit forecast (baseline vs. plan), calibrated gain per open suggestion, accuracy history."""
+    from ..services import forecast
+    return forecast.plan(db, horizon=horizon)
+
+
+@router.post("/plan/learn")
+def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    from ..services import forecast
+    return {"ok": True, "calibration": forecast.learn(db)}
+
+
 @router.get("/{insight_id}")
 def get_insight(insight_id: int, narrate: bool = False, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     row = _get(db, insight_id)
     if narrate:
         ai_narrator.narrate(db, row)
         db.commit()
-    return svc.to_dict(row)
+    out = svc.to_dict(row)
+    if row.status in ("NEW", "SNOOZED"):
+        from ..services import forecast
+        try:
+            out["prediction"] = forecast.predict_for(db, row)   # v3.1 what-if: profit path if executed
+        except Exception:   # never break the card because of the forecast
+            out["prediction"] = None
+    return out
 
 
 @router.post("/{insight_id}/accept")

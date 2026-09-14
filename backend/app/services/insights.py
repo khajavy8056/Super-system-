@@ -735,6 +735,8 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     created = refreshed = 0
     errors: dict[str, str] = {}
     seen: set[tuple[str, str]] = set()
+    from . import forecast   # v3.1 — learned per-kind calibration of the expected gain
+    cal = forecast._load_cal(db)
     for kind, fn in ANALYZERS.items():
         if kinds and kind not in kinds:
             continue
@@ -746,6 +748,11 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
             continue
         for d in drafts:
             seen.add((d.kind, d.dedupe_key))
+            # keep the analyzer's raw estimate (for learning) and expose the calibrated one
+            raw = float(d.expected_gain or 0.0)
+            c = forecast.calibrate(db, d.kind, raw, cal)
+            d.evidence = {**d.evidence, "expected_gain_raw": round(raw), "forecast": {"gain_month": c["gain"], "low_month": c["low"], "high_month": c["high"], "confidence": c["confidence"], "history_n": c["n"]}}
+            d.expected_gain = c["gain"]
             row = db.execute(select(Insight).where(Insight.kind == d.kind, Insight.dedupe_key == d.dedupe_key,
                                                    Insight.status.in_(["NEW", "SNOOZED", "ACCEPTED"]))).scalar_one_or_none()
             if row:
@@ -931,8 +938,14 @@ def measure(db: Session, insight: Insight) -> dict | None:
                                  "base_rate_per_day": round(base_rate, 2), "post_rate_per_day": round(post_rate, 2), **post}, ensure_ascii=False)
     insight.measured_gain = Decimal(str(round(gain))) if enough else None
     insight.measured_at = _now()
-    if elapsed >= wd - 0.01:
+    if elapsed >= wd - 0.01 and insight.status != "MEASURED":
         insight.status = "MEASURED"
+        db.flush()
+        try:   # v3.1 — every completed measurement re-fits the calibration (the engine learns)
+            from . import forecast
+            forecast.learn(db)
+        except Exception:
+            log.exception("calibration failed")
     return {"baseline": base, "post": post, "gain": gain, "complete": insight.status == "MEASURED"}
 
 

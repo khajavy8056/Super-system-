@@ -72,6 +72,8 @@ public final class Ui {
     private static final NumberFormat NF = NumberFormat.getInstance(Locale.US);
     public static String currencyLabel = "ریال";
     public static String money(double v) { return fa(NF.format(Math.round(v))) + " " + currencyLabel; }
+    /** v3.1 compact money for chart axes: ۱٫۲ میلیون / ۳۴۰ هزار. */
+    public static String moneyShort(double v) { double a = Math.abs(v); if (a >= 1e9) return fa(String.format(Locale.US, "%.1f", v / 1e9)) + " میلیارد"; if (a >= 1e6) return fa(String.format(Locale.US, "%.1f", v / 1e6)) + " میلیون"; if (a >= 1e3) return fa(String.valueOf(Math.round(v / 1e3))) + " هزار"; return fa(String.valueOf(Math.round(v))); }
     public static String num(double v) { return fa(v == Math.floor(v) ? NF.format((long) v) : String.format(Locale.US, "%.3f", v).replaceAll("0+$", "").replaceAll("\\.$", "")); }
     public static String fa(String s) { if (s == null) return ""; StringBuilder b = new StringBuilder(); for (char c : s.toCharArray()) b.append(c >= '0' && c <= '9' ? (char) ('۰' + c - '0') : c); return b.toString(); }
     public static String jdate(String iso) { if (iso == null || iso.length() < 10 || iso.equals("null")) return "—"; int[] j = Jalali.toJalali(Integer.parseInt(iso.substring(0, 4)), Integer.parseInt(iso.substring(5, 7)), Integer.parseInt(iso.substring(8, 10))); String t = iso.length() >= 16 ? " " + iso.substring(11, 16) : ""; return fa(j[0] + "/" + two(j[1]) + "/" + two(j[2]) + t); }

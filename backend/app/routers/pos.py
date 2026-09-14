@@ -37,6 +37,9 @@ class PaymentIn(BaseModel):
     amount: Decimal = Field(ge=0)
 
 
+from .customers import norm_phone as _norm_phone
+
+
 class CheckoutIn(BaseModel):
     items: list[CartLineIn]
     payments: list[PaymentIn]
@@ -155,13 +158,19 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             # Phone book: a phone number alone is enough to create a customer (§30)
             from ..models import Customer
 
-            phone = body.customer_phone.strip()
-            cust = db.execute(select(Customer).where(Customer.phone == phone)).scalar_one_or_none()
-            if cust is None:
-                cust = Customer(name=(body.customer_name or phone).strip(), phone=phone)
-                db.add(cust)
-                db.flush()
-            customer_id = cust.id
+            # v3.1: any phone typed at checkout (e.g. only for the invoice SMS) lands in the
+            # customer book automatically — last name optional — so the next purchase with the
+            # same number is recognised and VIP/churn/basket analytics apply to it.
+            phone = _norm_phone(body.customer_phone)
+            cust = None
+            if phone:
+                cust = db.execute(select(Customer).where(Customer.phone == phone)).scalar_one_or_none()
+                if cust is None:
+                    cust = Customer(name=(body.customer_name or "").strip() or f"مشتری {phone}", phone=phone)
+                    db.add(cust)
+                    db.flush()
+            if cust is not None:
+                customer_id = cust.id
         invoice = pos_svc.checkout(
             db,
             items=[CartItem(product_id=i.product_id, quantity=i.quantity, batch_id=i.batch_id,

@@ -35,8 +35,24 @@ def _raise(err: ledger_svc.LedgerError):
     )
 
 
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def norm_phone(p: str | None) -> str:
+    """Persian/Arabic digits → ASCII, strip separators, +98 → 0. Shared with POS checkout."""
+    p = (p or "").translate(_FA_DIGITS)
+    p = "".join(ch for ch in p if ch.isdigit() or ch == "+")
+    if p.startswith("+98"):
+        p = "0" + p[3:]
+    elif p.startswith("0098"):
+        p = "0" + p[4:]
+    elif p.startswith("98") and len(p) == 12:
+        p = "0" + p[2:]
+    return p
+
+
 class CustomerIn(BaseModel):
-    name: str
+    name: str | None = None          # v3.1: phone-only customers are allowed (name defaults to the phone)
     last_name: str | None = None
     phone: str | None = None
     email: str | None = None
@@ -114,7 +130,9 @@ def list_customers(q: str | None = None, with_debt: bool = False,
 def create_customer(body: CustomerIn, db: Session = Depends(get_db),
                     _: User = Depends(require_permission("pos.sell"))):
     """Create a customer. Idempotent by phone (§42: a phone with no name is fine)."""
-    phone = (body.phone or "").strip() or None
+    phone = norm_phone(body.phone) or None
+    if not phone and not (body.name or "").strip():
+        raise HTTPException(status_code=422, detail="نام یا شماره موبایل لازم است")
     if phone:
         existing = db.execute(
             select(Customer).where(Customer.phone == phone)
@@ -146,7 +164,7 @@ def list_debtors(min_amount: Decimal = Decimal("0"), db: Session = Depends(get_d
 @router.get("/phone/{phone}")
 def by_phone(phone: str, db: Session = Depends(get_db),
              _: User = Depends(require_permission("pos.sell"))):
-    c = db.execute(select(Customer).where(Customer.phone == phone)).scalar_one_or_none()
+    c = db.execute(select(Customer).where(Customer.phone == norm_phone(phone))).scalar_one_or_none()
     if not c:
         raise HTTPException(status_code=404, detail="CUSTOMER_NOT_FOUND")
     out = _out(c)

@@ -7,6 +7,7 @@
   const pct = (x) => fa(Math.round((Number(x) || 0) * 100)) + "٪";
   const KIND_ICON = { CROSS_SELL: "gift", EXPIRY_LADDER: "clock", DEAD_STOCK: "warehouse", VELOCITY: "trend", SUPPLIER: "inbox", CASHFLOW: "cash",
     VIP: "star", CHURN: "user", BASKET_NUDGE: "pos", PRICE_GAP: "tag", LOSS_PREV: "shield", SEASON: "chart" };
+  const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
   const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"] };
   const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
   const ico = (k, s) => (typeof ICONS !== "undefined" && ICONS[k]) ? icon(k, s) : icon("chart", s);
@@ -17,6 +18,8 @@
     const grp = NAV_GROUPS.find((g) => g[0] === "رشد و تحلیل");
     if (grp) grp[1].splice(1, 0, "insights");
   }
+  // v3.1: the planning view is reached from the insights page / dashboard (title only, not a separate nav entry)
+  if (typeof NAV !== "undefined" && !NAV.some((n) => n[0] === "insightsPlan")) NAV.push(["insightsPlan", "برنامه‌ریزی و پیش‌بینی سود", "reports.view", "chart"]);
   if (typeof ICONS !== "undefined") {
     ICONS.sparkle = ICONS.sparkle || '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>';
     ICONS.star = ICONS.star || '<path d="M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 18l-5.9 3 1.2-6.5L2.5 9.9 9.1 9z"/>';
@@ -30,6 +33,8 @@
       const g = Number(i.measured_gain || 0);
       return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} اثر واقعی: ${money(Math.abs(g))}</span>`;
     }
+    const fc = (i.evidence || {}).forecast;
+    if (fc && Number(fc.gain_month) > 0) return `<span class="ins-gain muted">پیش‌بینی سود ماهانه: <b>${money(fc.gain_month)}</b> <span class="ins-band">(${money(fc.low_month)} تا ${money(fc.high_month)}) · اطمینان ${CONF[fc.confidence] || "—"}</span>`;
     return Number(i.expected_gain) > 0 ? `<span class="ins-gain muted">برآورد اثر: ${money(i.expected_gain)} / ماه</span>` : "";
   }
 
@@ -83,12 +88,94 @@
     </div>`;
   }
 
+
+  // ---------------------------------------------------------------- v3.1 forecast / planning
+  function svgLine(series, opts) {
+    // series: [{name, color, points:[y...], dash?}], x labels = opts.labels; returns an SVG string (responsive)
+    const W = 640, H = opts.height || 200, P = { l: 8, r: 8, t: 14, b: 26 };
+    const all = series.flatMap((s) => s.points).filter((v) => v != null);
+    const max = Math.max(1, ...all), min = Math.min(0, ...all);
+    const n = Math.max(2, ...series.map((s) => s.points.length));
+    const x = (i) => P.l + (W - P.l - P.r) * i / (n - 1);
+    const y = (v) => P.t + (H - P.t - P.b) * (1 - (v - min) / (max - min || 1));
+    const grid = [0, .25, .5, .75, 1].map((g) => { const v = min + (max - min) * g; return `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" class="g"/><text x="${W - P.r}" y="${y(v) - 3}" class="t" text-anchor="end">${moneyShort(v)}</text>`; }).join("");
+    const paths = series.map((s) => {
+      const d = s.points.map((v, i) => (v == null ? "" : `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)).join(" ");
+      const area = s.area ? `<path d="${d} L${x(s.points.length - 1).toFixed(1)},${y(min)} L${x(0)},${y(min)} Z" fill="${s.color}" opacity=".08"/>` : "";
+      return `${area}<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.2}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ""} stroke-linejoin="round" stroke-linecap="round"/>`;
+    }).join("");
+    const band = opts.band ? (() => { const [lo, hi] = opts.band; const up = hi.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "); const dn = lo.map((v, i) => `L${x(lo.length - 1 - i).toFixed(1)},${y(lo[lo.length - 1 - i]).toFixed(1)}`).join(" "); return `<path d="${up} ${dn} Z" fill="${opts.bandColor || "#7c5cff"}" opacity=".12"/>`; })() : "";
+    const labels = (opts.labels || []).map((l, i) => (l ? `<text x="${x(i)}" y="${H - 8}" class="t" text-anchor="middle">${esc(l)}</text>` : "")).join("");
+    const legend = series.map((s) => `<span class="lg"><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("");
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${band}${paths}${labels}</svg><div class="legend">${legend}</div></div>`;
+  }
+  function svgBars(rows, opts) {
+    const W = 640, H = (opts && opts.height) || Math.max(90, rows.length * 30 + 10);
+    const max = Math.max(1, ...rows.map((r) => Math.abs(r.value)));
+    const lw = 220;
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${rows.map((r, i) => {
+      const w = (W - lw - 110) * Math.abs(r.value) / max, yy = 8 + i * 30;
+      return `<text x="${W - 4}" y="${yy + 15}" class="t" text-anchor="end">${esc(r.label)}</text><rect x="${W - lw - 8 - w}" y="${yy}" width="${w}" height="20" rx="6" fill="${r.value >= 0 ? (r.color || "#3dd6c4") : "#e5484d"}"/><text x="${W - lw - 14 - w}" y="${yy + 15}" class="t" text-anchor="end">${moneyShort(r.value)}</text>`;
+    }).join("")}</svg></div>`;
+  }
+  function moneyShort(v) { v = Number(v) || 0; const a = Math.abs(v); const s = a >= 1e9 ? fa((v / 1e9).toFixed(1)) + " میلیارد" : a >= 1e6 ? fa((v / 1e6).toFixed(1)) + " میلیون" : a >= 1e3 ? fa(Math.round(v / 1e3)) + " هزار" : fa(Math.round(v)); return s; }
+  const faMonthDay = (iso) => { try { return faDateTime(iso + "T00:00:00", false).replace(/^\S+\s/, "").slice(0, 8); } catch (_) { return iso.slice(5); } };
+
+  function predictBlock(i) {
+    const p = i.prediction; if (!p || !(p.gain_month > 0)) return "";
+    const pts = [0, ...p.path.map((x) => x.cum_gain)], lo = [0, ...p.path.map((x) => x.cum_low)], hi = [0, ...p.path.map((x) => x.cum_high)];
+    return `<div class="predict"><h4>اگر این پیشنهاد اجرا شود…</h4>
+      <div class="predict-kpis">
+        <div><span class="muted">سود اضافه در ماه</span><b class="ok">+${money(p.gain_month)}</b><span class="muted">بازهٔ ${money(p.low_month)} تا ${money(p.high_month)}</span></div>
+        <div><span class="muted">رشد سود ماهانهٔ فروشگاه</span><b>${p.growth_pct != null ? fa(p.growth_pct) + "٪" : "—"}</b><span class="muted">پایهٔ ماهانه ${money(p.store_profit_month)}</span></div>
+        <div><span class="muted">جمع ۹۰ روز</span><b>+${money(p.gain_90d)}</b><span class="muted">با شروع تدریجی در هفتهٔ اول</span></div>
+        <div><span class="muted">اطمینان پیش‌بینی</span><b>${CONF[p.confidence] || "—"}</b><span class="muted">${p.history_n ? `از ${fa(p.history_n)} اقدام مشابه اندازه‌گیری‌شده (ضریب ${fa(p.ratio)})` : "هنوز اقدام مشابهی سنجیده نشده"}</span></div>
+      </div>
+      ${svgLine([{ name: "سود تجمعی اضافه", color: "#7c5cff", points: pts, area: true }], { labels: ["امروز", ...p.path.map((x) => `روز ${fa(x.day)}`)], band: [lo, hi], height: 170 })}
+      <p class="muted">این پیش‌بینی با هر اقدام اجراشده دقیق‌تر می‌شود: اثر واقعی اندازه‌گیری و ضریب همین نوع پیشنهاد اصلاح می‌گردد.</p></div>`;
+  }
+
+  RENDER.insightsPlan = async () => {
+    const v = $("#view");
+    v.innerHTML = `<div class="ins-wrap"><section class="ins-hero" id="pl-hero"><div class="muted">در حال محاسبهٔ پیش‌بینی…</div></section><div id="pl-body"></div></div>`;
+    $("#topbar-actions").innerHTML = "";
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیشنهادها", onclick: () => go("insights") }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "بازآموزی مدل", onclick: async () => { await api("/insights/plan/learn", { method: "POST" }); toast("ضرایب از اندازه‌گیری‌های واقعی به‌روز شد"); RENDER.insightsPlan(); } }));
+    let p; try { p = await api("/insights/plan?horizon=90"); } catch (e) { $("#pl-hero").innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    const m = p.model, b = p.baseline, pl = p.plan;
+    $("#pl-hero").innerHTML = `<div class="ins-kpis">
+      <div class="ins-kpi"><span class="muted">سود ماهانهٔ پایه (روند فعلی)</span><b>${money(b.profit_month)}</b><span class="muted">روند ${m.trend_pct_per_week >= 0 ? "+" : ""}${fa(m.trend_pct_per_week)}٪ در هفته · ${fa(m.weeks_of_history)} هفته سابقه</span></div>
+      <div class="ins-kpi"><span class="muted">با اجرای ${fa(pl.open)} پیشنهاد باز</span><b class="ok">${money(pl.profit_month)}</b><span class="muted">+${money(pl.gain_month)} (${pl.growth_pct != null ? fa(pl.growth_pct) + "٪" : "—"}) در ماه</span></div>
+      <div class="ins-kpi"><span class="muted">بازهٔ اطمینان ماهانه</span><b>${money(pl.low_month)} – ${money(pl.high_month)}</b><span class="muted">۹۰ روز: +${money(pl.gain_horizon)}</span></div>
+      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>`;
+    const wk = p.history_weeks.slice(-14), fc = p.forecast;
+    const labels = [...wk.map((w, i) => (i % 2 ? "" : faMonthDay(w.week_start))), ...fc.map((f, i) => (i % 2 ? "" : faMonthDay(f.day)))];
+    const hist = [...wk.map((w) => w.profit), ...fc.map(() => null)], base = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_baseline)], plan = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_plan)];
+    const cumL = [...wk.map(() => null), ...fc.map((f) => f.cum_low)], cumH = [...wk.map(() => null), ...fc.map((f) => f.cum_high)];
+    const body = $("#pl-body");
+    body.innerHTML = `
+      <div class="card"><h3>سود هفتگی: گذشته، روند پایه و برنامه</h3>
+        ${svgLine([{ name: "سود واقعی هر هفته", color: "#3dd6c4", points: hist, area: true }, { name: "ادامهٔ روند فعلی", color: "#8a94a6", points: base, dash: "6 5" }, { name: "با اجرای پیشنهادها", color: "#7c5cff", points: plan, width: 2.8 }], { labels, height: 230 })}
+        <p class="muted">مدل: روند خطی هفتگی × الگوی روزهای هفته (شاخص روزها: ${m.weekday_index.map((x, i) => `${["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه"][i]} ${fa(x)}`).join("، ")}).</p></div>
+      <div class="card"><h3>سود تجمعی ۹۰ روز آینده — پایه در برابر برنامه (با بازهٔ اطمینان)</h3>
+        ${svgLine([{ name: "پایه (روند فعلی)", color: "#8a94a6", points: fc.map((f) => f.cum_baseline), dash: "6 5" }, { name: "برنامه (پیشنهادها اجرا شود)", color: "#7c5cff", points: fc.map((f) => f.cum_plan), area: true }], { labels: fc.map((f, i) => (i % 2 ? "" : faMonthDay(f.day))), band: [fc.map((f) => f.cum_low), fc.map((f) => f.cum_high)], height: 220 })}</div>
+      <div class="card"><h3>سهم هر نوع پیشنهاد در سود ماهانهٔ برنامه</h3>${p.by_kind.length ? svgBars(p.by_kind.map((k) => ({ label: `${k.label} (${fa(k.count)})`, value: k.gain_month }))) : `<div class="muted">پیشنهاد بازی نیست.</div>`}</div>
+      <div class="card"><h3>برنامهٔ اقدام — پیشنهادهای باز به ترتیب اثر</h3>
+        <table class="tbl"><thead><tr><th>پیشنهاد</th><th>نوع</th><th>سود اضافه / ماه</th><th>بازه</th><th>۹۰ روز</th><th>اطمینان</th><th></th></tr></thead><tbody>
+        ${p.items.sort((a, c) => c.gain_month - a.gain_month).map((it) => `<tr><td>${esc(it.title)}</td><td class="muted">${esc(it.label)}</td><td class="ok"><b>+${money(it.gain_month)}</b></td><td class="muted">${money(it.low_month)} – ${money(it.high_month)}</td><td>+${money(it.gain_horizon)}</td><td>${CONF[it.confidence] || "—"}${it.history_n ? ` <span class="muted">(${fa(it.history_n)})</span>` : ""}</td><td><button class="btn btn-sm btn-ghost" data-ins="${it.id}">جزئیات</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">—</td></tr>`}</tbody></table></div>
+      <div class="card"><h3>یادگیری مدل — پیش‌بینی در برابر اثر واقعی</h3>
+        ${m.calibration.length ? `<div class="cal-grid">${m.calibration.map((c) => `<div class="cal"><b>${esc(c.label)}</b><span>ضریب یادگرفته‌شده <b>${fa(c.ratio)}</b> از ${fa(c.n)} اقدام</span><span class="muted">جهت درست ${c.direction_accuracy != null ? fa(Math.round(c.direction_accuracy * 100)) + "٪" : "—"} · پراکندگی ${fa(c.sd)}</span></div>`).join("")}</div>` : `<p class="muted">هنوز اقدامی به پایان اندازه‌گیری نرسیده؛ پس از اولین اقدام سنجیده‌شده، ضرایب هر نوع پیشنهاد به‌طور خودکار یاد گرفته می‌شود.</p>`}
+        ${p.accuracy.length ? svgBars(p.accuracy.slice(0, 10).flatMap((a) => [{ label: `${a.title.slice(0, 34)} — پیش‌بینی`, value: a.calibrated, color: "#8a94a6" }, { label: "اثر واقعی", value: a.measured, color: "#7c5cff" }]), { height: Math.min(620, p.accuracy.slice(0, 10).length * 60 + 10) }) : ""}</div>`;
+    body.querySelectorAll("button[data-ins]").forEach((b) => b.onclick = () => detail(Number(b.dataset.ins)));
+  };
+
   async function detail(id) {
     const i = await api(`/insights/${id}?narrate=true`);
     openModal(`<div class="ins-detail">
       <header><span class="ins-ic">${ico(KIND_ICON[i.kind] || "chart", 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
       ${i.narrative ? `<div class="ins-narr">${esc(i.narrative).replace(/\n/g, "<br/>")}</div>` : `<p>${esc(i.body)}</p>`}
       ${abBlock(i)}
+      ${predictBlock(i)}
       <h4>اقدام‌ها</h4><ul class="ins-list">${(i.actions || []).map((a) => `<li>${esc(a.label)}</li>`).join("") || "<li class='muted'>—</li>"}</ul>
       <h4>شواهد (از داده‌های خود فروشگاه)</h4>${evidenceTable(i.evidence || {})}
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
@@ -131,6 +218,7 @@
       <div id="ins-list" class="ins-grid"></div></div>`;
     $("#topbar-actions").innerHTML = "";
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "تحلیل دوباره", onclick: async () => { toast("در حال تحلیل داده‌ها…"); const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created)} پیشنهاد جدید، ${fa(r.refreshed)} به‌روزرسانی`); RENDER.insights(); } }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
     const [s, list] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=80`)]);
     if (!list.length && insTab === "NEW" && !s.accepted && !s.open) {
@@ -177,7 +265,7 @@
             <div class="ins-dash-big"><span class="muted">اثر کل بر سود</span><b class="${s.total_gain >= 0 ? "ok" : "err"}">${money(s.total_gain)}</b><span class="muted">۳۰ روز اخیر ${money(s.month_gain)}${s.share_of_month_profit ? ` · ${fa(Math.round(s.share_of_month_profit * 100))}٪ سود دوره` : ""}</span></div>
             <div class="ins-dash-list">${top.map((t) => `<div class="ins-dash-row" onclick="go('insights')"><span>${esc(t.title)}</span><b class="${t.gain >= 0 ? "ok" : "err"}">${t.gain >= 0 ? "+" : ""}${money(t.gain)}</b></div>`).join("") || `<div class="muted">هنوز اقدامی اجرا نشده است.</div>`}</div>
           </div>
-          <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px"><span class="muted">${fa(s.open)} پیشنهاد باز · برآورد ${money(s.expected_open)} / ماه</span><button class="btn btn-sm btn-primary" onclick="go('insights')">مشاهدهٔ پیشنهادها</button></div>`;
+          <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px"><span class="muted">${fa(s.open)} پیشنهاد باز · برآورد ${money(s.expected_open)} / ماه</span><span><button class="btn btn-sm btn-ghost" onclick="go('insightsPlan')">پیش‌بینی سود</button> <button class="btn btn-sm btn-primary" onclick="go('insights')">مشاهدهٔ پیشنهادها</button></span></div>`;
       } catch (e) { host.innerHTML = `<h3>هوش فروشگاه</h3><div class="muted">${esc(e.message)}</div>`; }
     },
   };
@@ -216,7 +304,7 @@
         <p class="muted">نسخهٔ پشتیبان یک فایل کامل از همهٔ داده‌های فروشگاه است (کالا، فاکتور، مشتری، حسابداری، تنظیمات). آن را روی فلش/تلگرام/گوشی نگه دارید.</p>
         <div class="row" style="gap:8px;flex-wrap:wrap">
           <button class="btn btn-primary" id="bk-make">تهیهٔ نسخهٔ پشتیبان و دانلود</button>
-          <label class="btn"><input type="file" id="bk-file" accept=".db" hidden/> بازیابی از فایل…</label>
+          <label class="btn"><input type="file" id="bk-file" accept=".db,.gz,.sqlite,.bak,.zip" hidden/> بازیابی از فایل…</label>
         </div>
         <h4 style="margin-top:14px">نسخه‌های ذخیره‌شده روی این دستگاه</h4><div id="bk-list" class="muted">…</div>
         <div id="bk-demo" style="margin-top:16px"></div>`;

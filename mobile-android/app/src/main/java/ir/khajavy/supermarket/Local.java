@@ -473,19 +473,31 @@ public final class Local {
         java.io.File[] all = dir.listFiles(); if (all != null && all.length > Integer.parseInt(setting("backup.keep", "10"))) { java.util.Arrays.sort(all, (x, y) -> Long.compare(x.lastModified(), y.lastModified())); for (int i = 0; i < all.length - 10; i++) all[i].delete(); }
         Db.kv("last_backup", Db.now()); audit("BACKUP", "Db", out.getName(), null, null); return out;
     }
-    /** Replace the phone database with a backup file (SQLite produced by backup()). A safety copy is taken first. */
-    public static void restore(android.content.Context c, java.io.InputStream in) throws Exception {
+    /** Replace the phone database with a backup file. Accepts a phone backup (backup()), a Windows
+     *  backup (PC schema → converted by {@link PcImport}), and either of them gzip-compressed
+     *  (the bundled demo store is a .gz). A safety copy is taken first. Returns a short summary. */
+    public static JSONObject restore(android.content.Context c, java.io.InputStream in0) throws Exception {
         java.io.File tmp = new java.io.File(c.getCacheDir(), "restore.db");
+        java.io.InputStream in = new java.io.BufferedInputStream(in0, 1 << 16); in.mark(4); byte[] h2 = new byte[2]; int got = in.read(h2); in.reset();
+        if (got == 2 && (h2[0] & 0xff) == 0x1f && (h2[1] & 0xff) == 0x8b) in = new java.util.zip.GZIPInputStream(in, 1 << 16);
         try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
         byte[] head = new byte[16]; try (java.io.InputStream t = new java.io.FileInputStream(tmp)) { t.read(head); }
-        if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست"); }
-        android.database.sqlite.SQLiteDatabase chk = android.database.sqlite.SQLiteDatabase.openDatabase(tmp.getPath(), null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY);
-        try { android.database.Cursor cu = chk.rawQuery("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('products','invoices','batches')", null); cu.moveToFirst(); int n = cu.getInt(0); cu.close(); if (n < 3) throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست"); } finally { chk.close(); }
+        if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست (باید فایل .db یا .db.gz خروجی «سوپری من» یا نسخهٔ ویندوز باشد)"); }
+        boolean phone = PcImport.isPhoneBackup(tmp), pc = !phone && PcImport.isPcBackup(tmp);
+        if (!phone && !pc) { tmp.delete(); throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست"); }
         backup(c); // safety copy of the current data
-        Db.shutdown(); java.io.File dst = c.getDatabasePath("supermarket_native.db"); for (String sfx : new String[]{"-wal", "-shm", "-journal"}) new java.io.File(dst.getPath() + sfx).delete();
-        try (java.io.InputStream i2 = new java.io.FileInputStream(tmp); java.io.OutputStream os = new java.io.FileOutputStream(dst)) { byte[] buf = new byte[65536]; int n; while ((n = i2.read(buf)) > 0) os.write(buf, 0, n); }
-        tmp.delete(); Db.db(); // reopen → runs migrations (adds ai_insights etc. if missing)
-        Db.kv("last_restore", Db.now()); audit("RESTORE", "Db", "import", null, null);
+        JSONObject summary = new JSONObject();
+        if (pc) {
+            summary = PcImport.run(tmp); summary.put("source", "windows");
+            tmp.delete();
+        } else {
+            Db.shutdown(); java.io.File dst = c.getDatabasePath("supermarket_native.db"); for (String sfx : new String[]{"-wal", "-shm", "-journal"}) new java.io.File(dst.getPath() + sfx).delete();
+            try (java.io.InputStream i2 = new java.io.FileInputStream(tmp); java.io.OutputStream os = new java.io.FileOutputStream(dst)) { byte[] buf = new byte[65536]; int n; while ((n = i2.read(buf)) > 0) os.write(buf, 0, n); }
+            tmp.delete(); Db.db(); // reopen → runs migrations (adds ai_insights etc. if missing)
+            summary.put("source", "phone");
+        }
+        Db.kv("last_restore", Db.now()); audit("RESTORE", "Db", pc ? "import-windows" : "import", null, null);
+        return summary;
     }
     public static int bootstrapUnits() { seedUsers(); return count("units"); }
 

@@ -45,11 +45,12 @@ public final class Insights {
         String w = seg[1];
         if ("summary".equals(w)) { JSONObject s = summary(); JSONArray ks = new JSONArray(); for (String[] l : LABELS) ks.put(Local.obj("kind", l[0], "label", l[1])); s.put("kinds", ks); s.put("ai", Local.obj("provider", "local", "online", false, "model", "—")); return s; }
         if ("run".equals(w)) return run();
+        if ("plan".equals(w)) { if (seg.length > 2 && "learn".equals(seg[2])) return Local.obj("ok", true, "calibration", Forecast.learn()); return Forecast.plan(Math.max(14, Math.min(365, q.optInt("horizon", 90)))); }
         if ("report".equals(w)) { JSONObject s = summary(); JSONArray open = arr(Local.rows("SELECT * FROM ai_insights WHERE status='NEW' ORDER BY priority, expected_gain DESC LIMIT 10")); return Local.obj("summary", s, "open", open, "narrative", weekly(s, open), "generated_at", Db.now()); }
         if ("nudges".equals(w)) return nudges(b.optJSONArray("product_ids"));
         if ("tasks".equals(w)) { JSONArray lst = new JSONArray(Local.setting("insights.reorder_list", "[]")); if ("DELETE".equals(method) && seg.length > 3) { JSONArray keep = new JSONArray(); for (int i = 0; i < lst.length(); i++) if (lst.optJSONObject(i).optLong("product_id") != Long.parseLong(seg[3])) keep.put(lst.optJSONObject(i)); Local.setSetting("insights.reorder_list", keep.toString()); return keep; } return lst; }
         long id = Long.parseLong(w); JSONObject row = Local.one("SELECT * FROM ai_insights WHERE id=?", id); if (row == null) throw new Api.ApiError(404, "INSIGHT_NOT_FOUND", "پیشنهاد یافت نشد");
-        if (seg.length == 2) { if (q.optBoolean("narrate") && row.optString("narrative").isEmpty()) { String n = localNarrative(row); Local.exec("UPDATE ai_insights SET narrative=? WHERE id=?", n, id); row.put("narrative", n); } return out(row); }
+        if (seg.length == 2) { if (q.optBoolean("narrate") && row.optString("narrative").isEmpty()) { String n = localNarrative(row); Local.exec("UPDATE ai_insights SET narrative=? WHERE id=?", n, id); row.put("narrative", n); } JSONObject o = out(row); if ("NEW".equals(row.optString("status")) || "SNOOZED".equals(row.optString("status"))) { try { o.put("prediction", Forecast.predictFor(row)); } catch (Exception ignore) {} } return o; }
         switch (seg[2]) {
             case "accept": { if (!"NEW".equals(row.optString("status")) && !"SNOOZED".equals(row.optString("status"))) throw new Api.ApiError(409, "INSIGHT_NOT_OPEN", "این پیشنهاد باز نیست"); JSONArray only = b.optJSONArray("actions"); JSONObject r = accept(row, only); r.put("ok", true); r.put("insight", out(Local.one("SELECT * FROM ai_insights WHERE id=?", id))); return r; }
             case "dismiss": Local.exec("UPDATE ai_insights SET status='DISMISSED' WHERE id=?", id); return Local.obj("ok", true);
@@ -107,9 +108,11 @@ public final class Insights {
         Object[][] an = {{"CROSS_SELL", (Analyzer) Insights::crossSell}, {"EXPIRY_LADDER", (Analyzer) Insights::expiry}, {"DEAD_STOCK", (Analyzer) Insights::deadStock}, {"VELOCITY", (Analyzer) Insights::velocity},
             {"CASHFLOW", (Analyzer) Insights::cashflow}, {"VIP", (Analyzer) Insights::vip}, {"CHURN", (Analyzer) Insights::churn}, {"BASKET_NUDGE", (Analyzer) Insights::basketNudge}, {"PRICE_GAP", (Analyzer) Insights::priceGap}, {"LOSS_PREV", (Analyzer) Insights::lossPrev}, {"SEASON", (Analyzer) Insights::season}};
         for (Object[] a : an) { try { drafts.addAll(((Analyzer) a[1]).run(f)); } catch (Exception e) { errors.put((String) a[0], String.valueOf(e.getMessage())); } }
-        int created = 0, refreshed = 0; Set<String> seen = new HashSet<>(); String now = Db.now();
+        int created = 0, refreshed = 0; Set<String> seen = new HashSet<>(); String now = Db.now(); JSONObject cal = Forecast.cal();
         for (Draft d : drafts) {
             seen.add(d.kind + "|" + d.key);
+            // v3.1: keep the raw estimate for learning; expose the calibrated one with its band
+            double raw = d.gain; JSONObject c = Forecast.calibrate(cal, d.kind, raw); d.ev.put("expected_gain_raw", Math.round(raw)); d.ev.put("forecast", Local.obj("gain_month", c.optLong("gain"), "low_month", c.optLong("low"), "high_month", c.optLong("high"), "confidence", c.optString("confidence"), "history_n", c.optInt("n"))); d.gain = c.optDouble("gain");
             JSONObject row = Local.one("SELECT * FROM ai_insights WHERE kind=? AND dedupe_key=? AND status IN ('NEW','SNOOZED','ACCEPTED')", d.kind, d.key);
             if (row != null) { if ("NEW".equals(row.optString("status"))) Local.exec("UPDATE ai_insights SET title=?,body=?,priority=?,evidence=?,actions=?,expected_gain=?,metric=?,last_seen_at=? WHERE id=?", d.title, d.body, d.prio, d.ev.toString(), d.actions.toString(), Math.round(d.gain), d.metric.toString(), now, row.optLong("id")); else Local.exec("UPDATE ai_insights SET last_seen_at=? WHERE id=?", now, row.optLong("id")); refreshed++; }
             else { Local.exec("INSERT INTO ai_insights(kind,dedupe_key,title,body,priority,evidence,actions,expected_gain,metric,status,last_seen_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,'NEW',?,?)", d.kind, d.key, d.title, d.body, d.prio, d.ev.toString(), d.actions.toString(), Math.round(d.gain), d.metric.toString(), now, now); created++; }
@@ -337,6 +340,7 @@ public final class Insights {
         JSONObject res = new JSONObject(post.toString()); res.put("window_days", wd); res.put("elapsed_days", Math.round(elapsed * 10) / 10.0); res.put("from", start); res.put("to", end); res.put("enough_data", enough); res.put("change_pct", change == null ? JSONObject.NULL : change); res.put("control_ratio", Math.round(ctrl * 1000) / 1000.0); res.put("raw_gain", Math.round(raw)); res.put("adjusted_gain", Math.round(adj)); res.put("projected_month", enough ? Math.round(adj / elapsed * 30) : JSONObject.NULL);
         String st = elapsed >= wd - 0.01 ? "MEASURED" : "ACCEPTED";
         if (enough) Local.exec("UPDATE ai_insights SET result=?, measured_gain=?, measured_at=?, status=? WHERE id=?", res.toString(), Math.round(adj), now, st, row.optLong("id")); else Local.exec("UPDATE ai_insights SET result=?, measured_gain=NULL, measured_at=?, status=? WHERE id=?", res.toString(), now, st, row.optLong("id"));
+        if ("MEASURED".equals(st) && !"MEASURED".equals(row.optString("status"))) { try { Forecast.learn(); } catch (Exception ignore) {} }   // v3.1: the engine learns from every completed measurement
         return Local.obj("baseline", base, "post", post, "gain", enough ? Math.round(adj) : 0, "complete", "MEASURED".equals(st));
     }
     static int measureAll() { int n = 0; for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status='ACCEPTED'")) { try { if (measure(r) != null) n++; } catch (Exception ignore) {} } return n; }

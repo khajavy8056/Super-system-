@@ -741,3 +741,20 @@ h1, h2, h3 { letter-spacing: .1px; }
 .nudge-chip:hover { border-color: var(--accent); background: rgba(124,92,255,.10); }
 .demo-box { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: linear-gradient(135deg, rgba(61,214,196,.08), transparent), var(--bg2); }
 .demo-box p { margin: 6px 0 10px; }
+
+/* v3.1 forecast / planning */
+.chart { width: 100%; margin-top: 10px; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .g { stroke: var(--border); stroke-width: 1; }
+.chart .t { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.chart .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.chart .legend .lg i { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin-inline-end: 6px; vertical-align: middle; }
+.predict { margin-top: 12px; padding: 14px; border-radius: 14px; background: var(--bg2); border: 1px solid var(--border); }
+.predict h4 { margin: 0 0 10px; }
+.predict-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.predict-kpis > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); }
+.predict-kpis b { font-size: 18px; font-weight: 800; }
+.ins-band { font-size: 11px; }
+.cal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
+.cal { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); font-size: 12.5px; }
+@media (max-width: 1200px) { .predict-kpis, .cal-grid { grid-template-columns: repeat(2, 1fr); } }
