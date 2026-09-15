@@ -122,6 +122,11 @@ public final class AdminScreens {
                 box.addView(Ui.kv(c, "نسخهٔ بانک همراه برنامه", s(st, "version"), 0));
                 box.addView(Ui.kv(c, "واردشده در این دستگاه", s(st, "imported_version").isEmpty() ? "هنوز وارد نشده" : s(st, "imported_version"), 0));
                 box.addView(Ui.kv(c, "کالاهای موجود در دستگاه", Ui.fa(String.valueOf(st.optInt("products"))), 0));
+                // v3.5.5 — pictures are streamed from the catalogue's own URLs and
+                // kept in files/thumbs, so an item the shop has received still shows
+                // with the network off. Surfacing the count is the only way the
+                // operator can tell that is actually happening.
+                box.addView(Ui.kv(c, "تصویر ذخیره‌شده روی دستگاه", Ui.fa(String.valueOf(Images.cached())), 0));
                 if (!s(st, "error").isEmpty()) box.addView(Ui.muted(c, "خطای آخرین تلاش: " + s(st, "error")));
                 box.addView(Ui.primary(c, "دریافت محصولات پیش‌فرض", () -> {
                     Ui.toast("در حال ورود محصولات پیش‌فرض…");

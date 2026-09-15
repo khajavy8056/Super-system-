@@ -114,7 +114,13 @@ public final class StockScreens {
             if (q <= 0) { Ui.toast("مقدار باید بیشتر از صفر باشد"); return; } if (b < 0) { Ui.toast("قیمت خرید لازم است"); return; } if (sl < b) { Ui.toast("قیمت فروش کمتر از خرید است"); }
             if (!unitDecimal(p.optLong("unit_id")) && q != Math.floor(q)) { Ui.toast("واحد این کالا اعشار نمی‌پذیرد"); return; }
             try { String ex = dateIn(exp); JSONObject body = j("barcode", p.optString("barcode"), "note", Ui.str(note)); if (p.optLong("id") > 0) putNum(body, "product_id", p.optLong("id")); putNum(body, "quantity_received", q); putNum(body, "buy_price", b); putNum(body, "consumer_price", cs); putNum(body, "sell_price", sl); if (ex != null) body.put("expiry_date", ex);
-                Db.localBatch(p.optLong("id"), q, sl, cs, b, ex); Sync.queue("STOCK_RECEIVE", body, "ورود " + Ui.num(q) + " × " + p.optString("name"), null); qty.setText(""); exp.setText(""); note.setText(""); Ui.done(a, "ورود کالا ثبت شد", Ui.num(q) + " × " + p.optString("name") + "\nموجودی به‌روز شد", () -> { if (!a.back()) resolve(p.optString("barcode")); }); } catch (IllegalArgumentException ignore) {} catch (Exception e) { Ui.toast(e.getMessage()); }
+                Db.localBatch(p.optLong("id"), q, sl, cs, b, ex); Sync.queue("STOCK_RECEIVE", body, "ورود " + Ui.num(q) + " × " + p.optString("name"), null);
+                // v3.5.5 — the shop now carries this item, so its picture is worth
+                // keeping on the phone: fetch it once into files/thumbs and it still
+                // renders after the internet goes away. Fire-and-forget on the image
+                // pool; a failure here must never undo a stock receipt that succeeded.
+                try { Images.prefetch(p); } catch (Exception ignore) {}
+                qty.setText(""); exp.setText(""); note.setText(""); Ui.done(a, "ورود کالا ثبت شد", Ui.num(q) + " × " + p.optString("name") + "\nموجودی به‌روز شد", () -> { if (!a.back()) resolve(p.optString("barcode")); }); } catch (IllegalArgumentException ignore) {} catch (Exception e) { Ui.toast(e.getMessage()); }
         }
     }
 

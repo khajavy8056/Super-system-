@@ -55,6 +55,37 @@ public final class Images {
         return base + "/media/" + u.replaceFirst("^/?media/", "");
     }
 
+    /** v3.5.5 — cache a product's picture to disk right now, with no ImageView involved.
+     *  Called when stock is received: a product the shop actually carries is worth the
+     *  bytes, and once it is in {@code files/thumbs} it renders with the network off,
+     *  which is the whole point — the counter must not go blank when the internet drops.
+     *  Cheap to call repeatedly: an existing cache file or a memory hit returns at once. */
+    public static void prefetch(JSONObject p) {
+        final String url = urlOf(p);
+        if (url == null || Ui.ctx == null) return;
+        if (url.startsWith("file://") || url.startsWith("pack://")) return;   // already on the device
+        if (MEM.get(url) != null) return;
+        final Context c = Ui.ctx;
+        POOL.execute(() -> {
+            try {
+                File f = new File(thumbDir(c), Integer.toHexString(url.hashCode()) + ".jpg");
+                if (f.exists() && f.length() > 0) return;
+                Bitmap b = load(c, url);        // downloads and writes the cache file itself
+                if (b != null) MEM.put(url, b);
+            } catch (Exception ignore) {}
+        });
+    }
+
+    /** v3.5.5 — how many products still have no cached picture. Shown next to the
+     *  settings action so the operator can tell a download is making progress. */
+    public static int cached() {
+        if (Ui.ctx == null) return 0;
+        File[] f = thumbDir(Ui.ctx).listFiles();
+        int n = 0;
+        if (f != null) for (File x : f) if (x.length() > 0) n++;
+        return n;
+    }
+
     /** Show the thumbnail (async). Falls back to the placeholder already set on the view. */
     public static void bind(ImageView iv, JSONObject p) {
         final String url = urlOf(p);
@@ -100,7 +131,17 @@ public final class Images {
     /* ------------------------------------------------------------ HTTP */
     static byte[] download(String url, int max) { return download(url, max, false); }
     static byte[] download(String url, int max, boolean browserUa) {
-        if (!(Api.base != null && !Api.base.isEmpty() && url.startsWith(Api.base))) return null;   // v3.4: only the paired PC, never the internet
+        if (url == null || url.isEmpty()) return null;
+        boolean paired = Api.base != null && !Api.base.isEmpty() && url.startsWith(Api.base);
+        // v3.5.5 — the default catalogue carries a direct picture URL for 13 537 of
+        // its 13 570 products, and not one of them ever rendered: this guard returned
+        // null for anything that was not the paired PC, so the request was refused
+        // before a socket was even opened and every row fell back to its letter tile.
+        // The v3.4 rule was meant to stop the app *searching* the web for pictures;
+        // it should never have stopped it *showing* a picture whose address the shop
+        // already has in its own data. http/https only, and the bearer token is still
+        // sent to the paired PC alone — never to a third-party host.
+        if (!paired && !(url.startsWith("http://") || url.startsWith("https://"))) return null;
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection(); c.setConnectTimeout(8000); c.setReadTimeout(12000); c.setInstanceFollowRedirects(true);
