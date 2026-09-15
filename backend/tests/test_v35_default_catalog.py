@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.database import SessionLocal
 from app.models import Category, Product, ProductBatch
@@ -307,3 +307,55 @@ def test_product_search_puts_in_stock_items_first(client, auth_headers, db):
     plain = client.get("/api/products", headers=auth_headers,
                        params={"q": tag, "limit": 50, "in_stock_first": False}).json()
     assert [p["id"] for p in plain["items"]] == [oos_id, in_stock_id]
+
+
+def test_import_reconciles_with_products_the_shop_already_typed(client, auth_headers, db):
+    """A product the shop typed by hand must be matched, never duplicated.
+
+    The shop in the field had products from before the bank existed. When the
+    default catalogue is imported over that database, a line whose name matches
+    one of those hand-typed products has to RECONCILE with it — adopt the exact
+    GTIN and the picture it was missing — instead of creating a second row the
+    cashier then has to disambiguate at the till.
+
+    This is the case the barcode-only identity rule does not cover: the existing
+    row has no barcode at all, so barcode equality can never match it.
+    """
+    NAME = "شامپو 220 گرمی شبنم"
+    BANK_BARCODE = "6261101521038"
+
+    # make sure neither the name nor the code is already in the database
+    db.execute(delete(Product).where(Product.name == NAME))
+    db.execute(delete(Product).where(Product.barcode == BANK_BARCODE))
+    db.commit()
+
+    # the shop's own hand-typed row: correct name, no barcode, no picture
+    hand = client.post("/api/products", headers=auth_headers,
+                       json={"name": NAME, "barcode": None, "unit_id": None,
+                             "min_stock_alert": 0})
+    assert hand.status_code == 201, hand.text
+    hand_id = hand.json()["id"]
+    # the API mints an internal code for a product with no GTIN of its own; that
+    # is precisely the "no real barcode" case barcode equality can never match.
+    hand_code = hand.json()["barcode"]
+    assert not hand_code or hand_code.startswith("INT-"), hand.json()
+    assert hand.json()["has_own_barcode"] is False, hand.json()
+    assert not hand.json()["image_url"]
+
+    # now import the bank over it
+    res = default_catalog.import_csv(db)
+    db.commit()
+    assert res["ok"] is True, res
+
+    # the whole point: exactly ONE row for this product, not two
+    rows = db.execute(select(Product).where(Product.name == NAME)).scalars().all()
+    assert len(rows) == 1, \
+        f"import duplicated a product the shop already had: {len(rows)} rows named {NAME!r}"
+
+    # and it kept the shop's own row (so any stock/history stays attached) while
+    # adopting the exact GTIN and picture from the bank
+    kept = rows[0]
+    assert kept.id == hand_id, "the shop's own row should have been reconciled, not replaced"
+    assert kept.barcode == BANK_BARCODE, kept.barcode
+    assert kept.image_url, "the picture the shop was missing should have been adopted"
+    assert kept.has_own_barcode is True

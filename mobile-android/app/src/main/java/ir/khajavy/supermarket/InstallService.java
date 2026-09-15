@@ -43,8 +43,14 @@ public final class InstallService extends Service {
         nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) { NotificationChannel ch = new NotificationChannel(CH, "نصب اولیهٔ سامانه", NotificationManager.IMPORTANCE_LOW); ch.setSound(null, null); nm.createNotificationChannel(ch); }
         startForeground(NID, build(percent(), false));
-        // the real work (starter catalogue import) happens once, early, on a worker thread
-        Api.bg(() -> { try { if ("1".equals(Prefs.get("install_starter", "")) && Db.count("products") == 0) { Db.importStarter(this); Images.kick(); } } catch (Exception ignore) {} Prefs.set("install_work_done", "1"); });
+        // The catalogue import used to be gated on `Db.count("products") == 0`, so
+        // it only ever ran on a truly fresh install. Android keeps the app's
+        // database across an in-place update, so every shop that upgraded saw the
+        // new default bank advertised and then received none of it. The gate is
+        // now the catalogue VERSION: a fresh install and an upgrade alike import
+        // whatever lines this build ships, and importStarter reconciles against
+        // the products the shop already has instead of duplicating them.
+        Api.bg(() -> { try { if (Db.catalogPending()) { Db.importStarter(this); Images.kick(); } } catch (Exception ignore) {} Prefs.set("install_work_done", "1"); });
         tick = () -> {
             int pc = percent();
             if (progress() >= 1 && "1".equals(Prefs.get("install_work_done", ""))) { finish(); return; }

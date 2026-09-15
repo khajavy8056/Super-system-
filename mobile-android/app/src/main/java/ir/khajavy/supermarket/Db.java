@@ -193,14 +193,37 @@ public final class Db extends SQLiteOpenHelper {
      * still held an ASCII comma shifted every field after it. Lines are parsed as
      * real CSV now and all nine columns are honoured.
      */
-    public static int importStarter(Context ctx) {
-        int n = 0; SQLiteDatabase d = w(); d.beginTransaction();
+    public static JSONObject importStarter(Context ctx) {
+        int n = 0, matched = 0, filled = 0;
+        SQLiteDatabase d = w(); d.beginTransaction();
         try (java.io.BufferedReader br = new java.io.BufferedReader(
                 new java.io.InputStreamReader(ctx.getAssets().open(STARTER_ASSET), "UTF-8"))) {
             br.readLine();   // header: category,subcategory,name,brand,unit,min_stock_alert,barcode,image_url,images
             java.util.Map<String, Long> units = new java.util.HashMap<>();
             java.util.Map<String, Long> cats = new java.util.HashMap<>();
             java.util.HashSet<String> seen = new java.util.HashSet<>();
+
+            // v3.5.1 — RECONCILE with what the shop already has. The old code
+            // deduplicated only *within* the CSV and minted a fresh id for every
+            // row, so running it against a database that already held products
+            // (i.e. after an in-place app update) would have cloned every item the
+            // shop had typed by hand. Identity is the barcode first — that is the
+            // only hard rule — then the normalised name, which is what a product
+            // entered manually before the bank existed will match on.
+            java.util.HashMap<String, Long> byBarcode = new java.util.HashMap<>();
+            java.util.HashMap<String, Long> byName = new java.util.HashMap<>();
+            java.util.HashMap<Long, String> imgOf = new java.util.HashMap<>();
+            try (Cursor c = d.rawQuery("SELECT id, barcode, name, image_url FROM products", null)) {
+                while (c.moveToNext()) {
+                    long pid = c.getLong(0);
+                    String bc = norm(c.getString(1)).replaceAll("[^0-9]", "");
+                    String nm = norm(c.getString(2)).trim();
+                    if (!bc.isEmpty()) byBarcode.put(bc, pid);
+                    if (!nm.isEmpty()) byName.put(nm, pid);
+                    imgOf.put(pid, c.isNull(3) ? "" : c.getString(3));
+                }
+            }
+
             String line;
             while ((line = br.readLine()) != null) {
                 String[] f = csvLine(line);
@@ -208,17 +231,32 @@ public final class Db extends SQLiteOpenHelper {
                 String name = f[2].trim();
                 if (name.isEmpty()) continue;
                 String barcode = f.length > 6 ? f[6].trim() : "";
-                // barcode is the only hard identity; the name+category guard stops
-                // a hand-written list from creating the same row twice.
                 String key = barcode.isEmpty() ? (name + "\u0000" + f[0].trim()) : barcode;
                 if (!seen.add(key)) continue;
+
+                String img = f.length > 7 ? f[7].trim() : "";
+
+                // already known → do not create a second row. If the shop's own
+                // copy has no picture yet, adopt the one that ships with the bank;
+                // that is the whole point of reconciling instead of skipping.
+                Long hit = barcode.isEmpty() ? null : byBarcode.get(barcode.replaceAll("[^0-9]", ""));
+                if (hit == null) hit = byName.get(norm(name).trim());
+                if (hit != null) {
+                    matched++;
+                    if (!img.isEmpty() && imgOf.get(hit).isEmpty()) {
+                        ContentValues u = new ContentValues(); u.put("image_url", img);
+                        d.update("products", u, "id=?", new String[]{String.valueOf(hit)});
+                        imgOf.put(hit, img);
+                        filled++;
+                    }
+                    continue;
+                }
 
                 String unit = f.length > 4 && !f[4].trim().isEmpty() ? f[4].trim() : "عدد";
                 if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
                 String cat = f[0].trim() + (f.length > 1 && !f[1].trim().isEmpty() ? " / " + f[1].trim() : "");
                 if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
 
-                String img = f.length > 7 ? f[7].trim() : "";
                 String gallery = f.length > 8 ? f[8].trim() : "";
 
                 long id = -counter("pid");
@@ -250,13 +288,56 @@ public final class Db extends SQLiteOpenHelper {
                     bankPut(Api.obj("barcode", barcode, "name", name, "category", cat,
                             "image_url", img, "source", "IMPORT"));
                 }
+                // remember what we just added so a later line in the same file
+                // cannot create a second row for it
+                if (!barcode.isEmpty()) byBarcode.put(barcode.replaceAll("[^0-9]", ""), id);
+                byName.put(norm(name).trim(), id);
+                imgOf.put(id, img);
                 n++;
             }
             try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
-            kv("starter_imported", "1"); kv("default_catalog_count", String.valueOf(n)); d.setTransactionSuccessful();
-        } catch (Exception ignore) {
+            kv("starter_imported", "1");
+            kv("default_catalog_count", String.valueOf(n));
+            kv("default_catalog_ver", CATALOG_VERSION);
+            d.setTransactionSuccessful();
+        } catch (Exception e) {
+            // a swallowed failure here is exactly how the shop ended up with an
+            // empty catalogue and no explanation — record it so the settings
+            // screen can say what happened.
+            kv("default_catalog_error", String.valueOf(e));
+            try { d.setTransactionSuccessful(); } catch (Exception ignore) {}
         } finally { d.endTransaction(); }
-        return n;
+        JSONObject r = new JSONObject();
+        try { r.put("created", n); r.put("matched_existing", matched); r.put("images_filled", filled); } catch (Exception ignore) {}
+        return r;
+    }
+
+    /**
+     * Bump when the bundled catalogue changes, so an in-place app update imports
+     * the new lines instead of leaving the shop on the old list. Compared against
+     * the {@code default_catalog_ver} key written above.
+     */
+    public static final String CATALOG_VERSION = "3.5.1-13570";
+
+    /** True when the bundled catalogue has not been imported into this database yet. */
+    public static boolean catalogPending() {
+        return !CATALOG_VERSION.equals(kv("default_catalog_ver"));
+    }
+
+    /** Result of the last run, for the settings screen. */
+    public static JSONObject catalogStatus() {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("version", CATALOG_VERSION);
+            o.put("imported_version", kv("default_catalog_ver"));
+            o.put("pending", catalogPending());
+            o.put("products", count("products"));
+            String c = kv("default_catalog_count");
+            o.put("last_created", c == null ? 0 : Integer.parseInt(c));
+            String err = kv("default_catalog_error");
+            if (err != null && !err.isEmpty()) o.put("error", err);
+        } catch (Exception ignore) {}
+        return o;
     }
 
     /** Name of the bundled catalogue asset; v3.5 renamed it from starter_catalog.csv. */

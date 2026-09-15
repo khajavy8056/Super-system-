@@ -42,6 +42,15 @@ public class AppActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Prefs.init(this); Db.init(this); Ui.init(this); Api.bg(() -> Db.importBankSeed(this));   // v2.7 bundled barcode bank
+        // v3.5.1 — the default catalogue used to be reachable only through the
+        // first-run wizard (AppActivity → SetupActivity → InstallService), and an
+        // in-place update never walks that path, so shops that upgraded saw the new
+        // bank advertised and received none of it. This runs on EVERY launch and is
+        // gated on the catalogue version, not on "is the database empty", so an
+        // upgrade picks up the new lines too. importStarter reconciles against the
+        // products the shop already has (barcode, then normalised name) rather than
+        // duplicating them, so it is safe to run repeatedly.
+        Api.bg(() -> { try { if (Db.catalogPending()) Db.importStarter(this); } catch (Exception ignore) {} });
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");

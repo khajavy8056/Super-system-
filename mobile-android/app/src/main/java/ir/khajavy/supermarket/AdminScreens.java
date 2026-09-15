@@ -110,6 +110,36 @@ public final class AdminScreens {
             if ("license".equals(id)) body.addView(Ui.ghost(c, "وضعیت لایسنس", () -> a.route("license")));
             if ("backup".equals(id)) body.addView(Ui.primary(c, "پشتیبان‌گیری و بازیابی از فایل", () -> a.route("backup")));
             if ("catalog".equals(id)) body.addView(Ui.primary(c, Catalog.present(c) ? "به‌روزرسانی بانک محصولات" : "دریافت بانک محصولات (نام + تصویر کالاها)", () -> a.route("catalog")));
+            // v3.5.1 — manual trigger for the bundled default catalogue. The
+            // automatic import runs on every launch when the catalogue version is
+            // newer, but a shop must never depend on that: this button always
+            // works, and it reports what it actually did instead of failing
+            // silently the way the old first-install-only path did.
+            if ("products".equals(id)) {
+                final JSONObject st = Db.catalogStatus();
+                LinearLayout box = Ui.card(c, "محصولات پیش‌فرض");
+                box.addView(Ui.muted(c, "بانک کامل کالاهای سوپرمارکت و داروخانه — نام کامل، بارکد دقیق، دسته و زیردسته و تصویر — با موجودی صفر. کالاهایی که از قبل دارید تطبیق داده می‌شوند و تکراری ساخته نمی‌شود؛ فقط موارد تازه اضافه می‌شوند."));
+                box.addView(Ui.kv(c, "نسخهٔ بانک همراه برنامه", s(st, "version"), 0));
+                box.addView(Ui.kv(c, "واردشده در این دستگاه", s(st, "imported_version").isEmpty() ? "هنوز وارد نشده" : s(st, "imported_version"), 0));
+                box.addView(Ui.kv(c, "کالاهای موجود در دستگاه", Ui.fa(String.valueOf(st.optInt("products"))), 0));
+                if (!s(st, "error").isEmpty()) box.addView(Ui.muted(c, "خطای آخرین تلاش: " + s(st, "error")));
+                box.addView(Ui.primary(c, "دریافت محصولات پیش‌فرض", () -> {
+                    Ui.toast("در حال ورود محصولات پیش‌فرض…");
+                    Api.bg(() -> {
+                        final JSONObject r = Db.importStarter(a);
+                        Api.ui(() -> {
+                            Ui.done(c, "محصولات پیش‌فرض",
+                                Ui.fa(String.valueOf(r.optInt("created"))) + " کالای تازه اضافه شد · "
+                                + Ui.fa(String.valueOf(r.optInt("matched_existing"))) + " مورد از قبل موجود بود و تطبیق داده شد"
+                                + (r.optInt("images_filled") > 0 ? " · " + Ui.fa(String.valueOf(r.optInt("images_filled"))) + " تصویر تکمیل شد" : ""),
+                                null);
+                            Images.kick();
+                            load();
+                        });
+                    });
+                }));
+                body.addView(box);
+            }
             if ("mobile".equals(id)) body.addView(Ui.ghost(c, "دستگاه‌ها و همگام‌سازی", () -> a.route("sync")));
             if ("cloud".equals(id)) body.addView(Ui.ghost(c, "وضعیت همگام‌سازی ابری", () -> a.route("cloud")));
             if ("update".equals(id)) body.addView(Ui.ghost(c, "بررسی به‌روزرسانی", () -> get("/system/update/check", r -> { JSONObject u = (JSONObject) r; Ui.toast(s(u, "message", s(u, "status")) + " · نسخهٔ فعلی " + Ui.fa(s(u, "current_version"))); })));
