@@ -16,7 +16,14 @@ _seq = 0
 
 
 def _phone() -> str:
-    return "0939" + uuid4().hex[:7]
+    """A unique 11-digit Iranian mobile number.
+
+    BUG FIX: this used to be ``"0939" + uuid4().hex[:7]`` — ``uuid4().hex`` is
+    HEXADECIMAL, so ~96% of the generated "phone numbers" contained letters
+    (``09395228e46``). The API correctly normalises the number to digits only,
+    so the equality assertion failed at random. Digits only, always 11 chars.
+    """
+    return "0939" + str(uuid4().int)[:7].zfill(7)
 
 
 @pytest.fixture()

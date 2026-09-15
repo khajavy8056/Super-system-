@@ -35,6 +35,7 @@
     ]],
     ["کالا و انبار", [
       ["showProducts", "box", "کالاها (افزودن / ویرایش / قیمت)", "products.view"],
+      ["showDefaultCatalogM", "download", "دریافت محصولات پیش‌فرض", "products.manage"],
       ["showStockOpsM", "warehouse", "ضایعات / اصلاح / انتقال", "inventory.view"],
       ["showWarehousesM", "warehouse", "انبارها و محل نگهداری", "inventory.view"],
       ["showMovementsM", "sync", "گردش موجودی", "inventory.view"],
@@ -92,6 +93,36 @@
   window.mHeldBar = () => { const h = held(); return h.length ? `<div class="held-bar">${h.map((x) => `<button class="held-chip" onclick="mResume(${x.id})">${esc(x.label)} · ${x.cart.length}</button>`).join("")}</div>` : ""; };
 
   /* ------------------------------------------------------------------ Products */
+  /**
+   * v3.5 — «دریافت محصولات پیش‌فرض»: the full bundled catalogue (13 570
+   * supermarket/pharmacy items with exact GTINs, category, sub-category and the
+   * picture(s) that shipped with them), all created with zero stock. The operator
+   * scans a barcode, the item is recognised, and the receiving is what finally
+   * puts stock behind it.
+   */
+  window.showDefaultCatalogM = async () => {
+    screen("دریافت محصولات پیش‌فرض", null,
+      `<p class="muted">بانک کامل کالاهای سوپرمارکت و داروخانه — نام کامل، بارکد دقیق، دسته و زیردسته و تصویر — با <b>موجودی صفر</b> وارد می‌شود. موجودی فقط با رسید ورود اضافه می‌شود، پس با اسکن بارکد کالا شناخته می‌شود و رسید ورودش را ثبت می‌کنید. اجرای دوباره کالای تکراری نمی‌سازد.</p>
+       <div id="dc-info" class="muted">در حال خواندن اطلاعات بانک…</div>
+       <button class="btn btn-primary" id="dc-go" style="width:100%">${icon("download", 18)} دریافت محصولات پیش‌فرض</button>
+       <div id="dc-out" class="muted" style="margin-top:10px"></div>`);
+    try {
+      const i = await api("/products/import/default");
+      $("#dc-info").innerHTML = `بانک آماده: <b>${i.products}</b> کالا در <b>${i.categories}</b> دسته و <b>${i.subcategories}</b> زیردسته · <b>${i.with_image}</b> کالا با تصویر`;
+    } catch (e) { $("#dc-info").textContent = "اطلاعات بانک خوانده نشد: " + e.message; }
+    $("#dc-go").onclick = async () => {
+      if (!confirm("محصولات پیش‌فرض با موجودی صفر وارد شود؟")) return;
+      const b = $("#dc-go"); b.disabled = true; b.textContent = "در حال ورود…";
+      try {
+        const r = await api("/products/import/default", { method: "POST" });
+        $("#dc-out").innerHTML = r.ok === false ? `<span class="err">${esc(r.message || "خطا")}</span>`
+          : `${r.created} کالا ایجاد شد · ${r.skipped} مورد از قبل موجود بود · ${r.categories} دسته و ${r.subcategories} زیردسته · ${r.with_image} کالا با تصویر`;
+        toast("محصولات پیش‌فرض وارد شد");
+      } catch (e) { $("#dc-out").innerHTML = `<span class="err">${esc(e.message)}</span>`; toast(e.message, "err"); }
+      finally { b.disabled = false; b.innerHTML = `${icon("download", 18)} دریافت محصولات پیش‌فرض`; }
+    };
+  };
+
   window.showProducts = async () => {
     screen("کالاها", null, `<div class="search-bar"><input id="p-q" placeholder="نام / بارکد / SKU…" /><button class="icon-btn big" onclick="openScanForLookup()">${icon("camera", 22)}</button></div>
       ${perm("products.manage") ? `<button class="btn btn-primary" onclick="mProductForm()">${icon("plus", 18)} کالای جدید</button>` : ""}<div id="p-list">${empty("در حال بارگذاری…")}</div>`);

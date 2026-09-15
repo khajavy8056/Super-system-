@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 from decimal import Decimal
@@ -48,10 +49,21 @@ class ProductPatch(BaseModel):
 
 
 def _out(p: Product) -> dict:
+    # v3.5 — the default bank ships up to three pictures per line; `gallery` is
+    # the JSON list, exposed as a plain array so the UI never parses it itself.
+    gallery: list[str] = []
+    raw = getattr(p, "gallery", None)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            gallery = [u for u in parsed if isinstance(u, str) and u][:3]
+        except (ValueError, TypeError):
+            gallery = []
     return {
         "id": p.id, "barcode": p.barcode, "name": p.name, "sku": p.sku,
         "brand_id": p.brand_id, "category_id": p.category_id, "unit_id": p.unit_id,
         "model": p.model, "description": p.description, "image_url": p.image_url,
+        "gallery": gallery,
         "min_stock_alert": p.min_stock_alert, "is_active": p.is_active,
         "has_own_barcode": bool(getattr(p, "has_own_barcode", True)),
         "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -63,15 +75,68 @@ def list_products(
     q: str | None = Query(default=None),
     limit: int = Query(default=100, le=1000),
     offset: int = 0,
+    in_stock_first: bool = Query(default=True),
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("products.view")),
 ):
+    """Product search.
+
+    v3.5 — the default catalogue made this list 13 570 rows long, which broke the
+    till in two ways at once. Searching by name loaded every ORM row into memory
+    before slicing, and the results came back purely alphabetically, so an item
+    that was actually on the shelf could be buried under hundreds of rows the shop
+    does not stock. Both are fixed here:
+
+    * ``in_stock_first`` (on by default) sorts items that have sellable stock
+      ahead of everything else, then alphabetically inside each group. That is
+      the order a cashier wants: what can be sold now, then the rest of the
+      catalogue by name.
+    * the ordering and the paging happen in SQL, so only the requested page is
+      materialised.
+    """
+    from ..models import ProductBatch
+
     stmt = select(Product).where(Product.deleted_at.is_(None))
     if q:
         stmt = stmt.where(Product.name.ilike(f"%{q}%") | Product.barcode.ilike(f"%{q}%"))
     total = int(db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one())
-    rows = db.execute(stmt.order_by(Product.name.asc()).limit(limit).offset(offset)).scalars().all()
-    return {"total": total, "items": [_out(p) for p in rows]}
+
+    # Sellable stock per product, computed in the database. "Sellable" mirrors
+    # pos.sellable_batches: an ACTIVE batch with quantity left. Expired stock is
+    # deliberately NOT filtered here — it still exists and the shop must be able
+    # to find it; whether it may be sold is decided at checkout.
+    stock = (
+        select(ProductBatch.product_id, func.coalesce(func.sum(ProductBatch.current_qty), 0).label("qty"))
+        .where(ProductBatch.current_qty > 0, ProductBatch.status == "ACTIVE")
+        .group_by(ProductBatch.product_id)
+        .subquery()
+    )
+    stmt = stmt.outerjoin(stock, Product.id == stock.c.product_id)
+    available = func.coalesce(stock.c.qty, 0)
+    if in_stock_first:
+        stmt = stmt.order_by((available > 0).desc(), Product.name.asc())
+    else:
+        stmt = stmt.order_by(Product.name.asc())
+    rows = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
+
+    # one extra query for the whole page instead of one per row
+    page_ids = [p.id for p in rows]
+    stock_map: dict[int, float] = {}
+    if page_ids:
+        for pid, qty in db.execute(
+            select(ProductBatch.product_id, func.sum(ProductBatch.current_qty))
+            .where(ProductBatch.product_id.in_(page_ids),
+                   ProductBatch.current_qty > 0, ProductBatch.status == "ACTIVE")
+            .group_by(ProductBatch.product_id)
+        ).all():
+            stock_map[pid] = float(qty or 0)
+    items = []
+    for p in rows:
+        o = _out(p)
+        o["stock_qty"] = stock_map.get(p.id, 0.0)
+        o["in_stock"] = o["stock_qty"] > 0
+        items.append(o)
+    return {"total": total, "items": items, "in_stock_first": in_stock_first}
 
 
 @router.get("/barcode/{barcode}")
@@ -167,21 +232,48 @@ def create_category(body: TaxonomyIn, db: Session = Depends(get_db),
 # --- §80–82 starter catalog / CSV import (declared before /{product_id}) ---------
 @router.get("/import/starter")
 def starter_catalog_info(_: User = Depends(require_permission("products.manage"))):
-    """Describe the bundled zero-stock starter catalog and the CSV columns."""
-    from ..services import starter_catalog
-    return starter_catalog.bundled_summary()
+    """Describe the bundled zero-stock default product bank and the CSV columns."""
+    from ..services import default_catalog
+    return default_catalog.bundled_summary()
 
 
 @router.post("/import/starter")
 def import_starter_catalog(dry_run: bool = False, db: Session = Depends(get_db),
                            user: User = Depends(require_permission("products.manage"))):
-    """Import the bundled starter catalog (idempotent, zero stock)."""
-    from ..services import starter_catalog
-    from ..services.audit import write_audit
-    res = starter_catalog.import_csv(db, None, user=user, dry_run=dry_run)
+    """Import the bundled default product bank (idempotent, zero stock)."""
+    from ..services import default_catalog
+    res = default_catalog.import_csv(db, None, user=user, dry_run=dry_run)
     if not dry_run and res.get("ok"):
         write_audit(db, action="CATALOG_IMPORT", user_id=user.id, entity_type="Product",
                     after={"source": "bundled", "created": res["created"], "skipped": res["skipped"]})
+    db.commit()
+    return res
+
+
+# v3.5 — the same bank under the name the UI now uses («دریافت محصولات پیش‌فرض»).
+# Both routes stay: the desktop/mobile clients and the phones are updated
+# together, but an older build must not break against a newer server.
+@router.get("/import/default")
+def default_catalog_info(db: Session = Depends(get_db),
+                         _: User = Depends(require_permission("products.manage"))):
+    """Describe the bundled bank AND how much of it is already in the shop."""
+    from ..services import default_catalog
+    info = default_catalog.bundled_summary()
+    info["products_in_shop"] = int(db.execute(
+        select(func.count(Product.id)).where(Product.deleted_at.is_(None))).scalar() or 0)
+    return info
+
+
+@router.post("/import/default")
+def import_default_catalog(dry_run: bool = False, db: Session = Depends(get_db),
+                           user: User = Depends(require_permission("products.manage"))):
+    """«دریافت محصولات پیش‌فرض» — the full bundled bank, zero stock, idempotent."""
+    from ..services import default_catalog
+    res = default_catalog.import_csv(db, None, user=user, dry_run=dry_run)
+    if not dry_run and res.get("ok"):
+        write_audit(db, action="CATALOG_IMPORT", user_id=user.id, entity_type="Product",
+                    after={"source": "default_bank", "created": res["created"],
+                           "skipped": res["skipped"], "with_image": res.get("with_image", 0)})
     db.commit()
     return res
 
@@ -343,11 +435,18 @@ def find_image_now(product_id: int, force: bool = False, db: Session = Depends(g
 
 @router.get("/{product_id}/image/candidates")
 def image_candidates(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("products.manage"))):
-    """v2.5.1 — picker: top candidate pictures (retail catalogues first) so the operator chooses the right pack photo."""
+    """v3.5 — picker: the product's OWN shipped pictures (up to three).
+
+    There is no web search any more, so the list is exactly what the default
+    bank carried for this line; a hand-typed product returns an empty list and
+    the operator photographs or uploads it instead.
+    """
     p = db.get(Product, product_id)
     if not p or p.deleted_at is not None:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
-    return {"product_id": p.id, "name": p.name, "current": p.image_url, "candidates": product_images.list_candidates(db, p)}
+    return {"product_id": p.id, "name": p.name, "current": p.image_url,
+            "gallery": [u for u in (json.loads(p.gallery) if p.gallery else []) if u][:3],
+            "candidates": product_images.list_candidates(db, p), "web_lookup": False}
 
 
 class _PickBody(BaseModel):
@@ -401,7 +500,10 @@ def images_status(db: Session = Depends(get_db), user: User = Depends(get_curren
     missing = product_images.missing_count(db)
     return {"total": total, "with_image": total - missing, "missing": missing, "jobs": {s: n for s, n in q},
             "auto_find": product_images.setting(db, "images.auto_find", "true") == "true",
-            "web_fallback": product_images.setting(db, "images.web_fallback", "true") == "true"}
+            # v3.5 — the web picture hunt is gone; the bank ships its own pictures.
+            # The key stays in the payload (always False) so an older client that
+            # still renders the switch does not crash on a missing field.
+            "web_fallback": False, "web_lookup": False}
 
 
 @router.delete("/{product_id}", status_code=204)

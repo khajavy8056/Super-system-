@@ -42,6 +42,11 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE INDEX IF NOT EXISTS ix_mv_pid ON movements(product_id)", "CREATE INDEX IF NOT EXISTS ix_mv_at ON movements(created_at)", "CREATE INDEX IF NOT EXISTS ix_ai_status ON ai_insights(status)",
         "CREATE INDEX IF NOT EXISTS ix_p_name ON products(is_active, name)", "CREATE INDEX IF NOT EXISTS ix_c_phone ON customers(phone)",
         "CREATE TABLE IF NOT EXISTS journal_lines(jid INTEGER, code TEXT, debit REAL, credit REAL)", "CREATE INDEX IF NOT EXISTS ix_jl_code ON journal_lines(code, jid)", "CREATE INDEX IF NOT EXISTS ix_jl_jid ON journal_lines(jid)",
+        // v3.5 — the default catalogue ships up to three pictures per product, so
+        // the operator can pick another shot with no network lookup. Idempotent:
+        // indexes() wraps every statement in try/catch, so the ALTER is a no-op
+        // once the column exists.
+        "ALTER TABLE products ADD COLUMN gallery TEXT",
     };
     static void indexes(SQLiteDatabase d) { for (String q : V4_INDEX) { try { d.execSQL(q); } catch (Exception ignore) {} } }
     /** v3.3 — account balances are summed in SQL from journal_lines (one row per posting line) instead of
@@ -157,6 +162,8 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("unit_id", p.isNull("unit_id") ? null : p.optLong("unit_id")); cv.put("category_id", p.isNull("category_id") ? null : p.optLong("category_id")); cv.put("brand_id", p.isNull("brand_id") ? null : p.optLong("brand_id"));
         cv.put("min_stock_alert", p.optDouble("min_stock_alert", 0)); cv.put("image_url", p.isNull("image_url") ? null : p.optString("image_url")); cv.put("is_active", p.optBoolean("is_active", true) ? 1 : 0);
         cv.put("is_local", local ? 1 : 0); cv.put("json", p.toString()); cv.put("updated_at", now());
+        // v3.5 — the extra catalogue pictures, kept as the same JSON array the PC uses
+        cv.put("gallery", p.isNull("gallery") ? null : p.optJSONArray("gallery") == null ? null : p.optJSONArray("gallery").toString());
         w().insertWithOnConflict("products", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
     public static void putBatch(JSONObject b, boolean local) {
@@ -173,25 +180,107 @@ public final class Db extends SQLiteOpenHelper {
         w().insertWithOnConflict("customers", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
-    /** v2.1 standalone: bundled starter catalogue (same CSV as the Windows wizard) → local products. */
+    /**
+     * v3.5 — the bundled default catalogue: 13 570 supermarket/pharmacy products
+     * built from the shop's own product sheets, each with its full name, its exact
+     * GTIN, its category/sub-category and the picture(s) that shipped with it.
+     * Everything is created with NO stock — stock only ever appears through a
+     * receiving — so a barcode scan identifies the item and the operator records
+     * what actually came in.
+     *
+     * The old version split each line on "," and read 7 columns. That silently
+     * mangled the new file: the extra image columns were dropped and any name that
+     * still held an ASCII comma shifted every field after it. Lines are parsed as
+     * real CSV now and all nine columns are honoured.
+     */
     public static int importStarter(Context ctx) {
         int n = 0; SQLiteDatabase d = w(); d.beginTransaction();
-        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(ctx.getAssets().open("starter_catalog.csv"), "UTF-8"))) {
-            String line = br.readLine(); // header: category,subcategory,name,brand,unit,min_stock_alert,barcode
-            java.util.Map<String, Long> units = new java.util.HashMap<>(); java.util.Map<String, Long> cats = new java.util.HashMap<>();
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(ctx.getAssets().open(STARTER_ASSET), "UTF-8"))) {
+            br.readLine();   // header: category,subcategory,name,brand,unit,min_stock_alert,barcode,image_url,images
+            java.util.Map<String, Long> units = new java.util.HashMap<>();
+            java.util.Map<String, Long> cats = new java.util.HashMap<>();
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            String line;
             while ((line = br.readLine()) != null) {
-                String[] f = line.split(",", -1); if (f.length < 5 || f[2].trim().isEmpty()) continue;
-                String unit = f[4].trim().isEmpty() ? "عدد" : f[4].trim(); if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
-                String cat = f[0].trim() + (f[1].trim().isEmpty() ? "" : " / " + f[1].trim()); if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
-                long id = -counter("pid"); JSONObject p = new JSONObject();
-                try { p.put("id", id); p.put("name", f[2].trim()); p.put("barcode", f.length > 6 && !f[6].trim().isEmpty() ? f[6].trim() : "INT-L" + pad5(-id)); p.put("unit_id", units.get(unit)); p.put("unit_name", unit); p.put("category_id", cats.get(cat)); p.put("category_name", cat); if (!f[3].trim().isEmpty()) p.put("brand_name", f[3].trim()); p.put("min_stock_alert", f.length > 5 && !f[5].trim().isEmpty() ? Double.parseDouble(f[5].trim()) : 0); p.put("is_active", true); p.put("_local", true); p.put("has_own_barcode", f.length > 6 && !f[6].trim().isEmpty()); } catch (Exception ignore) {}
-                putProduct(p, true); n++;   // v2.5: picture looked up in the background
+                String[] f = csvLine(line);
+                if (f.length < 3) continue;
+                String name = f[2].trim();
+                if (name.isEmpty()) continue;
+                String barcode = f.length > 6 ? f[6].trim() : "";
+                // barcode is the only hard identity; the name+category guard stops
+                // a hand-written list from creating the same row twice.
+                String key = barcode.isEmpty() ? (name + "\u0000" + f[0].trim()) : barcode;
+                if (!seen.add(key)) continue;
+
+                String unit = f.length > 4 && !f[4].trim().isEmpty() ? f[4].trim() : "عدد";
+                if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
+                String cat = f[0].trim() + (f.length > 1 && !f[1].trim().isEmpty() ? " / " + f[1].trim() : "");
+                if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
+
+                String img = f.length > 7 ? f[7].trim() : "";
+                String gallery = f.length > 8 ? f[8].trim() : "";
+
+                long id = -counter("pid");
+                JSONObject p = new JSONObject();
+                try {
+                    p.put("id", id);
+                    p.put("name", name);
+                    p.put("barcode", barcode.isEmpty() ? "INT-L" + pad5(-id) : barcode);
+                    p.put("has_own_barcode", !barcode.isEmpty() && !barcode.startsWith("INT-"));
+                    p.put("unit_id", units.get(unit)); p.put("unit_name", unit);
+                    p.put("category_id", cats.get(cat)); p.put("category_name", cat);
+                    p.put("subcategory_name", f.length > 1 ? f[1].trim() : "");
+                    if (f.length > 3 && !f[3].trim().isEmpty()) p.put("brand_name", f[3].trim());
+                    p.put("min_stock_alert", f.length > 5 && !f[5].trim().isEmpty() ? Double.parseDouble(f[5].trim()) : 0);
+                    if (!img.isEmpty()) p.put("image_url", img);
+                    // the extra links travel with the product so the operator can
+                    // pick another shot without any network lookup
+                    if (!gallery.isEmpty()) {
+                        JSONArray g = new JSONArray();
+                        for (String u : gallery.split("\\|")) { if (!u.trim().isEmpty()) g.put(u.trim()); }
+                        if (g.length() > 0) p.put("gallery", g);
+                    }
+                    p.put("is_active", true); p.put("_local", true);
+                } catch (Exception ignore) {}
+                putProduct(p, true);
+                // the offline barcode→name bank, so an unknown item can still be
+                // named from the phone when the PC is out of reach
+                if (!barcode.isEmpty() && !barcode.startsWith("INT-")) {
+                    bankPut(Api.obj("barcode", barcode, "name", name, "category", cat,
+                            "image_url", img, "source", "IMPORT"));
+                }
+                n++;
             }
             try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
-            kv("starter_imported", "1"); d.setTransactionSuccessful();
+            kv("starter_imported", "1"); kv("default_catalog_count", String.valueOf(n)); d.setTransactionSuccessful();
         } catch (Exception ignore) {
         } finally { d.endTransaction(); }
         return n;
+    }
+
+    /** Name of the bundled catalogue asset; v3.5 renamed it from starter_catalog.csv. */
+    static final String STARTER_ASSET = "default_catalog.csv";
+
+    /** Minimal RFC-4180 line parser — the old {@code split(",")} shifted every
+     *  field after a quoted comma and threw the image columns away. */
+    static String[] csvLine(String line) {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (quoted) {
+                if (c == '"') {
+                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') { cur.append('"'); i++; }
+                    else quoted = false;
+                } else cur.append(c);
+            } else if (c == '"') quoted = true;
+            else if (c == ',') { out.add(cur.toString()); cur.setLength(0); }
+            else cur.append(c);
+        }
+        out.add(cur.toString());
+        return out.toArray(new String[0]);
     }
 
     /* ---------------- v2.7 بانک کالا (barcode → name/brand, offline) ---------------- */

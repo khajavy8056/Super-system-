@@ -163,13 +163,10 @@ def _handle_product_image(db: Session, payload: dict) -> dict | None:
         return {"skipped": "PRODUCT_GONE"}
     if p.image_url:
         return {"skipped": "ALREADY_HAS_IMAGE"}
-    rep = product_images.find_and_store(db, p)
-    if not rep.get("ok"):
-        if rep.get("reason") == "NO_CANDIDATES" and rep.get("tried", 0) == 0:
-            # most likely offline → let the backoff retry later
-            raise RuntimeError("IMAGE_LOOKUP_NO_SOURCE_REACHED")
-        return rep
-    return rep
+    # v3.5 — mirror the picture the product shipped with (the bank carries its
+    # own links); there is no web search to retry against any more, so a miss is
+    # reported honestly instead of being re-queued forever.
+    return product_images.find_and_store(db, p)
 
 
 @register("EXTERNAL_LOOKUP")

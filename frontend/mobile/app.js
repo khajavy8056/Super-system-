@@ -61,6 +61,7 @@ const ICONS = {
   minus: '<path d="M5 12h14"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  download: '<path d="M12 3v11M12 14l-4-4M12 14l4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
 };
 
 /* size: px; the stroke scales with it so icons stay crisp at any tab size. */

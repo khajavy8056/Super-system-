@@ -93,9 +93,20 @@ def test_api_endpoints(client, admin_headers, tree, tmp_path, monkeypatch):
 
 
 def test_online_lookups_are_off_in_production(monkeypatch, db_session):
+    """v3.5 — there is no web lookup to switch off any more; it is simply gone.
+
+    The ``SUPERMARKET_ONLINE_LOOKUPS`` env flag used to be the kill-switch. With
+    the picture hunt removed and ``DEFAULT_SOURCES`` empty, the honest assertions
+    are that the pipeline is unconditionally offline and that no source is
+    consulted unless a shop registers one itself.
+    """
+    from app.bootstrap import DEFAULT_SOURCES
     from app.services import product_images, resolvers
-    monkeypatch.setenv("SUPERMARKET_ONLINE_LOOKUPS", "0")
-    assert product_images.find_candidates("شیر", None, "6260000000001") == []
+    monkeypatch.setenv("SUPERMARKET_ONLINE_LOOKUPS", "1")   # even "on" changes nothing now
+
+    assert DEFAULT_SOURCES == []
+    assert product_images.online_enabled() is False
     assert product_images.backfill(db_session)["reason"] == "OFFLINE_MODE"
     r = resolvers.resolve_barcode(db_session, "6260000099999")
-    assert r["origin"] in ("none", "bank", "local", "cache") and r.get("sources", []) == [] or r["origin"] != "external"
+    assert r["origin"] != "external"
+    assert r.get("sources", []) == []

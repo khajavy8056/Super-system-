@@ -60,6 +60,11 @@ class Product(TimestampMixin, SoftDeleteMixin, Base):
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v3.5 — the default product bank ships up to three direct image links per
+    # line. `image_url` stays the primary thumbnail; `gallery` holds the rest as
+    # a JSON list so the product card can offer «تصویر بعدی» without another
+    # round trip. Nullable: a shop's own products simply have no gallery.
+    gallery: Mapped[str | None] = mapped_column(Text, nullable=True)
     min_stock_alert: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

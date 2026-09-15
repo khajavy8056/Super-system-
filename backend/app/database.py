@@ -95,6 +95,21 @@ PERF_INDEXES = (
 )
 
 
+def heal_schema() -> dict:
+    """Public self-heal: add missing model columns, then (re)create the perf indexes.
+
+    v3.5 — restoring a backup replaces the whole SQLite file with a database
+    written by an OLDER release, which by definition lacks the v3.3 performance
+    indexes (and any column added since). Nothing re-created them, so a shop that
+    restored a backup silently lost the index range scans and went back to full
+    table scans on every dashboard/report query. Any code path that swaps or
+    rebuilds the live database must call this.
+    """
+    cols = _reconcile_schema()
+    idx = _ensure_indexes()
+    return {"columns_added": cols, "indexes_ensured": idx}
+
+
 def _ensure_indexes() -> list[str]:
     import logging
 
@@ -124,6 +139,20 @@ def _reconcile_schema() -> list[str]:
 
     log = logging.getLogger("supermarket.db")
     added: list[str] = []
+    failed: list[str] = []
+    # v3.5 — drop every pooled connection before reflecting.
+    #
+    # SQLite caches the schema per connection, and a connection that still holds
+    # a read snapshot does NOT see DDL another connection just committed. That
+    # produced a nasty contradiction: reflection reported `units.allow_decimal`
+    # missing while the ALTER on a second connection failed with "duplicate
+    # column name", so the reconcile silently added nothing and the app booted
+    # against a schema it had not verified. Reflection here must agree with the
+    # connection that is about to run DDL, so both start from a fresh handle.
+    try:
+        engine.dispose()
+    except Exception:  # noqa: BLE001 — a pool that cannot be disposed is not fatal
+        log.debug("engine.dispose() before schema reflection failed", exc_info=True)
     try:
         insp = inspect(engine)
         existing_tables = set(insp.get_table_names())
@@ -136,10 +165,27 @@ def _reconcile_schema() -> list[str]:
                     if col.name in have:
                         continue
                     ddl = _add_column_ddl(conn, table.name, col)
-                    conn.execute(text(ddl))
-                    added.append(f"{table.name}.{col.name}")
+                    # v3.5 — one column per SAVEPOINT. The old code wrapped the
+                    # whole loop in a single try/except, so the first column that
+                    # failed to ALTER silently aborted the rest and the function
+                    # returned [] — the app then booted and crashed later with
+                    # "no such column". Each column is now independent and every
+                    # failure is reported by name.
+                    try:
+                        with conn.begin_nested():
+                            conn.execute(text(ddl))
+                        added.append(f"{table.name}.{col.name}")
+                    except Exception as exc:  # noqa: BLE001
+                        # "duplicate column name" means the column is in fact
+                        # there (stale reflection, or two processes reconciling
+                        # at once). That is the desired end state, not a failure.
+                        if "duplicate column name" in str(exc).lower():
+                            continue
+                        failed.append(f"{table.name}.{col.name}: {exc}")
         if added:
             log.warning("schema reconciled: added missing columns %s", ", ".join(added))
+        if failed:
+            log.error("schema reconciliation could not add: %s", "; ".join(failed))
     except Exception as exc:  # pragma: no cover - defensive
         log.error("schema reconciliation failed: %s", exc)
     return added

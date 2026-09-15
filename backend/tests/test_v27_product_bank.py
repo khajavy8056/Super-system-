@@ -47,25 +47,42 @@ def test_remember_ranking_and_validation(db_session):
 
 
 def test_resolver_uses_bank_first_and_remembers_online_hits(db_session):
-    from app.bootstrap import ensure_default_sources
-    ensure_default_sources(db_session); db_session.commit()
+    """A shop-registered source is still consulted; its hit is remembered offline.
+
+    v3.5: the bank used to be fed by the bundled Basalam provider. That provider
+    is gone, so the test registers its own ``custom_http`` source — which is
+    exactly how a shop that runs its own identification service would do it —
+    and asserts the remember-then-offline behaviour is unchanged.
+    """
+    from app.models import ExternalSource
     _clear(db_session)
     calls = []
 
+    if db_session.query(ExternalSource).filter_by(code="bank_test_src").first() is None:
+        db_session.add(ExternalSource(code="bank_test_src", name="Bank test", source_type="PRODUCT",
+                                      base_url="https://svc.test/{barcode}", priority=5, is_active=True))
+    else:
+        db_session.query(ExternalSource).filter_by(code="bank_test_src").update({"is_active": True})
+    db_session.commit()
+
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append(req.url.host)
-        if "basalam.com" in req.url.host:
-            return httpx.Response(200, json=BASALAM_HIT)
-        return httpx.Response(404)
+        return httpx.Response(200, json={"name": "خامه صبحانه پگاه 200 گرم",
+                                         "image_url": "https://svc.test/img/1.jpg"})
+
     c = httpx.Client(transport=httpx.MockTransport(handler))
-    r1 = resolvers.resolve_barcode(db_session, "6260007424016", client=c)
-    assert r1["origin"] == "external" and calls
-    row = bank.lookup(db_session, "6260007424016")
-    assert row and row["name"] == "خامه صبحانه پگاه 200 گرم" and row["source"] == "ONLINE" and row["image_url"]
-    calls.clear()
-    r2 = resolvers.resolve_barcode(db_session, "6260007424016", client=c)
-    assert r2["origin"] == "bank" and r2["merged"]["name"]["chosen"] == "خامه صبحانه پگاه 200 گرم"
-    assert r2["image_url"] and calls == []                                       # second scan: no network
+    try:
+        r1 = resolvers.resolve_barcode(db_session, "6260007424016", client=c)
+        assert r1["origin"] == "external" and calls
+        row = bank.lookup(db_session, "6260007424016")
+        assert row and row["name"] == "خامه صبحانه پگاه 200 گرم" and row["source"] == "ONLINE" and row["image_url"]
+        calls.clear()
+        r2 = resolvers.resolve_barcode(db_session, "6260007424016", client=c)
+        assert r2["origin"] == "bank" and r2["merged"]["name"]["chosen"] == "خامه صبحانه پگاه 200 گرم"
+        assert r2["image_url"] and calls == []                                   # second scan: no network
+    finally:
+        db_session.query(ExternalSource).filter_by(code="bank_test_src").update({"is_active": False})
+        db_session.commit()
 
 
 def test_product_create_teaches_bank_and_api(client, auth_headers, db_session):

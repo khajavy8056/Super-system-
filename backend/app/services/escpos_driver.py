@@ -91,11 +91,22 @@ def visual_rtl(line: str) -> str:
 
 # v2.8 — decorative characters used by the professional receipt layout that cp1256
 # cannot encode; mapped to the closest printable ASCII so the frame survives on paper.
+#
+# v3.5 BUG FIX — the Persian digits ۰-۹ (U+06F0-U+06F9) are NOT in the Windows-1256
+# table (nor are the Arabic-Indic ٠-٩, U+0660-U+0669: Python's cp1256 maps 0xB0-0xB9
+# to °±²³´µ¶·¸¹). ``receipt_text`` localises every number to Persian digits, so the
+# whole numeric half of a printed receipt — invoice number, date, quantities, prices,
+# the amount due — was going out as '?' (errors="replace"): a real 58/80 mm printer
+# printed "شمارهٔ فاکتور INV-????????-??????" and "قابل پرداخت ????? تومان".
+# On paper the digits must be legible above all, so the ESC/POS path falls back to
+# ASCII digits; the on-screen/file receipt keeps the Persian glyphs.
+_FA_TO_ASCII = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 _CP1256_FALLBACK = str.maketrans({"─": "-", "═": "=", "·": ".", "◆": "*", "×": "x", "ٔ": ""})
 
 
 def encode_line(line: str) -> bytes:
-    return visual_rtl(line).translate(_CP1256_FALLBACK).encode("cp1256", errors="replace")
+    return (visual_rtl(line).translate(_FA_TO_ASCII)
+            .translate(_CP1256_FALLBACK).encode("cp1256", errors="replace"))
 
 
 @dataclass

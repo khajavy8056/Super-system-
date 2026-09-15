@@ -69,13 +69,29 @@ def test_mobile_sync_push_is_idempotent_and_pull_returns_changes(client, auth_he
     op = {"id": op_id, "type": "POS_CHECKOUT", "payload": {
         "items": [{"product_id": milk["id"], "batch_id": two_batches["a"]["id"], "quantity": 1}],
         "payments": [{"method": "CASH", "amount": 60000}]}}
-    r = client.post("/api/mobile/sync", headers=auth_headers, json={"device_id": "dev1", "push": [op], "cursor": None})
+    r = client.post("/api/mobile/sync", headers=auth_headers,
+                    json={"device_id": "dev1", "push": [op], "cursor": None, "limit": 2000})
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["applied"][0]["status"] == "APPLIED" and b["applied"][0]["result"]["invoice_number"]
-    assert any(p["id"] == milk["id"] for p in b["pull"]["products"])
-    assert any(x["id"] == two_batches["a"]["id"] for x in b["pull"]["batches"])
-    cursor = b["cursor"]
+    # v3.5 — with the 13 570-line default bank one pull cannot carry everything,
+    # so the client must follow the cursor. Walk the pages the way a phone does
+    # and assert the catalogue really does arrive in full instead of stopping at
+    # page 1 (the old `cursor = now` reply made that impossible).
+    seen_products, seen_batches = set(), set()
+    cursor, guard = b["cursor"], 0
+    while True:
+        seen_products.update(p["id"] for p in b["pull"]["products"])
+        seen_batches.update(x["id"] for x in b["pull"]["batches"])
+        if not b.get("has_more") or guard > 60:
+            break
+        guard += 1
+        b = client.post("/api/mobile/sync", headers=auth_headers,
+                        json={"device_id": "dev1", "cursor": cursor, "pull": True,
+                              "push": [], "limit": 2000}).json()
+        cursor = b["cursor"]
+    assert milk["id"] in seen_products, f"catalogue incomplete after {guard} pages"
+    assert two_batches["a"]["id"] in seen_batches
     # replay → duplicate, nothing sold twice
     r2 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [op], "cursor": cursor, "pull": False})
     assert r2.json()["applied"][0]["status"] == "DUPLICATE"

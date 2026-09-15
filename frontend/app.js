@@ -843,17 +843,18 @@ function posBatchChooser(product, opts) {
 }
 
 async function posAddByBarcode(barcode) {
+  // v3.5 — the catalogue is local now: the bundled bank carries 13 570 products
+  // with exact GTINs, so a scan resolves straight from the database. The old
+  // "look this barcode up on the internet" step is gone; when the code is not in
+  // the bank the operator registers the product by hand instead of waiting on a
+  // network round-trip that no longer exists.
   let p;
   try {
     p = await api(`/products/barcode/${encodeURIComponent(barcode)}`);
   } catch (err) {
-    try {
-      const r = await api(`/barcode/resolve/${encodeURIComponent(barcode)}`);
-      if (r.origin === "local" && r.product) p = r.product;
-      else toast(r.message || "بارکد ناشناخته — ثبت دستی لازم است", "err");
-    } catch (e2) { toast("کالا یافت نشد", "err"); }
+    toast("بارکد ناشناخته — کالا را دستی ثبت کنید", "err");
     $("#pos-scan").focus();
-    if (!p) return;
+    return;
   }
   let options;
   try { options = await api(`/pos/batch-options/${p.id}`); } catch (e) { toast(e.message, "err"); return; }
@@ -1284,14 +1285,14 @@ RENDER.products = async () => {
     <button id="p-add" class="btn btn-primary" style="margin-top:12px">ثبت کالا</button>
   </div>
   <div class="card" style="margin-bottom:14px">
-    <h3>بانک اولیهٔ کالاها (موجودی صفر)</h3>
-    <p class="muted" id="p-starter-info">فهرست آمادهٔ کالاهای رایج سوپرمارکت (دسته/زیردسته/واحد) را می‌توانید با یک کلیک وارد کنید. همهٔ کالاها با موجودی صفر ساخته می‌شوند و موجودی فقط با رسید ورود اضافه می‌شود. اجرای دوباره، کالای تکراری نمی‌سازد.</p>
+    <h3>دریافت محصولات پیش‌فرض</h3>
+    <p class="muted" id="p-starter-info">بانک کامل کالاهای سوپرمارکت و داروخانه — با نام کامل، بارکد دقیق، دسته و زیردسته و تصویر — آمادهٔ ورود است. همهٔ کالاها با <b>موجودی صفر</b> ساخته می‌شوند و موجودی فقط با رسید ورود اضافه می‌شود؛ به این ترتیب با اسکن بارکد، کالا شناخته می‌شود و رسید ورودش را ثبت می‌کنید. اجرای دوباره، کالای تکراری نمی‌سازد.</p>
     <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-      <button id="p-starter" class="btn">ورود بانک اولیه</button>
+      <button id="p-starter" class="btn btn-primary">دریافت محصولات پیش‌فرض</button>
       <label class="btn btn-ghost file-btn">انتخاب فایل CSV<input type="file" id="p-csv" accept=".csv,text/csv" /></label>
       <span id="p-csv-name" class="muted"></span>
       <button id="p-csv-up" class="btn btn-ghost">ورود فایل CSV فروشگاه</button>
-      <a class="muted" href="${API}/products/import/starter" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode</a>
+      <a class="muted" href="${API}/products/import/default" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode, image_url, images</a>
     </div>
     <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
   </div>
@@ -1302,15 +1303,17 @@ RENDER.products = async () => {
 
   const starterOut = (r) => {
     $("#p-starter-out").textContent = r.ok === false ? (r.message || "خطا")
-      : `${r.created} کالا ایجاد شد، ${r.skipped} مورد تکراری/خالی رد شد${r.errors && r.errors.length ? `، ${r.errors.length} خطا` : ""}. ${r.stock_note || ""}`;
+      : `${r.created} کالا ایجاد شد، ${r.skipped} مورد از قبل موجود بود، ${r.categories} دسته و ${r.subcategories} زیردسته، ${r.with_image} کالا با تصویر${r.errors && r.errors.length ? `، ${r.errors.length} خطا` : ""}. ${r.stock_note || ""}`;
   };
-  api("/products/import/starter").then((i) => {
-    $("#p-starter-info").textContent += ` (${i.products} کالا در ${i.categories} دسته و ${i.subcategories} زیردسته)`;
+  api("/products/import/default").then((i) => {
+    $("#p-starter-info").textContent += ` (بانک آماده: ${i.products} کالا در ${i.categories} دسته و ${i.subcategories} زیردسته، ${i.with_image} کالا با تصویر)`;
   }).catch(() => {});
   $("#p-starter").addEventListener("click", async () => {
-    if (!confirm("بانک اولیهٔ کالاها با موجودی صفر وارد شود؟")) return;
-    try { starterOut(await api("/products/import/starter", { method: "POST" })); toast("بانک اولیه وارد شد"); RENDER.products(); }
+    if (!confirm("محصولات پیش‌فرض با موجودی صفر وارد شود؟")) return;
+    $("#p-starter").disabled = true; $("#p-starter").textContent = "در حال ورود…";
+    try { starterOut(await api("/products/import/default", { method: "POST" })); toast("محصولات پیش‌فرض وارد شد"); RENDER.products(); }
     catch (e) { toast(e.message, "err"); }
+    finally { $("#p-starter").disabled = false; $("#p-starter").textContent = "دریافت محصولات پیش‌فرض"; }
   });
   $("#p-csv").addEventListener("change", () => { $("#p-csv-name").textContent = ($("#p-csv").files[0] || {}).name || ""; });
   $("#p-csv-up").addEventListener("click", async () => {
@@ -1522,11 +1525,11 @@ window.pickProductImage = async function pickProductImage(productId, after) {
     if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "تصویری در بانک محصولات برای این کالا نیست — از پوشهٔ بانک محصولات وارد کنید یا عکس خودتان را بارگذاری کنید. به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
     const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
     for (const x of c.candidates) {
-      const src = x.source.startsWith("retail:") ? "جست‌وجوی آنلاین" : (x.source === "bank" ? "بانک کالا" : "جست‌وجوی تصویر");
+      const src = x.source === "bank" ? "گالری بانک کالا" : "تصویر ثبت‌شده";
       const card = el("div", { class: "card", style: "padding:6px;cursor:pointer;text-align:center", title: x.title },
         el("img", { src: x.url, alt: "", style: "width:100%;height:120px;object-fit:contain;background:#fff;border-radius:6px", loading: "lazy", referrerpolicy: "no-referrer" }),
         el("div", { class: "muted", style: "font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", text: x.title || "—" }),
-        el("div", { class: "badge " + (x.source.startsWith("retail:") ? "badge-green" : "badge-gray"), text: src }));
+        el("div", { class: "badge " + (x.source === "bank" ? "badge-green" : "badge-gray"), text: src }));
       card.addEventListener("click", async () => { card.style.opacity = ".5"; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: x.url, source: x.source }) })); } catch (e) { card.style.opacity = "1"; toast("دریافت این تصویر ناموفق بود؛ گزینهٔ دیگری را انتخاب کنید", "err"); } });
       card.addEventListener("error", () => card.remove(), true);
       grid.append(card);

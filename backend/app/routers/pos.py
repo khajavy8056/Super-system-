@@ -326,12 +326,25 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
                   | (Product.sku.ilike(like)) | (Product.model.ilike(like)))
     if brand_ids:
         conditions = conditions | (Product.brand_id.in_(brand_ids))
+    # v3.5 — the default catalogue made a typed search return hundreds of rows the
+    # shop does not stock, burying the ones it does. Order the partial matches by
+    # "can I actually sell this right now", then alphabetically inside each group.
+    # An exact barcode/SKU hit still wins outright, so scanning stays instant.
+    stock = (
+        select(ProductBatch.product_id,
+               _f.coalesce(_f.sum(ProductBatch.current_qty), 0).label("qty"))
+        .where(ProductBatch.current_qty > 0, ProductBatch.status == "ACTIVE")
+        .group_by(ProductBatch.product_id)
+        .subquery()
+    )
+    available = _f.coalesce(stock.c.qty, 0)
     partial = db.execute(
         select(Product).where(
             Product.deleted_at.is_(None),
             Product.is_active.is_(True),
             conditions,
-        ).order_by(Product.name.asc()).limit(limit)
+        ).outerjoin(stock, Product.id == stock.c.product_id)
+        .order_by((available > 0).desc(), Product.name.asc()).limit(limit)
     ).scalars().all()
 
     seen: set[int] = set()

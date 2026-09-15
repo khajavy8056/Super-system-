@@ -125,11 +125,19 @@ def resolve_barcode(db: Session, barcode: str, *, client: httpx.Client | None = 
                              "fields": {k: v["chosen"] for k, v in merged_b.items()}, "image_url": bank.get("image_url")}],
                 "message": None}
 
-    # 3) external providers (multi-source) — v3.4: OFF unless SUPERMARKET_ONLINE_LOOKUPS=1 (tests).
-    # The shop's own catalogue (Settings → بانک محصولات) is the identification source; unknown codes are typed once.
-    from .product_images import online_enabled
+    # 3) external providers — v3.5: EMPTY BY DEFAULT.
+    #
+    # Earlier releases registered Basalam/Torob and OpenFoodFacts on first boot,
+    # so an unknown GTIN was identified by scraping third-party storefronts. That
+    # is gone: the default product bank ships 13 570 real supermarket lines with
+    # their exact codes, so a scan that is not local, not cached and not in the
+    # bank is genuinely unknown and is typed once.
+    #
+    # The multi-source plumbing stays for a shop that runs its OWN identification
+    # service (Settings → منابع خارجی → ``custom_http``). Nothing is contacted
+    # unless the operator registers and enables a source.
     outcomes: list[SourceOutcome] = []
-    sources = _active_sources(db, "PRODUCT") if online_enabled() else []
+    sources = _active_sources(db, "PRODUCT")
     for source in sources:
         provider = _instantiate(source)
         try:
@@ -138,6 +146,13 @@ def resolve_barcode(db: Session, barcode: str, *, client: httpx.Client | None = 
         except ProviderError as exc:
             outcomes.append(SourceOutcome(source.code, provider.code, False,
                                           error_kind=exc.kind, error_detail=exc.detail))
+
+    if not sources:
+        return {
+            "origin": "none", "barcode": barcode, "format": fmt, "need_manual": True,
+            "review_id": None, "merged": {}, "sources": [],
+            "message": "این بارکد در بانک کالا نیست؛ نام کالا را یک بار ثبت کنید تا ذخیره شود.",
+        }
 
     # 4-6) normalize + merge + confidence
     merged = _merge(outcomes)

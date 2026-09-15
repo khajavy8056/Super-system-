@@ -51,8 +51,9 @@ a = Analysis(
         # app's own modules are found by static analysis (no dynamic imports);
         # listed explicitly anyway so a missing file fails the build loudly:
         "app.main", "app.database", "app.bootstrap",
-        "app.services.providers", "app.services.providers.openfoodfacts",
-        "app.services.providers.custom_http",
+        # v3.5 — the bundled online image/retail providers were removed: the
+        # default catalogue ships the pictures, so only custom_http remains.
+        "app.services.providers", "app.services.providers.custom_http",
         # CRITICAL (found by the cx_Freeze frozen boot test): SQLAlchemy loads
         # the sqlite dialect via entry points -> frozen apps miss it without this
         "sqlalchemy.dialects.sqlite",

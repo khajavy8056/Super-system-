@@ -28,7 +28,12 @@ def test_notifications_and_sounds_exist():
     for k in ('"success"', '"add"', '"error"', '"void"', '"hold"', '"resume"', '"welcome"', "AudioTrack"):
         assert k in sfx, k
     sales = (JAVA / "SalesScreens.java").read_text(encoding="utf-8")
-    assert 'Sfx.play("success")' in sales and 'Sfx.play("void")' in sales and 'Sfx.play("hold")' in sales
+    # v3.5: the success beep is emitted by Ui.done() (which SalesScreens calls on a
+    # confirmed sale) so it is played exactly once; a FAILED sale beeps "error" at
+    # the counter. Assert the real wiring instead of a literal string in one file.
+    assert 'Sfx.play("void")' in sales and 'Sfx.play("hold")' in sales and 'Sfx.play("error")' in sales
+    assert 'Ui.done(a, "فروش ثبت شد"' in sales
+    assert 'Sfx.play("success")' in (JAVA / "Ui.java").read_text(encoding="utf-8")
     screens = (JAVA / "Screens.java").read_text(encoding="utf-8")
     assert 'case "notifications":' in screens
 

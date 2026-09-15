@@ -212,29 +212,36 @@ def test_known_barcode_short_circuits_to_the_local_product(client, H, monkeypatc
 # ---------------------------------------------------------------------------
 # First-boot wiring — the actual root cause of "scanning does nothing"
 # ---------------------------------------------------------------------------
-def test_bootstrap_registers_openfoodfacts_by_default():
-    """A fresh install must ship with a working, openly-licensed source."""
-    from app.bootstrap import DEFAULT_SOURCES, ensure_default_sources
+def test_bootstrap_registers_no_online_sources_by_default():
+    """v3.5 — a fresh install ships with NO external lookup source.
 
-    codes = {s["code"] for s in DEFAULT_SOURCES}
-    assert "openfoodfacts" in codes
-    assert any(s["source_type"] == "IMAGE" for s in DEFAULT_SOURCES)
-    # licensing rule: nothing keyed/commercial is shipped enabled
+    It used to register OpenFoodFacts (and, from v2.6, Basalam/Torob) so an
+    unknown GTIN could be identified by scraping the web. The default product
+    bank now carries 13 570 real lines with their exact codes, so nothing is
+    contacted at the till. A shop that runs its own identification service can
+    still register one under Settings → منابع خارجی.
+    """
+    from app.bootstrap import DEFAULT_SOURCES, LEGACY_ONLINE_SOURCES, ensure_default_sources
+
+    assert DEFAULT_SOURCES == [], "no web source may be registered on first boot"
+    # licensing rule kept from the original test: nothing keyed/commercial is shipped
     for s in DEFAULT_SOURCES:
         assert "holoo" not in s["code"].lower()
         assert s["base_url"].startswith("https://")
+    assert "openfoodfacts" in LEGACY_ONLINE_SOURCES and "retail_ir" in LEGACY_ONLINE_SOURCES
 
     db = SessionLocal()
     try:
         ensure_default_sources(db)
         db.commit()
-        got = {s.code for s in db.execute(select(ExternalSource)).scalars()}
-        assert "openfoodfacts" in got
+        active = {s.code for s in db.execute(
+            select(ExternalSource).where(ExternalSource.is_active.is_(True))).scalars()}
+        assert not (active & set(LEGACY_ONLINE_SOURCES)), active
         # idempotent
         ensure_default_sources(db)
         db.commit()
         again = [s for s in db.execute(select(ExternalSource)).scalars()
                  if s.code == "openfoodfacts"]
-        assert len(again) == 1
+        assert len(again) <= 1
     finally:
         db.close()

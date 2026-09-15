@@ -202,8 +202,9 @@ public final class SalesScreens {
                 smsPhone = null;
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
                 cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart();
+                // Ui.done() plays Sfx "success" itself — one beep, not two.
                 Ui.done(a, "فروش ثبت شد", "فاکتور " + Ui.fa(no) + " · " + Ui.money(total), null);
-            } catch (Exception e) { Ui.toast("خطا: " + e.getMessage()); }
+            } catch (Exception e) { Sfx.play("error"); Ui.toast("خطا: " + e.getMessage()); }   // v3.5: a FAILED sale must be audible at the counter, not just a silent toast
         }
     }
 

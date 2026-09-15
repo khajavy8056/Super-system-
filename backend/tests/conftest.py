@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,20 @@ def auth_headers(client):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+def _days_from_now(days: int) -> str:
+    """ISO date ``days`` from today — fixtures must never hard-code a calendar date."""
+    return (date.today() + timedelta(days=days)).isoformat()
+
+
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def fa_digits(text: str) -> str:
+    """``receipt_text`` localises numbers to Persian digits (v2.8 layout), so a test
+    that looks for an invoice number inside a receipt must look for THIS form."""
+    return str(text).translate(_FA_DIGITS)
+
+
 _barcode_counter = 0
 
 
@@ -49,12 +64,19 @@ def milk(client, auth_headers):
 
 @pytest.fixture()
 def two_batches(client, auth_headers, milk):
-    """Batch A: buy 50000/sell 60000 qty 10; Batch B: buy 55000/sell 65000 qty 20."""
+    """Batch A: buy 50000/sell 60000 qty 10; Batch B: buy 55000/sell 65000 qty 20.
+
+    Expiry dates are RELATIVE to today. They used to be hard-coded
+    ("2026-09-10" / "2026-09-20"), which silently turned into a time bomb: once
+    the calendar passed 2026-09-10 batch A became an EXPIRED batch, every
+    checkout against it returned BATCH_EXPIRED and 16 tests started failing for
+    a reason that had nothing to do with the code under test.
+    """
     r1 = client.post("/api/batches/receive", headers=auth_headers, json={
         "product_id": milk["id"], "quantity_received": 10, "buy_price": 50000,
-        "sell_price": 60000, "expiry_date": "2026-09-10"})
+        "sell_price": 60000, "expiry_date": _days_from_now(30)})
     r2 = client.post("/api/batches/receive", headers=auth_headers, json={
         "product_id": milk["id"], "quantity_received": 20, "buy_price": 55000,
-        "sell_price": 65000, "expiry_date": "2026-09-20"})
+        "sell_price": 65000, "expiry_date": _days_from_now(60)})
     assert r1.status_code == 201 and r2.status_code == 201
     return {"a": r1.json(), "b": r2.json()}

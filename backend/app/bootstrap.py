@@ -201,47 +201,34 @@ def bootstrap(db: Session) -> None:
     db.commit()
 
 
-#: Sources registered on first boot. Only openly-licensed, keyless services.
-DEFAULT_SOURCES: list[dict] = [
-    {
-        # v2.6 — Iranian GTINs (626…) are almost never in OpenFoodFacts; Basalam
-        # listings carry the barcode in their title, so this answers first and
-        # only when the digits literally match (see providers/retail_ir.py).
-        "code": "retail_ir",
-        "name": "شناسایی آنلاین کالاهای ایرانی — بارکد در عنوان",
-        "source_type": "PRODUCT",
-        "priority": 5,
-        "base_url": "https://search.basalam.com/ai-engine/api/v2.0/product/search?q={barcode}",
-        "connection": '{"basalam": true, "torob": false}',
-        "is_active": True,
-    },
-    {
-        "code": "openfoodfacts",
-        "name": "OpenFoodFacts (ODbL, public, keyless)",
-        "source_type": "PRODUCT",
-        "priority": 10,
-        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
-        "is_active": True,
-    },
-    {
-        # Same upstream, registered separately so the IMAGE pipeline has a
-        # source of its own and can be disabled independently of name/brand
-        # lookups (a shop may want text but not pictures, or vice versa).
-        "code": "openfoodfacts_img",
-        "name": "OpenFoodFacts Images (ODbL)",
-        "source_type": "IMAGE",
-        "priority": 10,
-        "base_url": "https://world.openfoodfacts.org/api/v2/product/{barcode}.json",
-        "is_active": True,
-    },
-]
+#: Sources registered on first boot.
+#:
+#: v3.5 — EMPTY ON PURPOSE. The app used to register Basalam/Torob (Iranian
+#: listings) and OpenFoodFacts here so an unknown barcode could be identified by
+#: scraping the web, and the picture pipeline went off to OpenFoodFacts /
+#: Wikimedia / DuckDuckGo to find a photo by name. Both are gone:
+#:
+#:   * the default product bank now ships 13 570 real supermarket lines with
+#:     their exact GTIN and up to three direct picture links, so a scan resolves
+#:     locally and instantly — there is nothing left to look up;
+#:   * scraping third-party storefronts is fragile (they change, they rate-limit,
+#:     they block), slow, and needs the shop to be online at the counter.
+#:
+#: A shop that runs its OWN identification service can still register it under
+#: Settings → منابع خارجی (the generic ``custom_http`` provider is unchanged).
+DEFAULT_SOURCES: list[dict] = []
+
+#: v3.5 — codes that earlier releases registered by default. On upgrade they are
+#: switched off (never deleted: resolver results / market prices reference them
+#: through a foreign key), so an existing shop stops calling those sites the
+#: moment it updates.
+LEGACY_ONLINE_SOURCES: tuple[str, ...] = ("retail_ir", "openfoodfacts", "openfoodfacts_img")
 
 
 def ensure_default_sources(db: Session) -> None:
-    """Register the built-in resolver sources (idempotent).
+    """Register the built-in resolver sources (idempotent) and retire the legacy ones.
 
-    Existing rows are never modified: if an operator disabled or re-pointed a
-    source, that decision must survive a restart.
+    Rows an operator created or re-pointed are never touched.
     """
     from .models import ExternalSource
 
@@ -250,6 +237,13 @@ def ensure_default_sources(db: Session) -> None:
         if spec["code"] in existing:
             continue
         db.add(ExternalSource(**spec))
+    # v3.5: the bundled web-scraping sources are retired on upgrade.
+    legacy = db.execute(
+        select(ExternalSource).where(ExternalSource.code.in_(LEGACY_ONLINE_SOURCES),
+                                     ExternalSource.is_active.is_(True))
+    ).scalars().all()
+    for src in legacy:
+        src.is_active = False
     db.flush()
 
 

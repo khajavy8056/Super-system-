@@ -157,9 +157,13 @@ def test_android_v21_wizard_datepicker_name_and_support():
     # LAN re-discovery on the phone uses the same protocol as the PC beacon
     disc = (JAVA / "Discovery.java").read_text(encoding="utf-8")
     assert "SMKT-FIND" in disc and "SMKT-HERE" in disc and "48765" in disc
-    # starter catalogue bundled for the standalone wizard
-    assert (ANDROID / "assets" / "starter_catalog.csv").exists()
-    assert "starter_catalog.csv" in (ROOT / "scripts" / "android" / "build-apk.sh").read_text(encoding="utf-8")
+    # v3.5 — the bundled catalogue for the standalone wizard is now the full
+    # default bank (13 570 products), and the old 191-line placeholder is gone.
+    catalog = ANDROID / "assets" / "default_catalog.csv"
+    assert catalog.exists()
+    assert catalog.stat().st_size > 1_000_000, "the bundled catalogue looks truncated"
+    assert not (ANDROID / "assets" / "starter_catalog.csv").exists()
+    assert "default_catalog.csv" in (ROOT / "scripts" / "android" / "build-apk.sh").read_text(encoding="utf-8")
     # in-app Drive fallback for the phone
     assert "appDataFolder" in (JAVA / "CloudSync.java").read_text(encoding="utf-8")
 

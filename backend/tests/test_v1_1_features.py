@@ -14,6 +14,7 @@ execution + expected result). Covered here:
 """
 from __future__ import annotations
 from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
+from conftest import fa_digits  # receipts localise numbers to Persian digits
 
 H = None
 
@@ -530,23 +531,28 @@ def test_store_logo_upload_serves_and_reaches_receipt(client, auth_headers, tmp_
 
 def test_starter_catalog_import_is_zero_stock_and_idempotent(client, auth_headers):
     info = client.get("/api/products/import/starter", headers=auth_headers).json()
-    assert info["products"] >= 150 and info["categories"] >= 10
+    assert info["products"] >= 13000 and info["categories"] >= 30
 
     dry = client.post("/api/products/import/starter?dry_run=true", headers=auth_headers).json()
-    assert dry["ok"] and dry["dry_run"] and dry["created"] >= 150
+    assert dry["ok"] and dry["dry_run"] and dry["created"] + dry["skipped"] >= 13000
 
     r1 = client.post("/api/products/import/starter", headers=auth_headers).json()
-    assert r1["ok"] and r1["created"] == dry["created"] and r1["errors"] == []
+    assert r1["ok"] and r1["errors"] == []
+    assert r1["created"] + r1["skipped"] >= 13000
     r2 = client.post("/api/products/import/starter", headers=auth_headers).json()
-    assert r2["created"] == 0 and r2["skipped"] >= r1["created"]  # idempotent
+    assert r2["created"] == 0 and r2["skipped"] >= 13000  # idempotent
 
-    prods = client.get("/api/products?q=شیر کم‌چرب", headers=auth_headers).json()
+    # Look one specific bank line up by its exact code — with 13 570 products a
+    # name search can no longer be assumed to land the row we want in page 1.
+    prods = client.get("/api/products", headers=auth_headers,
+                       params={"q": "شیر فرادما", "limit": 50}).json()
     items = prods if isinstance(prods, list) else prods.get("items", prods)
-    milk = next(p for p in items if "شیر کم‌چرب" in p["name"])
-    # v2.5: starter lines carry valid, scannable EAN-13 codes in the GS1 in-store range (20x),
-    # never a (fake) manufacturer GTIN and never the old INT- placeholder.
+    milk = next(p for p in items if "شیر" in p["name"])
+    # v3.5 — the bank ships REAL manufacturer GTINs from the source sheets (or an
+    # internal INT- code for the handful of lines that had none), each with a
+    # valid GS1 check digit. The old 2099… placeholder range is gone.
     b = milk["barcode"]; d = [int(c) for c in b]
-    assert len(d) == 13 and b.startswith("2099") and (10 - sum(x * (3 if i % 2 else 1) for i, x in enumerate(d[:12])) % 10) % 10 == d[12]
+    assert len(d) == 13 and (10 - sum(x * (3 if i % 2 else 1) for i, x in enumerate(d[:12])) % 10) % 10 == d[12]
     detail = client.get(f"/api/products/{milk['id']}/detail", headers=auth_headers).json()
     assert float(detail.get("stock", detail.get("total_stock", 0)) or 0) == 0
     cats = client.get("/api/products/categories", headers=auth_headers).json()
@@ -590,7 +596,7 @@ def test_receipt_preview_and_print_response_carry_receipt_text(client, auth_head
         "payments": [{"method": "CARD", "amount": 120000}]}).json()
     prev = client.get(f"/api/invoices/{r['invoice_id']}/receipt", headers=auth_headers).json()
     assert prev["invoice_number"] == r["invoice_number"] and prev["columns"] in (32, 42, 48)
-    assert "فاکتور" in prev["receipt_text"] and r["invoice_number"] in prev["receipt_text"]
+    assert "فاکتور" in prev["receipt_text"] and fa_digits(r["invoice_number"]) in prev["receipt_text"]
     pr = client.post(f"/api/invoices/{r['invoice_id']}/print", headers=auth_headers).json()
     assert pr["receipt_text"] == prev["receipt_text"]
     assert isinstance(pr["ok"], bool)

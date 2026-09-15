@@ -80,15 +80,22 @@ def clean_sources():
     from app.database import init_db
     init_db()  # tables exist even when this module runs first
     s = SessionLocal()
+    # v3.5 BUG FIX: remember the flags we are about to flip. Deactivating every
+    # source and never putting them back leaked into later modules — the shared
+    # session database meant test_v26/test_v27 found `retail_ir` disabled and
+    # asserted `'none' == 'external'` for a reason that had nothing to do with
+    # the code under test.
+    before = {src.id: src.is_active for src in s.execute(select(ExternalSource)).scalars()}
     for src in s.execute(select(ExternalSource)).scalars():
         src.is_active = False
     s.commit()
     s.close()
     yield
-    # deactivate (not delete): results/prices reference sources via FK
+    # restore exactly what we found (deactivate, never delete: results/prices
+    # reference sources via FK)
     s = SessionLocal()
     for src in s.execute(select(ExternalSource)).scalars():
-        src.is_active = False
+        src.is_active = before.get(src.id, True)
     s.commit()
     s.close()
 

@@ -209,7 +209,10 @@ def complete(body: SetupIn, db: Session = Depends(get_db)):
 
     starter = None
     if body.import_starter_catalog and _get(db, SETUP_KEYS["starter"]) != "1":
-        from ..services.starter_catalog import import_csv
+        # v3.5 — this is now the full 13 570-line default bank (name + GTIN +
+        # pictures), imported with zero stock. Idempotent, so a wizard that is
+        # re-run cannot duplicate it.
+        from ..services.default_catalog import import_csv
         starter = import_csv(db)
         _set(db, SETUP_KEYS["starter"], "1")
 

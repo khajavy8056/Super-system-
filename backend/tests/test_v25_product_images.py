@@ -1,63 +1,51 @@
-"""v2.5 — automatic product pictures by name.
+"""v2.5 → v3.5 — product pictures.
 
-External HTTP goes through httpx.MockTransport (deterministic, offline).
-The «رب گوجه‌فرنگی» case guards relevance: a tomato *plant* photo must lose to
-the tomato-paste can even though both mention «tomato».
+v2.5 introduced *automatic pictures by name*: the system searched OpenFoodFacts,
+Wikimedia Commons, Wikipedia and DuckDuckGo (and from v2.5.1 the Iranian retail
+catalogues) for a photo matching the product name. **All of that was removed in
+v3.5** — the default product bank now ships its own pictures for 13 537 of its
+13 570 lines, and a guessed photo is worse than none because the cashier then
+sells the wrong pack.
+
+What this module still guards:
+
+* the picture an operator uploads / pastes is validated byte-by-byte and stored
+  LOCALLY under ``MEDIA_DIR/products`` (§21 — ``image_url`` is never a hot link);
+* the bank's own links can be mirrored locally, so an offline shop keeps its
+  thumbnails;
+* the API surface (status / backfill / candidates / pick / upload) keeps working
+  and reports honestly that there is no web lookup any more.
 """
 from __future__ import annotations
 
-import io
 import struct
 import zlib
 
-import httpx
 import pytest
 from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import Product, SyncJob
 from app.services import product_images as pi
+from app.services import resolvers
 from app.services import sync as sync_svc
 
 
 def _png(w=200, h=200, color=(200, 30, 30)) -> bytes:
     import random
     rnd = random.Random(sum(color))
-    raw = b"".join(b"\x00" + bytes(min(255, max(0, ch + rnd.randint(-40, 40))) for _ in range(w) for ch in color) for _ in range(h))
-    def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    raw = b"".join(b"\x00" + bytes(min(255, max(0, ch + rnd.randint(-40, 40)))
+                                   for _ in range(w) for ch in color) for _ in range(h))
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-PASTE_PNG, PLANT_PNG, MILK_PNG = _png(), _png(color=(30, 160, 30)), _png(color=(240, 240, 240))
-
-
-def handler(req: httpx.Request) -> httpx.Response:
-    u, q = str(req.url), dict(req.url.params)
-    if "openfoodfacts.org/api/v2/product/6260100108219" in u:
-        return httpx.Response(200, json={"status": 1, "product": {"product_name": "شیر پرچرب میهن ۱ لیتری", "image_front_url": "https://img.test/milk.png"}})
-    if "openfoodfacts.org/api/v2/product/" in u:
-        return httpx.Response(200, json={"status": 0})
-    if "openfoodfacts.org/cgi/search.pl" in u:
-        if "رب" in q.get("search_terms", "") or "tomato paste" in q.get("search_terms", ""):
-            return httpx.Response(200, json={"products": [
-                {"product_name": "Tomato plant seedling", "image_front_url": "https://img.test/plant.png"},
-                {"product_name_fa": "رب گوجه فرنگی چین چین", "product_name": "Tomato paste", "brands": "Chin Chin", "image_front_url": "https://img.test/paste.png"},
-            ]})
-        return httpx.Response(200, json={"products": []})
-    if "commons.wikimedia.org" in u or "wikipedia.org" in u:
-        return httpx.Response(200, json={"query": {"pages": {}}})
-    if "duckduckgo.com" in u:
-        return httpx.Response(200, text="<html>vqd=3-123</html>") if u.endswith("images") or "i.js" not in u else httpx.Response(200, json={"results": []})
-    if u.endswith("paste.png"): return httpx.Response(200, content=PASTE_PNG, headers={"content-type": "image/png"})
-    if u.endswith("plant.png"): return httpx.Response(200, content=PLANT_PNG, headers={"content-type": "image/png"})
-    if u.endswith("milk.png"): return httpx.Response(200, content=MILK_PNG, headers={"content-type": "image/png"})
-    return httpx.Response(404)
-
-
-@pytest.fixture()
-def client():
-    with httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True) as c:
-        yield c
+MILK_PNG = _png(color=(240, 240, 240))
+NOT_AN_IMAGE = b"<html>not an image" + b"x" * 2048 + b"</html>"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -70,195 +58,153 @@ def _app():
 
 @pytest.fixture()
 def db():
-    s = SessionLocal(); yield s; s.close()
+    s = SessionLocal()
+    yield s
+    s.close()
 
 
-def _product(db, name, barcode=None):
-    p = db.execute(select(Product).where(Product.name == name)).scalar_one_or_none()
+def _auth(tc):
+    tok = tc.post("/api/auth/login", data={"username": "admin", "password": "admin123"}).json()["access_token"]
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def _product(db, name, barcode=None, gallery=None):
+    # Product names are NOT unique — two lines can share a name under different
+    # barcodes — so take the first match instead of demanding exactly one.
+    p = db.execute(select(Product).where(Product.name == name)
+                   .order_by(Product.id).limit(1)).scalar_one_or_none()
     if p is None:
-        import hashlib, uuid
+        import hashlib
+        import uuid
         bc = barcode or ("INT-T" + hashlib.md5(name.encode()).hexdigest()[:8] + uuid.uuid4().hex[:4])
-        p = Product(name=name, barcode=bc, is_active=True, has_own_barcode=bool(barcode)); db.add(p); db.flush()
+        p = Product(name=name, barcode=bc, is_active=True, has_own_barcode=bool(barcode))
+        db.add(p)
+        db.flush()
     p.image_url = None
+    if gallery is not None:
+        p.gallery = gallery
     return p
 
 
-def test_01_query_building():
-    assert "tomato paste" in pi.english_query("رب گوجه‌فرنگی ۸۰۰ گرمی", "چین‌چین")
-    assert pi.persian_query("شیر پرچرب ۱ لیتری", "میهن").startswith("شیر پرچرب")
-    assert "لیتری" not in pi.persian_query("شیر پرچرب ۱ لیتری", None)
+# ------------------------------------------------------------- no web, ever
+def test_the_web_picture_hunt_is_gone():
+    assert pi.online_enabled() is False
+    for gone in ("find_candidates", "src_duckduckgo", "src_commons", "src_wikipedia",
+                 "src_off_search", "src_retail_ir", "parse_retail", "score_title"):
+        assert not hasattr(pi, gone), f"{gone} should have been removed with the web ladder"
 
 
-def test_02_relevance_paste_beats_plant():
-    name = "رب گوجه‌فرنگی"
-    assert pi.score_title("رب گوجه فرنگی چین چین Tomato paste", name, None) > pi.score_title("Tomato plant seedling", name, None)
-
-
-def test_03_rob_gets_paste_not_plant(db, client):
-    p = _product(db, "رب گوجه‌فرنگی ۸۰۰ گرمی")
-    rep = pi.find_and_store(db, p, client=client, force=True)
-    assert rep["ok"], rep
-    assert rep["url"].endswith("paste.png"), rep
-    assert p.image_url and p.image_url.startswith("/media/products/")
+def test_a_product_with_no_shipped_picture_stays_pictureless(db):
+    p = _product(db, "کالای بدون تصویر تست")
+    rep = pi.find_and_store(db, p)
+    assert rep == {"ok": False, "reason": "NO_REMOTE_IMAGE", "tried": 0}
+    assert p.image_url is None
     db.rollback()
 
 
-def test_04_barcode_exact_hit_first(db, client):
-    p = _product(db, "شیر پرچرب ۱ لیتری میهن", barcode="6260100108219")
-    rep = pi.find_and_store(db, p, client=client, force=True)
-    assert rep["ok"] and rep["source"] == "openfoodfacts:barcode" and rep["url"].endswith("milk.png")
+def test_backfill_reports_offline_instead_of_queueing_noop_jobs(db):
+    assert pi.backfill(db) == {"queued": 0, "reason": "OFFLINE_MODE"}
+
+
+# ------------------------------------------------------- mirroring the bank
+def test_mirror_remote_stores_locally_and_never_hot_links(db, monkeypatch):
+    monkeypatch.setattr(resolvers, "_fetch_image",
+                        lambda url, client=None: ({"ok": True, "format": "PNG",
+                                                   "width": 200, "height": 200}, MILK_PNG))
+    p = _product(db, "شیر پرچرب ۱ لیتری آینه", gallery='["https://img.test/a.png", "https://img.test/b.png"]')
+    rep = pi.mirror_remote(db, p)
+    assert rep["ok"] is True and rep["reason"] == "STORED", rep
+    assert p.image_url.startswith("/media/products/"), p.image_url
+    # a second call is a no-op — the picture is already local
+    again = pi.mirror_remote(db, p)
+    assert again["reason"] == "ALREADY_LOCAL"
     db.rollback()
 
 
-def test_05_no_candidates_reports_honestly(db, client):
-    p = _product(db, "کالای کاملاً ناشناخته زیدبیس")
-    rep = pi.find_and_store(db, p, client=client, force=True)
-    assert rep["ok"] is False and rep["reason"] in ("NO_CANDIDATES", "NO_VALID_IMAGE")
+def test_mirror_falls_back_to_the_next_link_when_one_fails(db, monkeypatch):
+    calls = []
+
+    def fake(url, client=None):
+        calls.append(url)
+        if url.endswith("a.png"):
+            return {"ok": False, "reason": "FETCH_FAILED"}, b""
+        return {"ok": True, "format": "PNG", "width": 200, "height": 200}, MILK_PNG
+
+    monkeypatch.setattr(resolvers, "_fetch_image", fake)
+    p = _product(db, "شیر کم‌چرب آینه دوم", gallery='["https://img.test/a.png", "https://img.test/b.png"]')
+    rep = pi.mirror_remote(db, p)
+    assert rep["ok"] is True and calls == ["https://img.test/a.png", "https://img.test/b.png"], (rep, calls)
     db.rollback()
 
 
-def test_06_enqueue_is_idempotent_and_handler_registered(db):
-    p = _product(db, "ماست کم‌چرب ۹۰۰ گرمی")
-    db.flush()
-    for j in db.execute(select(SyncJob).where(SyncJob.idempotency_key == f"product-image:{p.id}")).scalars().all():
-        db.delete(j)
-    db.flush()
-    pi.enqueue(db, p.id); pi.enqueue(db, p.id)
-    jobs = db.execute(select(SyncJob).where(SyncJob.idempotency_key == f"product-image:{p.id}")).scalars().all()
-    assert len(jobs) == 1 and jobs[0].job_type == "PRODUCT_IMAGE"
+def test_mirror_reports_failure_honestly_when_every_link_is_dead(db, monkeypatch):
+    monkeypatch.setattr(resolvers, "_fetch_image", lambda url, client=None: ({"ok": False, "reason": "FETCH_FAILED"}, b""))
+    p = _product(db, "شیر شکست آینه", gallery='["https://img.test/a.png"]')
+    rep = pi.mirror_remote(db, p)
+    assert rep == {"ok": False, "reason": "FETCH_FAILED", "tried": 1}
+    assert p.image_url is None, "a failed download must not leave a half-set image"
+    db.rollback()
+
+
+# ------------------------------------------------------------ upload / pick
+def test_upload_validates_bytes_and_stores_locally(db):
+    p = _product(db, "پنیر سفید ۴۰۰ گرمی آپلود")
+    ok = pi.set_image_from_bytes(db, p, MILK_PNG, source="upload")
+    assert ok["ok"] is True and ok["image_url"].startswith("/media/products/")
+    bad = pi.set_image_from_bytes(db, _product(db, "پنیر سفید آپلود بد"), NOT_AN_IMAGE, source="upload")
+    assert bad == {"ok": False, "reason": "INVALID_IMAGE"}
+    db.rollback()
+
+
+def test_pick_a_url_downloads_and_stores(db, monkeypatch):
+    monkeypatch.setattr(resolvers, "_fetch_image",
+                        lambda url, client=None: ({"ok": True, "format": "PNG",
+                                                   "width": 200, "height": 200}, MILK_PNG))
+    p = _product(db, "ماست پرچرب انتخابی")
+    rep = pi.set_image_from_url(db, p, "https://img.test/picked.png", source="picked")
+    assert rep["ok"] is True and rep["source"] == "picked"
+    db.rollback()
+
+
+def test_candidates_are_the_shipped_pictures_only(db):
+    p = _product(db, "کره ۵۰ گرمی گالری", gallery='["https://img.test/1.png", "https://img.test/2.png"]')
+    cands = pi.list_candidates(db, p)
+    assert [c["url"] for c in cands] == ["https://img.test/1.png", "https://img.test/2.png"]
+    assert all(c["source"] == "bank" for c in cands)
+    assert pi.list_candidates(db, _product(db, "کره بدون گالری")) == []
+    db.rollback()
+
+
+# ------------------------------------------------------------------- the API
+def test_api_endpoints(_app):
+    tc = _app
+    H = _auth(tc)
+    st = tc.get("/api/products/images/status", headers=H).json()
+    assert {"total", "missing", "jobs", "auto_find"} <= set(st)
+    # v3.5 — the panel must not advertise a web lookup that no longer exists
+    assert st["web_fallback"] is False and st["web_lookup"] is False
+
+    r = tc.post("/api/products", json={"name": "پنیر سفید ۴۰۰ گرمی تست‌تصویر",
+                                       "has_own_barcode": False}, headers=H)
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+
+    bf = tc.post("/api/products/images/backfill?limit=5", headers=H).json()
+    assert bf["queued"] == 0 and bf["reason"] == "OFFLINE_MODE", bf
+    # nothing is queued: there is no lookup to run
+    with SessionLocal() as s:
+        assert s.execute(select(SyncJob).where(
+            SyncJob.idempotency_key == f"product-image:{pid}")).scalar_one_or_none() is None
+
+    cands = tc.get(f"/api/products/{pid}/image/candidates", headers=H).json()
+    assert cands["web_lookup"] is False and cands["candidates"] == []
+
+    up = tc.post(f"/api/products/{pid}/image/upload", headers=H,
+                 files={"file": ("p.png", MILK_PNG, "image/png")})
+    assert up.status_code == 200 and up.json()["image_url"].startswith("/media/products/"), up.text
+    tc.delete(f"/api/products/{pid}", headers=H)
+
+
+def test_image_job_handler_is_still_registered():
+    """The sync worker keeps its PRODUCT_IMAGE handler (it now mirrors, not searches)."""
     assert "PRODUCT_IMAGE" in sync_svc.HANDLERS
-    db.rollback()
-
-
-def test_07_api_endpoints(_app):
-    tc = _app
-    if True:
-        tok = tc.post("/api/auth/login", data={"username": "admin", "password": "admin123"}).json()["access_token"]
-        H = {"Authorization": f"Bearer {tok}"}
-        st = tc.get("/api/products/images/status", headers=H).json()
-        assert {"total", "missing", "jobs", "auto_find"} <= set(st)
-        r = tc.post("/api/products", json={"name": "پنیر سفید ۴۰۰ گرمی تست‌تصویر", "has_own_barcode": False}, headers=H)
-        assert r.status_code == 201, r.text
-        pid = r.json()["id"]
-        bf = tc.post("/api/products/images/backfill?limit=5", headers=H).json()
-        assert "queued" in bf
-        # job queued for the new product
-        with SessionLocal() as s:
-            assert s.execute(select(SyncJob).where(SyncJob.idempotency_key == f"product-image:{pid}")).scalar_one_or_none() is not None
-        tc.delete(f"/api/products/{pid}", headers=H)
-
-
-# ---------------------------------------------------------------- v2.5.1: packaged photo beats generic photo
-PACK_PNG = _png(color=(200, 40, 40))
-
-
-def handler_v251(req: httpx.Request) -> httpx.Response:
-    u, q = str(req.url), dict(req.url.params)
-    if "openfoodfacts.org/api/v2/product/" in u:
-        return httpx.Response(200, json={"status": 0})
-    if "api.digikala.com/v1/search" in u:
-        # real-world shape (abridged): data.products[].{title_fa, images.main.url[]}
-        return httpx.Response(200, json={"status": 200, "data": {"products": [
-            {"id": 1, "title_fa": "شیر پرچرب میهن حجم 1 لیتر", "images": {"main": {"url": ["https://img.test/pack.png"]}}}]}})
-    if "okala.com" in u or "basalam.com" in u or "torob.com" in u:
-        return httpx.Response(200, json={"entities": []})
-    if "openfoodfacts.org/cgi/search.pl" in u:
-        return httpx.Response(200, json={"products": []})
-    if "commons.wikimedia.org" in u:
-        # the exact failure the operator saw: a generic bowl of milk
-        return httpx.Response(200, json={"query": {"pages": {"1": {"title": "File:Glass of milk in a bowl.jpg",
-                              "imageinfo": [{"thumburl": "https://img.test/bowl.png", "mime": "image/png"}]}}}})
-    if "wikipedia.org" in u:
-        return httpx.Response(200, json={"query": {"pages": {}}})
-    if "duckduckgo.com" in u:
-        return httpx.Response(200, text="<html></html>")
-    if u.endswith("pack.png"): return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
-    if u.endswith("bowl.png"): return httpx.Response(200, content=MILK_PNG, headers={"content-type": "image/png"})
-    return httpx.Response(404)
-
-
-@pytest.fixture()
-def client251():
-    with httpx.Client(transport=httpx.MockTransport(handler_v251), follow_redirects=True) as c:
-        yield c
-
-
-def test_08_retail_pack_photo_beats_generic_bowl(db, client251):
-    p = _product(db, "شیر پرچرب ۱ لیتری")
-    rep = pi.find_and_store(db, p, client=client251, force=True)
-    assert rep["ok"], rep
-    assert rep["source"] == "retail:digikala" and rep["url"].endswith("pack.png"), rep
-    db.rollback()
-
-
-def test_09_generic_scores_low_and_can_be_disabled(db, client251):
-    assert pi.score_title("Glass of milk in a bowl", "شیر پرچرب ۱ لیتری", None) < pi.score_title("شیر پرچرب میهن حجم 1 لیتر", "شیر پرچرب ۱ لیتری", None)
-    # with retail sources off and generic fallback off → honest failure instead of a bowl
-    cands = pi.find_candidates("شیر پرچرب ۱ لیتری", None, None, client=client251, web_fallback=False,
-                               retail={k: False for k in pi.RETAIL_SOURCES}, generic_fallback=False)
-    assert cands == []
-
-
-def test_10_candidates_pick_and_upload(_app, db, client251):
-    tc = _app
-    tok = tc.post("/api/auth/login", data={"username": "admin", "password": "admin123"}).json()["access_token"]
-    H = {"Authorization": f"Bearer {tok}"}
-    pid = tc.post("/api/products", json={"name": "شیر پرچرب ۱ لیتری v251", "has_own_barcode": False}, headers=H).json()["id"]
-    orig = pi.find_candidates
-    pi.find_candidates = lambda *a, **k: orig(*a, **{**k, "client": client251})
-    orig_fetch = pi.resolvers._fetch_image
-    pi.resolvers._fetch_image = lambda url, client=None: orig_fetch(url, client=client251)
-    try:
-        c = tc.get(f"/api/products/{pid}/image/candidates", headers=H).json()
-        assert c["candidates"] and c["candidates"][0]["source"] == "retail:digikala", c
-        r = tc.post(f"/api/products/{pid}/image/pick", json={"url": c["candidates"][0]["url"]}, headers=H)
-        assert r.status_code == 200 and r.json()["image_url"].startswith("/media/products/"), r.text
-        r = tc.post(f"/api/products/{pid}/image/upload", files={"file": ("own.png", PASTE_PNG, "image/png")}, headers=H)
-        assert r.status_code == 200 and r.json()["source"] == "upload", r.text
-        assert tc.get(r.json()["image_url"]).status_code == 200
-        r = tc.post(f"/api/products/{pid}/image/upload", files={"file": ("x.txt", b"not an image at all" * 100, "text/plain")}, headers=H)
-        assert r.status_code == 400
-    finally:
-        pi.find_candidates = orig
-        pi.resolvers._fetch_image = orig_fetch
-
-
-# ---------------------------------------------------------------- v2.5.2: parsers against REAL (abridged) live responses, captured 2026-09-11
-DK_REAL = {"status": 200, "data": {"filters": {"categories": {"options": [{"id": 10603, "title_fa": "شیر پرچرب", "title_en": "شیر پرچرب"}]}},
-           "products": [{"id": 9006144, "title_fa": "شیر کم‌چرب کاله - 900 میلی لیتر", "title_en": "",
-                         "data_layer": {"brand": "کاله", "item_category4": "شیر"},
-                         "images": {"main": {"storage_ids": [], "url": ["https://dkstatics-public.digikala.com/digikala-products/f4c3246e9ec7735be3cc8e5746b0a835d470e970_1787417037.jpg?x-oss-process=image/resize,m_lfit,h_300,w_300/quality,q_80"], "thumbnail_url": None}, "list": []}}]}}
-BS_REAL = {"meta": {"count": 36}, "products": [
-    {"id": 49733095, "name": "شیر پرچرب میهن 1 لیتر", "photo": {"MEDIUM": "https://statics.basalam.com/public-215/users/NPMxem/06-29/BSD5.jpg_512X512X70.jpg", "SMALL": "https://statics.basalam.com/public-215/users/NPMxem/06-29/BSD5.jpg_256X256X70.jpg"}, "vendor": {"name": "ریپتون"}, "categoryTitle": "شیر"},
-    {"id": 52697199, "name": "شیرخشک پرچرب میت لهستان مناسب قهوه (1کیلوگرم) وجیسنک", "photo": {"MEDIUM": "https://statics.basalam.com/public-222/users/rAjQ/07-13/vmdR.jpg_512X512X70.jpg"}, "vendor": {"name": "وجیسنک"}}]}
-
-
-def test_11_real_digikala_and_basalam_shapes():
-    dk = pi.parse_retail("digikala", DK_REAL)
-    assert dk and dk[0][0].startswith("شیر کم‌چرب کاله") and "h_600,w_600" in dk[0][1] and dk[0][2] == "کاله"
-    # filter options (title_fa without picture) must NOT leak in as products
-    assert all("digikala-products" in u for _, u, _ in dk)
-    bs = pi.parse_retail("basalam", BS_REAL)
-    assert bs[0][0] == "شیر پرچرب میهن 1 لیتر" and bs[0][1].endswith("512X512X70.jpg")
-    # relevance: the exact pack wins over the powdered-milk-for-coffee listing and over a generic bowl
-    name = "شیر پرچرب ۱ لیتری میهن"
-    s_pack = pi.score_title("شیر پرچرب میهن 1 لیتر ریپتون", name, None)
-    s_powder = pi.score_title("شیرخشک پرچرب میت لهستان مناسب قهوه (1کیلوگرم) وجیسنک", name, None)
-    s_bowl = pi.score_title("Glass of milk in a bowl", name, None)
-    assert s_pack > s_powder > s_bowl and s_pack >= 0.75, (s_pack, s_powder, s_bowl)
-
-
-def test_12_real_shapes_end_to_end(db):
-    def h(req: httpx.Request) -> httpx.Response:
-        u = str(req.url)
-        if "digikala-products" in u or "statics.basalam.com" in u: return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
-        if "api.digikala.com" in u: return httpx.Response(200, json=DK_REAL)
-        if "search.basalam.com" in u: return httpx.Response(200, json=BS_REAL)
-        if "openfoodfacts" in u: return httpx.Response(200, json={"status": 0, "products": []})
-        if "digikala-products" in u or "statics.basalam.com" in u: return httpx.Response(200, content=PACK_PNG, headers={"content-type": "image/png"})
-        return httpx.Response(200, json={"query": {"pages": {}}})
-    with httpx.Client(transport=httpx.MockTransport(h)) as c:
-        p = _product(db, "شیر پرچرب ۱ لیتری میهن")
-        rep = pi.find_and_store(db, p, client=c, force=True)
-        assert rep["ok"] and rep["source"] in ("retail:basalam", "retail:digikala") and "میهن" in rep["title"], rep
-        db.rollback()

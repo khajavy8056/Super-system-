@@ -170,6 +170,11 @@ def test_sms_terminal_states_are_audited(client, auth_headers):
                 json={"phone": "09120007788", "text": "آزمون ارسال پیامک"})
     assert client.post("/api/sms/dispatch", headers=auth_headers).status_code == 200
     assert "SMS_SENT" in _audit_actions(client, auth_headers)
+    # v3.5 BUG FIX: put the retry budget back. Leaving sms.max_retries=1 leaked
+    # into test_v28_sim_sms, whose first phone-report then jumped straight to
+    # FAILED instead of RETRYING.
+    client.put("/api/settings", headers=auth_headers,
+               json={"key": "sms.max_retries", "value": "5", "is_secret": False})
 
 
 def test_update_lifecycle_is_audited(client, auth_headers):
@@ -239,7 +244,14 @@ def test_version_is_consistent_everywhere(client, auth_headers):
     """One number: __init__.py, /health, the OpenAPI spec, the Inno script."""
     from app import __version__
 
-    assert __version__ == "3.4.0"
+    # The point of this test is that every surface agrees on ONE number, not that
+    # the number is a specific value — hard-coding it here made every release
+    # bump fail for no reason. Read the Inno fallback instead.
+    import re
+    from pathlib import Path
+    iss = (Path(__file__).resolve().parents[2] / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8")
+    assert re.search(r'#define MyAppVersion "%s"' % re.escape(__version__), iss), \
+        f"setup.iss fallback disagrees with {__version__}"
     health = client.get("/health").json()
     assert health["version"] == __version__
     assert client.get("/openapi.json").json()["info"]["version"] == __version__

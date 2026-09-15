@@ -171,11 +171,20 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
+    # v3.5 — the restored file was written by an older release, so it can be missing
+    # model columns and (always) the v3.3 performance indexes. Self-heal in place,
+    # otherwise the shop silently drops back to full table scans after a restore.
+    from ..database import heal_schema
+    heal = heal_schema()
+
     write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
-                reference=getattr(file, "filename", None))
+                reference=getattr(file, "filename", None),
+                after={"columns_added": len(heal["columns_added"]),
+                       "indexes_ensured": len(heal["indexes_ensured"])})
     db.commit()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
-            "safety_backup": str(safety)}
+            "safety_backup": str(safety),
+            "columns_added": heal["columns_added"], "indexes_ensured": len(heal["indexes_ensured"])}
 
 
 # ---------------------------------------------------------------------------

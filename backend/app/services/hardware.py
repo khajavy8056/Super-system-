@@ -71,8 +71,20 @@ def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
     dots = "·" * W
 
     def kv(label: str, value: str, fill: str = " ") -> str:
+        """``label … value`` laid out on EXACTLY W columns.
+
+        v3.5 BUG FIX: this used to be ``fill * max(1, pad)``. The forced single
+        separator space pushed the row to W+1 characters, and the ESC/POS path
+        then ran ``encode_line(line[:job.columns])`` — which silently cut the
+        LAST character of the line. On 58 mm paper that chopped the final digit
+        off the invoice number (printed ``INV-20260915-00000`` for
+        ``INV-20260915-000001``) and off the date. The VALUE is never truncated
+        — when a row is too tight for both, the label gives way instead.
+        """
+        if len(label) + len(value) > W:
+            label = label[: max(0, W - len(value))]
         pad = W - len(label) - len(value)
-        return f"{label}{fill * max(1, pad)}{value}"
+        return f"{label}{fill * max(0, pad)}{value}"
 
     def center(t: str) -> str:
         return t[:W].center(W)

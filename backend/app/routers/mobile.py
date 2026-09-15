@@ -408,6 +408,60 @@ def _changed_since(db: Session, model, since: datetime | None, limit: int):
     return db.execute(stmt.order_by(model.updated_at.asc()).limit(limit)).scalars().all()
 
 
+def _pull_cursor(pull: dict, fallback: str, limit: int) -> tuple[str, bool]:
+    """v3.5 — the sync cursor must advance to the last row actually delivered.
+
+    It used to be ``now``. That was invisible while the catalogue was a few
+    hundred lines: one pull covered everything. With the 13 570-line default bank
+    it silently broke the phones — the first pull returned the 500 OLDEST
+    products and then handed back ``cursor = now``, so the next pull asked for
+    "everything changed since now" and the remaining 13 000 lines were never
+    delivered. A paired phone would sit on 500 products forever.
+
+    The cursor is now the newest ``updated_at`` in the page, so the next pull
+    continues exactly where this one stopped. ``>=`` (not ``>``) is used on the
+    way back in, which re-sends the boundary row; that is harmless because the
+    phone upserts by id, and it can never skip a row that shares a timestamp.
+
+    ``has_more`` tells the client to pull again immediately instead of waiting
+    for the next scheduled sync — a fresh install needs ~28 rounds to receive the
+    whole bank at the default page size of 500.
+    """
+    per_table_newest: list[datetime] = []
+    truncated_newest: list[datetime] = []
+    for rows in pull.values():
+        if not isinstance(rows, list) or not rows:
+            continue
+        newest: datetime | None = None
+        for r in rows:
+            ts = r.get("updated_at") if isinstance(r, dict) else getattr(r, "updated_at", None)
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except ValueError:
+                    ts = None
+            if ts is not None and (newest is None or ts > newest):
+                newest = ts
+        if newest is None:
+            continue
+        per_table_newest.append(newest)
+        # Only a table whose page came back FULL still has rows to deliver. An
+        # exhausted (short) table must not hold the cursor back, or the client
+        # would re-request the same page forever.
+        if len(rows) >= limit:
+            truncated_newest.append(newest)
+    if not per_table_newest:
+        return fallback, False
+    if not truncated_newest:
+        # every table fit in one page — the client is caught up
+        return max(per_table_newest).isoformat(), False
+    # ONE cursor covers several independently-paginated tables, so it may only
+    # advance as far as the SLOWEST table that is still truncated. Taking the
+    # global newest would let a finished table drag the cursor past rows another
+    # table has not delivered yet, skipping them for good.
+    return min(truncated_newest).isoformat(), True
+
+
 @router.post("/sync")
 def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Store-and-forward sync. Push is idempotent (same op id → applied once,
@@ -463,4 +517,7 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                 after={"pushed": len(body.push), "applied": sum(1 for a in applied if a["status"] == "APPLIED"),
                        "pulled": {k: len(v) for k, v in pull.items()}})
     db.commit()
-    return {"applied": applied, "pull": pull, "cursor": now, "server_time": now}
+    # v3.5 — advance to the last delivered row (see _pull_cursor), not to "now".
+    cursor, has_more = (_pull_cursor(pull, now, body.limit) if body.pull else (now, False))
+    return {"applied": applied, "pull": pull, "cursor": cursor, "server_time": now,
+            "has_more": has_more}
