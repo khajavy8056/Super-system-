@@ -335,7 +335,17 @@ public final class Db extends SQLiteOpenHelper {
     /* ---------------- local reads ---------------- */
     public static List<JSONObject> searchProducts(String q, int limit) {
         List<JSONObject> out = new ArrayList<>(); q = norm(q);
-        String sql = q.isEmpty() ? "SELECT json FROM products WHERE is_active=1 ORDER BY id DESC LIMIT ?" : "SELECT json FROM products WHERE is_active=1 AND (barcode=? OR sku=? OR name LIKE ? OR barcode LIKE ?) ORDER BY (barcode=?) DESC, name LIMIT ?";
+        // v3.5 — same ordering the PC till uses: an exact barcode/SKU hit wins so
+        // scanning stays instant, then items with sellable stock, then the rest of
+        // the catalogue alphabetically. With the 13 570-line default bank a purely
+        // alphabetical list buried the stocked items under hundreds of rows the
+        // shop does not carry.
+        String stock = "(SELECT COALESCE(SUM(b.current_qty),0) FROM batches b"
+                     + " WHERE b.product_id=products.id AND b.status='ACTIVE' AND b.current_qty>0) > 0";
+        String sql = q.isEmpty()
+            ? "SELECT json FROM products WHERE is_active=1 ORDER BY " + stock + " DESC, name LIMIT ?"
+            : "SELECT json FROM products WHERE is_active=1 AND (barcode=? OR sku=? OR name LIKE ? OR barcode LIKE ?)"
+              + " ORDER BY (barcode=?) DESC, " + stock + " DESC, name LIMIT ?";
         String[] args = q.isEmpty() ? new String[]{String.valueOf(limit)} : new String[]{q, q, "%" + q + "%", "%" + q + "%", q, String.valueOf(limit)};
         try (Cursor c = w().rawQuery(sql, args)) { while (c.moveToNext()) out.add(withBatches(c.getString(0))); }
         return out;

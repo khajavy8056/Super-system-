@@ -60,7 +60,14 @@
     const [prods, batches] = await Promise.all([all("products"), all("batches")]);
     const byProd = {}; for (const b of batches) { if ((b.status || "ACTIVE") === "ACTIVE" && b.current_qty > 0) (byProd[b.product_id] = byProd[b.product_id] || []).push(b); }
     const exact = prods.filter((p) => p.barcode === q || (p.sku && norm(p.sku) === q));
-    const fuzzy = exact.length ? [] : prods.filter((p) => norm(p.name).includes(q) || (p.barcode || "").includes(q));
+    // v3.5 — same ordering as the PC till and the native Android search: an exact
+    // hit wins so scanning stays instant, then items with sellable stock, then the
+    // rest alphabetically. Without this an offline phone sorted a 13 570-line
+    // catalogue purely alphabetically and buried the stocked items.
+    const hasStock = (p) => (byProd[p.id] || []).length > 0;
+    const fuzzy = exact.length ? [] : prods
+      .filter((p) => norm(p.name).includes(q) || (p.barcode || "").includes(q))
+      .sort((a, b) => (hasStock(b) - hasStock(a)) || String(a.name || "").localeCompare(String(b.name || ""), "fa"));
     return [...exact, ...fuzzy].slice(0, limit).map((p) => toSearchItem(p, byProd[p.id] || []));
   }
   function toSearchItem(p, bs) {
