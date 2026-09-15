@@ -590,3 +590,99 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
 def is_demo(db: Session) -> bool:
     from ..models import AuditLog
     return db.execute(select(AuditLog.id).where(AuditLog.action == "DEMO_STORE_GENERATED").limit(1)).first() is not None
+
+
+#: what POST /api/system/restore refuses to accept — kept in step with
+#: ``_REQUIRED_TABLES`` in routers/system.py so a generated file is validated
+#: here rather than discovered to be broken at restore time.
+_REQUIRED_TABLES = {"users", "products", "product_batches", "invoices", "audit_logs"}
+
+#: runs in the child process, with DATABASE_URL already pointed at the new file
+_CHILD = """
+import json, sys
+from app.database import init_db, SessionLocal
+from app.services import demo_store
+init_db()
+with SessionLocal() as db:
+    s = demo_store.generate(db, days=%d, seed=%d, invoices_per_day=%r)
+print("__DEMO__" + json.dumps(s))
+"""
+
+
+def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
+                         invoices_per_day: float = 95.0, compress: bool = True) -> dict:
+    """v3.5.6 — build the standalone one-year demo store.
+
+    This module's docstring has promised ``generate_backup_file(path)`` since v3.0,
+    but the function was never written: nothing could produce ``demo_store.db.gz``,
+    so ``GET /api/system/demo`` always reported ``available: false`` and the
+    "restore the bundled demo store" path had nothing to restore.
+
+    It builds in a throwaway directory through a SUBPROCESS whose DATABASE_URL
+    points at the new file, so the real ``init_db()`` runs unmodified — same
+    ``create_all``, same alembic stamp, same ``_reconcile_schema``, same indexes,
+    same ``bootstrap``. Building it any other way would drift from what an
+    installed app produces, and the whole point is that restore accepts the file
+    unchanged.
+
+    The result is validated with exactly the checks ``restore`` applies
+    (``PRAGMA integrity_check`` plus the required tables) before it is written
+    out, so a broken file fails here instead of at the shop's counter.
+    """
+    import gzip
+    import os
+    import shutil
+    import sqlite3
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    backend_dir = Path(__file__).resolve().parents[2]
+
+    with tempfile.TemporaryDirectory(prefix="demostore_") as td:
+        raw = Path(td) / "demo.db"
+        env = dict(os.environ)
+        env["DATABASE_URL"] = f"sqlite+pysqlite:///{raw}"
+        env["SUPERMARKET_LICENSE_GATE"] = "0"
+        env["ADMIN_USERNAME"] = "admin"
+        env["ADMIN_PASSWORD"] = "admin123"
+        env["PYTHONPATH"] = os.pathsep.join([str(backend_dir), env.get("PYTHONPATH", "")])
+
+        proc = subprocess.run([sys.executable, "-c", _CHILD % (int(days), int(seed), float(invoices_per_day))],
+                              cwd=str(backend_dir), env=env, capture_output=True, text=True)
+        summary = None
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith("__DEMO__"):
+                summary = json.loads(line[len("__DEMO__"):])
+        if proc.returncode != 0 or summary is None:
+            tail = "\n".join((proc.stderr or "").splitlines()[-25:])
+            raise RuntimeError(f"DEMO_BUILD_FAILED rc={proc.returncode}\n{tail}")
+
+        # --- validate exactly what restore will check -----------------------
+        con = sqlite3.connect(str(raw))
+        try:
+            integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            con.close()
+        if integrity != "ok":
+            raise RuntimeError(f"DEMO_INTEGRITY_FAILED: {integrity}")
+        missing = _REQUIRED_TABLES - tables
+        if missing:
+            raise RuntimeError(f"DEMO_MISSING_TABLES: {sorted(missing)}")
+
+        if compress:
+            tmp = dest.with_suffix(dest.suffix + ".tmp")
+            with open(raw, "rb") as src, gzip.open(tmp, "wb", compresslevel=9) as out:
+                shutil.copyfileobj(src, out, 1 << 20)
+            tmp.replace(dest)
+        else:
+            shutil.copyfile(raw, dest)
+
+    summary = dict(summary or {})
+    summary.update({"path": str(dest), "bytes": dest.stat().st_size,
+                    "compressed": bool(compress), "tables": len(tables)})
+    return summary

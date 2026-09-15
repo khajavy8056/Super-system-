@@ -659,13 +659,55 @@ public final class Db extends SQLiteOpenHelper {
             p.put("batches", bs); p.put("available_qty", total); p.put("product_id", p.optLong("id")); return p;
         } catch (Exception e) { return new JSONObject(); }
     }
-    public static List<JSONObject> stockRows() {
+    public static List<JSONObject> stockRows() { return stockRows("", false, 0); }
+    /** v3.5.6 — bounded stock listing. The unbounded version returned all 13 570
+     *  products and the inventory screen inflated a View per row on the UI thread,
+     *  which is what hung the phone and then killed it. The search filter, the
+     *  low-stock test, the stock value and the page cap now all happen in SQL, so the
+     *  screen only ever builds what it can actually show and {@link Local} no longer
+     *  runs one value query per product (13 571 round-trips for one call). */
+    public static List<JSONObject> stockRows(String filter, boolean lowOnly, int limit) {
         List<JSONObject> out = new ArrayList<>();
-        // v3.3: one grouped join (index ix_b_p_status) instead of a correlated sub-query per product
-        try (Cursor c = w().rawQuery("SELECT p.id, p.name, p.barcode, p.min_stock_alert, IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0) FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1 GROUP BY p.id ORDER BY p.name", null)) {
-            while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("product_id", c.getLong(0)); o.put("name", c.getString(1)); o.put("barcode", c.getString(2)); o.put("min_stock_alert", c.getDouble(3)); o.put("total_stock", c.getDouble(4)); } catch (Exception ignore) {} out.add(o); }
+        String f = norm(filter == null ? "" : filter);
+        String qty = "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0)";
+        StringBuilder sql = new StringBuilder(
+            "SELECT p.id, p.name, p.barcode, p.min_stock_alert, " + qty + ","
+            + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0)"
+            + " FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1");
+        java.util.List<String> args = new ArrayList<>();
+        if (!f.isEmpty()) { sql.append(" AND (p.name LIKE ? OR p.barcode LIKE ?)"); args.add("%" + f + "%"); args.add("%" + f + "%"); }
+        sql.append(" GROUP BY p.id");
+        // repeated rather than aliased: HAVING on a result alias is a SQLite
+        // extension and must not be relied on across engine versions
+        if (lowOnly) sql.append(" HAVING ").append(qty).append(" <= p.min_stock_alert");
+        sql.append(" ORDER BY p.name");
+        if (limit > 0) { sql.append(" LIMIT ?"); args.add(String.valueOf(limit)); }
+        try (Cursor c = w().rawQuery(sql.toString(), args.toArray(new String[0]))) {
+            while (c.moveToNext()) {
+                JSONObject o = new JSONObject();
+                try {
+                    o.put("product_id", c.getLong(0)); o.put("name", c.getString(1)); o.put("barcode", c.getString(2));
+                    o.put("min_stock_alert", c.getDouble(3)); o.put("total_stock", c.getDouble(4));
+                    o.put("total_qty", c.getDouble(4)); o.put("value_at_cost", c.getDouble(5));
+                } catch (Exception ignore) {}
+                out.add(o);
+            }
         }
         return out;
+    }
+    /** v3.5.6 — how many rows match, so a capped list can say what it is hiding. */
+    public static int stockCount(String filter, boolean lowOnly) {
+        String f = norm(filter == null ? "" : filter);
+        String qty = "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0)";
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM (SELECT p.id, " + qty + " AS q, p.min_stock_alert"
+            + " FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1");
+        java.util.List<String> args = new ArrayList<>();
+        if (!f.isEmpty()) { sql.append(" AND (p.name LIKE ? OR p.barcode LIKE ?)"); args.add("%" + f + "%"); args.add("%" + f + "%"); }
+        sql.append(" GROUP BY p.id");
+        if (lowOnly) sql.append(" HAVING q <= p.min_stock_alert");
+        sql.append(")");
+        try (Cursor c = w().rawQuery(sql.toString(), args.toArray(new String[0]))) { return c.moveToFirst() ? c.getInt(0) : 0; }
+        catch (Exception e) { return 0; }
     }
     public static JSONObject customerByPhone(String phone) { try (Cursor c = w().rawQuery("SELECT json FROM customers WHERE phone=? LIMIT 1", new String[]{norm(phone)})) { if (c.moveToFirst()) return new JSONObject(c.getString(0)); } catch (Exception ignore) {} return null; }
     public static List<JSONObject> customers(String q) {

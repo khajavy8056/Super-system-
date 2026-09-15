@@ -126,16 +126,58 @@ public final class StockScreens {
 
     /* ---------------- Inventory ---------------- */
     public static final class Inventory extends Screens.Screen {
-        int tab = 0;
+        /** v3.5.6 — this screen used to inflate one View per product. With the 13 570-line
+         *  default catalogue that was ~13 570 rows and roughly 50 000 Views built on the UI
+         *  thread in one go: the phone hung and then died. Everything is now filtered and
+         *  capped in SQL, and the rest is reachable by searching. */
+        static final int CAP = 200;
+        int tab = 0; String query = "";
         Inventory(AppActivity a) { super(a); }
         public String key() { return "inventory"; } public String title() { return "انبار و موجودی"; }
         public boolean autoRefresh() { return true; }
         public void load() {
             clear(); body.addView(tabs(new String[]{"همه", "کمبود", "انقضا"}, tab, t -> { tab = t; load(); }));
-            if (tab == 2) { body.addView(Ui.empty(c, "…")); get("/reports/expiry", r -> { body.removeViewAt(body.getChildCount() - 1); JSONObject ex = (JSONObject) r; String[][] EK = {{"EXPIRED", "منقضی‌شده"}, {"EXPIRING_TODAY", "امروز منقضی می‌شود"}, {"EXPIRING_3_DAYS", "تا ۳ روز"}, {"EXPIRING_7_DAYS", "تا ۷ روز"}, {"EXPIRING_30_DAYS", "تا ۳۰ روز"}}; boolean any = false; for (String[] k : EK) { JSONArray ar = ex.optJSONArray(k[0]); if (ar == null || ar.length() == 0) continue; any = true; LinearLayout cd = Ui.card(c, k[1] + " (" + Ui.num(ar.length()) + ")"); for (int i = 0; i < ar.length(); i++) { JSONObject b = ar.optJSONObject(i); cd.addView(Ui.kv(c, s(b, "product_name", s(b, "name")) + " · " + Ui.fa(s(b, "batch_number")), Ui.num(b.optDouble("current_qty")) + " · " + Ui.jdate(s(b, "expiry_date")), "EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER)); } body.addView(cd); } if (!any) body.addView(Ui.empty(c, "کالای نزدیک انقضا نیست")); }); return; }
-            List<JSONObject> rows = Db.stockRows(); double value = 0; int shown = 0; LinearLayout list = Ui.col(c);
-            for (JSONObject r : rows) { double st = r.optDouble("total_stock"), mn = r.optDouble("min_stock_alert"); if (tab == 1 && st > mn) continue; shown++; list.addView(Ui.item(c, r.optString("name"), Ui.fa(r.optString("barcode")), Ui.num(st), st <= 0 ? Ui.RED : st <= mn ? Ui.AMBER : Ui.GREEN, () -> a.open(new ProductDetail(a, r.optString("barcode")), true))); }
-            body.addView(Ui.muted(c, Ui.num(shown) + " کالا" + (tab == 1 ? " زیر حد هشدار" : ""))); body.addView(list); if (shown == 0) body.addView(Ui.empty(c, tab == 1 ? "کمبودی نیست" : "کاتالوگ خالی است"));
+            if (tab == 2) {
+                body.addView(Ui.empty(c, "…"));
+                get("/reports/expiry", r -> {
+                    body.removeViewAt(body.getChildCount() - 1); JSONObject ex = (JSONObject) r;
+                    String[][] EK = {{"EXPIRED", "منقضی‌شده"}, {"EXPIRING_TODAY", "امروز منقضی می‌شود"}, {"EXPIRING_3_DAYS", "تا ۳ روز"}, {"EXPIRING_7_DAYS", "تا ۷ روز"}, {"EXPIRING_30_DAYS", "تا ۳۰ روز"}};
+                    boolean any = false;
+                    for (String[] k : EK) {
+                        JSONArray ar = ex.optJSONArray(k[0]); if (ar == null || ar.length() == 0) continue;
+                        any = true;
+                        int n = Math.min(ar.length(), CAP);
+                        LinearLayout cd = Ui.card(c, k[1] + " (" + Ui.num(ar.length()) + ")");
+                        for (int i = 0; i < n; i++) { JSONObject b = ar.optJSONObject(i); cd.addView(Ui.kv(c, s(b, "product_name", s(b, "name")) + " · " + Ui.fa(s(b, "batch_number")), Ui.num(b.optDouble("current_qty")) + " · " + Ui.jdate(s(b, "expiry_date")), "EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER)); }
+                        if (ar.length() > n) cd.addView(Ui.muted(c, "و " + Ui.fa(String.valueOf(ar.length() - n)) + " مورد دیگر — از رایانه گزارش کامل بگیرید"));
+                        body.addView(cd);
+                    }
+                    if (!any) body.addView(Ui.empty(c, "کالای نزدیک انقضا نیست"));
+                });
+                return;
+            }
+            LinearLayout sr = Ui.row(c);
+            EditText q = Ui.input(c, "جست‌وجو در انبار (نام / بارکد)");
+            q.setLayoutParams(Ui.weight(1)); q.setText(query); try { q.setSelection(q.getText().length()); } catch (Exception ignore) {}
+            sr.addView(q); body.addView(sr);
+            TextView cnt = Ui.muted(c, ""); body.addView(cnt);
+            LinearLayout list = Ui.col(c); body.addView(list);
+            Runnable fill = () -> {
+                list.removeAllViews();
+                query = Ui.str(q);
+                boolean low = tab == 1;
+                int total = Db.stockCount(query, low);
+                List<JSONObject> rows = Db.stockRows(query, low, CAP);
+                for (JSONObject r : rows) {
+                    double st = r.optDouble("total_stock"), mn = r.optDouble("min_stock_alert");
+                    list.addView(Ui.item(c, r.optString("name"), Ui.fa(r.optString("barcode")), Ui.num(st), st <= 0 ? Ui.RED : st <= mn ? Ui.AMBER : Ui.GREEN, () -> a.open(new ProductDetail(a, r.optString("barcode")), true)));
+                }
+                cnt.setText(Ui.num(total) + " کالا" + (low ? " زیر حد هشدار" : "")
+                    + (total > rows.size() ? " — " + Ui.num(rows.size()) + " ردیف نمایش داده شد؛ برای دیدن بقیه جست‌وجو کنید" : ""));
+                if (rows.isEmpty()) list.addView(Ui.empty(c, low ? "کمبودی نیست" : total == 0 ? "کاتالوگ خالی است" : "کالایی یافت نشد"));
+            };
+            q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { fill.run(); } });
+            fill.run();
         }
     }
 
