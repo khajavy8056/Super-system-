@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "3.5.2"
+  #define MyAppVersion "3.5.3"
 #endif
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"

@@ -202,15 +202,72 @@ public final class Db extends SQLiteOpenHelper {
      * still held an ASCII comma shifted every field after it. Lines are parsed as
      * real CSV now and all nine columns are honoured.
      */
+    /**
+     * Only one import may ever be in flight.
+     *
+     * AppActivity fires the import on every launch and InstallService fires it
+     * during the first-run wizard; both go through Api.bg, which is a 4-thread
+     * pool. Without this guard the two ran concurrently on a fresh install and
+     * both called beginTransaction() on the same SQLiteDatabase from different
+     * threads, which is what crashed the app before the catalogue ever appeared.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean CATALOG_RUNNING =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public static JSONObject importStarter(Context ctx) {
+        if (!CATALOG_RUNNING.compareAndSet(false, true)) {
+            JSONObject busy = new JSONObject();
+            try { busy.put("created", 0); busy.put("matched_existing", 0); busy.put("images_filled", 0); busy.put("already_running", true); } catch (Exception ignore) {}
+            return busy;
+        }
+        try { return importStarterInner(ctx); } finally { CATALOG_RUNNING.set(false); }
+    }
+
+    private static JSONObject importStarterInner(Context ctx) {
         int n = 0, matched = 0, filled = 0;
-        SQLiteDatabase d = w(); d.beginTransaction();
+        SQLiteDatabase d = w();
+        // v3.5.3 — the import used to run as ONE transaction holding ~68 000
+        // statements (5 per product). That kept the write lock for so long the UI
+        // thread blocked on its own reads and Android raised an ANR, and a failure
+        // at row 13 000 rolled back all 13 000. Work is now committed in chunks so
+        // the lock is released regularly and partial progress survives.
+        final int CHUNK = 400;
+        boolean inTx = false;
+        // IDs used to come from counter("pid"), which did a SELECT + an INSERT on
+        // kv FOR EVERY ROW — 27 000 statements just to number the products. The
+        // counter is read once and written once instead.
+        long seq = 0;
+        try { String v = kv("pid"); if (v != null) seq = Long.parseLong(v); } catch (Exception ignore) {}
+        int pending = 0;
+        android.database.sqlite.SQLiteStatement ins = null;
+        android.database.sqlite.SQLiteStatement bankIns = null;
+        android.database.sqlite.SQLiteStatement bankFill = null;
+        java.util.regex.Pattern nonDigit = java.util.regex.Pattern.compile("[^0-9]");
         try (java.io.BufferedReader br = new java.io.BufferedReader(
                 new java.io.InputStreamReader(ctx.getAssets().open(STARTER_ASSET), "UTF-8"))) {
             br.readLine();   // header: category,subcategory,name,brand,unit,min_stock_alert,barcode,image_url,images
             java.util.Map<String, Long> units = new java.util.HashMap<>();
             java.util.Map<String, Long> cats = new java.util.HashMap<>();
             java.util.HashSet<String> seen = new java.util.HashSet<>();
+
+            ins = d.compileStatement("INSERT OR REPLACE INTO products(id,barcode,name,sku,unit_id,category_id,brand_id,"
+                + "min_stock_alert,image_url,is_active,is_local,json,updated_at,gallery) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)");
+            bankIns = d.compileStatement("INSERT OR REPLACE INTO bank(barcode,name,brand,unit,category,image_url,source,updated_at)"
+                + " VALUES(?,?,?,?,?,?,?,?)");
+            // bankPut() used to guard against downgrading a row the SHOP confirmed
+            // (source=USER, rank 3) with a mere IMPORT (rank 2). A plain
+            // INSERT OR REPLACE would have silently thrown that confirmation away,
+            // so the confirmed codes are loaded once and only get their blank
+            // fields filled instead of being replaced.
+            bankFill = d.compileStatement("UPDATE bank SET"
+                + " brand=COALESCE(NULLIF(brand,''),?),"
+                + " unit=COALESCE(NULLIF(unit,''),?),"
+                + " image_url=COALESCE(NULLIF(image_url,''),?)"
+                + " WHERE barcode=?");
+            java.util.HashSet<String> bankConfirmed = new java.util.HashSet<>();
+            try (Cursor c = d.rawQuery("SELECT barcode FROM bank WHERE source='USER'", null)) {
+                while (c.moveToNext()) bankConfirmed.add(c.getString(0));
+            }
 
             // v3.5.1 — RECONCILE with what the shop already has. The old code
             // deduplicated only *within* the CSV and minted a fresh id for every
@@ -225,7 +282,8 @@ public final class Db extends SQLiteOpenHelper {
             try (Cursor c = d.rawQuery("SELECT id, barcode, name, image_url FROM products", null)) {
                 while (c.moveToNext()) {
                     long pid = c.getLong(0);
-                    String bc = norm(c.getString(1)).replaceAll("[^0-9]", "");
+                    // precompiled: replaceAll() recompiles the regex on every call
+                    String bc = nonDigit.matcher(norm(c.getString(1))).replaceAll("");
                     String nm = norm(c.getString(2)).trim();
                     if (!bc.isEmpty()) byBarcode.put(bc, pid);
                     if (!nm.isEmpty()) byName.put(nm, pid);
@@ -248,15 +306,17 @@ public final class Db extends SQLiteOpenHelper {
                 // already known → do not create a second row. If the shop's own
                 // copy has no picture yet, adopt the one that ships with the bank;
                 // that is the whole point of reconciling instead of skipping.
-                Long hit = barcode.isEmpty() ? null : byBarcode.get(barcode.replaceAll("[^0-9]", ""));
+                Long hit = barcode.isEmpty() ? null : byBarcode.get(nonDigit.matcher(barcode).replaceAll(""));
                 if (hit == null) hit = byName.get(norm(name).trim());
                 if (hit != null) {
                     matched++;
                     if (!img.isEmpty() && imgOf.get(hit).isEmpty()) {
+                        if (!inTx) { d.beginTransaction(); inTx = true; }
                         ContentValues u = new ContentValues(); u.put("image_url", img);
                         d.update("products", u, "id=?", new String[]{String.valueOf(hit)});
                         imgOf.put(hit, img);
                         filled++;
+                        if (++pending >= CHUNK) { d.setTransactionSuccessful(); d.endTransaction(); inTx = false; pending = 0; }
                     }
                     continue;
                 }
@@ -268,62 +328,130 @@ public final class Db extends SQLiteOpenHelper {
 
                 String gallery = f.length > 8 ? f[8].trim() : "";
 
-                long id = -counter("pid");
+                // ids come from an in-memory counter; the old counter("pid") hit the
+                // kv table twice per product (27 000 statements for one import)
+                long id = -(++seq);
+                String code = barcode.isEmpty() ? "INT-L" + pad5(-id) : barcode;
+                long unitId = units.get(unit);
+                long catId = cats.get(cat);
+                double alert = 0;
+                try { if (f.length > 5 && !f[5].trim().isEmpty()) alert = Double.parseDouble(f[5].trim()); } catch (Exception ignore) {}
+                String galleryJson = null;
+                if (!gallery.isEmpty()) {
+                    JSONArray g = new JSONArray();
+                    for (String u : gallery.split("\\|")) { if (!u.trim().isEmpty()) g.put(u.trim()); }
+                    if (g.length() > 0) galleryJson = g.toString();
+                }
+
+                // the phone's own product document — same shape the PC sends over
+                // sync, so the rest of the app needs no special case for it
                 JSONObject p = new JSONObject();
                 try {
                     p.put("id", id);
                     p.put("name", name);
-                    p.put("barcode", barcode.isEmpty() ? "INT-L" + pad5(-id) : barcode);
+                    p.put("barcode", code);
                     p.put("has_own_barcode", !barcode.isEmpty() && !barcode.startsWith("INT-"));
-                    p.put("unit_id", units.get(unit)); p.put("unit_name", unit);
-                    p.put("category_id", cats.get(cat)); p.put("category_name", cat);
+                    p.put("unit_id", unitId); p.put("unit_name", unit);
+                    p.put("category_id", catId); p.put("category_name", cat);
                     p.put("subcategory_name", f.length > 1 ? f[1].trim() : "");
                     if (f.length > 3 && !f[3].trim().isEmpty()) p.put("brand_name", f[3].trim());
-                    p.put("min_stock_alert", f.length > 5 && !f[5].trim().isEmpty() ? Double.parseDouble(f[5].trim()) : 0);
+                    p.put("min_stock_alert", alert);
                     if (!img.isEmpty()) p.put("image_url", img);
-                    // the extra links travel with the product so the operator can
-                    // pick another shot without any network lookup
-                    if (!gallery.isEmpty()) {
-                        JSONArray g = new JSONArray();
-                        for (String u : gallery.split("\\|")) { if (!u.trim().isEmpty()) g.put(u.trim()); }
-                        if (g.length() > 0) p.put("gallery", g);
-                    }
+                    if (galleryJson != null) p.put("gallery", new JSONArray(galleryJson));
                     p.put("is_active", true); p.put("_local", true);
                 } catch (Exception ignore) {}
-                // One bad row must never abort the remaining 13 000. A thrown
-                // insert used to unwind the whole transaction, which is how the
-                // shop ended up with an empty catalogue and no explanation.
+
+                // One bad row must never abort the remaining 13 000 — and because
+                // work is committed in chunks, the rows already written survive.
                 try {
-                    putProduct(p, true);
+                    if (!inTx) { d.beginTransaction(); inTx = true; }
+                    ins.clearBindings();
+                    ins.bindLong(1, id);
+                    ins.bindString(2, code);
+                    ins.bindString(3, name);
+                    ins.bindNull(4);                       // sku
+                    ins.bindLong(5, unitId);
+                    ins.bindLong(6, catId);
+                    ins.bindNull(7);                       // brand_id
+                    ins.bindDouble(8, alert);
+                    if (img.isEmpty()) ins.bindNull(9); else ins.bindString(9, img);
+                    ins.bindLong(10, 1);                   // is_active
+                    // is_local is the literal 1 in the SQL, so it consumes no
+                    // placeholder: json/updated_at/gallery bind at 11/12/13, not
+                    // 12/13/14. Binding past the parameter count throws, and the
+                    // per-row guard would have swallowed it for all 13 570 rows.
+                    ins.bindString(11, p.toString());      // json
+                    ins.bindString(12, now());
+                    if (galleryJson == null) ins.bindNull(13); else ins.bindString(13, galleryJson);
+                    ins.executeInsert();
                 } catch (Exception e) {
                     kv("default_catalog_error", "row " + name + ": " + e);
                     continue;
                 }
                 // the offline barcode→name bank, so an unknown item can still be
-                // named from the phone when the PC is out of reach
+                // named from the phone when the PC is out of reach. Written with a
+                // compiled statement: bankPut() did a SELECT per row on top.
                 if (!barcode.isEmpty() && !barcode.startsWith("INT-")) {
-                    bankPut(Api.obj("barcode", barcode, "name", name, "category", cat,
-                            "image_url", img, "source", "IMPORT"));
+                    try {
+                        if (bankConfirmed.contains(barcode)) {
+                            // the shop already confirmed this barcode — never
+                            // downgrade it, only fill in what it left blank
+                            bankFill.clearBindings();
+                            bankFill.bindNull(1); bankFill.bindNull(2);
+                            if (img.isEmpty()) bankFill.bindNull(3); else bankFill.bindString(3, img);
+                            bankFill.bindString(4, barcode);
+                            bankFill.execute();
+                        } else {
+                            bankIns.clearBindings();
+                            bankIns.bindString(1, barcode); bankIns.bindString(2, name);
+                            bankIns.bindNull(3); bankIns.bindNull(4);
+                            bankIns.bindString(5, cat);
+                            if (img.isEmpty()) bankIns.bindNull(6); else bankIns.bindString(6, img);
+                            bankIns.bindString(7, "IMPORT"); bankIns.bindString(8, now());
+                            bankIns.executeInsert();
+                        }
+                    } catch (Exception ignore) {}
                 }
                 // remember what we just added so a later line in the same file
                 // cannot create a second row for it
-                if (!barcode.isEmpty()) byBarcode.put(barcode.replaceAll("[^0-9]", ""), id);
+                if (!barcode.isEmpty()) byBarcode.put(nonDigit.matcher(barcode).replaceAll(""), id);
                 byName.put(norm(name).trim(), id);
                 imgOf.put(id, img);
                 n++;
+
+                // release the write lock regularly so the UI thread can read
+                if (++pending >= CHUNK) { d.setTransactionSuccessful(); d.endTransaction(); inTx = false; pending = 0; }
             }
+            if (!inTx) { d.beginTransaction(); inTx = true; }
             try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
             kv("starter_imported", "1");
             kv("default_catalog_count", String.valueOf(n));
-            kv("default_catalog_ver", CATALOG_VERSION);
+            kv("pid", String.valueOf(seq));   // written once, not 13 570 times
+            // Only claim success when something actually landed. 3.5.1/3.5.2 wrote
+            // this marker unconditionally, so a phone where every single insert
+            // failed still reported "imported" and never retried — the shop was
+            // left with an empty catalogue and no way back.
+            if (n > 0 || matched > 0) {
+                kv("default_catalog_ver", CATALOG_VERSION);
+                kv("default_catalog_error", "");
+            } else {
+                kv("default_catalog_error", "no rows imported — nothing matched and nothing was created");
+            }
             d.setTransactionSuccessful();
         } catch (Exception e) {
             // a swallowed failure here is exactly how the shop ended up with an
             // empty catalogue and no explanation — record it so the settings
             // screen can say what happened.
-            kv("default_catalog_error", String.valueOf(e));
-            try { d.setTransactionSuccessful(); } catch (Exception ignore) {}
-        } finally { d.endTransaction(); }
+            try { kv("default_catalog_error", String.valueOf(e)); } catch (Exception ignore) {}
+            try { if (inTx) d.setTransactionSuccessful(); } catch (Exception ignore) {}
+        } finally {
+            // the work is committed in chunks, so a transaction may already have
+            // been closed by the loop — ending one that is not open throws.
+            try { if (inTx) d.endTransaction(); } catch (Exception ignore) {}
+            try { if (ins != null) ins.close(); } catch (Exception ignore) {}
+            try { if (bankIns != null) bankIns.close(); } catch (Exception ignore) {}
+            try { if (bankFill != null) bankFill.close(); } catch (Exception ignore) {}
+        }
         JSONObject r = new JSONObject();
         try { r.put("created", n); r.put("matched_existing", matched); r.put("images_filled", filled); } catch (Exception ignore) {}
         return r;
@@ -334,7 +462,12 @@ public final class Db extends SQLiteOpenHelper {
      * the new lines instead of leaving the shop on the old list. Compared against
      * the {@code default_catalog_ver} key written above.
      */
-    public static final String CATALOG_VERSION = "3.5.1-13570";
+    // Bumped for 3.5.3 even though the CSV did not change. Devices that ran 3.5.1
+    // or 3.5.2 wrote this marker while importing ZERO products: the per-row guard
+    // swallowed every failure and the marker was then written unconditionally, so
+    // catalogPending() stayed false and the phone never tried again. A new value
+    // forces exactly those devices to retry with the fixed importer.
+    public static final String CATALOG_VERSION = "3.5.3-13570";
 
     /** True when the bundled catalogue has not been imported into this database yet. */
     public static boolean catalogPending() {
