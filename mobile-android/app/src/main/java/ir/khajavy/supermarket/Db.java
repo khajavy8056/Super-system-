@@ -125,8 +125,17 @@ public final class Db extends SQLiteOpenHelper {
         v2(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
         try (Cursor c = d.rawQuery("PRAGMA user_version=" + VERSION, null)) { c.moveToFirst(); } catch (Exception ignore) {}
     }
-    static final int VERSION = 4;
-    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) { if (a < 3) v2(d); if (a < 4) { indexes(d); try { rebuildJournalLines(d); } catch (Exception ignore) {} } }   // v2() is idempotent (IF NOT EXISTS / try-ALTER)
+    // v3.5.2 — 4 → 5. products.gallery was added to V4_INDEX, but an install
+    // already sitting at user_version 4 never re-runs onUpgrade for a same-version
+    // bump, so the ALTER never executed and every putProduct then threw
+    // "no column named gallery", aborting the whole catalogue import. Bumping the
+    // version is what makes the migration actually reach existing installs.
+    static final int VERSION = 5;
+    @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
+        if (a < 3) v2(d);
+        if (a < 4) { try { rebuildJournalLines(d); } catch (Exception ignore) {} }
+        if (a < 5) indexes(d);   // idempotent: IF NOT EXISTS + try-ALTER per statement
+    }
 
     /* ---------------- kv ---------------- */
     public static String kv(String k) { try (Cursor c = w().rawQuery("SELECT v FROM kv WHERE k=?", new String[]{k})) { return c.moveToFirst() ? c.getString(0) : null; } }
@@ -281,7 +290,15 @@ public final class Db extends SQLiteOpenHelper {
                     }
                     p.put("is_active", true); p.put("_local", true);
                 } catch (Exception ignore) {}
-                putProduct(p, true);
+                // One bad row must never abort the remaining 13 000. A thrown
+                // insert used to unwind the whole transaction, which is how the
+                // shop ended up with an empty catalogue and no explanation.
+                try {
+                    putProduct(p, true);
+                } catch (Exception e) {
+                    kv("default_catalog_error", "row " + name + ": " + e);
+                    continue;
+                }
                 // the offline barcode→name bank, so an unknown item can still be
                 // named from the phone when the PC is out of reach
                 if (!barcode.isEmpty() && !barcode.startsWith("INT-")) {
