@@ -42,6 +42,13 @@ a = Analysis(
         (str(ROOT / "backend" / "app" / "data"), "app/data"),
         # v1.3 native window icon (WebView2 window title bar / taskbar)
         (str(ROOT / "installer" / "windows" / "icon.ico"), "."),
+        # v3.5.7 — the bundled one-year demo store (~20 MB gzipped, 76 MB inflated).
+        # _demo_backup_path() searches demo/demo_store.db.gz relative to the bundle
+        # root, so without this entry a real install reports available:false and
+        # "restore the demo store" has nothing to restore. Conditional on purpose: a
+        # fresh checkout that has not generated the file must still build.
+        *([(str(ROOT / "demo" / "demo_store.db.gz"), "demo")]
+          if (ROOT / "demo" / "demo_store.db.gz").exists() else []),
     ],
     hiddenimports=[
         "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",

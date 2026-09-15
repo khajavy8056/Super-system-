@@ -359,7 +359,14 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             except Exception:
                 total_est = sum(x["sell"] * q for x, q in items)
             on_credit = bool(cust and cust["credit"] and rnd.random() < 0.35)
-            method = "CREDIT" if on_credit else rnd.choices(["CARD", "CASH"], weights=[0.72, 0.28])[0]
+            # v3.5.7 — the account tender is called ACCOUNT everywhere else
+            # (pos.checkout sums on_account over method == "ACCOUNT", and the till's
+            # own dropdown offers value="ACCOUNT"). This said "CREDIT", a name nothing
+            # recognises, so on_account stayed 0: every "نسیه" sale was written up as
+            # fully PAID, no customer debt was ever posted, and the fortnightly
+            # settlement loop below then found balance_after == 0 and posted nothing
+            # either. The demo store shipped with zero receivables.
+            method = "ACCOUNT" if on_credit else rnd.choices(["CARD", "CASH"], weights=[0.72, 0.28])[0]
             user = rnd.choices(users, weights=user_weights)[0]
             coupon_obj = None
             if cust and cust["c"].id in (fx["vip_ids"] | fx["winback_ids"]) and rnd.random() < 0.6:
@@ -376,7 +383,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             pay_amt = round(total_est - float(inv_disc or 0))
             sp = db.begin_nested()
             try:
-                inv = pos_svc.checkout(db, items=cart, payments=[{"method": "CREDIT" if on_credit else method, "amount": str(pay_amt)}],
+                inv = pos_svc.checkout(db, items=cart, payments=[{"method": method, "amount": str(pay_amt)}],
                                        user=user, customer_id=cust["c"].id if cust else None, tax_rate=D(0), invoice_discount=inv_disc)
                 if coupon_obj:
                     from ..models import CouponRedemption
@@ -470,6 +477,30 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     db.flush(); _fix_created(db, "acc_cheques", [ch.id], when); sp.commit()
                 except Exception as exc:
                     sp.rollback(); log.warning("cheque skipped: %s", exc)
+            # v3.5.7 — settle the cheques that have come due. accounting.clear_cheque()
+            # and bounce_cheque() both exist, but nothing ever called them, so every
+            # cheque this generator wrote stayed PENDING and the cheques report had one
+            # column with anything in it: no وصول شده, no برگشت خورده, no ageing.
+            due = db.execute(select(Cheque).where(Cheque.status == "PENDING",
+                                                  Cheque.due_date <= day)).scalars().all()
+            for ch in due:
+                if rnd.random() < 0.12:
+                    continue                       # genuinely still outstanding
+                sp = db.begin_nested()
+                try:
+                    if rnd.random() < 0.07:
+                        acc_svc.bounce_cheque(db, cheque_id=ch.id, user=admin)
+                    else:
+                        acc_svc.clear_cheque(db, cheque_id=ch.id, user=admin)
+                    sp.commit()
+                    # the service stamps updated_at with the wall clock; pull it back onto
+                    # the simulated calendar. created_at is deliberately left alone — that
+                    # is the issue date and _fix_created() would overwrite it.
+                    db.execute(text("UPDATE acc_cheques SET updated_at=:at WHERE id=:id"),
+                               {"at": datetime.combine(day, datetime.min.time()) + timedelta(hours=9),
+                                "id": ch.id})
+                except Exception as exc:
+                    sp.rollback(); log.warning("cheque settle skipped: %s", exc)
         if di % 30 == 0:
             db.commit()
         day += timedelta(days=1)
