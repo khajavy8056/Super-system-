@@ -1,6 +1,12 @@
-# Branch divergence — read before touching the intelligence engine
+# Branch divergence — RESOLVED in v3.6.1
 
-Two parallel lines of work exist in this repository. Neither contains the other.
+**The merge has been done.** `arena/01a076d3-super-system` (v3.6.0: 59 analyzers, the
+`ai_narrator` free-provider advisor, `Ui.paged` on 22+ lists) was merged into
+`arena/01a0a5c6-super-system` (v3.5.13: the device-identity/login/licence fixes, 24 customer
+analyzers). v3.6.1 carries both. What follows is kept because the reasoning is still needed
+by anyone touching the intelligence engine.
+
+Two parallel lines of work existed in this repository. Neither contained the other.
 
 | | `arena/01a0a5c6-super-system` (this branch) | `arena/01a076d3-super-system` (parent) |
 |---|---|---|

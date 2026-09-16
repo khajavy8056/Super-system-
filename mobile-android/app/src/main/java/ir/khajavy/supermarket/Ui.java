@@ -133,50 +133,6 @@ public final class Ui {
     public static View divider(Context c) { View v = new View(c); v.setBackgroundColor(BORDER); v.setLayoutParams(margin(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)), 0, 8, 0, 8)); return v; }
     public static View space(Context c, int h) { View v = new View(c); v.setLayoutParams(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(h))); return v; }
 
-    /* ---------------- v3.5.13: bounded list rendering ---------------- */
-    /** Builds one row of a paged list. */
-    public interface Maker { View make(int i); }
-
-    /**
-     * v3.5.13 — render a long list one page at a time.
-     *
-     * Every long list in this app used to be {@code for (i < ar.length()) body.addView(row(i))},
-     * and the insight feed grew its view tree without limit every time the user pressed
-     * «نمایش N مورد دیگر». Rows are not cheap — a RippleDrawable, a custom typeface, Persian text
-     * shaping, sometimes a chart — so on a weak phone that is an ANR, which the user experiences as
-     * a hang followed by a crash.
-     *
-     * Paging REPLACES the previous page rather than appending to it, so however many times the
-     * button is pressed the tree holds at most {@code batch} rows. A cap that merely delayed the
-     * crash would not have fixed anything.
-     */
-    public static void page(Context c, LinearLayout host, final int total, final int batch, final Maker mk) {
-        if (total <= 0) return;
-        final LinearLayout box = col(c);
-        host.addView(box);
-        final int[] at = {0};
-        final Runnable[] go = new Runnable[1];
-        go[0] = new Runnable() {
-            @Override public void run() {
-                box.removeAllViews();
-                final int start = at[0];
-                final int end = Math.min(total, start + batch);
-                for (int i = start; i < end; i++) { View v = mk.make(i); if (v != null) box.addView(v); }
-                if (total <= batch) return;
-                LinearLayout nav = row(c); nav.setPadding(0, dp(6), 0, dp(10));
-                Button prev = small(c, "قبلی", () -> { at[0] = Math.max(0, start - batch); go[0].run(); });
-                Button next = small(c, "بعدی", () -> { at[0] = end; go[0].run(); });
-                prev.setEnabled(start > 0); next.setEnabled(end < total);
-                TextView pos = text(c, fa(String.valueOf(start + 1)) + "–" + fa(String.valueOf(end))
-                        + " از " + fa(String.valueOf(total)), 11.5f, MUTED, false);
-                pos.setGravity(Gravity.CENTER); pos.setLayoutParams(weight(1));
-                nav.addView(prev); nav.addView(pos); nav.addView(next);
-                box.addView(nav);
-            }
-        };
-        go[0].run();
-    }
-
     /* ---------------- inputs ---------------- */
     public static EditText input(Context c, String hint, boolean numeric) {
         EditText e = new EditText(c); e.setHint(hint); e.setTypeface(FONT); e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15); e.setTextColor(TEXT); e.setHintTextColor(MUTED);
@@ -301,4 +257,28 @@ public final class Ui {
     }
     public static ImageView img(Context c, int size) { ImageView i = new ImageView(c); i.setLayoutParams(lp(dp(size), dp(size))); i.setScaleType(ImageView.ScaleType.CENTER_CROP); i.setBackground(rounded(BG2, BORDER, 12)); i.setClipToOutline(true); return i; }
     public static FrameLayout frame(Context c) { FrameLayout f = new FrameLayout(c); f.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); return f; }
+
+    /* ---------------- v3.5 — staged rendering: never inflate hundreds of rows at once ---------------- */
+    public interface RowFactory { View make(int index); }
+    /**
+     * Adds rows to {@code host} in pages of {@code page}; a «نمایش N مورد بعدی» button appends the next page.
+     * Each page is inflated on the next UI frame so the screen paints before the work starts (no ANR/OOM on
+     * 1 000+ invoices or 100 insight cards with charts).
+     */
+    public static void paged(LinearLayout host, int total, int page, RowFactory f) {
+        if (total <= 0) return;
+        final int[] shown = {0}; final Button[] more = {null};
+        Runnable[] step = new Runnable[1];
+        step[0] = () -> {
+            if (more[0] != null) { host.removeView(more[0]); more[0] = null; }
+            int end = Math.min(total, shown[0] + page);
+            for (int i = shown[0]; i < end; i++) { try { View v = f.make(i); if (v != null) host.addView(v); } catch (Throwable t) { android.util.Log.w("Ui", "row " + i + ": " + t); } }
+            shown[0] = end;
+            if (shown[0] < total) { int rest = total - shown[0]; more[0] = ghost(host.getContext(), "نمایش " + fa(String.valueOf(Math.min(page, rest))) + " مورد بعدی (" + fa(String.valueOf(rest)) + " مانده)", () -> host.post(step[0])); more[0].setLayoutParams(margin(match(), 0, 8, 0, 8)); host.addView(more[0]); }
+        };
+        host.post(step[0]);
+    }
+    public static void paged(LinearLayout host, org.json.JSONArray arr, int page, java.util.function.Function<org.json.JSONObject, View> f) {
+        paged(host, arr == null ? 0 : arr.length(), page, i -> { org.json.JSONObject o = arr.optJSONObject(i); return o == null ? null : f.apply(o); });
+    }
 }

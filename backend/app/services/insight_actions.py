@@ -90,8 +90,13 @@ def act_set_price(db, insight, p, user):
     b = db.get(ProductBatch, p["batch_id"])
     if not b:
         return {"skipped": "batch"}
+    # v3.6.1 — hard stop. The ceiling is enforced HERE rather than only in the analyzers, so an
+    # insight written by an older version, or by an analyzer with a bug, still cannot push a
+    # price above the printed consumer price into the database.
+    from . import pricing_law
+    new_price = pricing_law.guard_sell_price(b, float(p["sell_price"]))
     before = float(b.sell_price)
-    b.sell_price = Decimal(str(p["sell_price"]))
+    b.sell_price = Decimal(str(new_price))
     try:
         from . import pricing
         pricing.set_price(db, product=b.product, price_type="SELL", price=b.sell_price, user=user, source="insight", note=f"insight #{insight.id}")
@@ -240,7 +245,10 @@ def act_bundle_campaign(db, insight, p, user):
     # markdown on the dead stock's batches
     for b in db.execute(select(ProductBatch).where(ProductBatch.product_id == p["product_id"], ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).scalars():
         before = float(b.sell_price)
+        from . import pricing_law
         new_price = max(float(b.buy_price) * 1.01, round(before * (1 - p["percent"] / 100) / 100) * 100)
+        # the cost floor above can itself sit over the printed consumer price — never charge it
+        new_price = pricing_law.clamp_sell(b, new_price)
         b.sell_price = Decimal(str(round(new_price)))
         b.discount = Decimal(str(round(before - new_price)))
     notify(db, type="INSIGHT_TASK", title="باندل ساخته شد", body=f"{name} — {p['percent']}٪ تخفیف روی کالای راکد؛ آن را کنار کالای پرفروش بچینید.",
@@ -295,7 +303,118 @@ def act_note(db, insight, p, user):
     return {"noted": True}
 
 
+# ------------------------------------------------------------------ v3.5 PRO actions
+def act_personal_sms(db, insight, p, user):
+    """One *different* text per customer (the PRO analyzers write the message for each person)."""
+    if not _sms_enabled(db):
+        return {"sms": 0, "skipped": "sms_disabled"}
+    sent = 0
+    for row in p.get("customers", []):
+        cust = db.get(Customer, row.get("customer_id"))
+        txt = (row.get("text") or "").strip()
+        if not cust or not cust.phone or not txt:
+            continue
+        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type="Insight", reference_id=insight.id)
+        sent += 1
+    sms_svc.kick_worker()
+    return {"sms": sent}
+
+
+def act_personal_coupons(db, insight, p, user):
+    """Per-customer percent/days (+ optional personal text). One campaign groups them for the ROI report."""
+    rows = p.get("customers", [])
+    if not rows:
+        return {"coupons": 0}
+    pct = int(rows[0].get("percent", 5)); days = int(rows[0].get("days", 7))
+    camp = _campaign(db, f"کوپن شخصی — {insight.title[:40]}", pct, days, user, f"کوپن‌های شخصی هوش فروشگاه (پیشنهاد #{insight.id})")
+    issued = sent = 0
+    for row in rows:
+        cust = db.get(Customer, row.get("customer_id"))
+        if not cust:
+            continue
+        c = _coupon(db, code_prefix="ME", customer=cust, percent=int(row.get("percent", pct)), days=int(row.get("days", days)), campaign_id=camp.id, user=user)
+        issued += 1
+        if cust.phone and _sms_enabled(db):
+            txt = row.get("text") or f"{cust.name} عزیز، کد {c.code} = {row.get('percent', pct)}٪ تخفیف شخصی شما در {_store(db)} تا {row.get('days', days)} روز آینده."
+            sms_svc.queue_sms(db, phone=cust.phone, text=txt.replace("WELCOME۱۰", c.code).replace("VIP۵", c.code).replace("BACK۱۰", c.code), reference_type="Insight", reference_id=insight.id)
+            sent += 1
+    sms_svc.kick_worker()
+    return {"campaign_id": camp.id, "coupons": issued, "sms": sent}
+
+
+def act_tag_customers(db, insight, p, user):
+    """Append «#tag» markers to the customer's notes so the POS and the customer card show them."""
+    n = 0
+    for tag, ids in (p.get("tags") or {}).items():
+        marker = f"#{tag}"
+        for cust in db.execute(select(Customer).where(Customer.id.in_(list(ids)))).scalars():
+            notes = cust.notes or ""
+            if marker not in notes:
+                cust.notes = (notes + " " + marker).strip()[:1000]
+                n += 1
+    return {"tagged": n}
+
+
+def act_set_credit_limit(db, insight, p, user):
+    n = 0
+    for row in p.get("customers", []):
+        cust = db.get(Customer, row.get("customer_id"))
+        if not cust:
+            continue
+        before = float(cust.credit_limit or 0)
+        cust.credit_limit = Decimal(str(int(row["limit"])))
+        write_audit(db, action="INSIGHT_ACTION", user_id=user.id if user else None, entity_type="Customer", entity_id=cust.id,
+                    before={"credit_limit": before}, after={"credit_limit": float(cust.credit_limit)})
+        n += 1
+    return {"updated": n}
+
+
+def act_set_min_stock_bulk(db, insight, p, user):
+    n = 0
+    for it in p.get("items", []):
+        pr = db.get(Product, it.get("product_id"))
+        if not pr:
+            continue
+        before = pr.min_stock_alert
+        pr.min_stock_alert = int(it["min_stock"])
+        write_audit(db, action="INSIGHT_ACTION", user_id=user.id if user else None, entity_type="Product", entity_id=pr.id,
+                    before={"min_stock_alert": before}, after={"min_stock_alert": pr.min_stock_alert})
+        n += 1
+    return {"updated": n}
+
+
+def act_set_prices_bulk(db, insight, p, user):
+    from .pricing_law import PriceLawError
+    n = skipped = 0
+    for it in p.get("items", []):
+        # one illegal row must not abort the whole batch — skip it and say how many were skipped,
+        # otherwise a 40-item rounding card fails entirely because of a single bad ceiling.
+        try:
+            r = act_set_price(db, insight, {"batch_id": it["batch_id"], "sell_price": it["sell_price"]}, user)
+        except PriceLawError:
+            skipped += 1
+            continue
+        n += 0 if r.get("skipped") else 1
+    return {"updated": n, "skipped_over_consumer_price": skipped}
+
+
+def act_threshold_campaign(db, insight, p, user):
+    camp = _campaign(db, f"خرید بالای {_fa(p['min_purchase'])} = {p['percent']}٪", p["percent"], p["days"], user, "کمپین آستانهٔ سبد — هوش فروشگاه")
+    camp.min_purchase = Decimal(str(int(p["min_purchase"])))
+    notify(db, type="INSIGHT_TASK", title="کمپین آستانهٔ سبد فعال شد", body=f"خرید بالای {_fa(p['min_purchase'])} تومان = {p['percent']}٪ تخفیف تا {p['days']} روز. یک برگهٔ کوچک روی صندوق بگذارید.",
+           severity="INFO", reference_type="Campaign", reference_id=camp.id)
+    return {"campaign_id": camp.id}
+
+
+def act_set_setting(db, insight, p, user):
+    _set_setting(db, str(p["key"]), str(p["value"]))
+    write_audit(db, action="INSIGHT_ACTION", user_id=user.id if user else None, entity_type="SystemSetting", entity_id=0, after={p["key"]: p["value"]})
+    return {p["key"]: p["value"]}
+
+
 ACTIONS = {
+    "personal_sms": act_personal_sms, "personal_coupons": act_personal_coupons, "tag_customers": act_tag_customers, "set_credit_limit": act_set_credit_limit,
+    "set_min_stock_bulk": act_set_min_stock_bulk, "set_prices_bulk": act_set_prices_bulk, "threshold_campaign": act_threshold_campaign, "set_setting": act_set_setting,
     "shelf_note": act_shelf_note, "reorder_note": act_reorder_note, "set_min_stock": act_set_min_stock, "set_price": act_set_price,
     "markdown_ladder": act_markdown_ladder, "vip_coupons": act_vip_coupons, "winback_sms": act_winback_sms, "sms_buyers": act_sms_buyers,
     "bundle_campaign": act_bundle_campaign, "flash_sale": act_flash_sale, "debt_reminders": act_debt_reminders,

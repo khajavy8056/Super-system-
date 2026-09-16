@@ -7,8 +7,11 @@
   const pct = (x) => fa(Math.round((Number(x) || 0) * 100)) + "٪";
   const KIND_ICON = { CROSS_SELL: "gift", EXPIRY_LADDER: "clock", DEAD_STOCK: "warehouse", VELOCITY: "trend", SUPPLIER: "inbox", CASHFLOW: "cash",
     VIP: "star", CHURN: "user", BASKET_NUDGE: "pos", PRICE_GAP: "tag", LOSS_PREV: "shield", SEASON: "chart", VISIT_PATTERN: "user" };
+  // v3.5 — group → icon fallback for the 46 PRO kinds
+  const GROUP_ICON = { customer: "user", stock: "warehouse", price: "tag", ops: "shield", growth: "trend", daily: "sparkle" };
+  const iconOf = (i) => KIND_ICON[i.kind] || GROUP_ICON[i.group] || "chart";
   const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
-  const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"] };
+  const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"], 4: ["نکته", "badge-gray"] };
   const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
   const ico = (k, s) => (typeof ICONS !== "undefined" && ICONS[k]) ? icon(k, s) : icon("chart", s);
 
@@ -42,7 +45,7 @@
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
-      <header><span class="ins-ic">${ico(KIND_ICON[i.kind] || "chart", 20)}</span>
+      <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}
@@ -255,7 +258,7 @@
   async function detail(id) {
     const i = await api(`/insights/${id}?narrate=true`);
     openModal(`<div class="ins-detail">
-      <header><span class="ins-ic">${ico(KIND_ICON[i.kind] || "chart", 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
+      <header><span class="ins-ic">${ico(iconOf(i), 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
       ${i.narrative ? `<div class="ins-narr">${esc(i.narrative).replace(/\n/g, "<br/>")}</div>` : `<p>${esc(i.body)}</p>`}
       ${abBlock(i)}
       ${predictBlock(i)}
@@ -292,7 +295,7 @@
   function refreshCurrent() { if (state.view === "insights") RENDER.insights(); else if (state.view === "dashboard") RENDER.dashboard(); }
 
   // ---------------------------------------------------------------- insights view
-  let insTab = "NEW";
+  let insTab = "NEW", insGroup = "";
   RENDER.insights = async () => {
     const v = $("#view");
     v.innerHTML = `<div class="ins-wrap">
@@ -304,7 +307,8 @@
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
-    const [s, list] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=80`)]);
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "مشاور هوش مصنوعی", onclick: aiAdvisor }));
+    const [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
     if (!list.length && insTab === "NEW" && !s.accepted && !s.open) {
       // first visit: run analyzers
       try { await api("/insights/run", { method: "POST" }); return RENDER.insights(); } catch (_) { /* fallthrough */ }
@@ -313,9 +317,15 @@
     const tabs = [["NEW", "پیشنهادهای باز", s.open], ["ACCEPTED,MEASURED", "اجراشده و اثر", s.accepted], ["SNOOZED", "به تعویق"], ["DISMISSED,EXPIRED", "بایگانی"]];
     const t = $("#ins-tabs"); t.innerHTML = "";
     tabs.forEach(([k, l, n]) => t.append(el("button", { class: "set-tab" + (k === insTab ? " active" : ""), text: l + (n != null ? ` (${fa(n)})` : ""), onclick: () => { insTab = k; RENDER.insights(); } })));
+    if (gr && gr.groups) {   // v3.5 — group strip (customer / stock / price / ops / growth / daily)
+      const gs = el("div", { class: "set-tabs ins-groups" });
+      gs.append(el("button", { class: "set-tab" + (!insGroup ? " active" : ""), text: `همه (${fa(gr.analyzers)} تحلیل)`, onclick: () => { insGroup = ""; RENDER.insights(); } }));
+      gr.groups.forEach((g) => gs.append(el("button", { class: "set-tab" + (g.id === insGroup ? " active" : ""), text: g.label + (g.open ? ` (${fa(g.open)})` : ""), onclick: () => { insGroup = g.id; RENDER.insights(); } })));
+      t.after(gs);
+    }
     const grid = $("#ins-list"); grid.innerHTML = "";
     if (!list.length) grid.innerHTML = `<div class="card muted">موردی نیست. ${insTab === "NEW" ? "همه چیز مرتب است — تحلیل بعدی به‌طور خودکار انجام می‌شود." : ""}</div>`;
-    list.forEach((i) => grid.append(card(i)));
+    pagedAppend(grid, list, 12, card);   // v3.5 staged — long lists no longer freeze the page
   };
 
   function hero(s, host) {
@@ -328,6 +338,31 @@
         <div class="ins-kpi"><span class="muted">موتور تحلیل</span><b>${s.ai && s.ai.online ? "محلی + روایت ابری" : "محلی (آفلاین)"}</b><span class="muted">${s.ai && s.ai.online ? esc(s.ai.model) : "روایت متنی داخلی"}</span></div>
       </div>
       ${s.by_kind && s.by_kind.length ? `<div class="ins-bars">${s.by_kind.map((k) => `<div class="ins-bar"><span>${esc(k.label)}</span><i style="width:${Math.min(100, Math.round(Math.abs(k.gain) / Math.max(1, Math.abs(s.by_kind[0].gain)) * 100))}%" class="${k.gain >= 0 ? "" : "neg"}"></i><b>${money(k.gain)}</b></div>`).join("")}</div>` : ""}`;
+  }
+
+  // v3.5 — AI advisor: show the (anonymised) report, send it to the configured free model, get suggestions as cards
+  async function aiAdvisor() {
+    const s = await api("/insights/summary");
+    if (!s.ai || !s.ai.online) {
+      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">هنوز سرویسی انتخاب نشده. از تنظیمات ← هوش فروشگاه یکی از سرویس‌های رایگان (OpenRouter، Groq، Gemini یا Ollama محلی) را انتخاب کنید و کلید رایگان را وارد کنید.</p>
+        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به تنظیمات</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
+      $("#aa-go").onclick = () => { closeModal(); go("settings"); setTimeout(() => { const b = document.querySelector('[data-cat="ai"]'); if (b) b.click(); }, 200); };
+      return;
+    }
+    openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی <span class="muted" style="font-size:12px">(${esc(s.ai.model)})</span></h3>
+      <p class="muted">این گزارش بدون نام و شمارهٔ مشتری به مدل فرستاده می‌شود و پیشنهادهایش به‌صورت کارت‌های قابل اجرا برمی‌گردد.</p>
+      <pre id="aa-rep" class="receipt" style="max-height:220px;overflow:auto;direction:ltr;text-align:left;font-size:11px">در حال ساخت گزارش…</pre>
+      <div id="aa-out" class="muted"></div>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-primary" id="aa-send">ارسال و دریافت راهکارها</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
+    try { const rep = await api("/insights/ai/report"); $("#aa-rep").textContent = JSON.stringify(rep, null, 1).slice(0, 6000); } catch (e) { $("#aa-rep").textContent = e.message; }
+    $("#aa-send").onclick = async () => {
+      $("#aa-send").disabled = true; $("#aa-out").textContent = "در انتظار پاسخ مدل… (تا ۳۰ ثانیه)";
+      try {
+        const r = await api("/insights/ai/advise", { method: "POST" });
+        $("#aa-out").className = "ins-narr"; $("#aa-out").innerHTML = `<b>${esc(r.summary || "")}</b><br/>${fa(r.created)} پیشنهاد به فهرست «روزانه ← مشاور هوش مصنوعی» اضافه شد؛ هر کدام را با یک لمس اجرا کنید.`;
+        setTimeout(() => { closeModal(); insTab = "NEW"; insGroup = "daily"; RENDER.insights(); }, 1800);
+      } catch (e) { $("#aa-out").textContent = e.message; $("#aa-send").disabled = false; }
+    };
   }
 
   async function weeklyReport() {
@@ -426,9 +461,27 @@
           <label>کلید API<input id="ai-key" class="ltr" type="password" placeholder="${g("ai.api_key") ? "•••••• (ذخیره‌شده)" : "sk-…"}"/></label>
           <label>مدل<input id="ai-model" class="ltr" placeholder="gpt-4o-mini" value="${esc(g("ai.model"))}"/></label>
         </div>
+        <div id="ai-presets" class="ins-presets" style="margin-top:10px"></div>
         <p class="muted" style="margin-top:8px">هر سرویس با API سازگار با OpenAI کار می‌کند (OpenAI، OpenRouter، Groq، یا مدل محلی مثل Ollama روی همین شبکه). هزینهٔ آن بر عهدهٔ شماست و بدون آن هم همهٔ امکانات کار می‌کند.</p>
         <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button><button class="btn" id="ai-test">تست روایت</button></div>`;
       body.append(card);
+      api("/insights/ai/presets").then((p) => {   // v3.5 — one-tap free providers
+        const box = $("#ai-presets"); if (!box) return;
+        box.append(el("div", { class: "muted", text: "سرویس‌های رایگان — یکی را انتخاب کنید، کلید رایگان را از سایتش بگیرید و همین‌جا وارد کنید:" }));
+        const wrap = el("div", { class: "row", style: "flex-wrap:wrap;gap:6px;margin-top:6px" });
+        p.presets.forEach((pr) => wrap.append(el("button", { class: "btn btn-sm" + (p.current.preset === pr.id ? " btn-primary" : ""), text: pr.label + (pr.free ? "" : " (پولی)"), title: pr.note, onclick: async () => {
+          const key = $("#ai-key").value.trim();
+          try { const r = await api("/insights/ai/preset", { method: "POST", body: JSON.stringify({ preset: pr.id, api_key: key || null }) });
+            $("#ai-pr").value = "openai_compatible"; $("#ai-url").value = r.base_url; $("#ai-model").value = r.model; toast(`${pr.label} انتخاب شد`);
+            if (!r.has_key && pr.id !== "ollama") { window.open(pr.keys_url, "_blank"); toast("کلید رایگان را از صفحهٔ بازشده بگیرید و در «کلید API» وارد و ذخیره کنید", "ok"); }
+          } catch (e) { toast(e.message, "err"); }
+        } })));
+        box.append(wrap);
+        const tb = el("button", { class: "btn btn-sm btn-ghost", text: "تست اتصال", style: "margin-top:6px", onclick: async () => {
+          try { const r = await api("/insights/ai/test", { method: "POST" }); toast(r.ok ? `متصل شد (${fa(r.ms)} ms): ${r.reply}` : r.error, r.ok ? "ok" : "err"); } catch (e) { toast(e.message, "err"); }
+        } });
+        box.append(tb);
+      }).catch(() => {});
       $("#ai-save").onclick = async () => {
         const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value, "ai.provider": $("#ai-pr").value, "ai.base_url": $("#ai-url").value.trim(), "ai.model": $("#ai-model").value.trim() };
         if ($("#ai-key").value) upd["ai.api_key"] = $("#ai-key").value.trim();

@@ -96,9 +96,17 @@ def analyzed(client, auth_headers):
 
 
 def test_new_analyzers_are_registered_and_labelled():
-    for kind in customer_intel.ANALYZERS:
+    """Only the analyzers that survive the v3.6.1 de-duplication should be registered."""
+    for kind in customer_intel.ACTIVE:
         assert kind in insights.ANALYZERS, f"{kind} is defined but never registered"
         assert kind in insights.KIND_LABELS, f"{kind} has no Persian label — the feed shows a blank chip"
+        assert any(kind in ks for _, ks in insights.GROUPS.values()), \
+            f"{kind} has no UI group, so the insight would never be counted or shown"
+    # ...and the ones folded into insights_pro must NOT be registered by this module, or the shop
+    # sees two cards for one problem (and for three kinds one dict silently overwrote the other).
+    for kind in customer_intel.SUPERSEDED_BY:
+        assert insights.ANALYZERS.get(kind) is not customer_intel.ANALYZERS.get(kind), \
+            f"{kind} is superseded by {customer_intel.SUPERSEDED_BY[kind]} but this module still owns it"
 
 
 def test_customer_analyzers_fire_on_real_data(analyzed):

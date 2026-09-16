@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (AuditLog, Cheque, Customer, Expense, Insight, Invoice, InvoiceItem, Product, StockMovement,
                       ProductBatch, Return, Supplier, User)
+from . import pricing_law  # v3.6.1 — the consumer-price ceiling every price suggestion must respect
 from .timeservice import local_now, local_today, local_day_range
 
 log = logging.getLogger("supermarket.insights")
@@ -222,6 +223,12 @@ def a_expiry_ladder(ctx: Ctx) -> list[Draft]:
                                    ProductBatch.expiry_date.is_not(None))
     ).scalars().all()
     for b in rows:
+        # The query asks for expiry_date IS NOT NULL, but a batch already sitting in the session
+        # identity map can still hand back None, and subtracting it killed the whole analyzer
+        # (silently — the per-kind try/except swallowed it, so the shop just never saw expiry
+        # advice again). Guard it rather than trust the filter.
+        if b.expiry_date is None:
+            continue
         days_left = (b.expiry_date - ctx.today).days
         if days_left < 0 or days_left > 45:
             continue
@@ -596,17 +603,65 @@ def a_price_gap(ctx: Ctx) -> list[Draft]:
         v = _daily_velocity(ctx, b.product_id)
         if margin < 0.03 and v > 0.2:
             seen.add(b.product_id)
-            new_price = round(cost * 1.12 / 100) * 100
-            out.append(Draft(
-                kind="PRICE_GAP", dedupe_key=f"low:{b.product_id}",
-                title=f"{_pname(ctx, b.product_id)} تقریباً بدون سود فروخته می‌شود",
-                body=(f"قیمت خرید {_money(cost)} و فروش {_money(sell)} → حاشیهٔ {_fa(margin*100,1)}٪ با {_fa(v*7,1)} فروش در هفته. "
-                      f"پیشنهاد: قیمت {_money(new_price)}" + (f" (مصرف‌کننده {_money(cons)})" if cons else "") + "."),
-                priority=2, evidence={"product_id": b.product_id, "batch_id": b.id, "buy": cost, "sell": sell, "consumer": cons, "margin": round(margin, 3), "velocity": round(v, 2)},
-                actions=[{"type": "set_price", "label": f"تغییر قیمت به {_money(new_price)}", "params": {"batch_id": b.id, "sell_price": new_price}}],
-                expected_gain=(new_price - sell) * v * 30,
-                metric={"metric": "product_profit", "product_id": b.product_id, "window_days": 28},
-            ))
+            # v3.6.1 — a thin margin used to produce one answer regardless of what the shop is
+            # actually allowed to do: "sell at cost + 12 %". When the printed consumer price sits
+            # below that, the advice was impossible at the till. The ceiling decides the answer
+            # now, and the three cases get three genuinely different remedies.
+            hr = pricing_law.headroom(b, cost)
+            ev = {"product_id": b.product_id, "batch_id": b.id, "buy": cost, "sell": sell,
+                  "consumer": cons, "margin": round(margin, 3), "velocity": round(v, 2),
+                  "verdict": hr["verdict"]}
+            name = _pname(ctx, b.product_id)
+            weekly = _fa(v * 7, 1)
+            if hr["verdict"] == "unprofitable":
+                # ceiling <= cost: no legal price makes money. The lever is procurement, not price.
+                out.append(Draft(
+                    kind="PRICE_GAP", dedupe_key=f"low:{b.product_id}",
+                    title=f"{name} با قیمت مصرف‌کنندهٔ فعلی هیچ سودی ندارد",
+                    body=(f"قیمت خرید {_money(cost)} از قیمت درج‌شده روی کالا ({_money(cons)}) بیشتر است، "
+                          f"پس در هیچ قیمت مجازی سود نمی‌دهد و {_fa(v*7,1)} فروش در هفته یعنی هر فروش ضرر است. "
+                          "افزایش قیمت راه‌حل نیست چون مجاز نیست. " + pricing_law.buy_price_is_not_a_lever(b) +
+                          " ابتدا بررسی کنید قیمت مصرف‌کننده درست ثبت شده باشد؛ اگر درست است، "
+                          "تأمین‌کنندهٔ ارزان‌تر پیدا کنید یا این کالا را از فهرست خرید حذف کنید."),
+                    priority=1, evidence=ev,
+                    actions=[{"type": "reorder_note", "label": "ثبت برای بازبینی تأمین/حذف",
+                              "params": {"product_id": b.product_id, "qty": 0, "products": [b.product_id]}},
+                             {"type": "note", "label": "یادداشت: بررسی قیمت مصرف‌کننده و تأمین‌کننده"}],
+                    expected_gain=0.0,
+                    metric={"metric": "product_profit", "product_id": b.product_id, "window_days": 28},
+                ))
+            elif hr["verdict"] == "at_ceiling":
+                # already selling at the ceiling: pricing is exhausted, say so honestly.
+                out.append(Draft(
+                    kind="PRICE_GAP", dedupe_key=f"low:{b.product_id}",
+                    title=f"{name} در سقف قیمت مجاز است و سودش کم مانده",
+                    body=(f"فروش {_money(sell)} دقیقاً روی قیمت مصرف‌کننده ({_money(cons)}) است و حاشیه "
+                          f"{_fa(margin*100,1)}٪ می‌دهد. بالاتر از این مجاز نیست، پس افزایش قیمت جواب نمی‌دهد؛ "
+                          "راه‌حل، کاهش قیمت خرید در سفارش بعدی یا جایگزینی با کالای پرحاشیه‌تر است."),
+                    priority=2, evidence=ev,
+                    actions=[{"type": "note", "label": "یادداشت: بازبینی تأمین‌کنندهٔ این کالا"}],
+                    expected_gain=0.0,
+                    metric={"metric": "product_profit", "product_id": b.product_id, "window_days": 28},
+                ))
+            else:
+                # there IS legal room between the current price and the ceiling.
+                want = round(cost * 1.12 / 100) * 100
+                new_price = pricing_law.clamp_sell(b, want)
+                capped = new_price < want
+                out.append(Draft(
+                    kind="PRICE_GAP", dedupe_key=f"low:{b.product_id}",
+                    title=f"{name} تقریباً بدون سود فروخته می‌شود",
+                    body=(f"قیمت خرید {_money(cost)} و فروش {_money(sell)} → حاشیهٔ {_fa(margin*100,1)}٪ با {weekly} فروش در هفته. "
+                          + (f"قیمت هدف {_money(want)} است ولی سقف مجاز (قیمت مصرف‌کننده) {_money(cons)} است، "
+                             f"پس پیشنهاد {_money(new_price)} — بالاتر از آن مجاز نیست. "
+                             if capped else
+                             f"پیشنهاد: قیمت {_money(new_price)}" + (f" (مصرف‌کننده {_money(cons)})" if cons else "") + ". ")),
+                    priority=2, evidence={**ev, "proposed": new_price, "capped_by_ceiling": capped},
+                    actions=[{"type": "set_price", "label": f"تغییر قیمت به {_money(new_price)}",
+                              "params": {"batch_id": b.id, "sell_price": new_price}}],
+                    expected_gain=(new_price - sell) * v * 30,
+                    metric={"metric": "product_profit", "product_id": b.product_id, "window_days": 28},
+                ))
         elif cons and sell > cons * 1.02 and v > 0:
             seen.add(b.product_id)
             out.append(Draft(
@@ -814,6 +869,13 @@ KIND_LABELS = {
     "VISIT_PATTERN": "پیش‌بینی خرید مشتری",
 }
 
+# v3.5 — the PRO pack (46 more analyzers) registers itself here; it imports the helpers above,
+# so the import must stay below them.
+from . import insights_pro as _pro  # noqa: E402
+ANALYZERS.update(_pro.ANALYZERS_PRO)
+KIND_LABELS.update(_pro.KIND_LABELS_PRO)
+GROUPS = _pro.GROUPS
+
 
 # ----------------------------------------------------------------------------- run / upsert
 def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
@@ -826,34 +888,50 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     for kind, fn in ANALYZERS.items():
         if kinds and kind not in kinds:
             continue
+        # v3.6.1 — one analyzer failing must cost the shop that ONE card, never the whole
+        # «هوش فروشگاه» screen. The try used to cover only fn(ctx), so a failure while the
+        # drafts were being written (a duplicate dedupe_key, a bad Decimal, a locked database)
+        # escaped as a 500 and the intelligence page came up empty. The savepoint means a
+        # failed kind leaves no half-written rows behind and earlier kinds keep theirs.
         try:
-            drafts = fn(ctx)
-        except Exception as exc:  # one broken analyzer must not stop the rest
+            with db.begin_nested():
+                drafts = fn(ctx)
+                for d in drafts:
+                    seen.add((d.kind, d.dedupe_key))
+                    # keep the analyzer's raw estimate (for learning) and expose the calibrated one
+                    raw = float(d.expected_gain or 0.0)
+                    c = forecast.calibrate(db, d.kind, raw, cal)
+                    d.evidence = {**d.evidence, "expected_gain_raw": round(raw), "forecast": {"gain_month": c["gain"], "low_month": c["low"], "high_month": c["high"], "confidence": c["confidence"], "history_n": c["n"]}}
+                    d.expected_gain = c["gain"]
+                    # v3.6.1 — dedupe_key is indexed but NOT unique, so more than one live row can carry
+                    # the same key (an analyzer renamed its key, or two runs overlapped). This used to be
+                    # scalar_one_or_none(), which raises MultipleResultsFound and took the whole
+                    # «هوش فروشگاه» screen down with a 500 — the "sometimes it crashes" report. Take the
+                    # oldest, and expire the rest so the feed heals itself instead of showing twins.
+                    dupes = db.execute(select(Insight).where(Insight.kind == d.kind, Insight.dedupe_key == d.dedupe_key,
+                                                             Insight.status.in_(["NEW", "SNOOZED", "ACCEPTED"]))
+                                       .order_by(Insight.id)).scalars().all()
+                    row = dupes[0] if dupes else None
+                    for extra in dupes[1:]:
+                        extra.status = "EXPIRED"
+                    if row:
+                        if row.status == "NEW":
+                            row.title, row.body, row.priority = d.title, d.body, d.priority
+                            row.evidence, row.actions = json.dumps(d.evidence, ensure_ascii=False, default=str), json.dumps(d.actions, ensure_ascii=False)
+                            row.expected_gain, row.metric = Decimal(str(round(d.expected_gain))), json.dumps(d.metric, ensure_ascii=False)
+                        row.last_seen_at = ctx.now_utc
+                        refreshed += 1
+                    else:
+                        db.add(Insight(kind=d.kind, dedupe_key=d.dedupe_key, title=d.title, body=d.body, priority=d.priority,
+                                       evidence=json.dumps(d.evidence, ensure_ascii=False, default=str), actions=json.dumps(d.actions, ensure_ascii=False),
+                                       expected_gain=Decimal(str(round(d.expected_gain))), metric=json.dumps(d.metric, ensure_ascii=False),
+                                       status="NEW", last_seen_at=ctx.now_utc))
+                        created += 1
+
+        except Exception as exc:
             log.exception("analyzer %s failed", kind)
             errors[kind] = str(exc)
             continue
-        for d in drafts:
-            seen.add((d.kind, d.dedupe_key))
-            # keep the analyzer's raw estimate (for learning) and expose the calibrated one
-            raw = float(d.expected_gain or 0.0)
-            c = forecast.calibrate(db, d.kind, raw, cal)
-            d.evidence = {**d.evidence, "expected_gain_raw": round(raw), "forecast": {"gain_month": c["gain"], "low_month": c["low"], "high_month": c["high"], "confidence": c["confidence"], "history_n": c["n"]}}
-            d.expected_gain = c["gain"]
-            row = db.execute(select(Insight).where(Insight.kind == d.kind, Insight.dedupe_key == d.dedupe_key,
-                                                   Insight.status.in_(["NEW", "SNOOZED", "ACCEPTED"]))).scalar_one_or_none()
-            if row:
-                if row.status == "NEW":
-                    row.title, row.body, row.priority = d.title, d.body, d.priority
-                    row.evidence, row.actions = json.dumps(d.evidence, ensure_ascii=False, default=str), json.dumps(d.actions, ensure_ascii=False)
-                    row.expected_gain, row.metric = Decimal(str(round(d.expected_gain))), json.dumps(d.metric, ensure_ascii=False)
-                row.last_seen_at = ctx.now_utc
-                refreshed += 1
-            else:
-                db.add(Insight(kind=d.kind, dedupe_key=d.dedupe_key, title=d.title, body=d.body, priority=d.priority,
-                               evidence=json.dumps(d.evidence, ensure_ascii=False, default=str), actions=json.dumps(d.actions, ensure_ascii=False),
-                               expected_gain=Decimal(str(round(d.expected_gain))), metric=json.dumps(d.metric, ensure_ascii=False),
-                               status="NEW", last_seen_at=ctx.now_utc))
-                created += 1
     # auto-close stale NEW insights that no analyzer re-confirmed
     stale_before = ctx.now_utc - timedelta(days=STALE_DAYS)
     for row in db.execute(select(Insight).where(Insight.status == "NEW", Insight.last_seen_at < stale_before)).scalars():
@@ -863,7 +941,11 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     for row in db.execute(select(Insight).where(Insight.status == "SNOOZED", Insight.snoozed_until <= ctx.now_utc)).scalars():
         row.status = "NEW"
     db.commit()
-    measure_all(db)
+    # Measurement is a bonus, not the product: if it fails the shop must still get its cards.
+    try:
+        measure_all(db)
+    except Exception:  # pragma: no cover - defensive
+        log.exception("measure_all failed after a successful run")
     return {"created": created, "refreshed": refreshed, "errors": errors, "invoices_analyzed": len(ctx.invoices), "window_days": days}
 
 
@@ -1153,9 +1235,16 @@ def impact_summary(db: Session) -> dict:
     }
 
 
+def group_of(kind: str) -> str:
+    for g, (_, ks) in GROUPS.items():
+        if kind in ks:
+            return g
+    return "growth"
+
+
 def to_dict(r: Insight) -> dict:
     return {
-        "id": r.id, "kind": r.kind, "label": KIND_LABELS.get(r.kind, r.kind), "title": r.title, "body": r.body, "priority": r.priority,
+        "id": r.id, "kind": r.kind, "label": KIND_LABELS.get(r.kind, r.kind), "group": group_of(r.kind), "title": r.title, "body": r.body, "priority": r.priority,
         "evidence": json.loads(r.evidence or "{}"), "actions": json.loads(r.actions or "[]"), "expected_gain": _f(r.expected_gain),
         "metric": json.loads(r.metric or "{}"), "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,
@@ -1259,5 +1348,5 @@ import sys as _sys  # noqa: E402
 if "app.services.customer_intel" not in _sys.modules:
     from . import customer_intel as _customer_intel  # noqa: E402
 
-    ANALYZERS.update(_customer_intel.ANALYZERS)
-    KIND_LABELS.update(_customer_intel.KIND_LABELS)
+    ANALYZERS.update(_customer_intel.ACTIVE)
+    KIND_LABELS.update({k: v for k, v in _customer_intel.KIND_LABELS.items() if k in _customer_intel.ACTIVE})

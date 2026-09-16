@@ -888,6 +888,37 @@ KIND_LABELS = {
 }
 
 
+# ----------------------------------------------------------------------------- superseded analyzers
+# v3.6.1 — this module and ``insights_pro`` were written on two branches that did not know about
+# each other. Registering both as-is meant the shop saw TWO cards for one problem, and for three
+# kinds the identical key meant one analyzer silently replaced the other. The engine is only
+# useful if every card is a distinct decision, so the analyzers below are deliberately NOT
+# registered: ``insights_pro`` (or the base engine) already covers the same ground, usually with
+# more evidence. The functions stay so the reasoning is not lost and so a future merge can see
+# exactly what was folded into what.
+SUPERSEDED_BY = {
+    # exact kind collisions — without this filter one dict overwrote the other
+    "DISCOUNT_LEAK":        "insights_pro.DISCOUNT_LEAK",
+    "PRICE_ROUNDING":       "insights_pro.PRICE_ROUNDING",
+    "OVERSTOCK":            "insights_pro.OVERSTOCK",
+    # same decision, different name
+    "CUST_PAYDAY":          "insights_pro.PAY_CYCLE",
+    "CUST_BASKET_SHRINK":   "insights_pro.TICKET_DROP",
+    "CUST_CHURN_RISK":      "insights_pro.FREQ_DROP + base CHURN",
+    "CUST_NEW_SECOND":      "insights_pro.NEW_CUST_2ND",
+    "CUST_CATEGORY_LOSS":   "insights_pro.CATEGORY_GAP",
+    "CUST_CREDIT_SLOW":     "insights_pro.CREDIT_RISK",
+    "CUST_ANONYMOUS":       "insights_pro.UNREGISTERED_SALES",
+    "STOCKOUT_COST":        "insights_pro.STOCKOUT_HISTORY",
+    "WEEKDAY_DIP":          "insights_pro.SLOW_DAY",
+    "PEAK_HOUR":            "insights_pro.PEAK_HOURS",
+    "TREND_BREAK":          "insights_pro.TREND_DOWN",
+    "ATTACH_OPPORTUNITY":   "base CROSS_SELL",
+}
+
+ACTIVE = {k: v for k, v in ANALYZERS.items() if k not in SUPERSEDED_BY}
+
+
 # ----------------------------------------------------------------------------- self-registration
 # Register into the main registry from here so the import works in BOTH orders. When
 # ``customer_intel`` is imported first, ``insights`` has already finished executing by the time
@@ -895,5 +926,20 @@ KIND_LABELS = {
 # merges the dicts itself (see the bottom of insights.py).
 from . import insights as _insights  # noqa: E402
 
-_insights.ANALYZERS.update(ANALYZERS)
-_insights.KIND_LABELS.update(KIND_LABELS)
+_insights.ANALYZERS.update(ACTIVE)
+_insights.KIND_LABELS.update({k: v for k, v in KIND_LABELS.items() if k in ACTIVE})
+
+# The feed is grouped (insights_pro.GROUPS) and a kind with no group simply does not appear in
+# any group's count — the insight exists but the shop never sees it. Every registered kind must
+# sit in exactly one group; tests/test_v35_intelligence_pro.py enforces that invariant.
+_GROUP_ADDITIONS = {
+    "customer": ["CUST_RFM", "CUST_CONCENTRATION", "CUST_LOYALTY_GAP", "CUST_RETURN_ABUSE"],
+    "price":    ["MARGIN_EROSION", "PROMO_DEPTH"],
+    "stock":    ["ABC_DRIFT", "SUPPLIER_CONCENTRATION"],
+    "ops":      ["DATA_HYGIENE"],
+}
+for _g, _kinds in _GROUP_ADDITIONS.items():
+    if _g in _insights.GROUPS:
+        for _k in _kinds:
+            if _k in ACTIVE and _k not in _insights.GROUPS[_g][1]:
+                _insights.GROUPS[_g][1].append(_k)

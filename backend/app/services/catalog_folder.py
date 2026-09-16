@@ -51,7 +51,7 @@ from .product_bank import _xlsx_rows, norm_barcode
 log = logging.getLogger("supermarket.catalog_folder")
 
 IMG_EXT = (".webp", ".jpg", ".jpeg", ".png", ".gif")
-PIC_DIRS = ("pic", "pics", "picture", "pictures", "images", "image", "img", "prc", "تصاویر", "تصویر", "عکس")
+PIC_DIRS = ("pic", "Pic", "PIC", "pics", "picture", "pictures", "images", "image", "img", "prc", "تصاویر", "تصویر", "عکس")
 SHEET_EXT = (".xlsx", ".xlsm", ".xls", ".csv", ".tsv")
 
 COLS = {
@@ -169,7 +169,8 @@ def read_sheet(path: Path) -> tuple[list[Row], str | None]:
 
 def _stem_keys(name: str) -> list[str]:
     """Variants of an image name that should match the same file on disk."""
-    n = name.strip().replace("\\", "/").split("/")[-1]
+    from urllib.parse import unquote
+    n = unquote(name.strip()).replace("\\", "/").split("?")[0].split("/")[-1]
     stem = re.sub(r"\.(jpe?g|png|webp|gif|bmp)$", "", n, flags=re.I)
     keys = {stem, stem.replace(" ", ""), stem.replace("-(", "("), stem.replace("(", "-("), stem.replace(" (", "(")}
     return [k.lower() for k in keys if k]
@@ -255,9 +256,10 @@ def scan(root: Path) -> dict:
             seen[r.barcode] = r
             rows.append(r)
     with_img = sum(1 for r in rows if r.found)
+    downloadable = sum(1 for r in rows if not r.found and any(x.lower().startswith("http") for x in r.images))
     missing = [{"barcode": r.barcode, "name": r.name, "images": r.images, "sheet": r.sheet} for r in rows if not r.found]
     return {"root": str(root), "sheets": len(sheets), "rows": len(rows), "duplicates": dup, "with_image": with_img,
-            "without_image": len(rows) - with_img, "errors": errors, "missing": missing[:200], "_rows": rows}
+            "without_image": len(rows) - with_img, "downloadable": downloadable, "errors": errors, "missing": missing[:200], "_rows": rows}
 
 
 # ------------------------------------------------------------------ import into the shop
@@ -293,7 +295,28 @@ def _store_image(barcode: str, src: Path) -> str:
     return f"/media/{rel}"
 
 
-def import_folder(db: Session, root: Path | None = None, *, replace_images: bool = False, progress=None, user_id: int | None = None) -> dict:
+def _download(url: str, dest_dir: Path) -> Path | None:
+    """Sheet gives a full URL and the file is not in any pic folder → fetch it once into <root>/_downloaded/."""
+    if not url.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        import httpx
+        from urllib.parse import unquote
+        name = unquote(url.split("?")[0].split("/")[-1]) or "img"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / name
+        if dest.is_file() and dest.stat().st_size > 0:
+            return dest
+        r = httpx.get(url, timeout=15, follow_redirects=True, headers={"User-Agent": "SuperyMan-Catalog/1.0"})
+        if r.status_code == 200 and r.content[:4] in (b"RIFF", b"\xff\xd8\xff\xe0", b"\x89PNG") or (r.status_code == 200 and r.headers.get("content-type", "").startswith("image/")):
+            dest.write_bytes(r.content)
+            return dest
+    except Exception as exc:  # offline / blocked → simply reported as missing
+        log.info("download skipped %s: %s", url, exc)
+    return None
+
+
+def import_folder(db: Session, root: Path | None = None, *, replace_images: bool = False, download_missing: bool = False, progress=None, user_id: int | None = None) -> dict:
     """Scan + write products/categories/bank/images. Returns a summary (also stored in settings)."""
     root = Path(root) if root else default_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -312,6 +335,12 @@ def import_folder(db: Session, root: Path | None = None, *, replace_images: bool
         parent = _category(db, cats, r.category, None)
         cat_id = _category(db, cats, r.subcategory, parent) if r.subcategory else parent
         url = ""
+        if not r.found and download_missing:
+            for nm in r.images:
+                d = _download(nm, root / "_downloaded")
+                if d is not None:
+                    r.found.append(d)
+                    break
         if r.found:
             url = _store_image(r.barcode, r.found[0])
         p = existing.get(r.barcode)
@@ -345,8 +374,10 @@ def import_folder(db: Session, root: Path | None = None, *, replace_images: bool
             db.flush()
     db.flush()
     summary = {k: v for k, v in res.items() if k != "missing"}
+    summary["with_image"] = sum(1 for r in rows if r.found); summary["without_image"] = len(rows) - summary["with_image"]
+    summary["missing"] = [{"barcode": r.barcode, "name": r.name, "images": r.images, "sheet": r.sheet} for r in rows if not r.found][:50]
     summary.update({"created": created, "updated": updated, "images": images, "images_kept": img_skipped,
-                    "seconds": round(time.time() - t0, 1), "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "missing": res.get("missing", [])[:50]})
+                    "seconds": round(time.time() - t0, 1), "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
     try:
         from ..models import SystemSetting
         row = db.execute(select(SystemSetting).where(SystemSetting.key == STATE_KEY)).scalars().first()
