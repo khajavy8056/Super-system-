@@ -19,8 +19,18 @@ public final class InsightScreens {
     private InsightScreens() {}
 
     static int prioColor(int p) { return p <= 1 ? Ui.RED : p == 2 ? Ui.AMBER : Ui.TEAL; }
-    static String prioLabel(int p) { return p <= 1 ? "فوری" : p == 2 ? "مهم" : "پیشنهاد"; }
-    static String kindIcon(String k) { switch (k) { case "CROSS_SELL": case "BASKET_NUDGE": return "cart"; case "EXPIRY_LADDER": return "calendar"; case "DEAD_STOCK": return "box"; case "VELOCITY": return "trend"; case "CASHFLOW": return "bank"; case "VIP": return "star"; case "CHURN": return "users"; case "PRICE_GAP": return "tag"; case "LOSS_PREV": return "shield"; case "SEASON": return "chart"; } return "star"; }
+    static String prioLabel(int p) { return p <= 1 ? "فوری" : p == 2 ? "مهم" : p == 3 ? "پیشنهاد" : "نکته"; }
+    static String kindIcon(String k) { switch (k) { case "CROSS_SELL": case "BASKET_NUDGE": return "cart"; case "EXPIRY_LADDER": return "calendar"; case "DEAD_STOCK": return "box"; case "VELOCITY": return "trend"; case "CASHFLOW": return "bank"; case "VIP": return "star"; case "CHURN": return "users"; case "PRICE_GAP": return "tag"; case "LOSS_PREV": return "shield"; case "SEASON": return "chart"; } return groupIcon(group(k)); }
+    // v3.5 — kind groups (mirror of backend GROUPS); PRO kinds fall back to their group's icon
+    static final String[][] GROUPS = {
+        {"customer", "رفتار مشتری", "VIP,CHURN,VISIT_PATTERN,PAY_CYCLE,CUST_FAVORITE,CUST_ITEM_DUE,TICKET_DROP,FREQ_DROP,NEW_CUST_2ND,OFFER_SENSITIVE,CATEGORY_GAP,CREDIT_RISK,ANNIVERSARY,BULK_BUYER,THRESHOLD_UPSELL"},
+        {"stock", "انبار و پیش‌بینی", "VELOCITY,EXPIRY_LADDER,DEAD_STOCK,SUPPLIER,REORDER_POINT,OVERSTOCK,STOCKOUT_HISTORY,TREND_UP,TREND_DOWN,EXPIRY_RISK_BUY,WASTE_PATTERN,SHRINKAGE,CATEGORY_TURNS,FIFO_BREAK,SUPPLIER_LEAD,SEASONAL_YOY"},
+        {"price", "قیمت و سود", "PRICE_GAP,PROFIT_PARETO,NEGATIVE_MARGIN,DISCOUNT_LEAK,PRICE_ROUNDING,ELASTICITY,CATEGORY_MARGIN"},
+        {"ops", "عملیات و مالی", "CASHFLOW,LOSS_PREV,PEAK_HOURS,QUEUE_STRESS,CASHIER_PERF,CASH_DIFF,RETURNS_PRODUCT,RECEIVABLES_AGING,EXPENSE_SPIKE,SMS_ROI"},
+        {"growth", "رشد و بازاریابی", "CROSS_SELL,BASKET_NUDGE,SEASON,CAMPAIGN_FATIGUE,UNREGISTERED_SALES,HERO_PRODUCT,SLOW_DAY,BASKET_TREND,NEW_PRODUCT_WATCH,CATEGORY_DEPTH"},
+        {"daily", "روزانه", "SURPRISE,AI_ADVISOR"}};
+    static String group(String kind) { for (String[] g : GROUPS) if (("," + g[2] + ",").contains("," + kind + ",")) return g[0]; return "growth"; }
+    static String groupIcon(String g) { switch (g) { case "customer": return "users"; case "stock": return "box"; case "price": return "tag"; case "ops": return "shield"; case "daily": return "star"; } return "trend"; }
 
     /* ---------------- dashboard card (called from Screens.Home) ---------------- */
     public static void dashboardCard(Screens.Screen sc, LinearLayout body, AppActivity a) {
@@ -35,26 +45,37 @@ public final class InsightScreens {
 
     /* ---------------- suggestions feed ---------------- */
     public static final class Feed extends Screens.Screen {
-        int tab = 0; JSONObject summary = new JSONObject();
+        int tab = 0; String grp = ""; JSONObject summary = new JSONObject();
         Feed(AppActivity a) { super(a); }
         public String key() { return "insights"; } public String title() { return "هوش فروشگاه"; }
         public boolean autoRefresh() { return true; }
         public void load() {
             loading();
-            get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=80", rr -> render(arr(rr))); });
+            get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
-        void render(JSONArray items) {
-            clear();
+        void render(JSONArray all) {
+            JSONArray items = all; clear();
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);
             LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
+            if (!Api.standalone()) br.addView(Ui.small(c, "مشاور AI", this::advisor));   // v3.5 — free-model advisor lives on the PC engine
             br.addView(Ui.small(c, "پیش‌بینی سود", () -> a.route("insightsPlan"))); br.addView(Ui.small(c, "مشتریان در نوبت", () -> a.route("insightsCustomers")));
             android.widget.Button rep = Ui.small(c, "گزارش هفتگی", () -> get("/insights/report", r -> { JSONObject x = (JSONObject) r; LinearLayout l = Ui.col(c); TextView tv = Ui.body(c, x.optString("narrative")); tv.setLineSpacing(0, 1.35f); l.addView(tv); Ui.sheet(c, "گزارش هوش فروشگاه", l); })); br.addView(rep);
             android.widget.Button lst = Ui.small(c, "لیست سفارش", () -> get("/insights/tasks", r -> { JSONArray t = arr(r); LinearLayout l = Ui.col(c); if (t.length() == 0) l.addView(Ui.empty(c, "لیست سفارش خالی است")); for (int i = 0; i < t.length(); i++) { JSONObject x = t.optJSONObject(i); l.addView(Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("qty")) + " عدد", Ui.AMBER)); } Ui.sheet(c, "لیست سفارش پیشنهادی", l); })); br.addView(lst); hero.addView(br); body.addView(hero);
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
+            // v3.5 — group strip; filtering is local so switching is instant
+            java.util.Map<String, Integer> cnt = new java.util.HashMap<>(); for (int i = 0; i < items.length(); i++) cnt.merge(group(items.optJSONObject(i).optString("kind")), 1, Integer::sum);
+            LinearLayout gl = Ui.row(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
+            for (String[] g : GROUPS) { int n = cnt.getOrDefault(g[0], 0); if (n == 0) continue; gl.addView(Ui.chip(c, g[1] + " (" + Ui.num(n) + ")", g[0].equals(grp), () -> { grp = g[0]; render(all); })); }
+            body.addView(Ui.chips(c, gl));
+            if (!grp.isEmpty()) { JSONArray fl = new JSONArray(); for (int i = 0; i < items.length(); i++) if (grp.equals(group(items.optJSONObject(i).optString("kind")))) fl.put(items.optJSONObject(i)); items = fl; }
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
-            for (int i = 0; i < items.length(); i++) body.addView(card(items.optJSONObject(i)));
+            LinearLayout list = Ui.col(c); body.addView(list); Ui.paged(list, items, 12, this::card);   // v3.5 staged (cards carry charts)
+        }
+        void advisor() {
+            Ui.toast("در حال ارسال گزارش به مدل…");
+            post("/insights/ai/advise", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.toast(Ui.num(x.optInt("created")) + " راهکار از مشاور دریافت شد"); grp = "daily"; tab = 0; load(); });
         }
         void accept(JSONObject x) { Ui.confirm(c, "این پیشنهاد اجرا شود؟ اقدام‌های آن هم‌اکنون انجام و اثرش از امروز اندازه‌گیری می‌شود.", () -> post("/insights/" + x.optLong("id") + "/accept", new JSONObject(), rr -> { JSONObject o = (JSONObject) rr; JSONArray ex = o.optJSONArray("executed"); StringBuilder sb = new StringBuilder(); for (int i = 0; ex != null && i < ex.length(); i++) { JSONObject e = ex.optJSONObject(i); sb.append(e.optBoolean("ok") ? "✓ " : "✗ ").append(e.optString("type")).append("\n"); } Sfx.play("ok"); Ui.done(Ui.ctx, "اجرا شد", sb.toString().trim(), null); load(); })); }
         void openDetail(long id) { a.open(new Detail(a, id), true); }

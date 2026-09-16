@@ -1914,6 +1914,25 @@ window._stWizard = async (id) => {
 };
 window._stDetail = window._stWizard;
 function fa(n) { return String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]); }
+/* v3.5 — staged list rendering: build `page` rows now, the rest behind a «نمایش N مورد بعدی» button.
+   Never inflates hundreds of nodes at once (that froze the tab on long invoice lists). */
+function pagedAppend(host, items, page, make, opts = {}) {
+  let pos = 0;
+  const step = () => {
+    const end = Math.min(items.length, pos + page);
+    const frag = document.createDocumentFragment();
+    for (; pos < end; pos++) { try { const n = make(items[pos], pos); if (n) frag.append(n); } catch (e) { console.warn("row failed", e); } }
+    host.append(frag);
+    const left = items.length - pos;
+    if (left > 0) {
+      const b = el(opts.tag || "button", { class: "btn btn-ghost btn-sm w-full", text: `نمایش ${fa(Math.min(page, left))} مورد بعدی (${fa(left)} مانده)` });
+      b.onclick = () => { b.remove(); requestAnimationFrame(step); };
+      host.append(opts.wrap ? opts.wrap(b) : b);
+    }
+  };
+  step();
+}
+window.pagedAppend = pagedAppend;
 function fmtSigned(n) { const x = Number(n) || 0; return (x > 0 ? "+" : "") + qty(x); }
 
 window._approve = async (id) => {
@@ -1928,8 +1947,8 @@ window._approve = async (id) => {
 RENDER.invoices = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card"><h3>فاکتورها</h3><table id="inv-table"></table></div>`;
-  const { items } = await api("/invoices?limit=100");
-  const rows = items.map((i) => el("tr", {},
+  const { items } = await api("/invoices?limit=400");
+  const mkRow = (i) => el("tr", {},
     el("td", { text: i.invoice_number }), el("td", { text: money(i.total_amount) }),
     el("td", { text: i.payment_method }),
     el("td", {}, el("span", { class: "badge " + (i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-gray"), text: i.status })),
@@ -1940,12 +1959,13 @@ RENDER.invoices = async () => {
         if (p.ok && typeof p.message === "string") openModal(`<pre class="receipt">${p.message}</pre>`);
         else toast(p.message, p.ok ? "ok" : "err");
       } }),
-      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) }))));
+      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })));
   const t = $("#inv-table");
   t.innerHTML = "";
+  const tb = el("tbody", {});
   t.append(el("thead", {}, el("tr", {}, el("th", { text: "شماره" }), el("th", { text: "مبلغ" }),
-    el("th", { text: "پرداخت" }), el("th", { text: "وضعیت" }), el("th", { text: "تاریخ" }), el("th", {}))),
-    el("tbody", {}, ...rows));
+    el("th", { text: "پرداخت" }), el("th", { text: "وضعیت" }), el("th", { text: "تاریخ" }), el("th", {}))), tb);
+  pagedAppend(tb, items, 50, mkRow, { wrap: (b) => el("tr", {}, el("td", { colspan: "6" }, b)) });
 };
 
 /* §109/§130/§131 — warehouses, storage locations, transfers */
@@ -2403,7 +2423,7 @@ RENDER.settings = async () => {
   v.innerHTML = `<div class="set-tabs" id="set-tabs"></div><div id="set-body"></div>`;
   const tabsEl = $("#set-tabs");
   SET_CATEGORIES.forEach((cat, i) => {
-    const b = el("button", { class: "set-tab" + (i === 0 ? " active" : ""), text: cat.label,
+    const b = el("button", { class: "set-tab" + (i === 0 ? " active" : ""), text: cat.label, "data-cat": cat.id,
       onclick: () => {
         tabsEl.querySelectorAll(".set-tab").forEach((x) => x.classList.remove("active"));
         b.classList.add("active");

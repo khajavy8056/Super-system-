@@ -814,6 +814,13 @@ KIND_LABELS = {
     "VISIT_PATTERN": "پیش‌بینی خرید مشتری",
 }
 
+# v3.5 — the PRO pack (46 more analyzers) registers itself here; it imports the helpers above,
+# so the import must stay below them.
+from . import insights_pro as _pro  # noqa: E402
+ANALYZERS.update(_pro.ANALYZERS_PRO)
+KIND_LABELS.update(_pro.KIND_LABELS_PRO)
+GROUPS = _pro.GROUPS
+
 
 # ----------------------------------------------------------------------------- run / upsert
 def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
@@ -1153,9 +1160,16 @@ def impact_summary(db: Session) -> dict:
     }
 
 
+def group_of(kind: str) -> str:
+    for g, (_, ks) in GROUPS.items():
+        if kind in ks:
+            return g
+    return "growth"
+
+
 def to_dict(r: Insight) -> dict:
     return {
-        "id": r.id, "kind": r.kind, "label": KIND_LABELS.get(r.kind, r.kind), "title": r.title, "body": r.body, "priority": r.priority,
+        "id": r.id, "kind": r.kind, "label": KIND_LABELS.get(r.kind, r.kind), "group": group_of(r.kind), "title": r.title, "body": r.body, "priority": r.priority,
         "evidence": json.loads(r.evidence or "{}"), "actions": json.loads(r.actions or "[]"), "expected_gain": _f(r.expected_gain),
         "metric": json.loads(r.metric or "{}"), "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,

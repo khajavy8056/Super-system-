@@ -257,4 +257,28 @@ public final class Ui {
     }
     public static ImageView img(Context c, int size) { ImageView i = new ImageView(c); i.setLayoutParams(lp(dp(size), dp(size))); i.setScaleType(ImageView.ScaleType.CENTER_CROP); i.setBackground(rounded(BG2, BORDER, 12)); i.setClipToOutline(true); return i; }
     public static FrameLayout frame(Context c) { FrameLayout f = new FrameLayout(c); f.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); return f; }
+
+    /* ---------------- v3.5 — staged rendering: never inflate hundreds of rows at once ---------------- */
+    public interface RowFactory { View make(int index); }
+    /**
+     * Adds rows to {@code host} in pages of {@code page}; a «نمایش N مورد بعدی» button appends the next page.
+     * Each page is inflated on the next UI frame so the screen paints before the work starts (no ANR/OOM on
+     * 1 000+ invoices or 100 insight cards with charts).
+     */
+    public static void paged(LinearLayout host, int total, int page, RowFactory f) {
+        if (total <= 0) return;
+        final int[] shown = {0}; final Button[] more = {null};
+        Runnable[] step = new Runnable[1];
+        step[0] = () -> {
+            if (more[0] != null) { host.removeView(more[0]); more[0] = null; }
+            int end = Math.min(total, shown[0] + page);
+            for (int i = shown[0]; i < end; i++) { try { View v = f.make(i); if (v != null) host.addView(v); } catch (Throwable t) { android.util.Log.w("Ui", "row " + i + ": " + t); } }
+            shown[0] = end;
+            if (shown[0] < total) { int rest = total - shown[0]; more[0] = ghost(host.getContext(), "نمایش " + fa(String.valueOf(Math.min(page, rest))) + " مورد بعدی (" + fa(String.valueOf(rest)) + " مانده)", () -> host.post(step[0])); more[0].setLayoutParams(margin(match(), 0, 8, 0, 8)); host.addView(more[0]); }
+        };
+        host.post(step[0]);
+    }
+    public static void paged(LinearLayout host, org.json.JSONArray arr, int page, java.util.function.Function<org.json.JSONObject, View> f) {
+        paged(host, arr == null ? 0 : arr.length(), page, i -> { org.json.JSONObject o = arr.optJSONObject(i); return o == null ? null : f.apply(o); });
+    }
 }

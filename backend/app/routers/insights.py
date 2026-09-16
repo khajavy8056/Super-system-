@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -37,13 +37,15 @@ def _get(db: Session, insight_id: int) -> Insight:
 
 
 @router.get("")
-def list_insights(status: str = Query("NEW"), kind: str | None = None, limit: int = 50,
+def list_insights(status: str = Query("NEW"), kind: str | None = None, limit: int = 50, group: str | None = None,
                   db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     q = select(Insight)
     if status and status != "ALL":
         q = q.where(Insight.status.in_(status.split(",")))
     if kind:
         q = q.where(Insight.kind == kind)
+    if group and group in svc.GROUPS:
+        q = q.where(Insight.kind.in_(svc.GROUPS[group][1]))
     q = q.order_by(Insight.priority.asc(), Insight.expected_gain.desc(), Insight.created_at.desc()).limit(limit)
     return [svc.to_dict(r) for r in db.execute(q).scalars()]
 
@@ -89,6 +91,59 @@ def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(g
     ctx = svc._load_ctx(db, 180)
     rows = svc.customer_patterns(ctx, horizon_days=days)
     return {"today": ctx.today.isoformat(), "horizon_days": days, "rows": rows}
+
+
+# ---------------------------------------------------------------- v3.5 AI advisor (free providers)
+class PresetIn(BaseModel):
+    preset: str
+    api_key: str | None = None
+
+
+@router.get("/ai/presets")
+def ai_presets(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    return {"presets": ai_narrator.presets(), "current": ai_narrator.configured(db)}
+
+
+@router.post("/ai/preset")
+def ai_apply_preset(body: PresetIn, db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    try:
+        if body.api_key:
+            insight_actions._set_setting(db, "ai.api_key", body.api_key.strip())
+        return ai_narrator.apply_preset(db, body.preset)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/ai/test")
+def ai_test(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    return ai_narrator.test_connection(db)
+
+
+@router.get("/ai/report")
+def ai_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """What would be sent — shown to the owner before anything leaves the machine."""
+    return ai_narrator.build_report(db)
+
+
+@router.post("/ai/advise")
+def ai_advise(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    try:
+        return ai_narrator.ask_advisor(db, user=user)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, ai_narrator._friendly_error(exc))
+
+
+@router.get("/groups")
+def groups(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """Kind groups with open counts — the tab strip of the intelligence page."""
+    rows = db.execute(select(Insight.kind, func.count(Insight.id)).where(Insight.status == "NEW").group_by(Insight.kind)).all()
+    cnt = {k: n for k, n in rows}
+    out = []
+    for gid, (label, kinds) in svc.GROUPS.items():
+        out.append({"id": gid, "label": label, "kinds": kinds, "open": sum(cnt.get(k, 0) for k in kinds)})
+    return {"groups": out, "analyzers": len(svc.ANALYZERS)}
 
 
 @router.get("/{insight_id}")

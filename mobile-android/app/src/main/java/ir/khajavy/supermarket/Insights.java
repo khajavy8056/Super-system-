@@ -32,7 +32,7 @@ public final class Insights {
     static final String[][] LABELS = {{"CROSS_SELL", "هم‌خرید و چیدمان"}, {"EXPIRY_LADDER", "تخفیف پله‌ای انقضا"}, {"DEAD_STOCK", "سرمایهٔ راکد"}, {"VELOCITY", "هشدار اتمام موجودی"},
         {"SUPPLIER", "امتیاز تأمین‌کننده"}, {"CASHFLOW", "نقدینگی"}, {"VIP", "مشتریان VIP"}, {"CHURN", "بازگشت مشتری"}, {"BASKET_NUDGE", "پیشنهاد پای صندوق"},
         {"PRICE_GAP", "اصلاح قیمت"}, {"LOSS_PREV", "پیشگیری از ضرر"}, {"SEASON", "الگوی فصلی و هفتگی"}, {"VISIT_PATTERN", "پیش‌بینی خرید مشتری"}};
-    static String label(String k) { for (String[] l : LABELS) if (l[0].equals(k)) return l[1]; return k; }
+    static String label(String k) { for (String[] l : LABELS) if (l[0].equals(k)) return l[1]; for (String[] l : InsightsPro.LABELS) if (l[0].equals(k)) return l[1]; return k; }
 
     static final String DDL = "CREATE TABLE IF NOT EXISTS ai_insights(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, dedupe_key TEXT, title TEXT, body TEXT, priority INTEGER DEFAULT 2, evidence TEXT, actions TEXT, expected_gain REAL DEFAULT 0, metric TEXT, status TEXT DEFAULT 'NEW', accepted_at TEXT, snoozed_until TEXT, baseline TEXT, result TEXT, measured_at TEXT, measured_gain REAL, last_seen_at TEXT, narrative TEXT, created_at TEXT)";
 
@@ -43,7 +43,7 @@ public final class Insights {
         ensure();
         if (seg.length == 1) { String st = q.optString("status", "NEW"); String where = "ALL".equals(st) ? "1=1" : "status IN ('" + st.replace(",", "','") + "')"; return arr(Local.rows("SELECT * FROM ai_insights WHERE " + where + " ORDER BY priority ASC, expected_gain DESC, id DESC LIMIT " + q.optInt("limit", 60))); }
         String w = seg[1];
-        if ("summary".equals(w)) { JSONObject s = summary(); JSONArray ks = new JSONArray(); for (String[] l : LABELS) ks.put(Local.obj("kind", l[0], "label", l[1])); s.put("kinds", ks); s.put("ai", Local.obj("provider", "local", "online", false, "model", "—")); return s; }
+        if ("summary".equals(w)) { JSONObject s = summary(); JSONArray ks = new JSONArray(); for (String[] l : LABELS) ks.put(Local.obj("kind", l[0], "label", l[1])); for (String[] l : InsightsPro.LABELS) ks.put(Local.obj("kind", l[0], "label", l[1])); s.put("kinds", ks); s.put("ai", Local.obj("provider", "local", "online", false, "model", "—")); return s; }
         if ("run".equals(w)) return run();
         if ("plan".equals(w)) { if (seg.length > 2 && "learn".equals(seg[2])) return Local.obj("ok", true, "calibration", Forecast.learn()); return Forecast.plan(Math.max(14, Math.min(365, q.optInt("horizon", 90)))); }
         if ("report".equals(w)) { JSONObject s = summary(); JSONArray open = arr(Local.rows("SELECT * FROM ai_insights WHERE status='NEW' ORDER BY priority, expected_gain DESC LIMIT 10")); return Local.obj("summary", s, "open", open, "narrative", weekly(s, open), "generated_at", Db.now()); }
@@ -116,6 +116,7 @@ public final class Insights {
         Object[][] an = {{"CROSS_SELL", (Analyzer) Insights::crossSell}, {"EXPIRY_LADDER", (Analyzer) Insights::expiry}, {"DEAD_STOCK", (Analyzer) Insights::deadStock}, {"VELOCITY", (Analyzer) Insights::velocity},
             {"CASHFLOW", (Analyzer) Insights::cashflow}, {"VIP", (Analyzer) Insights::vip}, {"CHURN", (Analyzer) Insights::churn}, {"BASKET_NUDGE", (Analyzer) Insights::basketNudge}, {"PRICE_GAP", (Analyzer) Insights::priceGap}, {"LOSS_PREV", (Analyzer) Insights::lossPrev}, {"SEASON", (Analyzer) Insights::season}, {"VISIT_PATTERN", (Analyzer) Insights::visitPattern}};
         for (Object[] a : an) { try { drafts.addAll(((Analyzer) a[1]).run(f)); } catch (Exception e) { errors.put((String) a[0], String.valueOf(e.getMessage())); } }
+        for (Object[] a : InsightsPro.ANALYZERS) { try { drafts.addAll(((Analyzer) a[1]).run(f)); } catch (Throwable e) { errors.put((String) a[0], String.valueOf(e.getMessage())); } }   // v3.5 PRO pack
         int created = 0, refreshed = 0; Set<String> seen = new HashSet<>(); String now = Db.now(); JSONObject cal = Forecast.cal();
         for (Draft d : drafts) {
             seen.add(d.kind + "|" + d.key);
@@ -317,6 +318,7 @@ public final class Insights {
 
     static Object execute(JSONObject ins, String type, JSONObject p) throws Exception {
         String store = Prefs.get("store_name", "فروشگاه"); String now = Db.now();
+        Object pro = InsightsPro.execute(ins, type, p); if (pro != null) return pro;   // v3.5
         switch (type) {
             case "shelf_note": { StringBuilder sb = new StringBuilder(); JSONArray ids = p.optJSONArray("products"); for (int i = 0; ids != null && i < ids.length(); i++) { JSONObject pr = Db.productById(ids.optLong(i)); if (pr != null) sb.append(i > 0 ? "، " : "").append(pr.optString("name")); } notify("کار انبار: تغییر چیدمان", "این کالاها را کنار هم بچینید: " + sb); return Local.obj("note", sb.toString()); }
             case "reorder_note": { JSONArray lst = new JSONArray(Local.setting("insights.reorder_list", "[]")); long pid = p.optLong("product_id"); boolean has = false; for (int i = 0; i < lst.length(); i++) if (lst.optJSONObject(i).optLong("product_id") == pid) has = true; if (!has) { JSONObject pr = Db.productById(pid); lst.put(Local.obj("product_id", pid, "name", pr == null ? String.valueOf(pid) : pr.optString("name"), "qty", p.opt("qty"), "added", now, "insight_id", ins.optLong("id"))); } Local.setSetting("insights.reorder_list", lst.toString()); return Local.obj("reorder_list", lst.length()); }
