@@ -88,12 +88,43 @@ def server_url(db: Session) -> str:
 
 # --- hardware id --------------------------------------------------------------
 _HWID: str | None = None
+_HWID_NAME = "machine.id"
+
+
+def _hwid_file() -> Path:
+    from ..config import settings
+
+    return settings.data_dir / _HWID_NAME
+
+
+def _format_hwid(raw: str) -> str:
+    digest = hashlib.sha256(("supermarket|" + raw).encode()).hexdigest().upper()
+    return "-".join(digest[i:i + 4] for i in range(0, 16, 4))  # XXXX-XXXX-XXXX-XXXX
 
 
 def hwid() -> str:
-    """Stable per-machine id: Windows MachineGuid → /etc/machine-id → MAC; hashed."""
+    """This machine's identity: Windows MachineGuid → /etc/machine-id → MAC; hashed.
+
+    v3.5.11 — the value is now also written to ``data/machine.id`` the first time it is computed
+    and read back from there on every later start, so it can never move. Two reasons:
+
+      * ``uuid.getnode()`` returns a RANDOM 48-bit number (multicast bit set) whenever it cannot
+        read a MAC address. Used raw, this machine got a fresh identity on every start and the
+        licence server counted each one as a new device until it answered MAX_DEVICES_REACHED —
+        «سقف تعداد دستگاه مجاز تکمیل شده است». That random value is now detected and refused.
+      * Even a good source can change (Windows reinstall, a swapped network card), and the same
+        id also keys the encrypted-backup vault, so a silent change would leave older vaults
+        unreadable. Freezing it keeps the licence and the vault stable together.
+    """
     global _HWID
     if _HWID:
+        return _HWID
+    try:
+        stored = _hwid_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        stored = ""
+    if len(stored) == 19 and stored.count("-") == 3:
+        _HWID = stored
         return _HWID
     raw = ""
     try:
@@ -114,9 +145,20 @@ def hwid() -> str:
             except Exception:  # noqa: BLE001
                 continue
     if not raw:
-        raw = f"{uuid.getnode():012x}"
-    digest = hashlib.sha256(("supermarket|" + raw).encode()).hexdigest().upper()
-    _HWID = "-".join(digest[i:i + 4] for i in range(0, 16, 4))  # XXXX-XXXX-XXXX-XXXX
+        node = uuid.getnode()
+        # The multicast bit being set is CPython's own marker for "I could not read a MAC and
+        # made this up" — a different number on every start, i.e. a new "device" every start.
+        if not (node >> 40) & 0x01:
+            raw = f"{node:012x}"
+    if not raw:
+        raw = "random|" + uuid.uuid4().hex   # still fine: it is persisted just below
+    _HWID = _format_hwid(raw)
+    try:
+        f = _hwid_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(_HWID, encoding="utf-8")
+    except OSError:
+        pass   # a read-only data dir must not stop the app; the in-process cache still holds
     return _HWID
 
 

@@ -96,6 +96,11 @@ public final class Local {
             String un = "", pw = ""; for (String kv : (body == null ? "" : body).split("&")) { int e = kv.indexOf('='); if (e < 0) continue; String k = kv.substring(0, e), v = java.net.URLDecoder.decode(kv.substring(e + 1), "UTF-8"); if ("username".equals(k)) un = v; if ("password".equals(k)) pw = v; }
             JSONObject u = one("SELECT * FROM users WHERE username=?", un);
             if (u == null || u.optInt("is_active", 1) == 0 || !passOk(u, un, pw)) { audit("LOGIN_FAILED", "User", un, null, null); throw new Api.ApiError(401, "AUTH", "نام کاربری یا رمز اشتباه است"); }
+            // v3.5.11 — one-way migration off the device-bound wizard hash, so this account can
+            // never be locked out by a change of device identity again.
+            if (!u.optString("pass_hash", "").startsWith("sha:")) {
+                try { exec("UPDATE users SET pass_hash=? WHERE id=?", sha(un + "|" + pw), u.optLong("id")); } catch (Exception ignore) {}
+            }
             Prefs.set("user_json", userOut(u).toString()); audit("LOGIN", "User", un, null, null);
             return obj("access_token", "local-" + u.optLong("id") + "-" + System.currentTimeMillis(), "token_type", "bearer");
         }

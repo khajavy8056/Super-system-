@@ -235,8 +235,11 @@ public class SetupActivity extends Activity {
         Prefs.set("store_name", str("store_name")); Prefs.set("store_json", data.toString()); Prefs.set("store_mobile", str("mobile"));
         Prefs.set("currency_label", "IRT".equals(str("currency")) ? "تومان" : "ریال"); Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         Prefs.set("theme_pref", str("theme")); Prefs.set("theme_resolved", "light".equals(str("theme")) ? "light" : "dark".equals(str("theme")) ? "dark" : (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) >= 7 && java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) < 19 ? "light" : "dark"));
-        try { JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL); Prefs.set("user_json", u.toString()); Prefs.set("local_admin_hash", Lic.hwid() + ":" + Integer.toHexString((str("admin_username") + "|" + str("admin_password")).hashCode())); } catch (Exception ignore) {}
-        Prefs.save(this, "http://standalone.invalid", "", str("store_name"), Prefs.deviceIdStatic() == null ? "local-" + Long.toHexString(System.currentTimeMillis()) : Prefs.deviceIdStatic());
+        // v3.5.11: the admin password is hashed on its own — never salted with the device id,
+        // which is what made a correct password read as wrong once that id moved.
+        try { JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL); Prefs.set("user_json", u.toString()); Prefs.set("local_admin_hash", Local.sha(str("admin_username") + "|" + str("admin_password"))); } catch (Exception ignore) {}
+        // v3.5.11: a time-based id here made every install a "new device"; the hardware seed cannot move.
+        Prefs.save(this, "http://standalone.invalid", "", str("store_name"), Prefs.deviceIdStatic() == null ? Prefs.hwidSeed() : Prefs.deviceIdStatic());
         Prefs.set("lic_mode", "own"); Session.start();
         final boolean starter = data.optBoolean("starter");
         boolean fast = "1".equals(Prefs.get("loading_fast", "")) || getIntent().getBooleanExtra("fastload", false);

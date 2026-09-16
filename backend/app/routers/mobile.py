@@ -95,18 +95,36 @@ def _server_port(request: Request) -> int:
 class TokenIn(BaseModel):
     name: str = Field(default="گوشی فروشگاه", max_length=60)
     days: int = Field(default=365, ge=1, le=3650)
+    #: v3.5.11 — a phone that is already paired sends the id it holds, so signing in again
+    #: refreshes that row instead of adding yet another "device" to the list.
+    device_id: str | None = Field(default=None, max_length=64)
 
 
-def _mint(db: Session, user: User, name: str, days: int) -> dict:
-    device_id = secrets.token_hex(6)
+def _mint(db: Session, user: User, name: str, days: int, device_id: str | None = None) -> dict:
+    """Mint a device token.
+
+    v3.5.11 — ``device_id`` lets a caller reuse an identity it already has. The phone used to
+    call this on *every* sign-in and got a fresh random id back each time, so the paired-device
+    list grew by one row per idle-lock re-login and the phone's licence identity moved with it.
+    Reusing the row keeps the list honest and the identity fixed.
+    """
+    did = (device_id or "").strip()[:64] or secrets.token_hex(6)
     exp = datetime.utcnow() + timedelta(days=days)
-    token = create_access_token(str(user.id), extra={"device": device_id, "exp": exp, "kind": "mobile"})
+    token = create_access_token(str(user.id), extra={"device": did, "exp": exp, "kind": "mobile"})
     items = _devices(db)
-    items.append({"id": device_id, "name": name, "user_id": user.id, "user": user.username,
-                  "created_at": datetime.utcnow().isoformat(timespec="seconds"), "expires_at": exp.isoformat(timespec="seconds"),
-                  "last_sync_at": None, "revoked": False})
+    for it in items:
+        if it.get("id") == did:
+            # Same phone again: refresh its name/owner/expiry. ``revoked`` is deliberately left
+            # alone — authenticating must not undo a revocation the shop's admin made on purpose.
+            it.update({"name": name, "user_id": user.id, "user": user.username,
+                       "expires_at": exp.isoformat(timespec="seconds")})
+            break
+    else:
+        items.append({"id": did, "name": name, "user_id": user.id, "user": user.username,
+                      "created_at": datetime.utcnow().isoformat(timespec="seconds"), "expires_at": exp.isoformat(timespec="seconds"),
+                      "last_sync_at": None, "revoked": False})
     _save_devices(db, items)
-    return {"device_id": device_id, "token": token, "expires_at": exp.isoformat(timespec="seconds")}
+    return {"device_id": did, "token": token, "expires_at": exp.isoformat(timespec="seconds")}
 
 
 @router.get("/pair/info")
@@ -249,7 +267,7 @@ def _port_env() -> int:
 
 @router.post("/pair/token")
 def pair_token(body: TokenIn, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
-    out = _mint(db, user, body.name, body.days)
+    out = _mint(db, user, body.name, body.days, device_id=body.device_id)
     write_audit(db, action="MOBILE_PAIR_TOKEN", user_id=user.id, entity_type="Mobile", reference=out["device_id"])
     db.commit()
     return out

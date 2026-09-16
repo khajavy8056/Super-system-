@@ -34,8 +34,30 @@ public final class Lic {
 
     public static String mode() { return Prefs.get("lic_mode", ""); }               // "" | pc | own
     public static boolean setupDone() { return "1".equals(Prefs.get("setup_done", "")); }
+    /**
+     * v3.5.11 — the device identity sent to the licence server. Frozen for the life of the
+     * install: the first value ever published is written to prefs and always reused, so the
+     * licence server can never see this phone as a second device.
+     */
     public static String hwid() {
-        String id = Prefs.deviceIdStatic(); if (id == null) id = "phone";
+        String frozen = Prefs.get("hwid", "");
+        if (!frozen.isEmpty()) return frozen;
+        // A key already activated was activated against one specific id; keep presenting that
+        // one, so upgrading cannot silently consume another slot of the shop's licence.
+        String activated = Prefs.get("lic_hwid", "");
+        if (!activated.isEmpty()) { Prefs.set("hwid", activated); return activated; }
+        // First run of this version on an EXISTING install: reuse the old derivation so the id
+        // does not move on upgrade. An install that never paired has no device_id and gets the
+        // stable hardware seed instead — the old fallback ("phone" + Build.SERIAL) produced the
+        // very same id on every phone of the same model, because SERIAL reads "unknown" without
+        // READ_PHONE_STATE on Android 10+.
+        String legacy = Prefs.deviceIdStatic();
+        String out = digestHwid((legacy == null || legacy.isEmpty()) ? Prefs.hwidSeed() : legacy);
+        Prefs.set("hwid", out);
+        return out;
+    }
+
+    private static String digestHwid(String id) {
         try { MessageDigest md = MessageDigest.getInstance("SHA-1"); byte[] h = md.digest(("android|" + id + "|" + android.os.Build.SERIAL + android.os.Build.MODEL).getBytes("UTF-8")); StringBuilder b = new StringBuilder(); for (int i = 0; i < 8; i++) b.append(String.format("%02X", h[i])); return "AND-" + b; } catch (Exception e) { return "AND-" + id; }
     }
 
@@ -94,7 +116,7 @@ public final class Lic {
                 return msg;
             }
             String exp = d.optString("expires", ""); if (exp.length() > 10) exp = exp.substring(0, 10);
-            Prefs.set("lic_key", key); Prefs.set("lic_mode", "own");
+            Prefs.set("lic_key", key); Prefs.set("lic_mode", "own"); Prefs.set("lic_hwid", hwid());   // v3.5.11: this key belongs to this id, permanently
             store("ACTIVE", exp, d.optString("type", "FULL"), d.optString("owner", ""), "");
             return null;
         } catch (Exception e) {

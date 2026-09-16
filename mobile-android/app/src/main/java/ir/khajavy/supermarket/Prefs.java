@@ -16,6 +16,32 @@ public final class Prefs {
 
     private static SharedPreferences p(Context c) { return c.getSharedPreferences(FILE, Context.MODE_PRIVATE); }
 
+    /**
+     * v3.5.11 — a seed for the device identity that cannot move under us.
+     *
+     * The identity used to be derived from {@code device_id}, which is minted by the shop PC (or
+     * invented on the spot) and therefore changes whenever the phone pairs or signs in again. Two
+     * bugs came out of that: the licence server counted a new device on every change until it
+     * answered MAX_DEVICES_REACHED, and the standalone admin password — hashed with that same
+     * identity — stopped verifying, so a correct password was reported as wrong after the idle
+     * lock. ANDROID_ID needs no permission, is fixed per (device, signing key, user), and is
+     * written to prefs the first time it is read, so even an OS that one day returned something
+     * else could not move a shop's identity.
+     */
+    public static String hwidSeed() {
+        String s = get("hwid_seed", "");
+        if (!s.isEmpty()) return s;
+        String v = "";
+        try {
+            if (APP != null) v = android.provider.Settings.Secure.getString(
+                    APP.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+        } catch (Exception ignore) {}
+        // that literal is the value broken ROMs and emulators all report; treat it as "unknown"
+        if (v == null || v.isEmpty() || "9774d56d682e549c".equals(v)) v = "rnd-" + java.util.UUID.randomUUID();
+        set("hwid_seed", v);
+        return v;
+    }
+
     public static String serverUrl(Context ctx) { return p(ctx).getString("server_url", null); }
     public static String deviceToken(Context ctx) { return p(ctx).getString("device_token", null); }
     public static String deviceId(Context ctx) { return p(ctx).getString("device_id", null); }
