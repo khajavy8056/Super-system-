@@ -400,7 +400,7 @@ def a_supplier(ctx: Ctx) -> list[Draft]:
               f"{_fa(worst['short_life_pct'])}٪ بچ‌ها با کمتر از ۶۰ روز تاریخ تحویل شده و {_fa(worst['returns'])} مرجوعی ثبت شده. "
               f"بهترین شریک شما «{best['name']}» با امتیاز {_fa(best['score'])} است. پیشنهاد: کالاهای مشترک را از «{best['name']}» بگیرید "
               f"یا با همین ارقام برای تخفیف مذاکره کنید."),
-        priority=3, evidence={"table": table},
+        priority=3, evidence={"table": (table[:1] + table[-24:]) if len(table) > 25 else table},
         actions=[{"type": "note", "label": "ذخیرهٔ کارت امتیاز برای جلسهٔ مذاکره", "params": {"supplier_id": worst["supplier_id"]}}],
         expected_gain=saving,
         metric={"metric": "purchase_over_best", "supplier_id": worst["supplier_id"], "window_days": 60},
@@ -663,7 +663,7 @@ def a_loss_prevention(ctx: Ctx) -> list[Draft]:
             title=f"الگوی غیرعادی در صندوق «{r['name']}»",
             body=("در ۶۰ روز اخیر: " + "، ".join(why) + ". این لزوماً تقلب نیست (ممکن است آموزش یا مشتری خاص باشد)، "
                   "اما ارزش یک گفت‌وگوی دوستانه و بررسی چند فاکتور باطل‌شده را دارد."),
-            priority=1, evidence={"row": r, "peers": rows},
+            priority=1, evidence={"row": r, "peers": rows[:25]},
             actions=[{"type": "note", "label": "یادداشت بررسی برای مدیر", "params": {"user_id": r["user_id"]}}],
             expected_gain=0.0, metric={"metric": "void_rate", "user_id": r["user_id"], "window_days": 30},
         ))

@@ -120,7 +120,16 @@ def _fix_created(db: Session, table: str, ids: list[int], at: datetime) -> None:
     db.execute(text(f"UPDATE {table} SET created_at=:at WHERE id IN ({','.join(str(i) for i in ids)})"), {"at": at})
 
 
-def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None) -> dict:
+def _supplier_weights(n: int) -> list[float]:
+    """v3.5.9 — ``random.choices`` silently ignores a population longer than its weight list,
+    so a big-store build with 15 wholesalers would have kept buying from the first three only."""
+    if n <= 3:
+        return [0.5, 0.25, 0.25][:n]
+    return [0.34, 0.17, 0.17] + [0.32 / (n - 3)] * (n - 3)
+
+
+def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None,
+             full_catalog: bool = False) -> dict:
     """Build the demo store. Idempotent guard: refuses if the DB already has > 50 invoices."""
     rnd = _rng(seed)
     n_inv = db.execute(select(Invoice.id).limit(51)).all()
@@ -160,6 +169,16 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     for name, prem, short in SUPPLIERS:
         s = db.execute(select(Supplier).where(Supplier.name == name)).scalar_one_or_none() or Supplier(name=name, phone="021-" + str(rnd.randint(44000000, 88999999)), is_active=True)
         db.add(s); db.flush(); sups.append((s, prem, short))
+    if full_catalog:
+        # A big store buys from more than three wholesalers. This also gives the SUPPLIER
+        # insight a score table long enough to matter — long enough, in fact, to need the
+        # v3.5.9 evidence cap, so the stress file reproduces that screen honestly.
+        for _nm, _prem, _short in (("پخش آریا", 0.04, 0.10), ("پخش بهار", 0.09, 0.18), ("پخش سپید", 0.02, 0.08),
+                                   ("پخش نگین", 0.12, 0.25), ("پخش پارس", 0.06, 0.12), ("پخش زاگرس", 0.15, 0.30),
+                                   ("پخش البرز", 0.03, 0.09), ("پخش سهند", 0.08, 0.16), ("پخش رویش", 0.11, 0.22),
+                                   ("پخش مهر", 0.05, 0.11), ("پخش کیان", 0.13, 0.27), ("پخش آبان", 0.07, 0.14)):
+            s = db.execute(select(Supplier).where(Supplier.name == _nm)).scalar_one_or_none() or Supplier(name=_nm, phone="021-" + str(rnd.randint(44000000, 88999999)), is_active=True)
+            db.add(s); db.flush(); sups.append((s, _prem, _short))
     products: list[dict] = []
     bc = 6260000000000 + seed * 100
     for cat_name, items in CATALOG.items():
@@ -181,6 +200,36 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                                            min_stock_alert=0)
             products.append({"p": p, "buy": buy, "sell": sell, "cons": cons, "shelf": shelf, "demand": demand, "loose": loose, "stock": 0.0, "cat": cat_name})
     by_name = {d["p"].name: d for d in products}
+
+    # ---- v3.5.9: the FULL default catalogue as a slow-moving long tail -----------------
+    # With full_catalog the store carries every SKU in the shipped bank (13,570), each with
+    # real receiving history, so a stress backup exercises the whole product range and not
+    # just the ~120 curated ones. These are deliberately kept OUT of the daily restock loop:
+    # calling sellable() for 13k products x 365 days would never finish. They receive stock
+    # on staggered days and join baskets as slow movers.
+    long_tail: list[dict] = []
+    if full_catalog:
+        import zlib
+        from . import default_catalog
+        default_catalog.import_csv(db, user=admin)
+        db.commit()
+        known = set(by_name)
+        for p in db.execute(select(Product)).scalars():
+            if p.name in known:
+                continue
+            # deterministic per name (hash() is salted per process, so it would not reproduce)
+            h = zlib.crc32(p.name.encode("utf-8"))
+            h1 = (h & 0xFFFF) / 0xFFFF
+            h2 = ((h >> 16) & 0xFFFF) / 0xFFFF
+            sell = int(round((18_000 + h1 * 640_000) / 1000) * 1000)
+            buy = int(round(sell * (0.70 + 0.16 * h2) / 100) * 100)
+            long_tail.append({"p": p, "buy": buy, "sell": sell, "cons": 0, "shelf": 0,
+                              "demand": round(0.03 + 0.30 * h2, 4), "loose": False,
+                              "stock": 0.0, "cat": "سایر"})
+        rnd.shuffle(long_tail)
+        log.info("demo: full catalogue loaded — %d long-tail SKUs", len(long_tail))
+        if progress:
+            progress(0.05)
 
     # ---- customers (140): habits
     customers = []
@@ -208,7 +257,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     pending_expiry: list[tuple[int, date]] = []
 
     def receive(d: dict, when: datetime, qty: float, *, sup=None, shelf_override=None, price_mult=1.0):
-        sup = sup or rnd.choices(sups, weights=[0.5, 0.25, 0.25])[0]
+        sup = sup or rnd.choices(sups, weights=_supplier_weights(len(sups)))[0]
         s, prem, short = sup
         buy = round(d["buy"] * (1 + prem) * price_mult / 100) * 100
         exp = None
@@ -279,8 +328,8 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     day = start
     while day <= today:
         di = (day - start).days
-        if progress and di % 30 == 0:
-            progress(di / total_days)
+        if progress and di % 3 == 0:
+            progress(0.05 + 0.87 * (di / total_days))   # v3.5.9: daily, mapped into the build's 5..92 %
         if di in (total_days - 45, total_days - 20):
             db.commit()
             _manager_reviews(db, day, admin, products, customers, fx, stats, by_name)
@@ -299,6 +348,16 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 d["stock"] = sellable(d, day)
                 continue
             morning_restock(d, day)
+        # v3.5.9 — long-tail SKUs receive stock on staggered days, so every barcode in the
+        # shipped bank ends up with a batch, a supplier and a stock movement somewhere in
+        # the year instead of only the curated ~120 SKUs having history.
+        if long_tail:
+            per = max(1, -(-len(long_tail) // total_days))
+            for x in long_tail[di * per:(di + 1) * per]:
+                if x["stock"] <= 0:
+                    receive(x, datetime.combine(day, datetime.min.time()) + timedelta(hours=8, minutes=rnd.randint(0, 59)),
+                            max(6.0, round(x["demand"] * rnd.randint(60, 160), 1)), sup=rnd.choice(sups))
+                    x["stock"] = sellable(x, day)
         # customers due today
         due = [c for c in customers if c["next"] <= day and (not c["churn"] or day < c["churn"] or c["c"].id in fx["winback_ids"])]
         rnd.shuffle(due)
@@ -339,6 +398,13 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     yb = next((x for x in products if x["p"].id == pid), None)
                     if yb:
                         chosen[pid] = yb
+            # v3.5.9 — slow movers join baskets, so most of the long tail accrues real
+            # sales history over the year (and the reports have something to aggregate).
+            if long_tail and rnd.random() < 0.10:
+                for _ in range(rnd.choices([1, 2, 3], weights=[0.7, 0.22, 0.08])[0]):
+                    _x = long_tail[rnd.randrange(len(long_tail))]
+                    if _x["stock"] > 0:
+                        chosen[_x["p"].id] = _x
             items = []
             for x in chosen.values():
                 q = round(rnd.uniform(0.3, 2.2), 3) if x["loose"] else (rnd.choices([1, 2, 3, 6], weights=[0.7, 0.2, 0.07, 0.03])[0])
@@ -532,12 +598,52 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     db.execute(update(ProductBatch).where(ProductBatch.product_id == tea["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(124000)))
     stamp_expiries()
     db.commit()
+
+    # ---- v3.5.9: run the model on the FINAL data and actually act on it -----------------
+    # A stress file that only *contains* sales proves nothing about the intelligence engine.
+    # So: run every generator over the finished year, accept the strongest suggestions through
+    # the real accept() path (baseline frozen, actions executed), then measure them — exactly
+    # what a manager clicking «اجرا و سنجش اثر» would do.
+    ins: dict = {}
+    try:
+        from ..models import Insight
+        from . import insights as ins_svc
+        if progress:
+            progress(0.93)
+        run_res = ins_svc.run(db, days=180)
+        db.commit()
+        if progress:
+            progress(0.96)
+        accepted = 0
+        for r in db.execute(select(Insight).where(Insight.status == "NEW")
+                            .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(14)).scalars().all():
+            try:
+                ins_svc.accept(db, r, user=admin)
+                accepted += 1
+            except Exception as exc:
+                db.rollback()
+                log.warning("demo: accept skipped for insight %s: %s", r.id, exc)
+        db.commit()
+        if progress:
+            progress(0.98)
+        ins = {"generated": int(run_res.get("created", 0)) + int(run_res.get("refreshed", 0)),
+               "accepted": accepted, "measured": ins_svc.measure_all(db),
+               "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all())}
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("demo: final insight pass failed (the store is still valid without it)")
+    if progress:
+        progress(1.0)
+
     try:
         write_audit(db, action="DEMO_STORE_GENERATED", entity_type="System", entity_id=None, after={"days": days, **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}})
         db.commit()
     except Exception:
         db.rollback()
-    return {"days": days, "products": len(products), "customers": len(customers), **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
+    return {"days": days, "products": len(products), "long_tail_products": len(long_tail),
+            "suppliers": len(sups), "customers": len(customers), "insights": ins,
+            **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
 
 
 def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dict, stats: dict, by_name: dict) -> None:
@@ -633,15 +739,28 @@ _CHILD = """
 import json, sys
 from app.database import init_db, SessionLocal
 from app.services import demo_store
+
+_cfg = json.loads(sys.argv[1])
 init_db()
+
+
+def _p(frac):
+    # Streamed so the parent can draw a live progress bar; flush matters more than format.
+    sys.stdout.write("__PROG__%.6f\\n" % max(0.0, min(1.0, float(frac))))
+    sys.stdout.flush()
+
+
 with SessionLocal() as db:
-    s = demo_store.generate(db, days=%d, seed=%d, invoices_per_day=%r)
+    s = demo_store.generate(db, days=_cfg["days"], seed=_cfg["seed"],
+                            invoices_per_day=_cfg["invoices_per_day"],
+                            full_catalog=_cfg["full_catalog"], progress=_p)
 print("__DEMO__" + json.dumps(s))
 """
 
 
 def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
-                         invoices_per_day: float = 95.0, compress: bool = True) -> dict:
+                         invoices_per_day: float = 95.0, compress: bool = True,
+                         full_catalog: bool = False, progress=None) -> dict:
     """v3.5.6 — build the standalone one-year demo store.
 
     This module's docstring has promised ``generate_backup_file(path)`` since v3.0,
@@ -682,15 +801,32 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
         env["ADMIN_PASSWORD"] = "admin123"
         env["PYTHONPATH"] = os.pathsep.join([str(backend_dir), env.get("PYTHONPATH", "")])
 
-        proc = subprocess.run([sys.executable, "-c", _CHILD % (int(days), int(seed), float(invoices_per_day))],
-                              cwd=str(backend_dir), env=env, capture_output=True, text=True)
-        summary = None
-        for line in (proc.stdout or "").splitlines():
-            if line.startswith("__DEMO__"):
+        # v3.5.9 — streamed, not capture_output: the build can run for an hour on a big store
+        # and the caller owes the user a progress bar. stderr is merged into stdout so the
+        # child can never deadlock on a full pipe. Parameters travel as JSON in argv rather
+        # than by %-formatting the template — a stray % in the child used to break the build.
+        cfg = json.dumps({"days": int(days), "seed": int(seed),
+                          "invoices_per_day": float(invoices_per_day),
+                          "full_catalog": bool(full_catalog)})
+        proc = subprocess.Popen([sys.executable, "-u", "-c", _CHILD, cfg],
+                                cwd=str(backend_dir), env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        summary, tail_lines = None, []
+        for line in proc.stdout or []:
+            line = line.rstrip("\n")
+            if line.startswith("__PROG__"):
+                if progress:
+                    try:
+                        progress(float(line[len("__PROG__"):]))
+                    except Exception:   # a broken progress callback must not kill the build
+                        log.debug("progress callback failed", exc_info=True)
+            elif line.startswith("__DEMO__"):
                 summary = json.loads(line[len("__DEMO__"):])
-        if proc.returncode != 0 or summary is None:
-            tail = "\n".join((proc.stderr or "").splitlines()[-25:])
-            raise RuntimeError(f"DEMO_BUILD_FAILED rc={proc.returncode}\n{tail}")
+            else:
+                tail_lines.append(line)
+        rc = proc.wait()
+        if rc != 0 or summary is None:
+            raise RuntimeError("DEMO_BUILD_FAILED rc=%s\n%s" % (rc, "\n".join(tail_lines[-25:])))
 
         # --- validate exactly what restore will check -----------------------
         con = sqlite3.connect(str(raw))

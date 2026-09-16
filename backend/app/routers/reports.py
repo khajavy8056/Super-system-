@@ -32,8 +32,12 @@ def cashiers(start: date | None = None, end: date | None = None, db: Session = D
 
 
 @router.get("/inventory")
-def inventory(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
-    return rep.inventory_report(db)
+def inventory(limit: int | None = Query(default=None, ge=1, le=5000),
+              db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    # v3.5.9 — one row per product. On a store carrying the full 13k-SKU bank the phone used
+    # to build one view per row and froze. Default stays None so the desktop is unchanged.
+    rows = rep.inventory_report(db)
+    return rows[:limit] if limit else rows
 
 
 @router.get("/purchase-cost")
@@ -44,8 +48,13 @@ def purchase_cost(product_id: int | None = None, limit: int = Query(default=100,
 
 
 @router.get("/expiry")
-def expiry(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
-    return rep.expiry_report(db)
+def expiry(limit: int | None = Query(default=None, ge=1, le=5000),
+           db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    # v3.5.9 — capped per bucket, same reason as /inventory. Desktop unaffected by default.
+    out = rep.expiry_report(db)
+    if limit and isinstance(out, dict):
+        out = {k: (v[:limit] if isinstance(v, list) else v) for k, v in out.items()}
+    return out
 
 
 @router.get("/adjustments")
@@ -66,8 +75,12 @@ def batches(db: Session = Depends(get_db), _: User = Depends(require_permission(
 
 
 @router.get("/low-stock")
-def low_stock(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
-    return rep.low_stock_report(db)
+def low_stock(limit: int | None = Query(default=None, ge=1, le=5000),
+              db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    # v3.5.9 — most of a 13k-SKU store sits at zero stock, so "no stock" alone can be
+    # thousands of rows. Desktop unaffected by default.
+    rows = rep.low_stock_report(db)
+    return rows[:limit] if limit else rows
 
 
 @router.get("/movements")

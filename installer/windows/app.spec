@@ -42,13 +42,14 @@ a = Analysis(
         (str(ROOT / "backend" / "app" / "data"), "app/data"),
         # v1.3 native window icon (WebView2 window title bar / taskbar)
         (str(ROOT / "installer" / "windows" / "icon.ico"), "."),
-        # v3.5.7 — the bundled one-year demo store (~20 MB gzipped, 76 MB inflated).
-        # _demo_backup_path() searches demo/demo_store.db.gz relative to the bundle
-        # root, so without this entry a real install reports available:false and
-        # "restore the demo store" has nothing to restore. Conditional on purpose: a
-        # fresh checkout that has not generated the file must still build.
-        *([(str(ROOT / "demo" / "demo_store.db.gz"), "demo")]
-          if (ROOT / "demo" / "demo_store.db.gz").exists() else []),
+        # v3.5.8 — the bundled one-year demo store (~20 MB gzipped, 76 MB inflated).
+        # v3.5.7 pointed this at ROOT/"demo", but _demo_backup_path() reaches
+        # backend/demo (its parents[2]) first and that is where the file has been
+        # tracked since the base commit — so the v3.5.7 path was never read.
+        # Destination stays "demo": that is what the frozen build looks for next to
+        # the exe. Conditional so a checkout without the 20 MB still builds.
+        *([(str(ROOT / "backend" / "demo" / "demo_store.db.gz"), "demo")]
+          if (ROOT / "backend" / "demo" / "demo_store.db.gz").exists() else []),
     ],
     hiddenimports=[
         "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",

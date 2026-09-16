@@ -54,7 +54,21 @@ public final class InsightScreens {
             android.widget.Button lst = Ui.small(c, "لیست سفارش", () -> get("/insights/tasks", r -> { JSONArray t = arr(r); LinearLayout l = Ui.col(c); if (t.length() == 0) l.addView(Ui.empty(c, "لیست سفارش خالی است")); for (int i = 0; i < t.length(); i++) { JSONObject x = t.optJSONObject(i); l.addView(Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("qty")) + " عدد", Ui.AMBER)); } Ui.sheet(c, "لیست سفارش پیشنهادی", l); })); br.addView(lst); hero.addView(br); body.addView(hero);
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
-            for (int i = 0; i < items.length(); i++) body.addView(card(items.optJSONObject(i)));
+            cur = items; shown = 0; addPage();
+        }
+        /**
+         * v3.5.9 — render one page at a time. Building all 80 cards in a single UI-thread pass
+         * (each with 4 tiles, Persian text shaping and a chart view) froze «هوش فروشگاه» long
+         * enough for Android to raise ANR on a weak phone, which the user sees as a hang/crash.
+         */
+        static final int PAGE = 15;
+        JSONArray cur = new JSONArray(); int shown = 0; android.widget.Button moreBtn;
+        void addPage() {
+            if (moreBtn != null) { body.removeView(moreBtn); moreBtn = null; }
+            int end = Math.min(cur.length(), shown + PAGE);
+            for (int i = shown; i < end; i++) body.addView(card(cur.optJSONObject(i)));
+            shown = end;
+            if (shown < cur.length()) { moreBtn = Ui.ghost(c, "نمایش " + Ui.fa(String.valueOf(cur.length() - shown)) + " مورد دیگر", () -> addPage()); moreBtn.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 8)); body.addView(moreBtn); }
         }
         void accept(JSONObject x) { Ui.confirm(c, "این پیشنهاد اجرا شود؟ اقدام‌های آن هم‌اکنون انجام و اثرش از امروز اندازه‌گیری می‌شود.", () -> post("/insights/" + x.optLong("id") + "/accept", new JSONObject(), rr -> { JSONObject o = (JSONObject) rr; JSONArray ex = o.optJSONArray("executed"); StringBuilder sb = new StringBuilder(); for (int i = 0; ex != null && i < ex.length(); i++) { JSONObject e = ex.optJSONObject(i); sb.append(e.optBoolean("ok") ? "✓ " : "✗ ").append(e.optString("type")).append("\n"); } Sfx.play("ok"); Ui.done(Ui.ctx, "اجرا شد", sb.toString().trim(), null); load(); })); }
         void openDetail(long id) { a.open(new Detail(a, id), true); }
@@ -106,7 +120,9 @@ public final class InsightScreens {
         box.addView(tiles2(c, tile(c, metricLabel(m) + " — قبل", fmtVal(m, base.optDouble("value")), Ui.num(base.optDouble("window_days", 28)) + " روز · " + Ui.moneyShort(res.optDouble("base_profit_per_day")) + "/روز", 0),
                 tile(c, metricLabel(m) + " — بعد", fmtVal(m, res.optDouble("value")), Ui.num(res.optDouble("elapsed_days")) + " روز · " + Ui.moneyShort(res.optDouble("post_profit_per_day")) + "/روز" + (res.isNull("change_pct") ? "" : " · " + pctTxt(res.optDouble("change_pct"))), 0)));
         JSONObject daily = res.optJSONObject("daily"); JSONArray bef = daily == null ? null : daily.optJSONArray("before"), aft = daily == null ? null : daily.optJSONArray("after");
-        if (bef != null && aft != null && bef.length() + aft.length() >= 4) {
+        // v3.5.9 — the daily chart is drawn only on the detail screen. In the feed it meant one
+        // extra custom-drawn view per card (up to 80), which is what made the list stutter.
+        if (full && bef != null && aft != null && bef.length() + aft.length() >= 4) {
             java.util.List<Double> b = new java.util.ArrayList<>(), af = new java.util.ArrayList<>(); String[] lb = new String[bef.length() + aft.length()];
             for (int i = 0; i < bef.length(); i++) { b.add(bef.optDouble(i)); af.add(null); lb[i] = i == 0 ? "قبل" : null; }
             for (int i = 0; i < aft.length(); i++) { b.add(null); af.add(aft.optDouble(i)); lb[bef.length() + i] = i == 0 ? "اجرا ▶" : i == aft.length() - 1 ? "امروز" : null; }
