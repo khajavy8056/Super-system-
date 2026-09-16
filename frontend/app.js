@@ -2436,6 +2436,7 @@ async function renderCatalogFolderCard(holder, opts = {}) {
       <button id="cat-scan" class="btn btn-ghost">بررسی پوشه (بدون تغییر)</button>
       <button id="cat-import" class="btn btn-primary">وارد کردن محصولات و تصاویر</button>
       <label class="row muted" style="gap:6px"><input type="checkbox" id="cat-replace"/> تصاویر قبلی کالاها هم با تصویر پوشه جایگزین شود</label>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="cat-dl"/> اگر تصویری در پوشه نبود و در اکسل نشانی اینترنتی داشت، دانلود شود (نیاز به اینترنت)</label>
     </div>
     <div id="cat-progress" style="margin-top:10px;display:none"><div class="muted" id="cat-prog-text"></div><div style="height:8px;background:var(--border,#ddd);border-radius:4px;overflow:hidden;margin-top:4px"><div id="cat-prog-bar" style="height:100%;width:0;background:var(--primary,#3b82f6)"></div></div></div>
     <div id="cat-out" class="muted" style="margin-top:8px"></div>
@@ -2453,7 +2454,7 @@ async function renderCatalogFolderCard(holder, opts = {}) {
     if (r.error) { out.append(el("span", { class: "err", text: r.error })); return; }
     const line = `${fa(r.sheets)} فایل اکسل · ${fa(r.rows)} محصول (${fa(r.with_image)} با تصویر، ${fa(r.without_image)} بدون تصویر)` +
       (r.created !== undefined ? ` → ${fa(r.created)} جدید، ${fa(r.updated)} به‌روزرسانی، ${fa(r.images)} تصویر ذخیره شد · ${fa(r.seconds)} ثانیه` : "") +
-      (r.duplicates ? ` · ${fa(r.duplicates)} بارکد تکراری ادغام شد` : "") + (r.at ? ` · آخرین اجرا: ${new Date(r.at).toLocaleString("fa-IR")}` : "");
+      (r.duplicates ? ` · ${fa(r.duplicates)} بارکد تکراری ادغام شد` : "") + (r.downloadable ? ` · ${fa(r.downloadable)} مورد بدون فایل محلی ولی با نشانی اینترنتی (تیک دانلود)` : "") + (r.at ? ` · آخرین اجرا: ${new Date(r.at).toLocaleString("fa-IR")}` : "");
     out.append(el("div", { text: line }));
     if (r.errors && r.errors.length) out.append(el("div", { class: "err", text: "خطاها: " + r.errors.join(" | ") }));
     if (r.missing && r.missing.length) {
@@ -2489,7 +2490,7 @@ async function renderCatalogFolderCard(holder, opts = {}) {
     try { showResult(await api("/catalog/folder/scan", { method: "POST", body: JSON.stringify({}) })); } catch (e) { $("#cat-out").innerHTML = `<span class="err">${e.message}</span>`; }
   });
   $("#cat-import").addEventListener("click", async () => {
-    try { const r = await api("/catalog/folder/import", { method: "POST", body: JSON.stringify({ replace_images: $("#cat-replace").checked }) }); if (r.started === false) toast("وارد کردن قبلی هنوز در جریان است"); }
+    try { const r = await api("/catalog/folder/import", { method: "POST", body: JSON.stringify({ replace_images: $("#cat-replace").checked, download_missing: $("#cat-dl").checked }) }); if (r.started === false) toast("وارد کردن قبلی هنوز در جریان است"); }
     catch (e) { toast(e.message, "err"); }
     refresh();
   });

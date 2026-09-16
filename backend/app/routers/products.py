@@ -627,6 +627,7 @@ _LOCK = _th.Lock()
 class FolderIn(BaseModel):
     root: str | None = None
     replace_images: bool = False
+    download_missing: bool = False   # picture named as a URL in the sheet and not on disk → fetch it (needs internet)
 
 
 @catalog_router.get("/folder")
@@ -659,6 +660,7 @@ def catalog_folder_import(body: FolderIn | None = None, user: User = Depends(req
         _JOB.update({"running": True, "done": 0, "total": 0, "current": "", "result": None, "error": None, "started": __import__("time").time()})
     root = _P(body.root) if body and body.root else catalog_folder.default_root()
     replace = bool(body and body.replace_images)
+    dl = bool(body and body.download_missing)
     uid = user.id
 
     def _run():
@@ -667,7 +669,7 @@ def catalog_folder_import(body: FolderIn | None = None, user: User = Depends(req
             with SessionLocal() as s:
                 def prog(done, total, cur):
                     _JOB.update({"done": done, "total": total, "current": cur})
-                res = catalog_folder.import_folder(s, root, replace_images=replace, progress=prog, user_id=uid)
+                res = catalog_folder.import_folder(s, root, replace_images=replace, download_missing=dl, progress=prog, user_id=uid)
                 if res.get("error"):
                     _JOB["error"] = res["error"]
                 else:
