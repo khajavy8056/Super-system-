@@ -21,6 +21,7 @@ REM    make-stress-backup.bat                    ساخت کامل یک‌سال
 REM    make-stress-backup.bat --smoke            تست سریع ۳۰ روزه
 REM    make-stress-backup.bat --out D:\stress.db.gz
 REM    make-stress-backup.bat --days 365 --per-day 144
+REM    make-stress-backup.bat --python C:\Python312\python.exe   اجبار به استفاده از یک پایتون مشخص
 REM  هر آرگومان دیگری مستقیم به اسکریپت پایتون پاس داده می‌شود.
 REM ============================================================================
 
@@ -69,6 +70,10 @@ echo.
 echo پایتون: %PY%
 echo بک‌اند: %BACKEND%
 echo.
+echo نکته: اگر کتابخانه‌های لازم نصب نباشند، خود برنامه یک بار آن‌ها را در
+echo       پوشهٔ tools\.venv نصب می‌کند و بعد ساخت را شروع می‌کند. برای این کار
+echo       به اینترنت نیاز دارد؛ بارهای بعدی بدون نصب اجرا می‌شود.
+echo.
 
 %PY% "%SCRIPT_DIR%\make_stress_backup.py" %*
 set "RC=%ERRORLEVEL%"
@@ -76,6 +81,9 @@ set "RC=%ERRORLEVEL%"
 echo.
 if "%RC%"=="0" (
   echo فایل بکاپ آماده است.
+) else if "%RC%"=="4" (
+  echo ساخت انجام نشد: کتابخانه‌های لازم نصب نیستند و نصب خودکار هم ممکن نشد.
+  echo دستورهای بالا را در CMD اجرا کنید و دوباره امتحان کنید.
 ) else (
   echo ساخت با کد %RC% ناموفق بود. متن خطا را در بالا ببینید.
 )

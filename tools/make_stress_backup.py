@@ -25,9 +25,19 @@ Usage
     python tools/make_stress_backup.py --out D:\\stress.db.gz
     python tools/make_stress_backup.py --smoke             # 30 days, to prove the pipeline
     python tools/make_stress_backup.py --days 365 --per-day 144 --no-compress
+    python tools/make_stress_backup.py --python C:\\Python312\\python.exe
+
+Dependencies
+------------
+Nothing has to be installed by hand. If the interpreter that launched this file cannot
+import the backend's libraries (the normal case on a machine that only ever ran the
+packaged app), it creates ``tools/.venv``, pip-installs ``backend/requirements.txt`` into
+it once, and re-runs itself there. ``--no-bootstrap`` turns that off and just reports
+what is missing; ``--force-deps`` reinstalls.
 
 Exit code 0 only if the file was written AND passed the same validation the app's
-own /api/system/restore endpoint applies.
+own /api/system/restore endpoint applies. 4 means "dependencies missing and the
+automatic install did not work"; the message above it says exactly what to run.
 """
 from __future__ import annotations
 
@@ -41,10 +51,21 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 BACKEND = ROOT / "backend"
+REQUIREMENTS = BACKEND / "requirements.txt"
 
 # The app package lives under backend/; make it importable no matter where we were called from.
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+
+# A shop owner double-clicks the .bat from an unzipped GitHub download. Their Python has no
+# third-party packages in it, so a bare `import app.services.demo_store` dies with
+# "No module named 'sqlalchemy'" — which is what v3.5.9 printed. Persian console output also
+# dies with UnicodeEncodeError when stdout is redirected under a cp1256 code page.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 # The build writes a brand-new database, so it must never touch the developer's own data.
 os.environ.setdefault("SUPERMARKET_LICENSE_GATE", "0")
@@ -147,6 +168,165 @@ def validate(path: Path) -> dict:
             "counts": counts, "uncompressed_bytes": raw_size}
 
 
+# --------------------------------------------------------------------------- dependencies
+# v3.5.10 — the tool used to assume the Python it was launched with already had the backend's
+# libraries installed. On a plain Windows machine it does not, and the user got a
+# ModuleNotFoundError instead of a backup file. The tool now installs what it needs into a
+# private venv (tools/.venv) and re-runs itself there, so a double-click is still enough.
+
+#: Probe set, measured from the real import chain rather than guessed:
+#: ``app.services.demo_store`` needs sqlalchemy + pydantic + pydantic_settings, and
+#: ``app.routers.system`` (imported by validate()) needs fastapi.
+PROBE_PACKAGES = ("sqlalchemy", "pydantic", "pydantic_settings", "fastapi")
+
+#: argv as the user typed it, so a re-exec can forward the flags verbatim.
+_ORIG_ARGV = list(sys.argv[1:])
+
+
+def _missing_packages() -> list[str]:
+    import importlib
+
+    missing = []
+    for name in PROBE_PACKAGES:
+        try:
+            importlib.import_module(name)
+        except Exception:
+            missing.append(name)
+    return missing
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _show(cmd: list[str]) -> None:
+    print("   $ " + " ".join(f'"{c}"' if " " in str(c) else str(c) for c in cmd))
+
+
+def _manual_help(missing: list[str]) -> None:
+    print()
+    print("-" * 72)
+    print(" کتابخانه‌های زیر در پایتون شما نصب نیستند:")
+    print("   " + ", ".join(missing))
+    print()
+    print(" نصب خودکار ممکن نشد. اگر اینترنت دارید، این دو خط را در CMD اجرا کنید:")
+    print(f'   "{sys.executable}" -m venv "{HERE / ".venv"}"')
+    print(f'   "{_venv_python(HERE / ".venv")}" -m pip install -r "{REQUIREMENTS}"')
+    print(" و بعد دوباره make-stress-backup.bat را اجرا کنید (بار دوم نصب را رد می‌کند).")
+    print("-" * 72)
+
+
+def _reexec(python: Path, argv: list[str]) -> int:
+    """Run this same script under a different interpreter and hand back its exit code."""
+    import subprocess
+
+    cmd = [str(python), str(Path(__file__).resolve()), *argv, "--no-bootstrap"]
+    _show(cmd)
+    print()
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError as exc:
+        print(f"\n[خطا] اجرای {python} ممکن نشد: {exc}")
+        return 4
+
+
+def ensure_dependencies(args):
+    """Make sure the backend's libraries are importable.
+
+    Returns ``None`` when THIS process may go on and build, or an ``int`` exit code when it
+    must stop — including the case where a bootstrapped child already did the whole job. That
+    distinction is the whole function: returning 0 for "the child finished" made the parent
+    run the build a second time under the very interpreter that has no sqlalchemy, which
+    reproduced the ModuleNotFoundError this was written to prevent.
+    """
+    import subprocess
+
+    missing = _missing_packages()
+    if not missing:
+        return None          # this interpreter can build; carry on
+
+    # --python X is an explicit instruction: run under that interpreter and stop guessing.
+    if args.python:
+        chosen = Path(args.python).expanduser()
+        if not chosen.exists():
+            print(f"[خطا] پایتون درخواستی پیدا نشد: {chosen}")
+            return 4
+        forwarded = [a for i, a in enumerate(_ORIG_ARGV)
+                     if not (a == "--python" or a.startswith("--python=")
+                             or (i and _ORIG_ARGV[i - 1] == "--python"))]
+        # Compare the paths as given, NOT resolved: a venv's python is a symlink to its base
+        # interpreter, so .resolve() made "--python tools/.venv/..." look identical to the
+        # interpreter we are already running and the flag was silently ignored.
+        if os.path.abspath(sys.executable) == os.path.abspath(str(chosen)):
+            pass  # already there; fall through to the bootstrap logic below
+        else:
+            print(f" اجرای ساخت با پایتون انتخابی شما: {chosen}")
+            return _reexec(chosen, forwarded)
+
+    if args.no_bootstrap:
+        # Second pass, or the user asked us not to install anything: report, don't crash.
+        _manual_help(missing)
+        return 4
+
+    venv_dir = HERE / ".venv"
+    vpy = _venv_python(venv_dir)
+
+    print(" کتابخانه‌های لازم در پایتون فعلی نصب نیستند:")
+    print("   " + ", ".join(missing))
+    print()
+    print(f" در حال ساخت محیط اختصاصی در: {venv_dir}")
+    print(" (فقط بار اول؛ دانلود کتابخانه‌ها بسته به سرعت اینترنت ۲ تا ۱۰ دقیقه طول می‌کشد.)")
+    print()
+
+    if not vpy.exists():
+        rc = subprocess.run([sys.executable, "-m", "venv", str(venv_dir)]).returncode
+        if rc != 0 or not vpy.exists():
+            print(f"\n[خطا] ساخت venv ناموفق بود (کد {rc}).")
+            _manual_help(missing)
+            return 4
+
+    def _probe() -> bool:
+        code = "import " + ",".join(PROBE_PACKAGES)
+        return subprocess.run([str(vpy), "-c", code],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+    if _probe() and not args.force_deps:
+        print(" محیط قبلاً آماده است — نصب رد شد.")
+    else:
+        if not REQUIREMENTS.exists():
+            print(f"\n[خطا] فایل {REQUIREMENTS} پیدا نشد.")
+            _manual_help(missing)
+            return 4
+        pip = [str(vpy), "-m", "pip", "--disable-pip-version-check"]
+        if subprocess.run([*pip, "--version"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode != 0:
+            _show([str(vpy), "-m", "ensurepip", "--upgrade"])
+            subprocess.run([str(vpy), "-m", "ensurepip", "--upgrade"])
+        cmd = [*pip, "install", "--upgrade", "pip"]
+        _show(cmd)
+        subprocess.run(cmd)
+        cmd = [*pip, "install", "-r", str(REQUIREMENTS)]
+        _show(cmd)
+        rc = subprocess.run(cmd).returncode
+        if rc != 0:
+            print(f"\n[خطا] نصب کتابخانه‌ها ناموفق بود (کد {rc}).")
+            _manual_help(missing)
+            return 4
+        if not _probe():
+            print("\n[خطا] کتابخانه‌ها نصب شدند اما هنوز import نمی‌شوند.")
+            _manual_help(missing)
+            return 4
+
+    print()
+    print(" نصب کامل شد. حالا ساخت اصلی اجرا می‌شود…")
+    forwarded = [a for i, a in enumerate(_ORIG_ARGV)
+                 if not (a == "--python" or a.startswith("--python=")
+                         or (i and _ORIG_ARGV[i - 1] == "--python"))]
+    return _reexec(vpy, forwarded)
+
+
 # --------------------------------------------------------------------------- main
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build a heavy one-year stress backup for the supermarket system.")
@@ -160,7 +340,20 @@ def main() -> int:
                     help="skip the 13,570-SKU catalogue and build only the ~120 curated products")
     ap.add_argument("--smoke", action="store_true",
                     help="30 days instead of a year — proves the pipeline in minutes, not hours")
+    ap.add_argument("--python", metavar="EXE",
+                    help="run the build with this Python instead of the one found on PATH")
+    ap.add_argument("--no-bootstrap", action="store_true",
+                    help="do not create tools/.venv or install anything; just report what is missing")
+    ap.add_argument("--force-deps", action="store_true",
+                    help="reinstall the requirements into tools/.venv even if they already import")
     args = ap.parse_args()
+
+    # Before anything else: a missing sqlalchemy must produce instructions, not a traceback.
+    # `is not None`, not truthiness: 0 here means "a bootstrapped child already built the
+    # file", and the parent must not then try to build it again.
+    rc = ensure_dependencies(args)
+    if rc is not None:
+        return rc
 
     days = 30 if args.smoke else args.days
     out = Path(args.out).expanduser()
