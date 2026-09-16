@@ -87,7 +87,14 @@ public final class Local {
     }
     static boolean passOk(JSONObject u, String username, String pass) {
         String h = u.optString("pass_hash", ""); if (h.startsWith("sha:")) return h.equals(sha(username + "|" + pass));
-        return h.equals(Lic.hwid() + ":" + Integer.toHexString((username + "|" + pass).hashCode()));   // wizard-era hash
+        // v3.5.11 — the wizard-era hash was "<device id>:<hex>". Salting a password with the
+        // device identity meant it stopped verifying the moment that identity moved, which is
+        // exactly why a CORRECT password was reported as wrong once the idle lock had sent the
+        // user back to the login screen. Compare only the digest part; auth() upgrades the row
+        // to the device-independent "sha:" form on the next successful login.
+        if (h.isEmpty()) return false;
+        int c = h.lastIndexOf(':');
+        return (c < 0 ? h : h.substring(c + 1)).equals(Integer.toHexString((username + "|" + pass).hashCode()));
     }
     static JSONObject userOut(JSONObject u) throws Exception { JSONArray roles = new JSONArray(u.optString("roles", "[]")); JSONObject o = new JSONObject(); o.put("id", u.optLong("id")); o.put("username", u.optString("username")); o.put("full_name", u.optString("full_name")); o.put("roles", roles); o.put("permissions", permsFor(roles)); o.put("is_active", u.optInt("is_active", 1) == 1); return o; }
     static Object auth(String method, String[] seg, String body) throws Exception {

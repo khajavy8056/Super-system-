@@ -15,11 +15,20 @@ These tests pin the guarantees that replace both.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.database import SessionLocal
 from app.routers.mobile import _devices
 from app.services import license as lic
+
+JAVA = (Path(__file__).resolve().parents[2] / "mobile-android" / "app" / "src" / "main" / "java"
+        / "ir" / "khajavy" / "supermarket")
+
+
+def _java(name: str) -> str:
+    return (JAVA / name).read_text(encoding="utf-8")
 
 
 class _NoMachineId:
@@ -108,3 +117,32 @@ def test_reauthenticating_does_not_undo_a_revocation(client, auth_headers):
     with SessionLocal() as db:
         row = next(d for d in _devices(db) if d["id"] == did)
     assert row["revoked"] is True
+
+
+# --------------------------------------------------------------------------- Android sources
+# The Java cannot be executed here (no device; android.jar's org.json is a stub that throws), so
+# these read the shipped source the way test_v20_native_android.py already does. They exist
+# because the passOk fix was once written, then silently reverted by a bad file write, and
+# NOTHING caught it: the code still compiled, the APK still built, and a release went out with
+# the bug in it. A missing guard is what let that happen, not a missing edit.
+def test_password_check_is_not_bound_to_the_device_identity():
+    src = _java("Local.java")
+    assert 'Lic.hwid() + ":"' not in src, "passOk still salts the password with the device id"
+    assert "lastIndexOf(':')" in src, "the wizard-era hash comparison went missing"
+
+
+def test_admin_password_is_stored_device_independently():
+    assert 'Lic.hwid() + ":"' not in _java("SetupActivity.java")
+    assert 'Local.sha(str("admin_username")' in _java("SetupActivity.java")
+
+
+def test_phone_identity_is_frozen_and_seeded_from_hardware():
+    assert 'Prefs.get("hwid", "")' in _java("Lic.java"), "hwid() is not frozen across runs"
+    assert "ANDROID_ID" in _java("Prefs.java"), "the hardware seed is gone"
+
+
+def test_no_time_based_ids_and_no_mint_on_every_login():
+    login = _java("LoginActivity.java")
+    assert "Long.toHexString(System.currentTimeMillis())" not in login, "time-based device id is back"
+    assert "Prefs.deviceToken(this) == null" in login, "minting a new device on every sign-in again"
+    assert "hwidSeed" in _java("SetupActivity.java")
