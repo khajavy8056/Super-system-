@@ -231,9 +231,20 @@ public final class SalesScreens {
         public boolean autoRefresh() { return tab == 0; }
         public void load() {
             clear(); body.addView(tabs(new String[]{Api.standalone() ? "همهٔ فاکتورها (ابطال / مرجوعی)" : "فاکتورهای رایانه", "فاکتورهای این گوشی"}, tab, t -> { tab = t; load(); }));
-            if (tab == 1) { for (JSONObject o : Db.localInvoices()) body.addView(Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total")), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, null)); if (Db.localInvoices().isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
-            body.addView(Ui.empty(c, "…")); get("/invoices?limit=100", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "فاکتوری نیست")); for (int i = 0; i < ar.length(); i++) { JSONObject inv = ar.optJSONObject(i); body.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
+            if (tab == 1) {
+                // v3.5.13 — paged. This loop had NO limit at all: a phone in use for months built
+                // one row per local invoice in a single UI-thread pass and died.
+                final java.util.List<JSONObject> mine = Db.localInvoices();
+                if (mine.isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده"));
+                else Ui.page(c, body, mine.size(), PAGE, i -> { JSONObject o = mine.get(i); return Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total")), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, null); });
+                return;
+            }
+            // v3.5.13 — was limit=100 rendered as 100 rows at once. Paging makes a deeper fetch
+            // safe, so the list now reaches further back without costing anything at render time.
+            body.addView(Ui.empty(c, "…")); get("/invoices?limit=200", r -> { body.removeViewAt(body.getChildCount() - 1); final JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "فاکتوری نیست")); else Ui.page(c, body, ar.length(), PAGE, i -> { JSONObject inv = ar.optJSONObject(i); return Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true)); }); });
         }
+        /** Rows are cheap but not free — RippleDrawable, a typeface and Persian shaping each. */
+        static final int PAGE = 25;
     }
     public static final class InvoiceDetail extends Screens.Screen {
         final long id; JSONObject inv;

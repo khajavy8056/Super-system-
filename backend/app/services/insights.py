@@ -1243,3 +1243,21 @@ def start_worker(session_factory) -> None:
 
 def stop_worker() -> None:
     _stop.set()
+
+
+# ----------------------------------------------------------------------------- v3.5.13 analyzers
+# The customer-behaviour and shop-floor detectors live in their own module. The import sits at the
+# BOTTOM of this file on purpose: customer_intel does `from .insights import Draft, Ctx, _f, ...`,
+# which only resolves once those names exist here. Reversing the direction would import a
+# half-built module.
+# Only import it when it is not already being imported: if customer_intel is the module that
+# started the chain, it is mid-initialisation here and its ANALYZERS dict does not exist yet.
+# In that case customer_intel registers ITSELF at the bottom of its own file, which covers the
+# other import order. Either way the registry ends up complete, and neither order crashes.
+import sys as _sys  # noqa: E402
+
+if "app.services.customer_intel" not in _sys.modules:
+    from . import customer_intel as _customer_intel  # noqa: E402
+
+    ANALYZERS.update(_customer_intel.ANALYZERS)
+    KIND_LABELS.update(_customer_intel.KIND_LABELS)

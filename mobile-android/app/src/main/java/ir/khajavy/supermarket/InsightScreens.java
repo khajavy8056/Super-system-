@@ -20,7 +20,19 @@ public final class InsightScreens {
 
     static int prioColor(int p) { return p <= 1 ? Ui.RED : p == 2 ? Ui.AMBER : Ui.TEAL; }
     static String prioLabel(int p) { return p <= 1 ? "فوری" : p == 2 ? "مهم" : "پیشنهاد"; }
-    static String kindIcon(String k) { switch (k) { case "CROSS_SELL": case "BASKET_NUDGE": return "cart"; case "EXPIRY_LADDER": return "calendar"; case "DEAD_STOCK": return "box"; case "VELOCITY": return "trend"; case "CASHFLOW": return "bank"; case "VIP": return "star"; case "CHURN": return "users"; case "PRICE_GAP": return "tag"; case "LOSS_PREV": return "shield"; case "SEASON": return "chart"; } return "star"; }
+    static String kindIcon(String k) { switch (k) { case "CROSS_SELL": case "BASKET_NUDGE": return "cart"; case "EXPIRY_LADDER": return "calendar"; case "DEAD_STOCK": return "box"; case "VELOCITY": return "trend"; case "CASHFLOW": return "bank"; case "VIP": return "star"; case "CHURN": return "users"; case "PRICE_GAP": return "tag"; case "LOSS_PREV": return "shield"; case "SEASON": return "chart";
+            // v3.5.13 — the customer-intelligence and shop-floor kinds (see backend/app/services/
+            // customer_intel.py). Without these every new suggestion fell through to the default
+            // star icon and the feed looked like 24 identical rows.
+            case "CUST_PAYDAY": case "CUST_CHURN_RISK": case "CUST_RFM": case "CUST_NEW_SECOND":
+            case "CUST_CONCENTRATION": case "CUST_LOYALTY_GAP": case "CUST_ANONYMOUS": return "users";
+            case "CUST_BASKET_SHRINK": case "CUST_CATEGORY_LOSS": case "CUST_RETURN_ABUSE":
+            case "ATTACH_OPPORTUNITY": return "cart";   // CROSS_SELL is already cased above
+            case "CUST_CREDIT_SLOW": case "DISCOUNT_LEAK": case "MARGIN_EROSION":
+            case "PRICE_ROUNDING": case "PROMO_DEPTH": return "tag";
+            case "STOCKOUT_COST": case "OVERSTOCK": case "ABC_DRIFT": case "SUPPLIER_CONCENTRATION": return "box";
+            case "DATA_HYGIENE": return "shield";
+            case "PEAK_HOUR": case "WEEKDAY_DIP": case "TREND_BREAK": return "chart"; } return "star"; }
 
     /* ---------------- dashboard card (called from Screens.Home) ---------------- */
     public static void dashboardCard(Screens.Screen sc, LinearLayout body, AppActivity a) {
@@ -54,22 +66,14 @@ public final class InsightScreens {
             android.widget.Button lst = Ui.small(c, "لیست سفارش", () -> get("/insights/tasks", r -> { JSONArray t = arr(r); LinearLayout l = Ui.col(c); if (t.length() == 0) l.addView(Ui.empty(c, "لیست سفارش خالی است")); for (int i = 0; i < t.length(); i++) { JSONObject x = t.optJSONObject(i); l.addView(Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("qty")) + " عدد", Ui.AMBER)); } Ui.sheet(c, "لیست سفارش پیشنهادی", l); })); br.addView(lst); hero.addView(br); body.addView(hero);
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
-            cur = items; shown = 0; addPage();
+            // v3.5.13 — paged, and each page REPLACES the previous one. The v3.5.9 version
+            // appended 15 cards per press and never removed any, so pressing «۳۶ مورد دیگر» a few
+            // times grew the tree to all 80 cards — each with tiles, Persian shaping and a chart —
+            // and a weak phone hung and then died. PAGE rows is now a hard ceiling on the tree.
+            final JSONArray list = items;
+            Ui.page(c, body, list.length(), PAGE, i -> card(list.optJSONObject(i)));
         }
-        /**
-         * v3.5.9 — render one page at a time. Building all 80 cards in a single UI-thread pass
-         * (each with 4 tiles, Persian text shaping and a chart view) froze «هوش فروشگاه» long
-         * enough for Android to raise ANR on a weak phone, which the user sees as a hang/crash.
-         */
-        static final int PAGE = 15;
-        JSONArray cur = new JSONArray(); int shown = 0; android.widget.Button moreBtn;
-        void addPage() {
-            if (moreBtn != null) { body.removeView(moreBtn); moreBtn = null; }
-            int end = Math.min(cur.length(), shown + PAGE);
-            for (int i = shown; i < end; i++) body.addView(card(cur.optJSONObject(i)));
-            shown = end;
-            if (shown < cur.length()) { moreBtn = Ui.ghost(c, "نمایش " + Ui.fa(String.valueOf(cur.length() - shown)) + " مورد دیگر", () -> addPage()); moreBtn.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 8)); body.addView(moreBtn); }
-        }
+        static final int PAGE = 8;
         void accept(JSONObject x) { Ui.confirm(c, "این پیشنهاد اجرا شود؟ اقدام‌های آن هم‌اکنون انجام و اثرش از امروز اندازه‌گیری می‌شود.", () -> post("/insights/" + x.optLong("id") + "/accept", new JSONObject(), rr -> { JSONObject o = (JSONObject) rr; JSONArray ex = o.optJSONArray("executed"); StringBuilder sb = new StringBuilder(); for (int i = 0; ex != null && i < ex.length(); i++) { JSONObject e = ex.optJSONObject(i); sb.append(e.optBoolean("ok") ? "✓ " : "✗ ").append(e.optString("type")).append("\n"); } Sfx.play("ok"); Ui.done(Ui.ctx, "اجرا شد", sb.toString().trim(), null); load(); })); }
         void openDetail(long id) { a.open(new Detail(a, id), true); }
         static android.widget.Button wbtn(android.widget.Button b) { LinearLayout.LayoutParams lp = Ui.weight(1); lp.setMargins(Ui.dp(3), Ui.dp(2), Ui.dp(3), Ui.dp(2)); b.setLayoutParams(lp); b.setPadding(Ui.dp(4), 0, Ui.dp(4), 0); b.setSingleLine(true); b.setEllipsize(android.text.TextUtils.TruncateAt.END); return b; }
