@@ -8,19 +8,19 @@ REM  Stress-backup builder: a full year of a big, busy supermarket.
 REM
 REM  چه چیزی می‌سازد:
 REM    * کل کاتالوگ پیش‌فرض (۱۳٬۵۷۰ کالا، همهٔ بارکدها)
-REM    * به‌طور میانگین یک فاکتور هر ۱۰ دقیقه برای یک سال (~۵۲٬۵۶۰ فاکتور)
+REM    * به‌طور میانگین ۱۱۰۰ فاکتور در روز؛ تعداد واقعی در پایان بررسی می‌شود
 REM    * ورودی/بچ/حرکت موجودی برای همهٔ کالاها، از ۱۵ تأمین‌کننده
 REM    * چک صادره و وصول‌شده، هزینه، مرجوعی، ابطال، فروش نسیه
 REM    * اجرای مدل هوش روی سالِ کامل، اجرای پیشنهادها و سنجش اثرشان
 REM
-REM  حجم فایل هرچه باشد مشکلی ندارد — هدف فشار روی دیتاست.
+REM  فضای دیسک و توان دستگاه محدود است؛ ابتدا اجرای کوتاه را بررسی کنید.
 REM  نوار پیشرفت واقعی است؛ با پایان آن فایل آماده است.
 REM
 REM  استفاده:
 REM    make-stress-backup.bat                    ساخت کامل یک‌ساله
 REM    make-stress-backup.bat --smoke            تست سریع ۳۰ روزه
 REM    make-stress-backup.bat --out D:\stress.db.gz
-REM    make-stress-backup.bat --days 365 --per-day 144
+REM    make-stress-backup.bat --days 365 --per-day 1100 --minimum-invoices 365000
 REM    make-stress-backup.bat --python C:\Python312\python.exe   اجبار به استفاده از یک پایتون مشخص
 REM  هر آرگومان دیگری مستقیم به اسکریپت پایتون پاس داده می‌شود.
 REM ============================================================================
@@ -40,26 +40,34 @@ if not exist "%BACKEND%\app\main.py" (
 )
 set "PYTHONPATH=%BACKEND%;%PYTHONPATH%"
 
-REM ---- find a Python 3.9+ --------------------------------------------------
+REM ---- find a Python 3.11+ --------------------------------------------------
 set "PY="
 if exist "%BACKEND%\.venv\Scripts\python.exe" set "PY=%BACKEND%\.venv\Scripts\python.exe"
 if not defined PY if exist "%SCRIPT_DIR%\.venv\Scripts\python.exe" set "PY=%SCRIPT_DIR%\.venv\Scripts\python.exe"
 if not defined PY (
   where py >nul 2>&1
   if not errorlevel 1 (
-    py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
+    py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
     if not errorlevel 1 set "PY=py -3"
   )
 )
 if not defined PY (
   where python >nul 2>&1
   if not errorlevel 1 (
-    python -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
+    python -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
     if not errorlevel 1 set "PY=python"
   )
 )
 if not defined PY (
-  echo [خطا] پایتون ۳.۹ یا جدیدتر پیدا نشد.
+  echo Python 3.11 is missing. Installing for this user using Windows Package Manager...
+  where winget >nul 2>&1
+  if not errorlevel 1 (
+    winget install --id Python.Python.3.11 --exact --source winget --scope user --silent --accept-package-agreements --accept-source-agreements
+    if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set "PY=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+  )
+)
+if not defined PY (
+  echo [خطا] پایتون ۳.۱۱ یا جدیدتر پیدا نشد.
   echo       پایتون را از https://python.org نصب کنید و تیک "Add to PATH" را بزنید.
   pause
   exit /b 1

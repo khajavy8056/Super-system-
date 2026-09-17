@@ -8,7 +8,7 @@ The bundled demo store is ~120 SKUs and ~95 invoices/day. That is a shop demo, n
 load test. This driver builds a file meant to be *abusive*:
 
   * the ENTIRE default catalogue (13,570 SKUs, every barcode in the shipped bank)
-  * one invoice every ~10 minutes for a year  -> ~52,560 invoices by default
+  * 1,100 invoices/day target (actual persisted count is validated separately)
   * receiving / batches / stock movements for every SKU, across 15 suppliers
   * cheques issued and settled, expenses, returns, voids, credit (نسیه) sales
   * the intelligence engine run on the finished year, the strongest suggestions
@@ -21,10 +21,10 @@ The build is streamed from a subprocess, so the progress bar is real, not decora
 
 Usage
 -----
-    python tools/make_stress_backup.py                     # the full year (~4-5 GB raw)
+    python tools/make_stress_backup.py                     # the full year (disk size and runtime must be measured)
     python tools/make_stress_backup.py --out D:\\stress.db.gz
     python tools/make_stress_backup.py --smoke             # 30 days, to prove the pipeline
-    python tools/make_stress_backup.py --days 365 --per-day 144 --no-compress
+    python tools/make_stress_backup.py --days 365 --per-day 1100 --minimum-invoices 365000 --no-compress
     python tools/make_stress_backup.py --python C:\\Python312\\python.exe
 
 Dependencies
@@ -158,6 +158,8 @@ def validate(path: Path) -> dict:
                   "returns", "audit_logs"):
             if t in tables:
                 counts[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        foreign_key_errors = con.execute("PRAGMA foreign_key_check").fetchmany(25)
+        daily = con.execute("SELECT substr(created_at,1,10), COUNT(*) FROM invoices GROUP BY substr(created_at,1,10) ORDER BY 1").fetchall() if "invoices" in tables else []
         raw_size = target.stat().st_size
     finally:
         con.close()
@@ -165,7 +167,8 @@ def validate(path: Path) -> dict:
             shutil.rmtree(tmpdir, ignore_errors=True)
     missing = required - tables
     return {"integrity": integrity, "tables": len(tables), "missing": sorted(missing),
-            "counts": counts, "uncompressed_bytes": raw_size}
+            "counts": counts, "uncompressed_bytes": raw_size,
+            "foreign_key_errors": foreign_key_errors, "daily_invoices": daily}
 
 
 # --------------------------------------------------------------------------- dependencies
@@ -332,8 +335,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Build a heavy one-year stress backup for the supermarket system.")
     ap.add_argument("--out", default=str(ROOT / "stress_store.db.gz"), help="output file (.gz recommended)")
     ap.add_argument("--days", type=int, default=365, help="days of history (default 365)")
-    ap.add_argument("--per-day", type=float, default=144.0,
-                    help="average invoices per day (default 144 = one every 10 minutes)")
+    ap.add_argument("--per-day", type=float, default=1100.0,
+                    help="average invoices per day (default 1100; validate actual count afterwards)")
     ap.add_argument("--seed", type=int, default=1404, help="RNG seed; same seed = same store")
     ap.add_argument("--no-compress", action="store_true", help="write raw SQLite instead of gzip")
     ap.add_argument("--lite-catalog", action="store_true",
@@ -346,7 +349,14 @@ def main() -> int:
                     help="do not create tools/.venv or install anything; just report what is missing")
     ap.add_argument("--force-deps", action="store_true",
                     help="reinstall the requirements into tools/.venv even if they already import")
+    ap.add_argument("--minimum-invoices", type=int, default=None,
+                    help="fail validation if the actual invoice count is below this target")
     args = ap.parse_args()
+    import math
+    if not 1 <= args.days <= 3660 or not math.isfinite(args.per_day) or not 1 <= args.per_day <= 10000:
+        ap.error("days must be 1..3660 and per-day 1..10000")
+    if args.minimum_invoices is not None and args.minimum_invoices < 1:
+        ap.error("minimum-invoices must be positive")
 
     # Before anything else: a missing sqlalchemy must produce instructions, not a traceback.
     # `is not None`, not truthiness: 0 here means "a bootstrapped child already built the
@@ -356,6 +366,8 @@ def main() -> int:
         return rc
 
     days = 30 if args.smoke else args.days
+    if args.minimum_invoices is None and args.per_day >= 1000 and not args.lite_catalog:
+        args.minimum_invoices = days * 1000
     out = Path(args.out).expanduser()
     if args.smoke and args.out.endswith("stress_store.db.gz"):
         out = out.with_name("stress_store_smoke.db.gz")
@@ -402,6 +414,23 @@ def main() -> int:
     raw_bytes = summary.get("bytes", 0)
     v = validate(out)
     raw = v.get("uncompressed_bytes", 0)
+    import json
+    report = {"simulation_only": True, "summary": summary, "validation": v,
+              "elapsed_seconds": round(time.time() - t0, 3),
+              "requested_days": days, "requested_invoices_per_day": args.per_day,
+              "model_effect_is_causal_evidence": False}
+    report_path = out.with_name(out.name + ".report.json")
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    actual = v.get("counts", {}).get("invoices", 0)
+    if args.minimum_invoices is not None and actual < args.minimum_invoices:
+        print(f"[FAILED] actual invoices {actual:,} < required {args.minimum_invoices:,}; report: {report_path}")
+        return 3
+    if v.get("foreign_key_errors"):
+        print(f"[FAILED] foreign-key violations detected; report: {report_path}")
+        return 3
+    if (summary.get("insights") or {}).get("errors"):
+        print(f"[FAILED] model errors were detected; report: {report_path}")
+        return 3
     size_txt = f"{raw_bytes:,} بایت ({raw_bytes / 1024 / 1024:.1f} مگابایت)"
     if raw:
         size_txt += f"  →  باز‌شده {raw:,} بایت ({raw / 1024 / 1024 / 1024:.2f} گیگابایت)"

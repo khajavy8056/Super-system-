@@ -131,12 +131,19 @@ def _supplier_weights(n: int) -> list[float]:
 def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None,
              full_catalog: bool = False) -> dict:
     """Build the demo store. Idempotent guard: refuses if the DB already has > 50 invoices."""
+    import math
+    if not 1 <= days <= 3660 or not math.isfinite(invoices_per_day) or not 1 <= invoices_per_day <= 10000:
+        raise ValueError("DEMO_INVALID_SCALE: days 1..3660, invoices/day 1..10000")
     rnd = _rng(seed)
     n_inv = db.execute(select(Invoice.id).limit(51)).all()
     if len(n_inv) > 50:
         raise RuntimeError("DEMO_ON_NONEMPTY_DB")
     today = datetime.utcnow().date()
-    start = today - timedelta(days=days)
+    # Stress history consists of exactly N completed days, not N+1 dates or a
+    # fabricated full current day whose evening has not happened yet.
+    if full_catalog:
+        today -= timedelta(days=1)
+    start = today - timedelta(days=days - 1 if full_catalog else days)
 
     admin = db.execute(select(User).order_by(User.id)).scalars().first()
     from ..security import hash_password
@@ -231,14 +238,22 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         if progress:
             progress(0.05)
 
+    # Scale replenishment with traffic; increasing checkouts alone just creates
+    # empty shelves instead of exercising a genuinely busy store.
+    if full_catalog:
+        supply_scale = max(1.0, invoices_per_day / 95.0)
+        for product in products + long_tail:
+            product["demand"] *= supply_scale
+
     # ---- customers (140): habits
     customers = []
-    for i in range(140):
+    customer_count = max(140, min(20000, int(invoices_per_day * 8)))
+    for i in range(customer_count):
         nm, ln = rnd.choice(FIRST), rnd.choice(LAST)
         phone = "0912" + str(rnd.randint(1000000, 9999999)) if i % 7 else None
         c = Customer(name=nm, last_name=ln, phone=phone, credit_enabled=(i % 5 == 0), credit_limit=D(2_000_000 if i % 5 == 0 else 0), is_active=True)
         db.add(c); db.flush()
-        kind = "vip" if i < 12 else "regular" if i < 90 else "occasional"
+        kind = "vip" if i < customer_count * .086 else "regular" if i < customer_count * .643 else "occasional"
         gap = {"vip": rnd.uniform(1.5, 3.5), "regular": rnd.uniform(4, 9), "occasional": rnd.uniform(14, 40)}[kind]
         churn_day = None
         if kind == "regular" and rnd.random() < 0.10:
@@ -323,7 +338,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0}
     # effects of manager-accepted suggestions (filled by _manager_reviews); the simulation honours them
     fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "visit_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
-    inv_ids_by_day: dict[date, list[int]] = {}
+    # Do not retain every historical invoice id in Python; the database is the ledger.
     total_days = days
     day = start
     while day <= today:
@@ -337,7 +352,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         wd_f = WEEKDAY_FACTOR[day.weekday()]
         growth = 1 + 0.18 * (di / total_days)   # the store grows ~18 % over the year
         n_today = max(20, int(rnd.gauss(invoices_per_day * month_f * wd_f * growth, 8)))
-        if day == today:
+        if day == today and not full_catalog:
             n_today = int(n_today * 0.55)
         if di == total_days - 150:
             for d in dead:
@@ -476,7 +491,6 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             stats["invoices"] += 1; stats["lines"] += len(items); stats["sales"] += float(inv.total_amount)
             if on_credit:
                 stats["credit"] += 1
-            inv_ids_by_day.setdefault(day, []).append(inv.id)
             # voids: cashier2 has an elevated rate (planted LOSS_PREV)
             vr = 0.045 if user.username == "cashier2" else 0.008
             if rnd.random() < vr:
@@ -567,8 +581,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                                 "id": ch.id})
                 except Exception as exc:
                     sp.rollback(); log.warning("cheque settle skipped: %s", exc)
-        if di % 30 == 0:
-            db.commit()
+        db.commit()  # bounded daily transactions; avoid month-sized WAL growth
         day += timedelta(days=1)
 
     def stamp_expiries():
@@ -581,23 +594,24 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
 
     stamp_expiries()
 
-    # ---- planted end-state situations
-    now = datetime.utcnow()
-    # 1) perishable over-receipt → EXPIRY_LADDER
-    yog = by_name["ماست ۹۰۰ گرمی"]
-    receive(yog, now - timedelta(days=2), 140, shelf_override=9)
-    # 2) fast mover nearly out → VELOCITY
-    water = by_name["آب معدنی ۱.۵ لیتری"]
-    db.execute(update(ProductBatch).where(ProductBatch.product_id == water["p"].id, ProductBatch.status == "ACTIVE").values(current_qty=D(0)))
-    receive(water, now - timedelta(hours=5), 14)
-    # 3) priced under cost → PRICE_GAP
-    tuna = by_name["تن ماهی ۱۸۰ گرمی"]
-    db.execute(update(ProductBatch).where(ProductBatch.product_id == tuna["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(69000)))
-    # 4) consumer-price violation
-    tea = by_name["چای کیسه‌ای ۱۰۰ عددی"]
-    db.execute(update(ProductBatch).where(ProductBatch.product_id == tea["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(124000)))
-    stamp_expiries()
-    db.commit()
+    if not full_catalog:
+        # ---- planted end-state situations
+        now = datetime.utcnow()
+        # 1) perishable over-receipt → EXPIRY_LADDER
+        yog = by_name["ماست ۹۰۰ گرمی"]
+        receive(yog, now - timedelta(days=2), 140, shelf_override=9)
+        # 2) fast mover nearly out → VELOCITY
+        water = by_name["آب معدنی ۱.۵ لیتری"]
+        db.execute(update(ProductBatch).where(ProductBatch.product_id == water["p"].id, ProductBatch.status == "ACTIVE").values(current_qty=D(0)))
+        receive(water, now - timedelta(hours=5), 14)
+        # 3) priced under cost → PRICE_GAP
+        tuna = by_name["تن ماهی ۱۸۰ گرمی"]
+        db.execute(update(ProductBatch).where(ProductBatch.product_id == tuna["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(69000)))
+        # 4) consumer-price violation
+        tea = by_name["چای کیسه‌ای ۱۰۰ عددی"]
+        db.execute(update(ProductBatch).where(ProductBatch.product_id == tea["p"].id, ProductBatch.status == "ACTIVE").values(sell_price=D(124000)))
+        stamp_expiries()
+        db.commit()
 
     # ---- v3.5.9: run the model on the FINAL data and actually act on it -----------------
     # A stress file that only *contains* sales proves nothing about the intelligence engine.
@@ -616,7 +630,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             progress(0.96)
         accepted = 0
         for r in db.execute(select(Insight).where(Insight.status == "NEW")
-                            .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(14)).scalars().all():
+                            .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(0 if full_catalog else 14)).scalars().all():
             try:
                 ins_svc.accept(db, r, user=admin)
                 accepted += 1
@@ -626,12 +640,13 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         db.commit()
         if progress:
             progress(0.98)
-        ins = {"generated": int(run_res.get("created", 0)) + int(run_res.get("refreshed", 0)),
+        ins = {"errors": run_res.get("errors", []), "generated": int(run_res.get("created", 0)) + int(run_res.get("refreshed", 0)),
                "accepted": accepted, "measured": ins_svc.measure_all(db),
                "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all())}
         db.commit()
     except Exception:
         db.rollback()
+        ins["errors"] = ["FINAL_INSIGHT_PASS_FAILED"]
         log.exception("demo: final insight pass failed (the store is still valid without it)")
     if progress:
         progress(1.0)
@@ -641,7 +656,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         db.commit()
     except Exception:
         db.rollback()
-    return {"days": days, "products": len(products), "long_tail_products": len(long_tail),
+    return {"days": days, "start_date": str(start), "end_date": str(today), "products": len(products), "long_tail_products": len(long_tail),
             "suppliers": len(sups), "customers": len(customers), "insights": ins,
             **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
 
@@ -811,7 +826,8 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
         proc = subprocess.Popen([sys.executable, "-u", "-c", _CHILD, cfg],
                                 cwd=str(backend_dir), env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-        summary, tail_lines = None, []
+        from collections import deque
+        summary, tail_lines = None, deque(maxlen=100)
         for line in proc.stdout or []:
             line = line.rstrip("\n")
             if line.startswith("__PROG__"):
@@ -826,7 +842,7 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
                 tail_lines.append(line)
         rc = proc.wait()
         if rc != 0 or summary is None:
-            raise RuntimeError("DEMO_BUILD_FAILED rc=%s\n%s" % (rc, "\n".join(tail_lines[-25:])))
+            raise RuntimeError("DEMO_BUILD_FAILED rc=%s\n%s" % (rc, "\n".join(list(tail_lines)[-25:])))
 
         # --- validate exactly what restore will check -----------------------
         con = sqlite3.connect(str(raw))
@@ -843,11 +859,13 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
 
         if compress:
             tmp = dest.with_suffix(dest.suffix + ".tmp")
-            with open(raw, "rb") as src, gzip.open(tmp, "wb", compresslevel=9) as out:
+            with open(raw, "rb") as src, gzip.open(tmp, "wb", compresslevel=6) as out:
                 shutil.copyfileobj(src, out, 1 << 20)
             tmp.replace(dest)
         else:
-            shutil.copyfile(raw, dest)
+            tmp = dest.with_suffix(dest.suffix + ".tmp")
+            shutil.copyfile(raw, tmp)
+            tmp.replace(dest)
 
     summary = dict(summary or {})
     summary.update({"path": str(dest), "bytes": dest.stat().st_size,

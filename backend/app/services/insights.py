@@ -85,20 +85,22 @@ class Draft:
     metric: dict = field(default_factory=dict)
 
 
-_CLOCK: datetime | None = None   # demo/test override of "now" (UTC); None = real clock
+from contextvars import ContextVar
+
+_CLOCK: ContextVar[datetime | None] = ContextVar("insight_clock", default=None)
 
 
 def set_clock(dt: datetime | None) -> None:
-    global _CLOCK
-    _CLOCK = dt
+    _CLOCK.set(dt)
 
 
 def _now() -> datetime:
-    return _CLOCK or datetime.utcnow()
+    return _CLOCK.get() or datetime.utcnow()
 
 
 def _today() -> date:
-    return (_CLOCK + timedelta(hours=3, minutes=30)).date() if _CLOCK else local_today()
+    clock = _CLOCK.get()
+    return (clock + timedelta(hours=3, minutes=30)).date() if clock else local_today()
 
 
 @dataclass
@@ -126,8 +128,9 @@ def _load_ctx(db: Session, days: int = 90) -> Ctx:
                InvoiceItem.unit_buy_price, InvoiceItem.subtotal, InvoiceItem.profit, InvoiceItem.batch_id,
                Invoice.created_at, Invoice.customer_id, Invoice.total_amount, Invoice.created_by)
         .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .where(Invoice.status == PAID, Invoice.created_at >= since)
-    ).all()
+        .where(Invoice.status == PAID, Invoice.created_at >= since, Invoice.created_at <= now_utc)
+        .execution_options(yield_per=2000)
+    )
     for r in rows:
         ctx.lines.append({"inv": r[0], "pid": r[1], "qty": _f(r[2]), "price": _f(r[3]), "cost": _f(r[4]),
                           "sub": _f(r[5]), "profit": _f(r[6]), "batch": r[7], "at": r[8], "cust": r[9],
