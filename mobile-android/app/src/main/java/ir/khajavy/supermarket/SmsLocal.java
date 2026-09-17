@@ -96,8 +96,27 @@ public final class SmsLocal {
     public static boolean phoneShouldSend() { return simEnabled() || Api.standalone() || (!Api.online && "true".equals(get("sms.phone_fallback", "false"))); }
 
     public static String renderInvoice(String invoiceNo, double amount) {
-        String t = get("sms.template.invoice", DEFAULT_TEMPLATE);
-        return t.replace("{store}", Prefs.get("store_name", "فروشگاه")).replace("{invoice}", invoiceNo).replace("{amount}", java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(amount))).replace("{currency}", Ui.currencyLabel).replace("{coupon_line}", "");
+        JSONObject inv = Local.one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", invoiceNo);
+        if (inv == null) throw new IllegalStateException("فاکتور ذخیره‌شده یافت نشد");
+        String store = Prefs.get("store_name", "فروشگاه").trim();
+        if (store.isEmpty()) store = "فروشگاه";
+        StringBuilder text = new StringBuilder(store).append("\nفاکتور ").append(invoiceNo)
+            .append("\nواحد مبالغ: ").append(Ui.currencyLabel);
+        int n = 0;
+        for (JSONObject it : Local.rows("SELECT * FROM invoice_items WHERE inv=? ORDER BY id", inv.optLong("id"))) {
+            JSONObject product = Db.productById(it.optLong("product_id"));
+            text.append("\n").append(++n).append(". ").append(product == null ? "کالا " + it.optLong("product_id") : product.optString("name"))
+                .append("\nتعداد ").append(Ui.num(it.optDouble("qty")))
+                .append(" × قیمت واحد ").append(Ui.num(it.optDouble("unit_sell_price")))
+                .append("\nتخفیف ").append(Ui.num(it.optDouble("discount")))
+                .append(" | جمع ").append(Ui.num(it.optDouble("subtotal")));
+        }
+        text.append("\nجمع پیش از تخفیف: ").append(Ui.num(inv.optDouble("subtotal")))
+            .append("\nتخفیف کل: ").append(Ui.num(inv.optDouble("discount")))
+            .append("\nمالیات: ").append(Ui.num(inv.optDouble("tax")))
+            .append("\nمبلغ نهایی: ").append(Ui.num(inv.optDouble("total"))).append(" ").append(Ui.currencyLabel)
+            .append("\nاز خرید شما سپاسگزاریم\n").append(store);
+        return text.toString();
     }
 
     /* ---------------- queue ---------------- */

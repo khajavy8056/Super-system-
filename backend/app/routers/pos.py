@@ -207,10 +207,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
                 coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
                     coupon_line += f" (تا {issued.valid_until.date()})"
-            text = sms_svc.render_template(
-                db, "invoice", invoice=invoice.invoice_number,
-                amount=f"{invoice.total_amount:,.0f}", coupon_line=coupon_line,
-                **sms_svc._store_ctx(db))
+            text = sms_svc.render_invoice(db, invoice, coupon_line)
             msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)

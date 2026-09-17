@@ -187,7 +187,7 @@ public final class SalesScreens {
         void checkout(String method, double paidAmt, double total) {
             try {
                 JSONObject body = new JSONObject(); JSONArray items = new JSONArray();
-                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", l.optDouble("quantity")); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", l.optDouble("discount")); items.put(it); }
+                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", l.optDouble("quantity")); it.put("price", l.optDouble("price")); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", l.optDouble("discount")); items.put(it); }
                 body.put("items", items); JSONArray pays = new JSONArray(); JSONObject p = new JSONObject();
                 boolean credit = "CREDIT".equals(method) || (paidAmt < total && customer != null);
                 if (credit) { if (paidAmt > 0) { p.put("method", "CASH"); p.put("amount", paidAmt); pays.put(p); } JSONObject cr = new JSONObject(); cr.put("method", "CREDIT"); cr.put("amount", total - paidAmt); pays.put(cr); } else { p.put("method", method); p.put("amount", total); pays.put(p); }
@@ -198,7 +198,9 @@ public final class SalesScreens {
                 // local-first: apply on the phone immediately (with the phone-book customer attached), then push
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
                 // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
+                try {
                 if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) SmsLocal.enqueueAndSend(ph, SmsLocal.renderInvoice(no, total), no); else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
+                } catch (Exception smsError) { Ui.toast("فروش ثبت شد؛ ساخت پیامک ناموفق بود: " + smsError.getMessage()); }
                 smsPhone = null;
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);
                 cart.clear(); customer = null; coupon = null; invoiceDiscount = 0; heldId = null; renderCart();

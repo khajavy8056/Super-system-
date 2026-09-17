@@ -8,7 +8,7 @@ customers, cash-flow shortfalls, loss-prevention anomalies, …
 Life-cycle:  NEW → ACCEPTED (actions applied, baseline frozen) → MEASURED
                  ↘ DISMISSED / SNOOZED
 
-The A/B measurement is intentionally simple and honest: the metric the insight
+The before/after measurement (NOT a randomized A/B experiment) is intentionally simple: the metric the insight
 promises to move is sampled over a *baseline window* before acceptance and the
 same-length *post window* after it, on the real invoice data — nothing is
 simulated. The dashboard «اثر پیشنهادها» block sums those measured deltas.

@@ -510,3 +510,23 @@ def outbox_report(db: Session, *, sms_id: int, status: str, response: str | None
             _audit(db, "SMS_FAILED", msg, "phone", error=msg.error_message)
     db.flush()
     return msg
+
+
+def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
+    """Complete receipt; legacy short templates must never suppress purchased lines."""
+    ctx = _store_ctx(db)
+    store = ctx["store"].strip() or "فروشگاه"
+    lines = [store, f"فاکتور {invoice.invoice_number}", f"واحد مبالغ: {ctx['currency']}"]
+    for n, item in enumerate(sorted(invoice.items, key=lambda x: x.id or 0), 1):
+        name = item.product.name if item.product else f"کالا {item.product_id}"
+        lines.extend([f"{n}. {name}",
+                      f"تعداد {item.qty:g} × قیمت واحد {_fmt(item.unit_sell_price)}",
+                      f"تخفیف {_fmt(item.discount)} | مالیات {_fmt(item.tax)} | جمع {_fmt(item.subtotal)}"])
+    lines.extend([f"جمع پیش از تخفیف: {_fmt(invoice.subtotal)}",
+                  f"تخفیف کل: {_fmt(invoice.discount)}",
+                  f"مالیات: {_fmt(invoice.tax)}",
+                  f"مبلغ نهایی: {_fmt(invoice.total_amount)} {ctx['currency']}"])
+    if coupon_line.strip():
+        lines.append(coupon_line.strip())
+    lines.extend(["از خرید شما سپاسگزاریم", store])
+    return "\n".join(lines)

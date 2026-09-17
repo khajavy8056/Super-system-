@@ -241,7 +241,7 @@ def test_low_stock_alert_sms_queued_by_scan(client, auth_headers, tmp_path):
                json={"key": "sms.low_stock_alert", "value": "false"})
 
 
-def test_invoice_sms_uses_editable_pattern(client, auth_headers, two_batches, milk, tmp_path):
+def test_invoice_sms_legacy_short_pattern_cannot_hide_items(client, auth_headers, two_batches, milk, tmp_path):
     _use_file_provider(client, auth_headers, tmp_path)
     client.put("/api/settings", headers=auth_headers,
                json={"key": "sms.template.invoice", "value": "TPL {invoice} = {amount}"})
@@ -252,7 +252,12 @@ def test_invoice_sms_uses_editable_pattern(client, auth_headers, two_batches, mi
         "customer_phone": "09125555555"}).json()
     rows = client.get("/api/sms", headers=auth_headers).json()
     mine = [m for m in rows if inv["invoice_number"] in m["text"]]
-    assert mine and mine[0]["text"].startswith("TPL ")
+    assert mine
+    text = mine[0]["text"]
+    assert milk["name"] in text
+    assert "قیمت واحد 60,000" in text
+    assert "مبلغ نهایی: 60,000" in text
+    assert not text.startswith("TPL ")  # complete receipts supersede the legacy short template
 
 
 # --- §215–§229 settings categories -------------------------------------------------

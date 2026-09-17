@@ -47,6 +47,19 @@ public class SupportActivity extends Activity {
         info.addView(Ui.kv(this, "کد نصب", SupportRelay.installCode(), 0));
         info.addView(Ui.kv(this, "نسخهٔ برنامه", Ui.fa(Version.NAME), 0));
         info.addView(Ui.kv(this, "وضعیت لایسنس", Lic.allowed() ? "فعال" : Lic.reason(), Lic.allowed() ? Ui.GREEN : Ui.RED));
+        String crash = Diagnostics.last(this);
+        if (!crash.isEmpty()) {
+            info.addView(Ui.ghost(this, "نمایش گزارش آخرین توقف", () -> {
+                TextView report = Ui.text(this, crash, 12, Ui.TEXT, false); report.setTextIsSelectable(true);
+                new android.app.AlertDialog.Builder(this).setTitle("گزارش فنی — بدون اطلاعات مشتری")
+                    .setView(Ui.scroll(this, report)).setPositiveButton("بستن", null)
+                    .setNeutralButton("اشتراک‌گذاری", (dialog, which) -> {
+                        Intent send = new Intent(Intent.ACTION_SEND); send.setType("text/plain");
+                        send.putExtra(Intent.EXTRA_TEXT, crash);
+                        startActivity(Intent.createChooser(send, "ارسال گزارش توقف"));
+                    }).show();
+            }));
+        }
         root.addView(info);
         root.addView(Ui.ghost(this, "بازگشت", this::finish));
         setContentView(Ui.scroll(this, root));

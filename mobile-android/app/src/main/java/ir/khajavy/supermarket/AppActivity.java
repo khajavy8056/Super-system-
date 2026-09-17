@@ -163,7 +163,7 @@ public class AppActivity extends Activity {
         String store = Prefs.get("store_name", Prefs.storeName(this) == null ? "فروشگاه" : Prefs.storeName(this));
         LinearLayout head = Ui.row(this); head.setPadding(Ui.dp(16), Ui.dp(28), Ui.dp(16), Ui.dp(18)); head.setBackground(Ui.gradient(0xFF1F8C78, Ui.dark ? 0xFF10303C : 0xFF135A50, 0, 0));
         head.addView(Ui.avatar(this, store, 52));
-        LinearLayout hc = Ui.col(this); hc.setPadding(Ui.dp(12), 0, 0, 0); hc.addView(Ui.text(this, store, 16, Color.WHITE, true)); hc.addView(Ui.text(this, "سوپری من · " + Screens.userName(), 12, 0xCCFFFFFF, false)); hc.setLayoutParams(Ui.weight(1)); head.addView(hc);
+        LinearLayout hc = Ui.col(this); hc.setPadding(Ui.dp(12), 0, 0, 0); hc.addView(Ui.text(this, store, 16, Color.WHITE, true)); hc.addView(Ui.text(this, store + " · " + Screens.userName(), 12, 0xCCFFFFFF, false)); hc.setLayoutParams(Ui.weight(1)); head.addView(hc);
         drawer.addView(head); drawer.addView(Ui.divider(this));
         LinearLayout list = Ui.col(this); list.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
         String cur = current() == null ? "" : current().key();
