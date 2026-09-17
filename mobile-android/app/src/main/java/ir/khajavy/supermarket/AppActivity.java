@@ -232,7 +232,10 @@ public class AppActivity extends Activity {
         Biometric.markInternal(); Intent i = new Intent(this, ScanActivity.class); i.putExtra("title", title); startActivityForResult(i, REQ_SCAN);
     }
     public Runnable permCb;   // v2.8: settings screens re-render after a permission answer
-    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 9 && permCb != null) permCb.run(); }
+    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
+            boolean sms = false; for (int i = 0; i < p.length; i++) if (android.Manifest.permission.SEND_SMS.equals(p[i])) sms = r[i] == PackageManager.PERMISSION_GRANTED;
+            Ui.toast(sms ? "اجازهٔ پیامک داده شد — حالا می‌توانید از سیم‌کارت بفرستید" : "اجازه داده نشد؛ بدون آن ارسال از سیم‌کارت ممکن نیست");
+            if (permCb != null) permCb.run(); } }
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         if (req == Biometric.REQ_KEYGUARD) { bioShowing = false; if (res == RESULT_OK) { Biometric.lastUnlock = System.currentTimeMillis(); recreate(); } else finishAffinity(); return; }

@@ -1350,3 +1350,11 @@ if "app.services.customer_intel" not in _sys.modules:
 
     ANALYZERS.update(_customer_intel.ACTIVE)
     KIND_LABELS.update({k: v for k, v in _customer_intel.KIND_LABELS.items() if k in _customer_intel.ACTIVE})
+
+# v3.6.2 — the Opportunity Engine. Same pattern: it registers itself, and importing it here
+# covers the "insights first" order.
+if "app.services.opportunity" not in _sys.modules:
+    from . import opportunity as _opportunity  # noqa: E402
+
+    ANALYZERS.update(_opportunity.ANALYZERS)
+    KIND_LABELS.update(_opportunity.KIND_LABELS)

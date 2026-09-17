@@ -227,6 +227,10 @@ def act_sms_buyers(db, insight, p, user):
                                     .where(Invoice.status == "PAID", Invoice.created_at >= since, InvoiceItem.product_id == pid,
                                            Invoice.customer_id.is_not(None))).all()}
     pr = db.get(Product, pid)
+    if not _sms_enabled(db):
+        # v3.6.2 — used to return {"buyers": N, "sms": 0} with no explanation, which reads as
+        # "done" in the UI. visit_sms already reported the reason; this must too.
+        return {"buyers": len(ids), "sms": 0, "skipped": "sms_disabled"}
     sent = 0
     if _sms_enabled(db):
         for cust in db.execute(select(Customer).where(Customer.id.in_(list(ids)), Customer.phone.is_not(None))).scalars():
@@ -269,6 +273,11 @@ def act_debt_reminders(db, insight, p, user):
     sub = select(CustomerLedgerEntry.customer_id, func.max(CustomerLedgerEntry.id).label("mid")).group_by(CustomerLedgerEntry.customer_id).subquery()
     rows = db.execute(select(CustomerLedgerEntry).join(sub, CustomerLedgerEntry.id == sub.c.mid)).scalars().all()
     sent = 0
+    n_debt = len([e for e in rows if float(e.balance_after) > 0])
+    if not _sms_enabled(db):
+        # v3.6.2 — same silent no-op that sms_buyers had: it reported the debtors it found
+        # with sms=0 and no reason, which the UI reads as "reminders sent".
+        return {"debtors": n_debt, "sms": 0, "skipped": "sms_disabled"}
     if _sms_enabled(db):
         for e in rows:
             if float(e.balance_after) > 0:
@@ -278,7 +287,7 @@ def act_debt_reminders(db, insight, p, user):
                     sms_svc.queue_sms(db, phone=cust.phone, text=text, reference_type="Insight", reference_id=insight.id)
                     sent += 1
         sms_svc.kick_worker()
-    return {"debtors": len([e for e in rows if float(e.balance_after) > 0]), "sms": sent}
+    return {"debtors": n_debt, "sms": sent}
 
 
 def act_enable_nudges(db, insight, p, user):
@@ -329,7 +338,7 @@ def act_personal_coupons(db, insight, p, user):
     camp = _campaign(db, f"کوپن شخصی — {insight.title[:40]}", pct, days, user, f"کوپن‌های شخصی هوش فروشگاه (پیشنهاد #{insight.id})")
     issued = sent = 0
     for row in rows:
-        cust = db.get(Customer, row.get("customer_id"))
+        cust = db.get(Customer, _row_id(row))
         if not cust:
             continue
         c = _coupon(db, code_prefix="ME", customer=cust, percent=int(row.get("percent", pct)), days=int(row.get("days", days)), campaign_id=camp.id, user=user)
@@ -355,10 +364,27 @@ def act_tag_customers(db, insight, p, user):
     return {"tagged": n}
 
 
+def _row_id(row) -> int | None:
+    """Customer id from a payload row, accepting either spelling.
+
+    The executors used to read only ``row["customer_id"]`` and ``continue`` when it was absent,
+    so a payload that said ``id`` produced ``ok: True`` with nothing changed — the shop presses
+    «اجرا», sees a green tick, and no coupon exists. Accepting both makes that impossible.
+    """
+    if not isinstance(row, dict):
+        return None
+    v = row.get("customer_id", row.get("id"))
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def act_set_credit_limit(db, insight, p, user):
     n = 0
-    for row in p.get("customers", []):
-        cust = db.get(Customer, row.get("customer_id"))
+    rows = p.get("customers", [])
+    for row in rows:
+        cust = db.get(Customer, _row_id(row))
         if not cust:
             continue
         before = float(cust.credit_limit or 0)
@@ -366,7 +392,8 @@ def act_set_credit_limit(db, insight, p, user):
         write_audit(db, action="INSIGHT_ACTION", user_id=user.id if user else None, entity_type="Customer", entity_id=cust.id,
                     before={"credit_limit": before}, after={"credit_limit": float(cust.credit_limit)})
         n += 1
-    return {"updated": n}
+    # say so when rows were supplied but none of them matched a real customer
+    return {"updated": n, **({"skipped": "no_matching_customers"} if rows and not n else {})}
 
 
 def act_set_min_stock_bulk(db, insight, p, user):

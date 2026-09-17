@@ -179,14 +179,14 @@ public final class AdminScreens {
             android.widget.Switch sw = new android.widget.Switch(c); sw.setText("ارسال پیامک از طریق سیم‌کارت این گوشی"); sw.setTypeface(Ui.FONT); sw.setTextColor(Ui.TEXT); sw.setChecked(on); sc.addView(sw);
             LinearLayout simRow = Ui.col(c); sc.addView(simRow);
             Runnable[] draw = new Runnable[1]; draw[0] = () -> { simRow.removeAllViews(); if (!sw.isChecked()) return;
-                if (!SmsLocal.simPermitted(c)) { simRow.addView(Ui.note(c, "اجازهٔ ارسال پیامک لازم است", "اندروید برای ارسال پیامک از سیم‌کارت اجازهٔ شما را می‌خواهد. با تأیید، فقط پیامک‌های فاکتور/یادآوری فروشگاه فرستاده می‌شوند.")); simRow.addView(Ui.primary(c, "اجازه دادن", () -> a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS, android.Manifest.permission.READ_PHONE_STATE}, 9))); return; }
+                if (!SmsLocal.simPermitted(c)) { simRow.addView(Ui.note(c, "اجازهٔ ارسال پیامک لازم است", "اندروید برای ارسال پیامک از سیم‌کارت اجازهٔ شما را می‌خواهد. با تأیید، فقط پیامک‌های فاکتور/یادآوری فروشگاه فرستاده می‌شوند.")); simRow.addView(Ui.primary(c, "اجازه دادن", () -> SmsLocal.askSimPermission(a, () -> draw[0].run()))); return; }
                 simRow.addView(Ui.label(c, "کدام سیم‌کارت؟")); LinearLayout ch = Ui.row(c); simRow.addView(ch); final String[] cur = {SmsLocal.get("sms.sim.sub_id", "-1")}; Runnable[] rc = new Runnable[1];
                 rc[0] = () -> { ch.removeAllViews(); for (String[] si : SmsLocal.sims(c)) ch.addView(Ui.chip(c, si[1] + (si[2].isEmpty() ? "" : " · " + Ui.fa(si[2])), si[0].equals(cur[0]), () -> { cur[0] = si[0]; SmsLocal.set("sms.sim.sub_id", si[0]); rc[0].run(); })); }; rc[0].run();
                 LinearLayout tr = Ui.row(c); simRow.addView(tr); EditText tp = Ui.input(c, "شمارهٔ آزمایشی (خودتان)", true); tr.addView(tp);
                 simRow.addView(Ui.ghost(c, "ارسال پیامک آزمایشی از سیم‌کارت", () -> { String ph = Db.norm(Ui.str(tp)); if (ph.length() < 10) { Ui.toast("شماره را کامل وارد کنید"); return; } Api.bg(() -> { try { SmsLocal.sendViaSim(ph, "پیامک آزمایشی «" + Prefs.get("store_name", "سوپری من") + "» — ارسال از سیم‌کارت با موفقیت فعال است."); Api.ui(() -> Ui.done(a, "ارسال شد", "پیامک آزمایشی از " + SmsLocal.simLabel(c) + " رفت", null)); } catch (Exception e) { Api.ui(() -> Ui.toast("خطا: " + e.getMessage())); } }); }));
                 if (!Api.standalone()) simRow.addView(Ui.muted(c, "حالت متصل به رایانه: اگر در رایانه «سرویس پیامک = گوشی» انتخاب شود، پیامک‌های صف رایانه هم از همین سیم‌کارت فرستاده می‌شوند (گوشی باید روشن و متصل باشد)."));
             };
-            sw.setOnCheckedChangeListener((b, v) -> { SmsLocal.set("sms.sim.enabled", v ? "true" : "false"); if (!Api.standalone()) s.v("sms.sim.enabled", v ? "true" : "false"); if (v && !SmsLocal.simPermitted(c)) a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS, android.Manifest.permission.READ_PHONE_STATE}, 9); draw[0].run(); });
+            sw.setOnCheckedChangeListener((b, v) -> { SmsLocal.set("sms.sim.enabled", v ? "true" : "false"); if (!Api.standalone()) s.v("sms.sim.enabled", v ? "true" : "false"); if (v && !SmsLocal.simPermitted(c)) SmsLocal.askSimPermission(a, () -> draw[0].run()); else draw[0].run(); });
             a.permCb = () -> draw[0].run(); draw[0].run();
         }
         void guide(LinearLayout out, boolean local) {

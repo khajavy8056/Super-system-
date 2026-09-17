@@ -136,8 +136,11 @@ def test_executor_refuses_an_illegal_price_even_from_a_handwritten_insight(clien
         db.add(fake)
         db.commit()
         res = insight_actions.execute(db, fake, user=admin)
-        db.rollback()
         after = float(db.get(ProductBatch, batch_id).sell_price)
+        # the fake row was committed, so remove it: left behind it poisons the shared database
+        # and later tests that execute every open insight trip over a price we booby-trapped.
+        db.delete(fake)
+        db.commit()
 
     assert res[0]["ok"] is False, f"an illegal price was accepted: {res}"
     assert "مصرف‌کننده" in res[0]["error"], f"the refusal is not explained: {res[0]['error']}"

@@ -30,6 +30,42 @@ public final class SmsLocal {
     /* ---------------- v2.8: SIM card of this phone ---------------- */
     public static boolean simEnabled() { return "true".equals(get("sms.sim.enabled", "false")); }
     public static boolean simPermitted(android.content.Context c) { return c.checkSelfPermission(android.Manifest.permission.SEND_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+
+    /**
+     * v3.6.2 — ask for SEND_SMS the way Android actually requires.
+     *
+     * The old code called requestPermissions() and nothing else. Once the user has denied a
+     * permission twice, Android answers that call immediately with DENIED and shows NO dialog at
+     * all, so the «اجازه دادن» button looked dead — the exact report: "pressing allow does
+     * nothing and it never takes the permission". There is no way to re-prompt in that state;
+     * the only path is the app's page in system Settings, so we detect it and offer that
+     * instead of silently doing nothing.
+     *
+     * @param a     the hosting activity (needs it for the rationale check and the callback)
+     * @param after runs after the user answers, so the screen can redraw
+     */
+    public static void askSimPermission(AppActivity a, Runnable after) {
+        if (a == null) return;
+        a.permCb = after;
+        if (simPermitted(a)) { if (after != null) after.run(); return; }
+        boolean asked = !"1".equals(Prefs.get("sms_perm_asked", ""));
+        // The rationale check is false both before the first ask and after a permanent denial;
+        // the "have we already asked" flag is what tells those two apart.
+        if (asked || a.shouldShowRequestPermissionRationale(android.Manifest.permission.SEND_SMS)) {
+            Prefs.set("sms_perm_asked", "1");
+            a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS,
+                                              android.Manifest.permission.READ_PHONE_STATE}, 9);
+            return;
+        }
+        Ui.toast("اجازهٔ پیامک قبلاً رد شده — آن را در تنظیمات برنامه فعال کنید");
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", a.getPackageName(), null));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            a.startActivity(i);
+        } catch (Exception ignore) { Ui.toast("تنظیمات برنامه باز نشد"); }
+    }
     /** [subId, label, number] for every active SIM (needs READ_PHONE_STATE for names; falls back to slot numbers). */
     public static java.util.List<String[]> sims(android.content.Context c) {
         java.util.List<String[]> out = new java.util.ArrayList<>();
