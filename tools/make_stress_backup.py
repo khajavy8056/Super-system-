@@ -356,12 +356,18 @@ def main() -> int:
                     help="reinstall the requirements into tools/.venv even if they already import")
     ap.add_argument("--minimum-invoices", type=int, default=None,
                     help="fail validation if the actual invoice count is below this target")
+    ap.add_argument("--work-dir", help="persistent simulation workspace; defaults to OUTPUT.work")
+    ap.add_argument("--resume", action="store_true", help="continue the last completed day with the original parameters")
+    ap.add_argument("--pause-after-days", type=int, help="save and stop after this many additional days (exit 75)")
     args = ap.parse_args()
     import math
     if not 1 <= args.days <= 3660 or not math.isfinite(args.per_day) or not 1 <= args.per_day <= 10000:
         ap.error("days must be 1..3660 and per-day 1..10000")
     if args.minimum_invoices is not None and args.minimum_invoices < 1:
         ap.error("minimum-invoices must be positive")
+
+    if args.pause_after_days is not None and args.pause_after_days < 1:
+        ap.error("pause-after-days must be positive")
 
     # Before anything else: a missing sqlalchemy must produce instructions, not a traceback.
     # `is not None`, not truthiness: 0 here means "a bootstrapped child already built the
@@ -389,6 +395,7 @@ def main() -> int:
     print(" این ساخت طولانی است. نوار پیشرفت واقعی است؛ پنجره را نبندید.")
     print()
 
+    from app.services.simulation_checkpoint import SimulationPaused
     from app.services import demo_store  # imported late: needs BACKEND on sys.path
 
     bar = Bar()
@@ -408,7 +415,11 @@ def main() -> int:
         summary = demo_store.generate_backup_file(
             out, days=days, seed=args.seed, invoices_per_day=args.per_day,
             compress=not args.no_compress, full_catalog=not args.lite_catalog,
-            progress=on_progress)
+            progress=on_progress, work_dir=args.work_dir or str(out) + ".work",
+            resume=args.resume, pause_after_days=args.pause_after_days)
+    except SimulationPaused as exc:
+        print(f"\n[PAUSED] {exc}\nبرای ادامه همان فرمان را با --resume اجرا کنید؛ بکاپ نهایی هنوز آماده نیست.")
+        return 75
     except Exception as exc:
         bar.draw(1.0, "ناموفق")
         print(f"\n[خطا] ساخت ناموفق بود: {exc}")

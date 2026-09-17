@@ -22,6 +22,8 @@ REM    make-stress-backup.bat --smoke            تست سریع ۳۰ روزه
 REM    make-stress-backup.bat --out D:\stress.db.gz
 REM    make-stress-backup.bat --days 365 --per-day 1100 --minimum-invoices 365000
 REM    make-stress-backup.bat --python C:\Python312\python.exe   اجبار به استفاده از یک پایتون مشخص
+REM    make-stress-backup.bat --resume          ادامه با همان پارامترهای اجرای قبلی
+REM    make-stress-backup.bat --pause-after-days 7   توقف برنامه‌ریزی‌شده بعد از ۷ روز
 REM  هر آرگومان دیگری مستقیم به اسکریپت پایتون پاس داده می‌شود.
 REM ============================================================================
 
@@ -83,12 +85,19 @@ echo       پوشهٔ tools\.venv نصب می‌کند و بعد ساخت را �
 echo       به اینترنت نیاز دارد؛ بارهای بعدی بدون نصب اجرا می‌شود.
 echo.
 
-%PY% "%SCRIPT_DIR%\make_stress_backup.py" %*
+if "%PY%"=="py -3" (
+  py -3 "%SCRIPT_DIR%\make_stress_backup.py" %*
+) else (
+  "%PY%" "%SCRIPT_DIR%\make_stress_backup.py" %*
+)
 set "RC=%ERRORLEVEL%"
 
 echo.
 if "%RC%"=="0" (
   echo فایل بکاپ آماده است.
+) else if "%RC%"=="75" (
+  echo روز کامل ذخیره شد. بکاپ نهایی هنوز ساخته نشده است.
+  echo برای ادامه، همان فرمان و پارامترها را با --resume اجرا کنید.
 ) else if "%RC%"=="4" (
   echo ساخت انجام نشد: کتابخانه‌های لازم نصب نیستند و نصب خودکار هم ممکن نشد.
   echo دستورهای بالا را در CMD اجرا کنید و دوباره امتحان کنید.
