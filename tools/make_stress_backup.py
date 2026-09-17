@@ -85,6 +85,8 @@ class Bar:
         self.stream = stream
         self.t0 = time.time()
         self.last = -1.0
+        self.phase = None
+        self.phase_start = self.t0
         self.tty = hasattr(stream, "isatty") and stream.isatty()
 
     @staticmethod
@@ -94,16 +96,21 @@ class Bar:
         m, s = divmod(rem, 60)
         return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
 
-    def draw(self, frac: float, label: str = "") -> None:
+    def draw(self, frac: float, label: str = "", *, phase="default", force=False) -> None:
+        if phase != self.phase:
+            self.phase, self.phase_start, self.last = phase, time.time(), -1.0
+            self.phase_baseline = frac
         frac = max(0.0, min(1.0, frac))
         # On a non-tty (a log file, a redirected pipe) redraw only on whole percent steps,
         # otherwise the file fills up with one line per progress tick.
-        if not self.tty and abs(frac - self.last) < 0.01 and frac < 1.0:
+        if not force and not self.tty and abs(frac - self.last) < 0.01 and frac < 1.0:
             return
         self.last = frac
         filled = int(round(frac * self.width))
         elapsed = time.time() - self.t0
-        eta = (elapsed / frac * (1 - frac)) if frac > 0.02 else 0.0
+        phase_elapsed = time.time() - self.phase_start
+        advanced = frac - self.phase_baseline
+        eta = (phase_elapsed / advanced * (1 - frac)) if advanced > 0 and phase_elapsed >= 30 else 0.0
         line = "[%s%s] %5.1f%%  %s%s  (گذشته %s%s)" % (
             "#" * filled, "-" * (self.width - filled), frac * 100,
             label, " " * max(0, 26 - len(label)),
@@ -135,15 +142,15 @@ def validate(path: Path) -> dict:
 
     try:
         from app.routers.system import _REQUIRED_TABLES as required
-    except Exception:
-        required = {"users", "products", "product_batches", "invoices", "audit_logs"}
+    except Exception as exc:
+        raise RuntimeError("Cannot load application restore contract") from exc
 
     with open(path, "rb") as fh:
         magic = fh.read(2)
     target = path
     tmpdir = None
     if magic == b"\x1f\x8b":
-        tmpdir = tempfile.mkdtemp(prefix="stress_validate_")
+        tmpdir = tempfile.mkdtemp(prefix="stress_validate_", dir=path.resolve().parent)
         target = Path(tmpdir) / "candidate.db"
         with gzip.open(path, "rb") as src, open(target, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
@@ -399,34 +406,39 @@ def main() -> int:
     from app.services import demo_store  # imported late: needs BACKEND on sys.path
 
     bar = Bar()
-    labels = [(0.0, "آماده‌سازی دیتابیس"), (0.05, "بارگذاری کاتالوگ کالاها"), (0.20, "ثبت فاکتورها و ورودی‌ها"),
-              (0.60, "ادامهٔ شبیه‌سازی سال"), (0.93, "اجرای مدل هوش"),
-              (0.96, "اجرای پیشنهادها"), (0.98, "سنجش اثر"), (0.995, "فشرده‌سازی و اعتبارسنجی")]
-
+    stage = [None]
     def on_progress(frac: float) -> None:
-        label = "در حال ساخت"
-        for at, text in labels:
-            if frac >= at:
-                label = text
-        bar.draw(frac, label)
+        # Legacy weighted fractions are stage signals, NOT an overall percentage.
+        label = ("آماده‌سازی و ثبت روزها" if frac < .93 else
+                 "اجرای مدل هوش" if frac < .96 else
+                 "تکمیل تحلیل و سنجش" if frac < 1 else "آماده‌سازی خروجی")
+        if label != stage[0]:
+            print("\n" + label, flush=True)
+            stage[0] = label
+
+    def on_event(event: dict) -> None:
+        phase, done, total = event["phase"], event["done"], event["total"]
+        label = {"days": "روز کامل", "snapshot": "صفحهٔ خروجی", "compress": "بایت ورودی فشرده‌ساز"}[phase]
+        text = f"{done:,}/{total:,} {label}"
+        if phase == "days":
+            text += f" | {event['invoices']:,} فاکتور"
+        bar.draw(done / max(total, 1), text, phase=phase, force=phase == "days")
 
     t0 = time.time()
     try:
         summary = demo_store.generate_backup_file(
             out, days=days, seed=args.seed, invoices_per_day=args.per_day,
             compress=not args.no_compress, full_catalog=not args.lite_catalog,
-            progress=on_progress, work_dir=args.work_dir or str(out) + ".work",
+            progress=on_progress, event_callback=on_event, work_dir=args.work_dir or str(out) + ".work",
             resume=args.resume, pause_after_days=args.pause_after_days)
     except SimulationPaused as exc:
         print(f"\n[PAUSED] {exc}\nبرای ادامه همان فرمان را با --resume اجرا کنید؛ بکاپ نهایی هنوز آماده نیست.")
         return 75
     except Exception as exc:
-        bar.draw(1.0, "ناموفق")
         print(f"\n[خطا] ساخت ناموفق بود: {exc}")
         return 2
 
-    # compression is the one step the child cannot report on; show it as the last few percent.
-    bar.draw(1.0, "اعتبارسنجی")
+    print("\nاعتبارسنجی نهایی؛ فایل هنوز تأیید نشده است.", flush=True)
     raw_bytes = summary.get("bytes", 0)
     v = validate(out)
     raw = v.get("uncompressed_bytes", 0)

@@ -131,7 +131,12 @@ def test_generator_resume_matches_uninterrupted_business_records(tmp_path, days,
         before = db.execute('SELECT COUNT(*) FROM invoices').fetchone()[0]
     assert before > 0
     result = generate_backup_file(resumed, work_dir=work, resume=True, **args)
-    original = generate_backup_file(baseline, work_dir=tmp_path/'baseline.work', **args)
+    events = []
+    original = generate_backup_file(baseline, work_dir=tmp_path/'baseline.work', event_callback=events.append, **args)
+    day_events = [e for e in events if e['phase'] == 'days']
+    assert [e['done'] for e in day_events] == list(range(0, day_events[-1]['total'] + 1))
+    assert day_events[-1]['invoices'] == original['invoices']
+    assert any(e['phase'] == 'snapshot' and e['done'] == e['total'] for e in events)
     assert result['invoices'] == original['invoices'] > before
     assert result['sales'] == original['sales']
     if days > 20:

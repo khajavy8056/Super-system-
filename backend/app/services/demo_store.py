@@ -175,7 +175,7 @@ def _supplier_weights(n: int) -> list[float]:
 
 
 def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None,
-             full_catalog: bool = False, resumable: bool = False, pause_after_days: int | None = None) -> dict:
+             full_catalog: bool = False, resumable: bool = False, pause_after_days: int | None = None, event_callback=None) -> dict:
     """Build the demo store. Idempotent guard: refuses if the DB already has > 50 invoices."""
     import math
     if not 1 <= days <= 3660 or not math.isfinite(invoices_per_day) or not 1 <= invoices_per_day <= 10000:
@@ -447,6 +447,9 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     if resumable and saved is None:
         checkpoint.save(db, config, checkpoint_state())
         db.commit()
+    if event_callback:
+        event_callback({"phase": "days", "done": (day - start).days,
+                        "total": (today - start).days + 1, "invoices": stats["invoices"]})
     completed_here = 0
     while day <= today:
         with db.atomic_day() if resumable else nullcontext():
@@ -721,6 +724,9 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
 
             if resumable:
                 checkpoint.save(db, config, checkpoint_state())
+        if event_callback:
+            event_callback({"phase": "days", "done": (day - start).days,
+                            "total": (today - start).days + 1, "invoices": stats["invoices"]})
         completed_here += 1
         if pause_after_days is not None and completed_here >= pause_after_days and day <= today:
             raise checkpoint.SimulationPaused(f"PAUSED: completed through {day - timedelta(days=1)}; next day {day}")
@@ -906,6 +912,10 @@ from contextlib import nullcontext
 _cfg = json.loads(sys.argv[1])
 
 
+def _event(event):
+    print("__EVENT__" + json.dumps(event), flush=True)
+
+
 def _p(frac):
     # Streamed so the parent can draw a live progress bar; flush matters more than format.
     sys.stdout.write("__PROG__%.6f\\n" % max(0.0, min(1.0, float(frac))))
@@ -919,7 +929,7 @@ with file_lock(_cfg["worker_lock"]) if _cfg.get("worker_lock") else nullcontext(
         with session as db:
             s = demo_store.generate(db, days=_cfg["days"], seed=_cfg["seed"],
                 invoices_per_day=_cfg["invoices_per_day"], full_catalog=_cfg["full_catalog"],
-                progress=_p, resumable=_cfg.get("resumable", False), pause_after_days=_cfg.get("pause_after_days"))
+                progress=_p, event_callback=_event, resumable=_cfg.get("resumable", False), pause_after_days=_cfg.get("pause_after_days"))
     except SimulationPaused as exc:
         print(str(exc), flush=True)
         sys.exit(75)
@@ -930,7 +940,7 @@ print("__DEMO__" + json.dumps(s))
 def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
                          invoices_per_day: float = 95.0, compress: bool = True,
                          full_catalog: bool = False, progress=None, work_dir=None, resume: bool = False,
-                         pause_after_days: int | None = None) -> dict:
+                         pause_after_days: int | None = None, event_callback=None) -> dict:
     """v3.5.6 — build the standalone one-year demo store.
 
     This module's docstring has promised ``generate_backup_file(path)`` since v3.0,
@@ -1000,6 +1010,9 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
                             progress(float(line[len("__PROG__"):]))
                         except Exception:   # a broken progress callback must not kill the build
                             log.debug("progress callback failed", exc_info=True)
+                elif line.startswith("__EVENT__"):
+                    if event_callback:
+                        event_callback(json.loads(line[len("__EVENT__"):]))
                 elif line.startswith("__DEMO__"):
                     summary = json.loads(line[len("__DEMO__"):])
                 else:
@@ -1022,7 +1035,9 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
             snapshot.unlink()
         source, target = sqlite3.connect(str(raw)), sqlite3.connect(str(snapshot))
         try:
-            source.backup(target)
+            source.backup(target, pages=256, progress=(
+                lambda status, remaining, total: event_callback({"phase": "snapshot", "done": total - remaining, "total": total})
+                if event_callback else None))
             target.execute("DROP TABLE IF EXISTS _simulation_checkpoint")
             target.commit()
             # sqlite's connection context manager commits but does NOT close.
@@ -1049,7 +1064,12 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
         if compress:
             tmp = dest.with_suffix(dest.suffix + ".tmp")
             with open(raw, "rb") as src, gzip.open(tmp, "wb", compresslevel=6) as out:
-                shutil.copyfileobj(src, out, 1 << 20)
+                processed, total = 0, raw.stat().st_size
+                while chunk := src.read(1 << 20):
+                    out.write(chunk)
+                    processed += len(chunk)
+                    if event_callback:
+                        event_callback({"phase": "compress", "done": processed, "total": total})
             tmp.replace(dest)
         else:
             tmp = dest.with_suffix(dest.suffix + ".tmp")

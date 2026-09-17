@@ -3,6 +3,14 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.6.4] - 2026-09-18
+
+- Standalone Windows annual simulation launcher: verified source download, per-user Python installation, isolated/frozen dependencies, logs and automatic completed-day resume.
+- Atomic day checkpoints, process locks and WAL-safe backup export; completed-day/invoice, SQLite-page and compression-byte progress replace misleading overall weighted percentages.
+- Includes the previously unreleased credit-void financial correction and chronological simulation accounting audits.
+- Android APK signed with the existing release key. Windows source/installer version updated; no new Windows Setup.exe and no Windows/device execution claim.
+- See [Persian generator guide](docs/year-generator.fa.md) for usage, synthetic-data caveats and test limits.
+
 ## [3.6.3] - 2026-09-17
 
 - Android reference-inspired UI: midnight navy surfaces, blue/violet primary gradients,
