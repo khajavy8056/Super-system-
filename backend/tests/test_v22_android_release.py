@@ -42,7 +42,7 @@ def test_redesigned_shell_matches_reference_mockups():
     ui = (JAVA / "Ui.java").read_text(encoding="utf-8")
     for k in ("gradient(", "surface(", "hero(", "tile(", "spark(", "avatar(", "cta(", "pill("):
         assert k in ui, k
-    assert "0xFF0C121C" in ui and "0xFFCBA75A" in ui  # v2.9 atelier: ink-navy background + champagne gold
+    assert all(color in ui for color in ("0xFF030B1D", "0xFF2563EB", "0xFF9654FF"))  # v3.6.3 user reference: navy, blue, violet
     app = (JAVA / "AppActivity.java").read_text(encoding="utf-8")
     assert "openGroups" in app and "Ui.avatar(" in app and "android.widget.Switch" in app
     for grp in ("فروش و مشتری", "فاکتورها", "کالا و موجودی", "جشنواره و کوپن"):
@@ -54,3 +54,12 @@ def test_redesigned_shell_matches_reference_mockups():
     assert "Ui.hero(c)" in home and "Ui.tile(c" in home and "حالت مستقل" in home
     pos = (JAVA / "SalesScreens.java").read_text(encoding="utf-8")
     assert "Ui.cta(c, \"پرداخت" in pos and "Ui.pill(c" in pos
+
+
+def test_reference_login_and_old_android_shadow_guard():
+    ui = (JAVA / "Ui.java").read_text(encoding="utf-8")
+    assert "if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor" in ui
+    login = (JAVA / "LoginActivity.java").read_text(encoding="utf-8")
+    assert "new WelcomeBackdrop()" in login
+    assert 'Icons.draw("cart"' in login
+    assert 'Prefs.get("store_name"' in login

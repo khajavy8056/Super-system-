@@ -99,7 +99,7 @@ public class AppActivity extends Activity {
     private void buildShell() {
         LinearLayout root = Ui.col(this); root.setBackgroundColor(Ui.BG);
         // header
-        LinearLayout head = Ui.row(this); head.setBackground(Ui.gradient(Ui.dark ? 0xFF121A27 : 0xFFFFFFFF, Ui.dark ? 0xFF0F1622 : 0xFFFBF9F4, 0, 0)); head.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); head.setElevation(Ui.dp(3));
+        LinearLayout head = Ui.row(this); head.setBackground(Ui.gradient(Ui.dark ? 0xFF091733 : 0xFFFFFFFF, Ui.dark ? 0xFF040D22 : 0xFFFBF9F4, 0, 0)); head.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); head.setElevation(Ui.dp(3));
         head.addView(iconBtn("menu", () -> drawer(true)));
         title = Ui.text(this, "", 17, Ui.TEXT, true); title.setLayoutParams(Ui.weight(1)); title.setPadding(Ui.dp(6), 0, Ui.dp(6), 0); head.addView(title);
         LinearLayout st = Ui.col(this); st.setGravity(Gravity.END);
@@ -111,7 +111,7 @@ public class AppActivity extends Activity {
         // content
         content = new FrameLayout(this); content.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(content);
         // tabs
-        tabs = Ui.row(this); tabs.setBackground(Ui.gradient(Ui.dark ? 0xFF121A27 : 0xFFFFFFFF, Ui.dark ? 0xFF0F1622 : 0xFFFBF9F4, 0, 0)); tabs.setElevation(Ui.dp(12)); tabs.setPadding(Ui.dp(8), Ui.dp(7), Ui.dp(8), Ui.dp(9)); root.addView(tabs);
+        tabs = Ui.row(this); tabs.setBackground(Ui.gradient(Ui.dark ? 0xFF091733 : 0xFFFFFFFF, Ui.dark ? 0xFF040D22 : 0xFFFBF9F4, 0, 0)); tabs.setElevation(Ui.dp(12)); tabs.setPadding(Ui.dp(8), Ui.dp(7), Ui.dp(8), Ui.dp(9)); root.addView(tabs);
         buildTabs(null);
         FrameLayout outer = new FrameLayout(this); outer.addView(root);
         // drawer layer
@@ -129,10 +129,10 @@ public class AppActivity extends Activity {
         for (String[] t : TABS) {
             boolean on = t[0].equals(active) || ("more".equals(t[0]) && active != null && !isTabKey(active));
             LinearLayout col = Ui.col(this); col.setGravity(Gravity.CENTER); LinearLayout.LayoutParams wp = Ui.weight(1); wp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0); col.setLayoutParams(wp); col.setPadding(0, Ui.dp(6), 0, Ui.dp(4));
-            col.setBackground(Ui.rounded(on ? (Ui.PRIMARY & 0x00FFFFFF) | (Ui.dark ? 0x30000000 : 0x1A000000) : Color.TRANSPARENT, 0, 16));
-            android.widget.ImageView ic = Icons.view(this, t[2], on ? Ui.PRIMARY : Ui.MUTED, 23); col.addView(ic);
-            TextView lb = Ui.text(this, t[1], 10.5f, on ? Ui.PRIMARY : Ui.MUTED, on); lb.setGravity(Gravity.CENTER); lb.setPadding(0, Ui.dp(3), 0, 0); col.addView(lb);
-            View bar = new View(this); bar.setBackground(Ui.rounded(Ui.GOLD, 0, 2)); bar.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(16), Ui.dp(3)), 0, 3, 0, 0)); bar.setVisibility(on ? View.VISIBLE : View.INVISIBLE); col.addView(bar);
+            col.setBackground(on ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 18) : Ui.rounded(Color.TRANSPARENT, 0, 18));
+            android.widget.ImageView ic = Icons.view(this, t[2], on ? Color.WHITE : Ui.MUTED, 23); col.addView(ic);
+            TextView lb = Ui.text(this, t[1], 10.5f, on ? Color.WHITE : Ui.MUTED, on); lb.setGravity(Gravity.CENTER); lb.setPadding(0, Ui.dp(3), 0, 0); col.addView(lb);
+            View bar = new View(this); bar.setBackground(Ui.rounded(Ui.GOLD, 0, 2)); bar.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(16), Ui.dp(3)), 0, 3, 0, 0)); bar.setVisibility(View.GONE); col.addView(bar);
             col.setOnClickListener(v -> { if ("more".equals(t[0])) drawer(true); else route(t[0]); });
             tabs.addView(col);
         }
@@ -161,7 +161,7 @@ public class AppActivity extends Activity {
         if (!open) { drawerLayer.setVisibility(View.GONE); return; }
         drawer.removeAllViews(); drawer.setBackgroundColor(Ui.BG);
         String store = Prefs.get("store_name", Prefs.storeName(this) == null ? "فروشگاه" : Prefs.storeName(this));
-        LinearLayout head = Ui.row(this); head.setPadding(Ui.dp(16), Ui.dp(28), Ui.dp(16), Ui.dp(18)); head.setBackground(Ui.gradient(0xFF1F8C78, Ui.dark ? 0xFF10303C : 0xFF135A50, 0, 0));
+        LinearLayout head = Ui.row(this); head.setPadding(Ui.dp(16), Ui.dp(28), Ui.dp(16), Ui.dp(18)); head.setBackground(Ui.gradient(Ui.dark ? 0xFF152958 : Ui.PRIMARY, Ui.dark ? Ui.BG : Ui.PRIMARY2, 0, 0));
         head.addView(Ui.avatar(this, store, 52));
         LinearLayout hc = Ui.col(this); hc.setPadding(Ui.dp(12), 0, 0, 0); hc.addView(Ui.text(this, store, 16, Color.WHITE, true)); hc.addView(Ui.text(this, store + " · " + Screens.userName(), 12, 0xCCFFFFFF, false)); hc.setLayoutParams(Ui.weight(1)); head.addView(hc);
         drawer.addView(head); drawer.addView(Ui.divider(this));

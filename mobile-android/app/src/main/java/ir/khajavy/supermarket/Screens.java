@@ -129,7 +129,7 @@ public final class Screens {
             LinearLayout hero = Ui.hero(c);
             LinearLayout hr = Ui.row(c); LinearLayout hcol = Ui.col(c); hcol.setLayoutParams(Ui.weight(1));
             hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه"), 21, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Jalali.todayLong(), 12, 0xDDFFFFFF, false));
-            hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x55CBA75A, 18)); hr.addView(av); hero.addView(hr);
+            hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x557383EF, 18)); hr.addView(av); hero.addView(hr);
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
             quick.addView(qb("plus", "فروش جدید", () -> a.route("pos"))); quick.addView(qb("scan", "اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("truck", "ورود کالا", () -> a.route("receive")));
             hero.addView(quick); body.addView(hero);
@@ -142,7 +142,7 @@ public final class Screens {
                 e -> { done[0] = true; if (gen != loadGen) return; body.removeView(ph); LinearLayout cd = Ui.card(c, e.offline() ? "رایانه در دسترس نیست" : "خطا در داشبورد"); cd.addView(Ui.body(c, e.getMessage())); cd.addView(Ui.primary(c, "تلاش دوباره", this::load)); body.addView(cd); });
         }
         static String greeting() { int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); return h < 12 ? "صبح بخیر" : h < 17 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر"; }
-        private View qb(String icon, String s, Runnable r) { LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER); t.setBackground(Ui.rounded(0x26FFFFFF, 0x33FFFFFF, 16)); t.setPadding(0, Ui.dp(10), 0, Ui.dp(8)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.addView(Icons.view(c, icon, 0xFFFFFFFF, 20)); TextView l = Ui.text(c, s, 11.5f, 0xFFFFFFFF, true); l.setPadding(0, Ui.dp(4), 0, 0); t.addView(l); t.setClickable(true); t.setOnClickListener(v -> r.run()); return t; }
+        private View qb(String icon, String s, Runnable r) { LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER); t.setBackground("plus".equals(icon) ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 16) : Ui.gradient(0xFF124B86, 0xFF0B2852, 0xFF2964A0, 16)); t.setPadding(0, Ui.dp(10), 0, Ui.dp(8)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.addView(Icons.view(c, icon, 0xFFFFFFFF, 20)); TextView l = Ui.text(c, s, 11.5f, 0xFFFFFFFF, true); l.setPadding(0, Ui.dp(4), 0, 0); t.addView(l); t.setClickable(true); t.setOnClickListener(v -> r.run()); return t; }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
             // 1-2 sales / invoices

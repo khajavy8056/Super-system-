@@ -3,6 +3,19 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.6.3] - 2026-09-17
+
+- Android reference-inspired UI: midnight navy surfaces, blue/violet primary gradients,
+  gradient active navigation, coordinated dashboard shortcuts and drawer, and a vector-wave
+  sign-in background with cart mark. Store names and statistics remain data-driven.
+- Guard Android 9+ shadow-color API on older supported devices.
+- Include the preceding complete invoice SMS fixes, bounded image loading, local crash
+  diagnostics and experiment-statistics foundations (not full experiment orchestration).
+- Validation: 471 backend tests passed, 1 skipped; APK compiled, dexed and signed.
+- Physical-device UI/SMS testing and a Windows Setup.exe build were not performed.
+  Windows installer source version is updated; no Windows binary is claimed.
+
+
 ## [3.6.2] - 2026-09-17 (لایهٔ فرصت، راستی‌آزمایی دکمهٔ «اجرا»، رفع بن‌بست دسترسی پیامک)
 
 ### افزوده — لایهٔ فرصت (`backend/app/services/opportunity.py`)
