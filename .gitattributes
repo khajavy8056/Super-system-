@@ -20,3 +20,7 @@
 *.ico  binary
 *.pdf  binary
 *.db   binary
+
+# Standalone downloads are byte-verified: preserve CRLF in Git blobs too.
+tools/bootstrap-year.ps1 -text
+tools/run-year-simulation.bat -text
