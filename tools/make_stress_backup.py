@@ -148,7 +148,10 @@ def validate(path: Path) -> dict:
         with gzip.open(path, "rb") as src, open(target, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
 
-    con = sqlite3.connect(str(target))
+    con = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
+    # Audit large snapshots without growing an unbounded in-memory sort/cache.
+    con.execute("PRAGMA temp_store=FILE")
+    con.execute("PRAGMA cache_size=-32768")
     try:
         integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -160,6 +163,8 @@ def validate(path: Path) -> dict:
                 counts[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         foreign_key_errors = con.execute("PRAGMA foreign_key_check").fetchmany(25)
         daily = con.execute("SELECT substr(created_at,1,10), COUNT(*) FROM invoices GROUP BY substr(created_at,1,10) ORDER BY 1").fetchall() if "invoices" in tables else []
+        from app.services.simulation_audit import audit
+        economic = audit(con)
         raw_size = target.stat().st_size
     finally:
         con.close()
@@ -168,7 +173,7 @@ def validate(path: Path) -> dict:
     missing = required - tables
     return {"integrity": integrity, "tables": len(tables), "missing": sorted(missing),
             "counts": counts, "uncompressed_bytes": raw_size,
-            "foreign_key_errors": foreign_key_errors, "daily_invoices": daily}
+            "foreign_key_errors": foreign_key_errors, "daily_invoices": daily, "economic": economic}
 
 
 # --------------------------------------------------------------------------- dependencies
@@ -424,6 +429,9 @@ def main() -> int:
     actual = v.get("counts", {}).get("invoices", 0)
     if args.minimum_invoices is not None and actual < args.minimum_invoices:
         print(f"[FAILED] actual invoices {actual:,} < required {args.minimum_invoices:,}; report: {report_path}")
+        return 3
+    if not v.get("economic", {}).get("ok"):
+        print(f"[FAILED] economic validation failed; report: {report_path}")
         return 3
     if v.get("foreign_key_errors"):
         print(f"[FAILED] foreign-key violations detected; report: {report_path}")

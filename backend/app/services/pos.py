@@ -583,6 +583,21 @@ def void_invoice(db: Session, *, invoice: Invoice, user: User | None = None, rea
     invoice.payment_status = "VOID"
     from . import accounting as acc_svc
     acc_svc.post_sale_void(db, invoice, user=user, reason=reason)
+    # Reversing the GL without reversing the customer subledger leaves a voided
+    # credit sale collectible forever. Reverse only the original credit portion,
+    # not cash/card payments or unrelated customer debts. The VOID guard above
+    # makes this append-only refund idempotent for repeat requests.
+    if invoice.customer_id:
+        from ..models import CustomerLedgerEntry
+        from . import ledger as ledger_svc
+        credit = db.execute(select(func.coalesce(func.sum(CustomerLedgerEntry.amount), 0)).where(
+            CustomerLedgerEntry.invoice_id == invoice.id,
+            CustomerLedgerEntry.entry_type == "CREDIT_SALE")).scalar_one()
+        if credit > ZERO:
+            ledger_svc.post_entry(db, customer_id=invoice.customer_id, entry_type="RETURN_REFUND",
+                amount=credit, invoice_id=invoice.id, method="ACCOUNT",
+                note=f"ابطال فاکتور {invoice.invoice_number}", user_id=user.id if user else None)
+
     write_audit(
         db, action="SALE_VOIDED", user_id=user.id if user else None,
         entity_type="Invoice", entity_id=invoice.id, reference=reason,

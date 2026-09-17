@@ -120,6 +120,52 @@ def _fix_created(db: Session, table: str, ids: list[int], at: datetime) -> None:
     db.execute(text(f"UPDATE {table} SET created_at=:at WHERE id IN ({','.join(str(i) for i in ids)})"), {"at": at})
 
 
+def _stamp_journal(db: Session, source: str, source_id: int, at: datetime) -> None:
+    """Backdate the generated source's journal AND its reversal, including fiscal year.
+
+    Simulation-only: amounts and journal lines are never rewritten. This is not a
+    live accounting repair operation; callers operate on an isolated demo DB.
+    """
+    local_day = (at + timedelta(hours=3, minutes=30)).date()
+    period = acc_svc.ensure_fiscal_period(db, local_day)
+    db.flush()
+    db.execute(text("""UPDATE acc_journal_entries SET entry_date=:day,
+        created_at=:at, updated_at=:at, fiscal_period_id=:period
+        WHERE (source_type=:source AND source_id=:id) OR reversal_of_id IN
+        (SELECT id FROM acc_journal_entries WHERE source_type=:source AND source_id=:id)
+        """), {"day": local_day, "at": at, "period": period.id, "source": source, "id": source_id})
+
+
+def _settle_demo_customer(db: Session, *, customer: Customer, amount: D, day: date,
+                          admin: User, by_cheque: bool = False, due_date: date | None = None):
+    """One atomic customer settlement, with exactly one accounting posting.
+
+    ledger.settle posts cash accounting itself. A received cheque's journal is
+    posted by record_cheque, so its companion ledger entry must NOT post it twice.
+    The caller owns the transaction/savepoint.
+    """
+    from . import ledger as ledger_svc
+    when = datetime.combine(day, datetime.min.time()) + timedelta(hours=10)
+    if by_cheque:
+        entry = ledger_svc.post_entry(db, customer_id=customer.id, entry_type="PAYMENT",
+                                     amount=amount, method="CHEQUE", note="دریافت چک بابت بدهی",
+                                     user_id=admin.id)
+        cheque = acc_svc.record_cheque(db, direction="RECEIVED",
+            number=f"SIM-R-{day.isoformat()}-{customer.id}", amount=amount,
+            due_date=due_date or day + timedelta(days=20), bank_name="ملت",
+            party_type="CUSTOMER", party_id=customer.id, party_name=customer.name,
+            issue_date=day, description="چک دریافتی بابت تسویهٔ بدهی", user=admin)
+        _fix_created(db, "acc_cheques", [cheque.id], when)
+        _stamp_journal(db, "Cheque", cheque.id, when)
+    else:
+        result = ledger_svc.settle(db, customer_id=customer.id, amount=amount, method="CASH",
+                                   note="تسویهٔ دوره‌ای", user_id=admin.id)
+        entry = db.get(CustomerLedgerEntry, result["entry_id"])
+        _stamp_journal(db, "CustomerLedgerEntry", entry.id, when)
+    _fix_created(db, "customer_ledger_entries", [entry.id], when)
+    return entry
+
+
 def _supplier_weights(n: int) -> list[float]:
     """v3.5.9 — ``random.choices`` silently ignores a population longer than its weight list,
     so a big-store build with 15 wholesalers would have kept buying from the first three only."""
@@ -268,6 +314,10 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                      ("حمل", ["حمل و نقل", "حمل"]), ("متفرقه", ["سایر", "متفرقه"])):
         exp_cats[nm] = next((c for a in alts for c in all_cats if a in c.name), all_cats[0])
 
+    # Utility bills are distinct events even where they share the chart-of-accounts category.
+    for utility in ("آب", "برق", "گاز"):
+        exp_cats[utility] = exp_cats["برق و گاز"]
+
     # ---- helpers
     pending_expiry: list[tuple[int, date]] = []
 
@@ -290,6 +340,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         if exp:
             pending_expiry.append((b.id, exp))
         db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='ProductBatch' AND reference_id=:bid"), {"at": when, "bid": b.id})
+        _stamp_journal(db, "ProductBatch", b.id, when)
         return b
 
     def sellable(d: dict, on: date) -> float:
@@ -488,6 +539,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='Invoice' AND reference_id=:id"), {"at": when, "id": inv.id})
             db.execute(text("UPDATE customer_ledger_entries SET created_at=:at WHERE invoice_id=:id"), {"at": when, "id": inv.id})
             db.execute(text("UPDATE audit_logs SET created_at=:at WHERE entity_type='Invoice' AND entity_id=:id"), {"at": when, "id": inv.id})
+            _stamp_journal(db, "Invoice", inv.id, when)
             stats["invoices"] += 1; stats["lines"] += len(items); stats["sales"] += float(inv.total_amount)
             if on_credit:
                 stats["credit"] += 1
@@ -501,6 +553,9 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     for x, q in items:
                         x["stock"] += float(q)
                     db.execute(text("UPDATE audit_logs SET created_at=:at WHERE action='SALE_VOIDED' AND entity_id=:id"), {"at": when + timedelta(minutes=3), "id": inv.id})
+                    db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='Invoice' AND reference_id=:id AND movement_type='VOID_REVERSAL'"), {"at": when + timedelta(minutes=3), "id": inv.id})
+                    _stamp_journal(db, "Invoice", inv.id, when)
+                    db.execute(text("UPDATE customer_ledger_entries SET created_at=:at WHERE invoice_id=:id AND entry_type='RETURN_REFUND'"), {"at": when + timedelta(minutes=3), "id": inv.id})
                     stats["voids"] += 1
                     sp.commit()
                 except Exception as exc:
@@ -510,9 +565,12 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 try:
                     it = db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == inv.id)).scalars().first()
                     if it:
-                        pos_svc.process_return(db, invoice=inv, invoice_item=it, qty=D(1) if not it.qty < 1 else it.qty, user=user, reason="معیوب")
+                        ret = pos_svc.process_return(db, invoice=inv, invoice_item=it, qty=D(1) if not it.qty < 1 else it.qty, user=user, reason="معیوب")
                         db.flush()
-                        db.execute(text("UPDATE returns SET created_at=:at WHERE invoice_id=:id"), {"at": when + timedelta(hours=rnd.randint(1, 30)), "id": inv.id})
+                        returned_at = when + timedelta(minutes=rnd.randint(10, 50))
+                        db.execute(text("UPDATE returns SET created_at=:at, updated_at=:at WHERE id=:id"), {"at": returned_at, "id": ret.id})
+                        db.execute(text("UPDATE stock_movements SET created_at=:at WHERE reference_type='Return' AND reference_id=:id"), {"at": returned_at, "id": it.id})
+                        _stamp_journal(db, "Return", ret.id, returned_at)
                         stats["returns"] += 1
                     sp.commit()
                 except Exception as exc:
@@ -528,20 +586,31 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     amt = float(last.balance_after) * rnd.choice([1.0, 1.0, 0.6])
                     sp = db.begin_nested()
                     try:
-                        e = ledger_svc.post_entry(db, customer_id=cu["c"].id, entry_type="PAYMENT", amount=D(str(round(amt))), method="CASH", note="تسویهٔ دوره‌ای", user_id=admin.id)
+                        e = _settle_demo_customer(db, customer=cu["c"], amount=D(str(round(amt))),
+                            day=day, admin=admin, by_cheque=rnd.random() < 0.3,
+                            due_date=day + timedelta(days=rnd.randint(10, 30)))
                         db.flush()
                         _fix_created(db, "customer_ledger_entries", [e.id], datetime.combine(day, datetime.min.time()) + timedelta(hours=10))
+                        _stamp_journal(db, "CustomerLedgerEntry", e.id, datetime.combine(day, datetime.min.time()) + timedelta(hours=10))
                         sp.commit()
                     except Exception as exc:
                         sp.rollback(); log.warning("settlement skipped: %s", exc)
         # monthly expenses + cheques
         if day.day == 1:
             when = datetime.combine(day, datetime.min.time()) + timedelta(hours=9)
-            for nm, amt in (("اجاره", 45_000_000), ("حقوق", 38_000_000), ("برق و گاز", rnd.randint(4_000_000, 9_000_000)), ("حمل", rnd.randint(1_500_000, 3_500_000)), ("متفرقه", rnd.randint(800_000, 2_500_000))):
+            monthly = [("اجاره", 45_000_000, "اجارهٔ ماهانه"),
+                       ("آب", rnd.randint(500_000, 1_500_000), "قبض آب"),
+                       ("برق", rnd.randint(3_000_000, 6_000_000), "قبض برق"),
+                       ("گاز", rnd.randint(500_000, 2_000_000), "قبض گاز"),
+                       ("حمل", rnd.randint(1_500_000, 3_500_000), "هزینهٔ حمل ماهانه"),
+                       ("متفرقه", rnd.randint(800_000, 2_500_000), "هزینهٔ تعمیرات و مصرفی")]
+            monthly.extend(("حقوق", 14_000_000 if idx == 0 else 12_000_000,
+                            "حقوق ماهانهٔ " + employee.full_name) for idx, employee in enumerate(cashiers))
+            for nm, amt, description in monthly:
                 sp = db.begin_nested()
                 try:
-                    e = acc_svc.record_expense(db, category_id=exp_cats[nm].id, amount=D(amt), expense_date=day, paid_from="BANK" if nm in ("اجاره", "حقوق") else "CASH", description=f"{nm} ماهانه", user=admin)
-                    db.flush(); _fix_created(db, "acc_expenses", [e.id], when); sp.commit()
+                    e = acc_svc.record_expense(db, category_id=exp_cats[nm].id, amount=D(amt), expense_date=day, paid_from="BANK" if nm in ("اجاره", "حقوق") else "CASH", description=description, user=admin)
+                    db.flush(); _fix_created(db, "acc_expenses", [e.id], when); _stamp_journal(db, "Expense", e.id, when); sp.commit()
                 except Exception as exc:
                     sp.rollback(); log.warning("expense skipped: %s", exc)
             # issued cheques to suppliers (planted: next month has a cluster)
@@ -554,33 +623,42 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     ch = acc_svc.record_cheque(db, direction="ISSUED", number=str(rnd.randint(100000, 999999)), amount=D(rnd.randint(35, 120) * 1_000_000),
                                                due_date=due_d, bank_name=rnd.choice(["ملت", "ملی", "صادرات", "پاسارگاد"]), party_type="SUPPLIER", party_id=s.id,
                                                party_name=s.name, description="بابت خرید کالا", issue_date=day, user=admin)
-                    db.flush(); _fix_created(db, "acc_cheques", [ch.id], when); sp.commit()
+                    db.flush(); _fix_created(db, "acc_cheques", [ch.id], when); _stamp_journal(db, "Cheque", ch.id, when); sp.commit()
                 except Exception as exc:
                     sp.rollback(); log.warning("cheque skipped: %s", exc)
-            # v3.5.7 — settle the cheques that have come due. accounting.clear_cheque()
-            # and bounce_cheque() both exist, but nothing ever called them, so every
-            # cheque this generator wrote stayed PENDING and the cheques report had one
-            # column with anything in it: no وصول شده, no برگشت خورده, no ageing.
-            due = db.execute(select(Cheque).where(Cheque.status == "PENDING",
-                                                  Cheque.due_date <= day)).scalars().all()
-            for ch in due:
-                if rnd.random() < 0.12:
-                    continue                       # genuinely still outstanding
-                sp = db.begin_nested()
-                try:
-                    if rnd.random() < 0.07:
-                        acc_svc.bounce_cheque(db, cheque_id=ch.id, user=admin)
-                    else:
-                        acc_svc.clear_cheque(db, cheque_id=ch.id, user=admin)
-                    sp.commit()
-                    # the service stamps updated_at with the wall clock; pull it back onto
-                    # the simulated calendar. created_at is deliberately left alone — that
-                    # is the issue date and _fix_created() would overwrite it.
-                    db.execute(text("UPDATE acc_cheques SET updated_at=:at WHERE id=:id"),
-                               {"at": datetime.combine(day, datetime.min.time()) + timedelta(hours=9),
-                                "id": ch.id})
-                except Exception as exc:
-                    sp.rollback(); log.warning("cheque settle skipped: %s", exc)
+        # v3.5.7 — settle the cheques that have come due. accounting.clear_cheque()
+        # and bounce_cheque() both exist, but nothing ever called them, so every
+        # cheque this generator wrote stayed PENDING and the cheques report had one
+        # column with anything in it: no وصول شده, no برگشت خورده, no ageing.
+        due = db.execute(select(Cheque).where(Cheque.status == "PENDING",
+                                              Cheque.due_date <= day)).scalars().all()
+        for ch in due:
+            if rnd.random() < 0.12:
+                continue                       # genuinely still outstanding
+            sp = db.begin_nested()
+            try:
+                if rnd.random() < 0.07:
+                    acc_svc.bounce_cheque(db, cheque_id=ch.id, user=admin)
+                    if ch.direction == "RECEIVED" and ch.party_type == "CUSTOMER":
+                        from . import ledger as ledger_svc
+                        restored = ledger_svc.post_entry(db, customer_id=ch.party_id,
+                            entry_type="ADJUSTMENT_DEBIT", amount=ch.amount,
+                            method="CHEQUE", note=f"برگشت چک {ch.number}", user_id=admin.id)
+                        _fix_created(db, "customer_ledger_entries", [restored.id],
+                                     datetime.combine(day, datetime.min.time()) + timedelta(hours=9))
+                else:
+                    acc_svc.clear_cheque(db, cheque_id=ch.id, user=admin)
+                cleared_at = datetime.combine(day, datetime.min.time()) + timedelta(hours=9)
+                _stamp_journal(db, "ChequeClear" if ch.status == "CLEARED" else "ChequeBounce", ch.id, cleared_at)
+                sp.commit()
+                # the service stamps updated_at with the wall clock; pull it back onto
+                # the simulated calendar. created_at is deliberately left alone — that
+                # is the issue date and _fix_created() would overwrite it.
+                db.execute(text("UPDATE acc_cheques SET updated_at=:at WHERE id=:id"),
+                           {"at": datetime.combine(day, datetime.min.time()) + timedelta(hours=9),
+                            "id": ch.id})
+            except Exception as exc:
+                sp.rollback(); log.warning("cheque settle skipped: %s", exc)
         db.commit()  # bounded daily transactions; avoid month-sized WAL growth
         day += timedelta(days=1)
 
