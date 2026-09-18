@@ -12,7 +12,7 @@ Import rules (unchanged from §80, extended for pictures):
 * **zero stock.** Products are created as ``Product`` rows only — never a
   ``ProductBatch`` — so stock stays 0 until the first receiving.
 * **idempotent.** A barcode that already exists is skipped, and so is a product
-  with the same normalised name inside the same category. Re-running the import
+  with the same exact barcode. Names are never identity keys. Re-running the import
   (or running it after the shop already typed a few products) never duplicates.
 * **pictures come with the product.** ``image_url`` is the first direct link and
   ``gallery`` the rest; nothing is looked up on the web any more (v3.5 removed
@@ -54,7 +54,7 @@ def _split_images(raw: str) -> list[str]:
     return [u for u in (u.strip() for u in (raw or "").split("|")) if u][:3]
 
 
-def _preload(db: Session) -> tuple[set, set, dict, dict, dict, dict]:
+def _preload(db: Session) -> tuple[set, set, dict, dict, dict]:
     """Everything the importer needs about the current catalogue, in 5 queries.
 
     Doing this per row would mean ~40 000 round trips for one import.
@@ -64,18 +64,6 @@ def _preload(db: Session) -> tuple[set, set, dict, dict, dict, dict]:
         (_normalize_name(n or ""), c)
         for n, c in db.execute(select(Product.name, Product.category_id)).all()
     }
-    # v3.5.1 — products the shop typed by hand before the bank existed. These
-    # carry no manufacturer GTIN of their own (the API mints an internal INT-
-    # code for them), so barcode equality can never match them and the import
-    # used to create a second row with the same name. Indexed by normalised name
-    # so the importer can reconcile instead of duplicating.
-    hand_typed: dict[str, list[int]] = {}
-    for pid, nm in db.execute(
-        select(Product.id, Product.name).where(
-            Product.deleted_at.is_(None), Product.has_own_barcode.is_(False)
-        )
-    ).all():
-        hand_typed.setdefault(_normalize_name(nm or ""), []).append(pid)
     cats: dict = {}
     for cid, name, parent in db.execute(select(Category.id, Category.name, Category.parent_id)).all():
         cats[(name.lower(), parent)] = cid
@@ -85,7 +73,7 @@ def _preload(db: Session) -> tuple[set, set, dict, dict, dict, dict]:
         for key in {name, sym} if key
     }
     brands = {n.lower(): b for b, n in db.execute(select(Brand.id, Brand.name)).all()}
-    return barcodes, existing_names, cats, units, brands, hand_typed
+    return barcodes, existing_names, cats, units, brands
 
 
 def _ensure_categories(db: Session, wanted: list[tuple[str, str | None]], cache: dict) -> None:
@@ -157,7 +145,7 @@ def import_csv(db: Session, text: str | None = None, *, user=None, dry_run: bool
                 "message": f"ستون‌های لازم وجود ندارد: {', '.join(missing)}",
                 "expected_columns": COLUMNS}
 
-    barcodes, existing_names, cats, units, brands, hand_typed = _preload(db)
+    barcodes, existing_names, cats, units, brands = _preload(db)
     created = skipped_barcode = skipped_name = skipped_empty = reconciled = 0
     images_with = 0
     errors: list[dict] = []
@@ -195,47 +183,7 @@ def import_csv(db: Session, text: str | None = None, *, user=None, dry_run: bool
 
             norm_name = _normalize_name(name)
 
-            # v3.5.1 — RECONCILE with a product the shop typed by hand before the
-            # bank existed. Such a row carries no manufacturer GTIN (the API mints
-            # an internal INT- code), so the barcode-equality rule above can never
-            # match it and the import used to create a second row with the same
-            # name — exactly the duplicate the cashier then has to disambiguate at
-            # the till. Matching on the normalised name instead lets the shop's own
-            # row keep its id (and any stock or history attached to it) while
-            # adopting the exact code, category and picture it was missing.
-            #
-            # Deliberately narrow: only when the match is UNAMBIGUOUS (one
-            # candidate, not several) and only onto a row that has no real code of
-            # its own, so a genuine GTIN the shop already recorded is never
-            # overwritten.
-            if has_own and barcode:
-                candidates = hand_typed.get(norm_name) or []
-                if len(candidates) == 1:
-                    pid = candidates.pop()
-                    if not dry_run:
-                        target = db.get(Product, pid)
-                        if target is not None:
-                            target.barcode = barcode
-                            target.has_own_barcode = True
-                            if cat_id is not None and target.category_id is None:
-                                target.category_id = cat_id
-                            if target.unit_id is None:
-                                target.unit_id = _ensure_unit(db, row.get("unit") or "عدد", units)
-                            if target.brand_id is None:
-                                target.brand_id = _ensure_brand(db, row.get("brand") or "", brands)
-                            row_imgs = _split_images(row.get("images") or "")
-                            row_image = (row.get("image_url") or "").strip() or (row_imgs[0] if row_imgs else None)
-                            if row_image and not target.image_url:
-                                target.image_url = row_image
-                            if len(row_imgs) > 1 and not target.gallery:
-                                target.gallery = json.dumps(row_imgs, ensure_ascii=False)
-                            if row_image:
-                                images_with += 1
-                    barcodes.add(barcode)
-                    existing_names.add((norm_name, cat_id))
-                    reconciled += 1
-                    continue
-
+            # Barcode is the sole identity: never replace a hand-entered code by name.
             key = (norm_name, cat_id)
             # §32 — barcode equality is the ONLY hard identity rule. Two bank
             # lines may legitimately share a normalised name inside one category
@@ -244,7 +192,7 @@ def import_csv(db: Session, text: str | None = None, *, user=None, dry_run: bool
             # rows that carry no real code of their own: it exists to stop the
             # import duplicating a loose/bulk product the shop typed by hand,
             # never to drop a scanned manufacturer code.
-            if not has_own and key in existing_names:
+            if not barcode and key in existing_names:
                 skipped_name += 1
                 continue
 
@@ -331,3 +279,22 @@ def bundled_summary() -> dict:
 # feature and is still imported by the setup router and by older tests.
 def bundled_path() -> Path:
     return BUNDLED
+
+
+def ensure_bundled_update(db: Session) -> dict:
+    """Apply changed packaged catalog once at application startup; never add stock."""
+    import hashlib
+    from ..models.system import SystemSetting
+    version = hashlib.sha256(BUNDLED.read_bytes()).hexdigest()
+    marker = db.execute(select(SystemSetting).where(SystemSetting.key == "catalog.bundle.sha256")).scalar_one_or_none()
+    if marker and marker.value == version:
+        return {"ok": True, "unchanged": True}
+    result = import_csv(db)
+    if not result.get("ok") or result.get("errors"):
+        raise RuntimeError("BUNDLED_CATALOG_IMPORT_FAILED: " + str(result.get("errors")))
+    if marker:
+        marker.value = version
+    else:
+        db.add(SystemSetting(key="catalog.bundle.sha256", value=version, is_secret=False))
+    db.commit()
+    return result

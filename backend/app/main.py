@@ -93,6 +93,9 @@ async def lifespan(app: FastAPI):
     from .services import sync as sync_svc
 
     init_db()
+    from .services.default_catalog import ensure_bundled_update
+    with SessionLocal() as catalog_db:
+        ensure_bundled_update(catalog_db)
     # v1.7.1: store timezone (default Asia/Tehran, +03:30) drives every "today"
     from .services import timeservice as _ts
     with SessionLocal() as _db:

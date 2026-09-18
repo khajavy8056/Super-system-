@@ -746,10 +746,12 @@ RENDER.pos = async () => {
       return;
     }
     if (e.key !== "Enter") return;
+    e.preventDefault();
     const term = e.target.value.trim();
+    const scanned = e.scanBarcode === true;
     e.target.value = "";
     hideSuggest();
-    if (term) await posAddByTerm(term);
+    if (term) await (scanned ? posAddByBarcode(term) : posAddByTerm(term));
   });
   /* Typed searches (name / SKU / code) show live suggestions; a hardware
      scanner types too fast for this to interfere — it ends with Enter. */
@@ -803,6 +805,7 @@ function showSuggest(items) {
 
 /* Accepts a barcode OR a typed term; a single exact match is added directly. */
 async function posAddByTerm(term) {
+  if (/^[0-9۰-۹٠-٩]+$/.test(term)) return posAddByBarcode(term);
   try {
     const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`);
     if (!r.items.length) { await posAddByBarcode(term); return; }
@@ -1199,21 +1202,26 @@ setInterval(() => { if (state.view === "pos") posClock(); }, 1000);
  * ===================================================================== */
 const SCAN_TARGETS = { pos: "#pos-scan", batches: "#b-barcode", products: "#p-barcode", inventory: "#i-search" };
 const scanWedge = { buf: "", last: 0, timer: null, gaps: [] };
+function scanEnterEvent() {
+  const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+  Object.defineProperty(event, "scanBarcode", { value: true });
+  return event;
+}
 function scanDeliver(code) {
   const sel = SCAN_TARGETS[state.view];
   const input = sel && document.querySelector(sel);
   const modalOpen = !$("#modal").classList.contains("hidden");
   if (modalOpen) {
     const mi = document.querySelector("#modal input.scan-input, #modal input[data-scan]");
-    if (mi) { mi.value = code; mi.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return; }
+    if (mi) { mi.value = code; mi.dispatchEvent(scanEnterEvent()); return; }
   }
   if (input) {
     input.value = code;
     input.focus();
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    input.dispatchEvent(scanEnterEvent());
     flashScan(input);
   } else if (can("pos.sell")) {
-    go("pos").then(() => { const i = $("#pos-scan"); if (i) { i.value = code; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); flashScan(i); } });
+    go("pos").then(() => { const i = $("#pos-scan"); if (i) { i.value = code; i.dispatchEvent(scanEnterEvent()); flashScan(i); } });
   }
   api("/hardware/scanner/detect", { method: "POST", body: JSON.stringify({ intervals_ms: scanWedge.gaps.slice(-12) }) }).catch(() => {});
 }
@@ -1223,7 +1231,7 @@ function flashScan(input) {
   setTimeout(() => w.classList.remove("scan-hit"), 600);
 }
 document.addEventListener("keydown", (e) => {
-  if (!state.user) return;
+  if (!state.user || e.scanBarcode) return;
   const now = performance.now();
   const gap = now - scanWedge.last;
   const active = document.activeElement;
@@ -1233,8 +1241,8 @@ document.addEventListener("keydown", (e) => {
     if (scanWedge.buf.length >= 4 && gap < 60 && scanWedge.gaps.length >= 3 && Math.max(...scanWedge.gaps) < 45) {
       const code = scanWedge.buf;
       scanWedge.buf = ""; scanWedge.gaps = [];
-      if (!inScanField) { e.preventDefault(); e.stopPropagation(); scanDeliver(code); }
-      else { flashScan(active); }
+      e.preventDefault(); e.stopPropagation();
+      scanDeliver(code);
       return;
     }
     scanWedge.buf = ""; scanWedge.gaps = [];

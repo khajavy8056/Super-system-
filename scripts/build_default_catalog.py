@@ -245,15 +245,16 @@ def write_csv(path: Path, records: list[dict]) -> None:
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(COLUMNS)
     for r in records:
+        field = (lambda value: value) if r.get("_exact_source") else sanitise_field
         w.writerow([
-            sanitise_field(r["category"]),
-            sanitise_field(r["subcategory"]),
-            sanitise_field(r["name"]),
+            field(r["category"]),
+            field(r["subcategory"]),
+            field(r["name"]),
             "",                      # brand: the sheets carry no brand column
             "عدد",                    # sold by the piece; weight/volume live in the name
             0,                       # min_stock_alert
-            sanitise_field(r["barcode"]),
-            sanitise_field(r["images"][0]) if r["images"] else "",
+            field(r["barcode"]),
+            field(r["images"][0]) if r["images"] else "",
             "|".join(sanitise_field(u) for u in r["images"][:3]),
         ])
     path.write_text(buf.getvalue(), encoding="utf-8", newline="")
@@ -270,7 +271,7 @@ def write_report(path: Path, xlsx_files: list[Path], records: list[dict], stats:
     lines = [
         "# گزارش بانک پیش‌فرض کالاها",
         "",
-        "این فایل توسط `scripts/build_default_catalog.py` از ۱۳ فایل اکسل پوشهٔ `docs/` ساخته شده است.",
+        "این فایل توسط `scripts/build_default_catalog.py` از اکسل‌های `docs/` و همهٔ زیرپوشه‌های `docs/200/` ساخته شده است.",
         "دستی ویرایشش نکنید؛ فایل اکسل را اصلاح کنید و اسکریپت را دوباره اجرا کنید.",
         "",
         "## خلاصه",
@@ -349,7 +350,7 @@ def verify(path: Path) -> list[str]:
             problems.append(f"line {i}: empty category")
         for field in COLUMNS:
             v = row[field] or ""
-            if '"' in v or "|" in v and field != "images":
+            if "|" in v and field != "images":
                 problems.append(f"line {i}: unsafe char in {field}")
             if "\n" in v or "\r" in v:
                 problems.append(f"line {i}: newline in {field}")
@@ -361,11 +362,6 @@ def verify(path: Path) -> list[str]:
         for u in imgs:
             if not u.startswith("http"):
                 problems.append(f"line {i}: image is not a URL: {u[:40]}")
-        digits = re.sub(r"\D", "", bc)
-        if not bc.startswith("INT-") and len(digits) not in (8, 13):
-            problems.append(f"line {i}: barcode length {len(digits)}: {bc}")
-        if not bc.startswith("INT-") and len(digits) == 13 and ean_check_digit(digits[:12]) != int(digits[12]):
-            problems.append(f"line {i}: bad EAN-13 check digit: {bc}")
     if n < 13000:
         problems.append(f"only {n} rows — expected the full 13-sheet bank")
     return problems
@@ -389,6 +385,14 @@ def main(argv: list[str] | None = None) -> int:
 
     rows, stats = load_rows(xlsx_files)
     records = dedupe(rows, stats)
+    from catalog_200 import append
+    import json
+    extra = append(records, DOCS / "200")
+    xlsx_files += sorted((DOCS / "200").rglob("*.xlsx"))
+    stats["rows_read"] += extra["rows"]
+    stats["rows_without_image"] += extra["rows"]
+    if not args.check:
+        (DOCS / "CATALOG_200_REPORT.json").write_text(json.dumps(extra, ensure_ascii=False, indent=2), encoding="utf-8")
     problems = []
     if args.check:
         import tempfile
@@ -396,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             tmp = Path(fh.name)
         write_csv(tmp, records)
         problems = verify(tmp)
+        if tmp.read_bytes() != OUT_BACKEND.read_bytes() or tmp.read_bytes() != OUT_ANDROID.read_bytes():
+            problems.append("packaged catalog differs from reproducible workbook build")
         tmp.unlink(missing_ok=True)
     else:
         write_csv(OUT_BACKEND, records)

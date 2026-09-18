@@ -238,6 +238,11 @@ public final class Db extends SQLiteOpenHelper {
         // counter is read once and written once instead.
         long seq = 0;
         try { String v = kv("pid"); if (v != null) seq = Long.parseLong(v); } catch (Exception ignore) {}
+        // A killed chunked import may have committed products before saving kv(pid).
+        // Never reuse their negative IDs on the next launch.
+        try (Cursor c = d.rawQuery("SELECT COALESCE(-MIN(id),0) FROM products WHERE id<0", null)) {
+            if (c.moveToFirst()) seq = Math.max(seq, c.getLong(0));
+        }
         int pending = 0;
         android.database.sqlite.SQLiteStatement ins = null;
         android.database.sqlite.SQLiteStatement bankIns = null;
@@ -269,24 +274,15 @@ public final class Db extends SQLiteOpenHelper {
                 while (c.moveToNext()) bankConfirmed.add(c.getString(0));
             }
 
-            // v3.5.1 — RECONCILE with what the shop already has. The old code
-            // deduplicated only *within* the CSV and minted a fresh id for every
-            // row, so running it against a database that already held products
-            // (i.e. after an in-place app update) would have cloned every item the
-            // shop had typed by hand. Identity is the barcode first — that is the
-            // only hard rule — then the normalised name, which is what a product
-            // entered manually before the bank existed will match on.
+            // Match complete identifiers only: names and numeric substrings are
+            // not product identity (Hy-40312350 must not collide with 40312350).
             java.util.HashMap<String, Long> byBarcode = new java.util.HashMap<>();
-            java.util.HashMap<String, Long> byName = new java.util.HashMap<>();
             java.util.HashMap<Long, String> imgOf = new java.util.HashMap<>();
             try (Cursor c = d.rawQuery("SELECT id, barcode, name, image_url FROM products", null)) {
                 while (c.moveToNext()) {
                     long pid = c.getLong(0);
-                    // precompiled: replaceAll() recompiles the regex on every call
-                    String bc = nonDigit.matcher(norm(c.getString(1))).replaceAll("");
-                    String nm = norm(c.getString(2)).trim();
+                    String bc = norm(c.getString(1));
                     if (!bc.isEmpty()) byBarcode.put(bc, pid);
-                    if (!nm.isEmpty()) byName.put(nm, pid);
                     imgOf.put(pid, c.isNull(3) ? "" : c.getString(3));
                 }
             }
@@ -303,11 +299,15 @@ public final class Db extends SQLiteOpenHelper {
 
                 String img = f.length > 7 ? f[7].trim() : "";
 
+                String unit = f.length > 4 && !f[4].trim().isEmpty() ? f[4].trim() : "عدد";
+                if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
+                String cat = f[0].trim() + (f.length > 1 && !f[1].trim().isEmpty() ? " / " + f[1].trim() : "");
+                if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
+
                 // already known → do not create a second row. If the shop's own
                 // copy has no picture yet, adopt the one that ships with the bank;
                 // that is the whole point of reconciling instead of skipping.
-                Long hit = barcode.isEmpty() ? null : byBarcode.get(nonDigit.matcher(barcode).replaceAll(""));
-                if (hit == null) hit = byName.get(norm(name).trim());
+                Long hit = barcode.isEmpty() ? null : byBarcode.get(norm(barcode));
                 if (hit != null) {
                     matched++;
                     if (!img.isEmpty() && imgOf.get(hit).isEmpty()) {
@@ -320,11 +320,6 @@ public final class Db extends SQLiteOpenHelper {
                     }
                     continue;
                 }
-
-                String unit = f.length > 4 && !f[4].trim().isEmpty() ? f[4].trim() : "عدد";
-                if (!units.containsKey(unit)) units.put(unit, (long) units.size() + 1);
-                String cat = f[0].trim() + (f.length > 1 && !f[1].trim().isEmpty() ? " / " + f[1].trim() : "");
-                if (!cats.containsKey(cat)) cats.put(cat, (long) cats.size() + 1);
 
                 String gallery = f.length > 8 ? f[8].trim() : "";
 
@@ -414,8 +409,7 @@ public final class Db extends SQLiteOpenHelper {
                 }
                 // remember what we just added so a later line in the same file
                 // cannot create a second row for it
-                if (!barcode.isEmpty()) byBarcode.put(nonDigit.matcher(barcode).replaceAll(""), id);
-                byName.put(norm(name).trim(), id);
+                if (!barcode.isEmpty()) byBarcode.put(norm(barcode), id);
                 imgOf.put(id, img);
                 n++;
 
@@ -467,7 +461,7 @@ public final class Db extends SQLiteOpenHelper {
     // swallowed every failure and the marker was then written unconditionally, so
     // catalogPending() stayed false and the phone never tried again. A new value
     // forces exactly those devices to retry with the fixed importer.
-    public static final String CATALOG_VERSION = "3.5.3-13570";
+    public static final String CATALOG_VERSION = "3.6.5-16953";
 
     /** True when the bundled catalogue has not been imported into this database yet. */
     public static boolean catalogPending() {
@@ -845,7 +839,7 @@ public final class Db extends SQLiteOpenHelper {
     private static String pad5(long n) { return String.format("%05d", n); }
     public static String norm(String s) {
         if (s == null) return ""; StringBuilder b = new StringBuilder();
-        for (char ch : s.trim().toCharArray()) { if (ch >= '۰' && ch <= '۹') b.append((char) ('0' + ch - '۰')); else if (ch == 'ي') b.append('ی'); else if (ch == 'ك') b.append('ک'); else b.append(ch); }
+        for (char ch : s.trim().toCharArray()) { if (ch >= '۰' && ch <= '۹') b.append((char) ('0' + ch - '۰')); else if (ch >= '٠' && ch <= '٩') b.append((char) ('0' + ch - '٠')); else if (ch == 'ي') b.append('ی'); else if (ch == 'ك') b.append('ک'); else b.append(ch); }
         return b.toString();
     }
 }

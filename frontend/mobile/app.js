@@ -1217,6 +1217,13 @@ $("#scan-manual").addEventListener("keydown", (e) => {
     else $("#scan-status").textContent = "بارکد نامعتبر (checksum)";
   }
 });
+async function exactScanProduct(raw) {
+  const local = window.Local ? await Local.byBarcode(raw).catch(() => null) : null;
+  if (local && String(local.barcode) === raw) return local;
+  if (!state.online) return null;
+  const r = await api(`/pos/search?q=${encodeURIComponent(raw)}&limit=1`);
+  return (r.items || []).find(item => String(item.barcode) === raw) || null;
+}
 function onScanHit(raw) {
   closeScanner();
   navigator.vibrate && navigator.vibrate(80);
@@ -1233,10 +1240,10 @@ function onScanHit(raw) {
   (async () => {
     try {
       if (mode === "pos") {
-        const r = await searchProducts(raw, 5);
-        if (!r.items.length) { toast("کالا یافت نشد: " + raw, "err"); if (window.offerNewProduct) offerNewProduct(raw); return; }
-        state._lastResults = r.items;
-        mPick(r.items[0].product_id);
+        const item = await exactScanProduct(raw);
+        if (!item) { toast("کالا یافت نشد: " + raw, "err"); if (window.offerNewProduct) offerNewProduct(raw); return; }
+        state._lastResults = [item];
+        mPick(item.product_id);
         return;
       }
       if (mode === "lookup") {

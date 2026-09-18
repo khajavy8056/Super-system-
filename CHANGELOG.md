@@ -3,6 +3,15 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.6.5] - 2026-09-18
+
+- Recursively import all six workbooks under docs/200: 6,096 rows, 3,383 additional barcode identities, 16,953 total products. New products have no images or stock; original catalog entries remain unchanged.
+- Preserve complete source identifiers (including alphabetic codes), retain image filenames in a separate provenance report, and deduplicate by barcode rather than name.
+- Apply changed bundled catalog at backend startup and bump the Android catalog marker; protect IDs when continuing an interrupted chunked phone import.
+- Fix POS keyboard-wedge loss of the first digit after focus changes; deliver a complete scan exactly once and resolve scans by exact barcode. Mobile web no longer picks the first fuzzy product match.
+- Android POS disables keyboard autocorrection and duplicate key-up submission; Arabic/Persian digit normalization is shared with inventory.
+- Signed Android APK; Windows/web source updated, no new Setup.exe or physical-device verification. See docs/release-3.6.5.fa.md.
+
 ## [3.6.4] - 2026-09-18
 
 - Standalone Windows annual simulation launcher: verified source download, per-user Python installation, isolated/frozen dependencies, logs and automatic completed-day resume.

@@ -38,11 +38,11 @@ public final class SalesScreens {
             LinearLayout root = Ui.col(c); root.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
             // search row (mockup: rounded input + teal «اسکن» button)
             LinearLayout sr = Ui.row(c);
-            search = Ui.input(c, "نام یا بارکد کالا…"); search.setLayoutParams(Ui.weight(1)); { Icons.Icon si = Icons.draw("search", Ui.MUTED, 2f); si.setBounds(0, 0, Ui.dp(18), Ui.dp(18)); search.setCompoundDrawables(null, null, si, null); search.setCompoundDrawablePadding(Ui.dp(8)); } sr.addView(search);
+            search = Ui.input(c, "نام یا بارکد کالا…"); search.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG_LTR); search.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); search.setLayoutParams(Ui.weight(1)); { Icons.Icon si = Icons.draw("search", Ui.MUTED, 2f); si.setBounds(0, 0, Ui.dp(18), Ui.dp(18)); search.setCompoundDrawables(null, null, si, null); search.setCompoundDrawablePadding(Ui.dp(8)); } sr.addView(search);
             android.widget.ImageView scanB = Icons.disc(c, "scan", Ui.PRIMARY, Color.WHITE, 46); scanB.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33FFFFFF), Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, 0x88CBA75A, 14), null)); scanB.setOnClickListener(v -> a.scan("اسکن کالا برای فروش", this::onBarcode)); scanB.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(50), Ui.dp(46)), 8, 0, 0, 6)); sr.addView(scanB);
             root.addView(sr);
             search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (pending != null) h.removeCallbacks(pending); pending = () -> suggest(e.toString().trim()); h.postDelayed(pending, 220); } });
-            search.setOnEditorActionListener((v, id, ev) -> { String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
+            search.setOnEditorActionListener((v, id, ev) -> { if (ev != null && ev.getAction() != android.view.KeyEvent.ACTION_DOWN) return true; String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
             sugg = Ui.col(c); root.addView(sugg);
             // customer + coupon strip
             LinearLayout cs = Ui.row(c); cs.setPadding(0, Ui.dp(4), 0, Ui.dp(2));
@@ -75,7 +75,7 @@ public final class SalesScreens {
             for (JSONObject p : list) { double avail = p.optDouble("available_qty", 0); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price", 0) : 0; sugg.addView(Ui.pitem(c, p, p.optString("name"), Ui.fa(p.optString("barcode")) + " · موجودی " + Ui.num(avail), Ui.money(price), avail > 0 ? Ui.TEXT : Ui.RED, () -> { add(p, null); search.setText(""); sugg.removeAllViews(); })); }
         }
         void onBarcode(String code) {
-            code = Db.norm(code); search.setText(""); sugg.removeAllViews();
+            code = Db.norm(code); if (pending != null) h.removeCallbacks(pending); search.setText(""); sugg.removeAllViews(); if (code.isEmpty()) return;
             JSONObject p = Db.productByBarcode(code);
             if (p != null && p.optJSONArray("batches") != null && p.optJSONArray("batches").length() > 0) { add(p, null); return; }
             final String bc = code;
