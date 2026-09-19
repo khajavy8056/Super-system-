@@ -1,0 +1,70 @@
+{
+  "simulation_only": true,
+  "summary": {
+    "days": 3,
+    "start_date": "2026-09-14",
+    "end_date": "2026-09-16",
+    "products": 75,
+    "long_tail_products": 13570,
+    "suppliers": 15,
+    "customers": 8800,
+    "insights": {
+      "errors": {},
+      "generated": 63,
+      "accepted": 0,
+      "measured": 0,
+      "open": 63
+    },
+    "invoices": 3253,
+    "lines": 12616,
+    "sales": 1047487137,
+    "voids": 62,
+    "returns": 45,
+    "credit": 119,
+    "accepted_insights": 0,
+    "lost_sales": 124,
+    "path": "/home/user/scale-benchmark/revised-three-days.db.gz",
+    "bytes": 7643600,
+    "compressed": true,
+    "tables": 51
+  },
+  "validation": {
+    "integrity": "ok",
+    "tables": 51,
+    "missing": [],
+    "counts": {
+      "products": 13645,
+      "invoices": 3253,
+      "invoice_items": 12616,
+      "product_batches": 13645,
+      "stock_movements": 26552,
+      "customers": 8800,
+      "acc_suppliers": 15,
+      "ai_insights": 63,
+      "acc_cheques": 0,
+      "acc_expenses": 0,
+      "returns": 45,
+      "audit_logs": 30788
+    },
+    "uncompressed_bytes": 35151872,
+    "foreign_key_errors": [],
+    "daily_invoices": [
+      [
+        "2026-09-14",
+        1017
+      ],
+      [
+        "2026-09-15",
+        1061
+      ],
+      [
+        "2026-09-16",
+        1175
+      ]
+    ]
+  },
+  "elapsed_seconds": 282.958,
+  "requested_days": 3,
+  "requested_invoices_per_day": 1100.0,
+  "model_effect_is_causal_evidence": false
+}

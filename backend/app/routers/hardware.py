@@ -60,31 +60,57 @@ def health(db: Session = Depends(get_db), _: User = Depends(require_permission("
 @router.post("/test/print")
 def test_print(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
     """Honest test print: ok=True ONLY when something was really printed/written."""
-    text = "Supermarket System\n--- TEST PRINT ---\n" + "x" * 32 + "\n" + "y" * 24 + "\n"
+    prof = hw.printer_profile(db)
+    W = prof["columns"]
+    text = "\n".join([(prof["store"]["name"] or "Supermarket System").center(W), "--- تست چاپ ---".center(W),
+                      "x" * W, "۰۱۲۳۴۵۶۷۸۹ 0123456789", f"عرض کاغذ: {prof['paper_width_mm']} mm / {W} ستون",
+                      "-" * W])
     device = hw._printer(db)
     if device is None:
         return {"ok": False, "message": "PRINTER_OFFLINE: no printer configured"}
-    if device.connection and device.connection.startswith("file://"):
+    conn = (device.connection or "").strip()
+    if conn.startswith("file://"):
         try:
-            with open(device.connection[len("file://"):], "w", encoding="utf-8") as f:
+            with open(conn[len("file://"):], "w", encoding="utf-8") as f:
                 f.write(text)
             return {"ok": True, "message": "test receipt written (file sink)"}
         except OSError as e:
             return {"ok": False, "message": f"PRINTER_OFFLINE: {e}"}
-    if device.connection and device.connection.startswith("escpos:"):
-        try:
-            from ..services.escpos_driver import print_via_escpos
-        except ImportError:
-            return {"ok": False, "message": "DRIVER_UNAVAILABLE: install python-escpos (requirements-hardware.txt)"}
-        ok, detail = print_via_escpos(device.connection, text)
+    if conn.startswith("tcp://") or conn.startswith("escpos:"):
+        from ..services.escpos_driver import print_via_escpos
+        ok, detail = print_via_escpos(conn, text, columns=W, cut=prof["cut"])
         return {"ok": ok, "message": "ESC/POS: " + detail}
-    return {"ok": False, "message": "NOT_SUPPORTED: no real driver for this connection type"}
+    return {"ok": False, "message": "NOT_SUPPORTED: use file://, tcp://host:9100 or escpos:usb:VID:PID"}
 
 
 @router.post("/test/drawer")
 def test_drawer(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
     ok, msg = hw.open_cash_drawer(db)
     return {"ok": ok, "message": msg}
+
+
+@router.get("/scanner/discover")
+def scanner_discover(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """Enumerate attached USB/HID barcode scanners and auto-register the first ready one."""
+    result = hw.detect_scanners()
+    registered = None
+    if result["scanners"]:
+        best = next((s for s in result["scanners"] if s["ready"]), result["scanners"][0])
+        existing = db.execute(select(HardwareDevice).where(HardwareDevice.device_type == "BARCODE_SCANNER")).scalars().first()
+        if existing is None:
+            existing = HardwareDevice(device_type="BARCODE_SCANNER", name=best["name"], vendor=best.get("vendor"),
+                                      model=f"VID {best['vid']:04X} PID {best['pid']:04X}" if best.get("vid") is not None else None,
+                                      connection="HID" if best["mode"] == "HID_KEYBOARD" else best["mode"],
+                                      status="CONNECTED" if best["ready"] else "UNKNOWN", is_enabled=True)
+            db.add(existing)
+        else:
+            existing.name = best["name"]
+            existing.vendor = best.get("vendor")
+            existing.status = "CONNECTED" if best["ready"] else existing.status
+        db.commit()
+        registered = {"id": existing.id, "name": existing.name, "status": existing.status}
+    result["registered"] = registered
+    return result
 
 
 @router.post("/scanner/detect")

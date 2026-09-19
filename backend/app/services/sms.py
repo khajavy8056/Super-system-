@@ -32,6 +32,16 @@ _worker: threading.Thread | None = None
 _stop = threading.Event()
 
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 class SmsProviderError(Exception):
     def __init__(self, kind: str, detail: str = ""):
         super().__init__(f"{kind}: {detail}")
@@ -44,21 +54,47 @@ def get_setting(db: Session, key: str, default: str) -> str:
     return row.value if row else default
 
 
+def _set_setting(db: Session, key: str, value: str) -> None:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    if row is None:
+        db.add(SystemSetting(key=key, value=value, description="v2.8 phone SIM sender state", is_secret=False))
+    else:
+        row.value = value
+    db.flush()
+
+
 # --- Providers ----------------------------------------------------------------
 
-def _send_melipayamak(db: Session, phone: str, text: str) -> str:
+MELIPAYAMAK_BASE = "https://rest.payamak-panel.com/api/SendSMS"
+
+# RetStatus codes documented by Melipayamak for SendSMS / BaseServiceNumber.
+MELIPAYAMAK_STATUS = {
+    0: "نام کاربری یا رمز عبور اشتباه است", 1: "ارسال موفق", 2: "اعتبار کافی نیست",
+    3: "محدودیت در ارسال روزانه", 4: "محدودیت در حجم ارسال", 5: "شماره فرستنده معتبر نیست",
+    6: "سامانه در حال بروزرسانی است", 7: "متن حاوی کلمهٔ فیلترشده است",
+    9: "ارسال از خطوط عمومی از طریق وب‌سرویس امکان‌پذیر نیست", 10: "کاربر مورد نظر فعال نیست",
+    11: "ارسال نشد", 12: "مدارک کاربر کامل نیست", 14: "متن حاوی لینک است",
+    15: "ارسال به بیش از ۱ شماره بدون درج «لغو۱۱» ممکن نیست", 16: "شمارهٔ گیرنده‌ای یافت نشد",
+    17: "متن پیامک خالی است", 35: "شماره در لیست سیاه مخابرات است",
+}
+
+
+def _melipayamak_base(db: Session) -> str:
+    """Endpoint override for tests / self-hosted proxies (sms.melipayamak_url)."""
+    return (get_setting(db, "sms.melipayamak_url", "") or MELIPAYAMAK_BASE).rstrip("/")
+
+
+def _melipayamak_post(db: Session, method: str, data: dict) -> dict:
+    """POST like the official client does: form-encoded, JSON back.
+    Reference: github.com/Melipayamak/melipayamak-python (sms/rest.py)."""
     username = get_setting(db, "sms.username", "")
     password = get_setting(db, "sms.password", "")
-    sender = get_setting(db, "sms.sender", "")
-    if not (username and password and sender):
-        raise SmsProviderError("CONFIG_MISSING", "sms.username/sms.password/sms.sender required")
+    if not (username and password):
+        raise SmsProviderError("CONFIG_MISSING", "sms.username/sms.password required")
     try:
-        resp = httpx.post(
-            "https://rest.payamak-panel.com/api/SendSMS/SendSMS",
-            json={"username": username, "password": password, "to": phone,
-                  "from": sender, "text": text},
-            timeout=app_settings.EXTERNAL_TIMEOUT_SECONDS,
-        )
+        resp = httpx.post(f"{_melipayamak_base(db)}/{method}",
+                          data={"username": username, "password": password, **data},
+                          timeout=app_settings.EXTERNAL_TIMEOUT_SECONDS)
     except httpx.HTTPError as exc:
         raise SmsProviderError("NETWORK", type(exc).__name__) from exc
     if resp.status_code != 200:
@@ -66,12 +102,67 @@ def _send_melipayamak(db: Session, phone: str, text: str) -> str:
     try:
         body = resp.json()
     except ValueError as exc:
-        raise SmsProviderError("INVALID_RESPONSE", str(exc)) from exc
-    # Melipayamak returns Value==1 (or RetStatus/Status codes) on success
-    value = body.get("Value") if isinstance(body, dict) else None
-    if value not in (1, "1"):
-        raise SmsProviderError("PROVIDER_REJECTED", json.dumps(body, ensure_ascii=False)[:200])
+        raise SmsProviderError("INVALID_RESPONSE", resp.text[:200]) from exc
+    if not isinstance(body, dict):
+        raise SmsProviderError("INVALID_RESPONSE", str(body)[:200])
+    return body
+
+
+def _melipayamak_check(body: dict) -> None:
+    """Melipayamak signals success with RetStatus==1 and Value = RecId (a long
+    number). A small Value together with RetStatus!=1 is an error code."""
+    ret = body.get("RetStatus")
+    try:
+        ret = int(ret)
+    except (TypeError, ValueError):
+        ret = None
+    if ret == 1:
+        return
+    code = ret if ret is not None else body.get("Value")
+    try:
+        code_i = int(code)
+    except (TypeError, ValueError):
+        code_i = -1
+    raise SmsProviderError(f"MELI_{code}", MELIPAYAMAK_STATUS.get(code_i, body.get("StrRetStatus") or str(body)[:120]))
+
+
+def _send_melipayamak(db: Session, phone: str, text: str) -> str:
+    """§165 — Melipayamak. Two modes:
+
+    * ``sms.melipayamak_mode = line``   → ``SendSMS`` from the shop's own line
+      (``sms.sender``). Needs a dedicated line; public lines are refused (9).
+    * ``sms.melipayamak_mode = pattern`` → ``BaseServiceNumber`` (خط خدماتی
+      اشتراکی) with ``sms.melipayamak_body_id``; the message text is sent as the
+      pattern variables joined by ';' (§166). Works without a dedicated line
+      and is not affected by carrier advertising filters.
+    """
+    mode = (get_setting(db, "sms.melipayamak_mode", "line") or "line").strip().lower()
+    if mode == "pattern":
+        body_id = get_setting(db, "sms.melipayamak_body_id", "").strip()
+        if not body_id:
+            raise SmsProviderError("CONFIG_MISSING", "sms.melipayamak_body_id required for pattern mode")
+        # a pattern takes positional variables; we send each line as one variable
+        variables = ";".join(part.strip() for part in text.split("\n") if part.strip())
+        body = _melipayamak_post(db, "BaseServiceNumber", {"text": variables, "to": phone, "bodyId": body_id})
+    else:
+        sender = get_setting(db, "sms.sender", "")
+        if not sender:
+            raise SmsProviderError("CONFIG_MISSING", "sms.sender required (line mode)")
+        body = _melipayamak_post(db, "SendSMS", {"to": phone, "from": sender, "text": text, "isFlash": "false"})
+    _melipayamak_check(body)
     return json.dumps(body, ensure_ascii=False)
+
+
+def melipayamak_credit(db: Session) -> dict:
+    """GetCredit — used by the connection test (§177)."""
+    body = _melipayamak_post(db, "GetCredit", {})
+    _melipayamak_check(body)
+    return {"credit": body.get("Value"), "raw": body}
+
+
+def melipayamak_delivery(db: Session, rec_id: str) -> dict:
+    """GetDeliveries2 — delivery status of a sent message (§170)."""
+    return _melipayamak_post(db, "GetDeliveries2", {"recId": rec_id})
 
 
 def _send_kavenegar(db: Session, phone: str, text: str) -> str:
@@ -108,12 +199,74 @@ def _send_fail(db: Session, phone: str, text: str) -> str:
     raise SmsProviderError("ALWAYS_FAIL", "test provider")
 
 
+def _send_phone(db: Session, phone: str, text: str) -> str:
+    """v2.8 — provider «phone»: the message is NOT sent here. A paired Android device that
+    has «ارسال با سیم‌کارت» enabled pulls PENDING rows from /sms/outbox, sends them through
+    its SIM and reports back. Raising HANDOFF keeps the row PENDING without a retry."""
+    raise SmsProviderError("HANDOFF", "در انتظار ارسال از سیم‌کارت گوشی")
+
+
 PROVIDERS = {
+    "phone": _send_phone,
     "melipayamak": _send_melipayamak,
     "kavenegar": _send_kavenegar,
     "file": _send_file,
     "fail": _send_fail,
 }
+
+
+# --- Enqueue / single dispatch ---------------------------------------------------
+
+def queue_sms(db: Session, *, phone: str, text: str,
+              reference_type: str | None = None, reference_id: int | None = None) -> SmsMessage:
+    """Persist a message as PENDING. The worker delivers it (offline-safe)."""
+    msg = SmsMessage(phone=phone.strip(), text=text.strip(), status="PENDING",
+                     reference_type=reference_type, reference_id=reference_id)
+    db.add(msg)
+    db.flush()
+    return msg
+
+
+def _audit(db: Session, action: str, msg: "SmsMessage", provider: str,
+           error: str | None = None) -> None:
+    """Write the §43 SMS_SENT / SMS_FAILED audit row.
+
+    Auditing must never be the reason a message fails to send, so a broken
+    audit write is swallowed after being logged — the SMS state is the primary
+    record and it is already committed by the caller.
+    """
+    try:
+        from .audit import write_audit
+
+        write_audit(db, action=action, entity_type="SmsMessage", entity_id=msg.id,
+                    reference=msg.phone,
+                    after={"provider": provider, "status": msg.status,
+                           "retry_count": msg.retry_count, "error": error})
+    except Exception:  # pragma: no cover - defensive
+        logging.getLogger("supermarket.sms").exception("audit write failed for %s", action)
+
+
+def dispatch_one(db: Session, sms_id: int) -> str:
+    """Send a single message now; raises SmsProviderError so the sync queue
+    can apply its backoff policy."""
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None:
+        raise SmsProviderError("NOT_FOUND", f"sms {sms_id}")
+    if msg.status == "SENT":
+        return "ALREADY_SENT"
+    provider_code = get_setting(db, "sms.provider", "").strip()
+    sender = PROVIDERS.get(provider_code)
+    if sender is None:
+        raise SmsProviderError("CONFIG_MISSING", f"provider={provider_code or 'none'}")
+    response = sender(db, msg.phone, msg.text)
+    msg.status = "SENT"
+    msg.sent_at = datetime.utcnow()
+    msg.provider_response = response
+    msg.error_message = None
+    # §43 — SMS_SENT belongs in the audit trail, not only in the message row.
+    _audit(db, "SMS_SENT", msg, provider_code)
+    db.flush()
+    return response
 
 
 # --- Dispatcher ----------------------------------------------------------------
@@ -143,6 +296,12 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
         summary["reason"] = f"UNKNOWN_PROVIDER:{provider_code}"
         return summary
 
+    if provider_code == "phone":
+        # nothing to do on the PC — the phone drains the outbox itself
+        summary["skipped"] = len(messages)
+        summary["reason"] = "PHONE_SIM_HANDOFF"
+        return summary
+
     for msg in messages:
         try:
             response = sender(db, msg.phone, msg.text)
@@ -151,12 +310,18 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
             msg.provider_response = response
             msg.error_message = None
             summary["sent"] += 1
+            _audit(db, "SMS_SENT", msg, provider_code)
         except SmsProviderError as exc:
             msg.retry_count = (msg.retry_count or 0) + 1
             msg.error_message = f"{exc.kind}: {exc.detail}"[:500]
             if msg.retry_count >= max_retries:
                 msg.status = "FAILED"
                 summary["failed"] += 1
+                # Only the terminal failure is audited: a message that is still
+                # going to be retried has not failed yet, and logging every
+                # attempt would bury the audit log in noise.
+                _audit(db, "SMS_FAILED", msg, provider_code,
+                       error=f"{exc.kind}: {exc.detail}")
             else:
                 msg.status = "RETRYING"
                 summary["retrying"] += 1
@@ -165,6 +330,14 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
 
 
 # --- Background worker -----------------------------------------------------------
+
+_wake = threading.Event()
+
+
+def kick_worker() -> None:
+    """Wake the dispatcher now (invoice SMS must go out the moment the sale is confirmed)."""
+    _wake.set()
+
 
 def start_worker(session_factory) -> None:
     """Start the background dispatch thread (idempotent)."""
@@ -186,11 +359,174 @@ def start_worker(session_factory) -> None:
                 import logging
                 logging.getLogger("supermarket.sms").exception("sms worker tick failed")
                 interval = 10
-            _stop.wait(max(3, min(interval, 300)))
+            # sleep until the next tick — or until a checkout kicks us (v2.3)
+            _wake.wait(max(3, min(interval, 300)))
+            _wake.clear()
 
     _worker = threading.Thread(target=run, name="sms-worker", daemon=True)
     _worker.start()
 
 
 def stop_worker() -> None:
+    _wake.set()
     _stop.set()
+
+
+# --- §166 templates / §173–§176 typed messages / §171 manual retry -----------
+
+TEMPLATE_KEYS = {
+    "invoice": ("sms.template.invoice",
+                "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم"),
+    "debt_reminder": ("sms.template.debt_reminder",
+                      "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر."),
+    "coupon": ("sms.template.coupon",
+               "{store} | کد تخفیف شما: {code} | تا {until} معتبر است"),
+    "low_stock": ("sms.template.low_stock",
+                  "{store} | هشدار انبار: {count} کالا زیر حداقل موجودی است: {items}"),
+    "daily_report": ("sms.template.daily_report",
+                     "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}"),
+}
+
+
+def render_template(db: Session, kind: str, **values) -> str:
+    """Fill the shop-editable template for ``kind`` (§166). Unknown placeholders
+    are left untouched so a typo in a template never crashes a sale."""
+    key, default = TEMPLATE_KEYS[kind]
+    tpl = get_setting(db, key, default) or default
+
+    class _Safe(dict):
+        def __missing__(self, k):  # pragma: no cover - defensive
+            return "{" + k + "}"
+    return tpl.format_map(_Safe(values))
+
+
+def _store_ctx(db: Session) -> dict:
+    cur = get_setting(db, "pos.currency", "IRT")
+    return {"store": get_setting(db, "store.name", "فروشگاه"),
+            "currency": "ریال" if cur == "IRR" else "تومان"}
+
+
+def _fmt(n) -> str:
+    try:
+        return f"{float(n):,.0f}"
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def admin_phone(db: Session) -> str:
+    return (get_setting(db, "sms.admin_phone", "") or get_setting(db, "store.mobile", "")).strip()
+
+
+def queue_low_stock_alert(db: Session, *, rows: list[dict]) -> "SmsMessage | None":
+    """§176 — SMS the manager when items fall below their minimum."""
+    if get_setting(db, "sms.low_stock_alert", "false").lower() != "true":
+        return None
+    phone = admin_phone(db)
+    if not phone or not rows:
+        return None
+    names = "، ".join(str(r.get("name")) for r in rows[:5])
+    if len(rows) > 5:
+        names += f" و {len(rows) - 5} مورد دیگر"
+    text = render_template(db, "low_stock", count=len(rows), items=names, **_store_ctx(db))
+    return queue_sms(db, phone=phone, text=text, reference_type="LowStock", reference_id=None)
+
+
+def queue_daily_report(db: Session) -> "SmsMessage | None":
+    """§175 — management summary SMS (dashboard numbers) to the admin phone."""
+    from .reports import dashboard as _dashboard
+
+    phone = admin_phone(db)
+    if not phone:
+        raise SmsProviderError("CONFIG_MISSING", "sms.admin_phone (یا store.mobile) تنظیم نشده است")
+    from datetime import date as _date
+    d = _dashboard(db)
+    sales = d.get("sales", {}) or {}
+    text = render_template(
+        db, "daily_report",
+        date=_lt_today().isoformat(),
+        invoices=sales.get("invoice_count_today", 0),
+        sales=_fmt(sales.get("today", 0)), profit=_fmt((d.get("profit") or {}).get("today", 0)),
+        debt=_fmt((d.get("receivables") or {}).get("customer_debt", 0)), **_store_ctx(db))
+    return queue_sms(db, phone=phone, text=text, reference_type="DailyReport", reference_id=None)
+
+
+def retry_message(db: Session, sms_id: int) -> "SmsMessage":
+    """§171 — put a FAILED message back in the queue (manual retry)."""
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None:
+        raise SmsProviderError("NOT_FOUND", "پیامک یافت نشد")
+    if msg.status == "SENT":
+        raise SmsProviderError("ALREADY_SENT", "این پیامک قبلاً ارسال شده است")
+    msg.status = "PENDING"
+    msg.retry_count = 0
+    msg.error_message = None
+    db.flush()
+    return msg
+
+
+def test_connection(db: Session) -> dict:
+    """§177 — provider connectivity test. Never sends a real SMS to a customer."""
+    if get_setting(db, "sms.provider", "").strip() == "phone":
+        seen = get_setting(db, "sms.phone_last_seen", "")
+        dev = get_setting(db, "sms.phone_device", "")
+        ok = bool(seen) and (datetime.utcnow() - datetime.fromisoformat(seen)).total_seconds() < 15 * 60
+        return {"status": "OK" if ok else "WARN", "provider": "phone",
+                "message": (f"گوشی ارسال‌کننده ({dev or 'نامشخص'}) متصل است" if ok else
+                            "هنوز هیچ گوشی‌ای صف را نگرفته — در اپ موبایل «ارسال با سیم‌کارت» را روشن کنید و گوشی متصل بماند")}
+    from .diagnostics import check_sms
+    return check_sms(db)
+
+
+# --- v2.8: outbox for the phone SIM sender ------------------------------------------
+
+def outbox_for_phone(db: Session, device_id: str, limit: int = 20) -> list[dict]:
+    """PENDING/RETRYING rows for the SIM sender; also records which device is draining."""
+    _set_setting(db, "sms.phone_last_seen", datetime.utcnow().isoformat(timespec="seconds"))
+    if device_id:
+        _set_setting(db, "sms.phone_device", device_id)
+    if get_setting(db, "sms.provider", "").strip() != "phone":
+        return []
+    rows = db.execute(select(SmsMessage).where(SmsMessage.status.in_(["PENDING", "RETRYING"]))
+                      .order_by(SmsMessage.id.asc()).limit(limit)).scalars().all()
+    return [{"id": m.id, "phone": m.phone, "text": m.text} for m in rows]
+
+
+def outbox_report(db: Session, *, sms_id: int, status: str, response: str | None, error: str | None) -> SmsMessage | None:
+    msg = db.get(SmsMessage, sms_id)
+    if msg is None or msg.status == "SENT":
+        return msg
+    if status == "SENT":
+        msg.status = "SENT"
+        msg.sent_at = datetime.utcnow()
+        msg.provider_response = response
+        msg.error_message = None
+        _audit(db, "SMS_SENT", msg, "phone")
+    else:
+        msg.retry_count = (msg.retry_count or 0) + 1
+        msg.error_message = (error or "")[:500]
+        max_retries = int(get_setting(db, "sms.max_retries", "5") or 5)
+        msg.status = "FAILED" if msg.retry_count >= max_retries else "RETRYING"
+        if msg.status == "FAILED":
+            _audit(db, "SMS_FAILED", msg, "phone", error=msg.error_message)
+    db.flush()
+    return msg
+
+
+def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
+    """Complete receipt; legacy short templates must never suppress purchased lines."""
+    ctx = _store_ctx(db)
+    store = ctx["store"].strip() or "فروشگاه"
+    lines = [store, f"فاکتور {invoice.invoice_number}", f"واحد مبالغ: {ctx['currency']}"]
+    for n, item in enumerate(sorted(invoice.items, key=lambda x: x.id or 0), 1):
+        name = item.product.name if item.product else f"کالا {item.product_id}"
+        lines.extend([f"{n}. {name}",
+                      f"تعداد {item.qty:g} × قیمت واحد {_fmt(item.unit_sell_price)}",
+                      f"تخفیف {_fmt(item.discount)} | مالیات {_fmt(item.tax)} | جمع {_fmt(item.subtotal)}"])
+    lines.extend([f"جمع پیش از تخفیف: {_fmt(invoice.subtotal)}",
+                  f"تخفیف کل: {_fmt(invoice.discount)}",
+                  f"مالیات: {_fmt(invoice.tax)}",
+                  f"مبلغ نهایی: {_fmt(invoice.total_amount)} {ctx['currency']}"])
+    if coupon_line.strip():
+        lines.append(coupon_line.strip())
+    lines.extend(["از خرید شما سپاسگزاریم", store])
+    return "\n".join(lines)

@@ -1,0 +1,53 @@
+{
+  "simulation_only": true,
+  "summary": {
+    "days": 3,
+    "products": 75,
+    "long_tail_products": 13570,
+    "suppliers": 15,
+    "customers": 8800,
+    "insights": {
+      "errors": {},
+      "generated": 49,
+      "accepted": 14,
+      "measured": 14,
+      "open": 35
+    },
+    "invoices": 3002,
+    "lines": 7158,
+    "sales": 714368398,
+    "voids": 57,
+    "returns": 43,
+    "credit": 94,
+    "accepted_insights": 0,
+    "lost_sales": 8810,
+    "path": "/home/user/scale-benchmark/three-days.db.gz",
+    "bytes": 7258071,
+    "compressed": true,
+    "tables": 51
+  },
+  "validation": {
+    "integrity": "ok",
+    "tables": 51,
+    "missing": [],
+    "counts": {
+      "products": 13645,
+      "invoices": 3002,
+      "invoice_items": 7176,
+      "product_batches": 13759,
+      "stock_movements": 21118,
+      "customers": 8800,
+      "acc_suppliers": 15,
+      "ai_insights": 49,
+      "acc_cheques": 0,
+      "acc_expenses": 0,
+      "returns": 43,
+      "audit_logs": 30660
+    },
+    "uncompressed_bytes": 33697792
+  },
+  "elapsed_seconds": 216.445,
+  "requested_days": 3,
+  "requested_invoices_per_day": 1100.0,
+  "model_effect_is_causal_evidence": false
+}

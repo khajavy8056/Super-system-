@@ -63,3 +63,135 @@ Base URL: `http://localhost:8000/api` — مستندات تعاملی: `/docs`
 
 ## کدهای خطا (بخش 102)
 `PRODUCT_NOT_FOUND`, `BATCH_NOT_FOUND`, `INSUFFICIENT_STOCK`, `BATCH_EXPIRED`, `PRICE_NOT_AVAILABLE`, `PRINTER_OFFLINE`, `SMS_PROVIDER_ERROR`, `EXTERNAL_API_TIMEOUT`, `DATABASE_ERROR`
+
+## Phase 11 — product identity, per-batch pricing (v0.3.0)
+
+### `GET /api/products/{id}/detail`
+One product identity plus **every** batch that ever belonged to it.
+
+```json
+{
+  "product": { "id": 1, "barcode": "INT-000001", "has_own_barcode": false },
+  "total_stock": 35.5,
+  "active_batches":   [ { "batch_number": "B-20260905-000002", "buy_price": 105000, "supplier_price": 107000, "sell_price": 140000, "discount": 0, "tax": 9450 } ],
+  "depleted_batches": [ ],
+  "batch_count": 2
+}
+```
+
+Depleted batches are returned, not hidden: they are the purchase-price history
+and deleting them would erase the margin record (§5).
+
+### `POST /api/products/check-duplicate`
+Advisory duplicate warning (§33). Never blocks and never auto-merges — barcode
+equality is the only hard identity rule (§32).
+
+Request `{"name": "...", "barcode": "...", "brand_id": 1}` →
+`{"exact_barcode_match": {...}|null, "possible_duplicates": [{"product_id":1,"confidence":0.9,"reason":"نام یکسان"}], "has_warning": true}`
+
+Name comparison folds Arabic/Persian variants (ي→ی، ك→ک، آ→ا) and
+Eastern-Arabic digits, so «آب معدني» and «اب معدنی» match.
+
+### `GET|POST /api/products/brands`, `GET|POST /api/products/categories`
+Idempotent taxonomy CRUD — re-posting an existing name returns that row.
+Required for §18 brand search.
+
+### `POST /api/batches/receive` — new optional fields
+`supplier_price`, `discount`, `tax`. All per batch; never written to Product.
+
+### `POST /api/barcode/apply` — behaviour change (§31)
+An existing barcode is now **updated** instead of rejected with 409. The
+response carries `"created": true|false`. Omitted/blank fields never overwrite
+existing local data, and omitting `min_stock_alert` no longer resets it.
+
+### `GET /api/pos/search`
+Now also matches **brand name** in addition to barcode, product name, SKU and
+model (§18).
+
+### §16 internal barcodes
+`POST /api/products` accepts a product with no `barcode`. The server mints
+`INT-000001` via an atomic counter and sets `has_own_barcode: false`, marking
+the code as meaningless to external catalogues.
+
+
+## افزوده‌های v1.1.0
+
+### انبارها و انتقال (§109, §130, §131)
+| Method | Path | مجوز | توضیح |
+|---|---|---|---|
+| GET | `/api/warehouses` | inventory.view | فهرست انبارها + محل‌ها + موجودی/ارزش هر انبار (انبار پیش‌فرض خودکار ساخته می‌شود) |
+| POST | `/api/warehouses` | inventory.adjust | `{name, code?, address?, is_default?}` |
+| PATCH | `/api/warehouses/{id}` | inventory.adjust | ویرایش / غیرفعال‌سازی |
+| POST | `/api/warehouses/{id}/locations` | inventory.adjust | `{name, code?}` محل نگهداری |
+| POST | `/api/warehouses/transfer` | inventory.adjust | `{batch_id, quantity, to_warehouse_id, to_location_id?, reason?}` → جفت حرکت `TRANSFER_OUT/IN` |
+
+### POS
+- `POST /api/pos/checkout` و `POST /api/pos/cart/validate`: فیلد جدید `invoice_discount` (مبلغ، §12). پاسخ checkout شامل `invoice_discount` و `drawer: {ok, message}` (§19) است.
+- `POST /api/invoices/{id}/void`: برای فاکتور `PAID` فیلد `admin_password` الزامی است (§209؛ قابل غیرفعال‌سازی با `security.require_admin_for_void_paid=false`). خطا: `401 ADMIN_PASSWORD_REQUIRED`.
+
+### پیامک
+| Method | Path | توضیح |
+|---|---|---|
+| GET | `/api/sms/templates` | الگوهای قابل ویرایش و placeholderها (§166) |
+| POST | `/api/sms/{id}/retry` | بازگرداندن پیامک FAILED به صف (§171) |
+| POST | `/api/sms/test-connection` | تست اتصال سرویس (§177) |
+| POST | `/api/sms/daily-report` | پیامک گزارش مدیریت به `sms.admin_phone` (§175) |
+
+### دسته‌بندی
+- `POST /api/products/categories` فیلد `parent_id?` (§79)؛ `GET` فیلدهای `parent_id`, `parent_name`, `path`.
+
+## افزوده‌های v1.2.0
+
+### بانک اولیهٔ کالا / ورود CSV (§80–82)
+- `GET /api/products/import/starter` — خلاصهٔ بانک بسته‌بندی‌شده (تعداد کالا/دسته/زیردسته، ستون‌ها).
+- `POST /api/products/import/starter?dry_run=false` — ورود idempotent با موجودی صفر؛ پاسخ `{created, skipped, errors[], stock_note}`.
+- `POST /api/products/import/csv` (multipart `file`, UTF-8; ستون‌ها `category,subcategory,name,brand,unit,min_stock_alert,barcode`) — `400 BAD_HEADER` / `BAD_ENCODING`.
+
+### لوگوی فروشگاه (§214)
+- `POST /api/settings/store-profile/logo` (multipart `file`, PNG/JPEG/SVG/WebP ≤ 2MB) → `{logo_path: "/media/store-logo.png?v=…"}`؛ خطاها `UNSUPPORTED_TYPE`, `TOO_LARGE`, `CORRUPT`.
+- `DELETE /api/settings/store-profile/logo` → لوگوی پیش‌فرض.
+
+### گزارش فروش (§137–138)
+- `GET /api/reports/sales?start&end&group=daily|weekly|monthly|product` — `monthly`/`weekly` گروه‌های شمسی `{period, first_day, last_day, invoice_count, total}`.
+
+### به‌روزرسانی (§270)
+- `GET /api/system/update/check` اکنون فیلد `channel` (`github` | `updateserver`) و وضعیت `CONFIG_MISSING` دارد. تنظیمات: `update.channel`, `update.server_url`, `update.server_token`.
+
+### سخت‌افزار (§178–182)
+- `POST /api/hardware` با `connection` یکی از `tcp://host:9100`, `escpos:usb:VID:PID`, `escpos:win:NAME`, `file:///path`.
+- `POST /api/hardware/test/print` — با پروفایل واقعی (`printer.*`, لوگو)؛ در نبود دستگاه `PRINTER_NOT_CONFIGURED`.
+
+### پیامک (§164–165)
+- `POST /api/sms/test-connection` برای ملی‌پیامک اعتبار واقعی (`GetCredit`) را برمی‌گرداند؛ حالت‌های `sms.melipayamak_mode=line|pattern`.
+
+## افزوده‌های v1.4.0 — حسابداری (`/api/accounting/*`)
+
+مجوزها: `accounting.view` (خواندن)، `accounting.post` (ثبت سند/هزینه/چک/پرداخت)، `accounting.close` (بستن دوره). صندوق‌دار با `pos.sell` فقط شیفت خودش را باز/بسته می‌کند. خطاها با بدنهٔ `{code, message}`: `UNBALANCED`/`NOT_POSTABLE` → 422؛ `PERIOD_CLOSED`/`ALREADY_REVERSED`/`SESSION_OPEN`/`INVALID_STATE` → 409.
+
+| متد | مسیر | شرح |
+|---|---|---|
+| GET | `/overview` | KPIها: صندوق، بانک، کارت‌خوان، طلب از مشتریان، بدهی به تأمین‌کنندگان، ارزش دفتری موجودی، `month` (درآمد/بهای تمام‌شده/هزینه/سود خالص/حاشیه)، چک‌ها |
+| GET/POST/PATCH | `/accounts`, `/accounts/{id}` | کدینگ حساب‌ها (کد، نام، نوع، والد، فعال) |
+| GET/POST | `/journal` | فهرست/ثبت سند دستی؛ بدنه `{date, description, lines:[{account_code|account_id, debit, credit, description, party_type, party_id}]}`؛ جمع بدهکار = بستانکار |
+| GET | `/journal/{id}` | سند با ردیف‌ها |
+| POST | `/journal/{id}/reverse` | سند برگشت (معکوس) |
+| GET | `/trial-balance?as_of` | تراز آزمایشی |
+| GET | `/ledger/{account_id}?start&end` | دفتر کل حساب با ماندهٔ جاری |
+| GET | `/income-statement?start&end` | صورت سود و زیان: `revenue`, `cogs`, `gross_profit`, `gross_margin_pct`, `expenses`, `net_profit` |
+| GET | `/balance-sheet?as_of` | ترازنامه (دارایی/بدهی/سرمایه + سود انباشته) |
+| GET / POST | `/periods`, `/periods/{id}/close` | دوره‌های مالی و بستن دوره |
+| GET/POST | `/expense-categories`, `/expenses` | دسته‌های هزینه و ثبت هزینه (`paid_from`: CASH/BANK/CARD) |
+| GET/POST | `/suppliers`, `/suppliers/{id}/pay` | تأمین‌کنندگان و پرداخت بدهی |
+| GET/POST | `/cheques`, `/cheques/{id}/clear`, `/cheques/{id}/bounce` | چک‌های دریافتی/پرداختی |
+| GET/POST | `/cash-sessions`, `/cash-sessions/current`, `/cash-sessions/open`, `/cash-sessions/{id}/close` | شیفت صندوق (موجودی اولیه، فروش نقدی، شمارش پایانی، مغایرت) |
+
+### ثبت خودکار
+- **فروش POS** (`POST /api/pos/checkout`): Dr 1101 صندوق / 1102 بانک / 1103 کارت‌خوان / 1201 حساب‌های دریافتنی (طرف = مشتری) — Cr 4101 فروش کالا (+ Cr 2201 مالیات)؛ و Dr 5101 بهای تمام‌شده / Cr 1301 موجودی کالا (FIFO بچ).
+- **ورود کالا** (`POST /api/batches/receive` با `supplier_id`, `paid_from`): Dr 1301 موجودی / Cr 2101 حساب‌های پرداختنی (یا 1101/1102/1103 هنگام پرداخت نقدی).
+
+### سایر افزوده‌های v1.4.0
+- `GET /api/reports/dashboard` → فیلدهای جدید `top_products[]` (`share_pct`, `qty`, `profit`), `trend[]` (۷ روز: فروش/سود), `accounting` (خلاصهٔ overview).
+- `GET /api/hardware/scanner/discover` — فهرست بارکدخوان‌های USB (HID/سریال) با پیشنهاد درایور؛ `POST /api/hardware/scanner/detect` `{intervals_ms:[]}` — تشخیص ویج اسکنر از الگوی تایپ.
+
+## افزوده‌های v1.5.0 — لایسنس و راه‌اندازی (`/api/setup/*`)
+جدول کامل در [`LICENSING.md`](LICENSING.md). گیت لایسنس: هر مسیر `/api/*` به‌جز `/api/setup/*` بدون لایسنس فعال → `402 {"detail":{"code":"LICENSE_REQUIRED","message":…,"license":{status,expires,days_left,hwid}}}`.

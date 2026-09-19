@@ -16,6 +16,16 @@ from .notifications import notify
 DEFAULT_THRESHOLDS = {"today": 0, "three": 3, "seven": 7, "thirty": 30}
 
 
+
+def _lt_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _lt_now():
+    from .timeservice import local_now
+    return local_now()
+
 def get_thresholds(db: Session) -> dict[str, int]:
     out = dict(DEFAULT_THRESHOLDS)
     for key in out:
@@ -33,11 +43,11 @@ def get_thresholds(db: Session) -> dict[str, int]:
 def days_until(batch: ProductBatch, today: date | None = None) -> int | None:
     if batch.expiry_date is None:
         return None
-    return (batch.expiry_date - (today or date.today())).days
+    return (batch.expiry_date - (today or _lt_today())).days
 
 
 def classify(batch: ProductBatch, today: date | None = None, thresholds: dict[str, int] | None = None) -> str:
-    today = today or date.today()
+    today = today or _lt_today()
     d = days_until(batch, today)
     if d is None:
         return "NORMAL"
@@ -64,7 +74,7 @@ def block_expired_policy(db: Session) -> bool:
 def expiry_scan(db: Session) -> dict:
     """Periodic job: mark expired batches and notify about near-expiry ones."""
     thresholds = get_thresholds(db)
-    today = date.today()
+    today = _lt_today()
     batches = db.execute(select(ProductBatch).where(ProductBatch.status == "ACTIVE")).scalars().all()
     result = {"expired": 0, "expiring_today": 0, "expiring_3": 0, "expiring_7": 0, "expiring_30": 0}
 
@@ -81,5 +91,17 @@ def expiry_scan(db: Session) -> dict:
             bucket = {"EXPIRING_TODAY": "expiring_today", "EXPIRING_3_DAYS": "expiring_3",
                       "EXPIRING_7_DAYS": "expiring_7", "EXPIRING_30_DAYS": "expiring_30"}[status]
             result[bucket] += 1
+
+    # §112/§176 — low-stock pass: dashboard notification + optional manager SMS.
+    try:
+        from .reports import low_stock_report
+        from . import sms as sms_svc
+        low = low_stock_report(db)
+        result["low_stock"] = len(low)
+        if low:
+            msg = sms_svc.queue_low_stock_alert(db, rows=low)
+            result["low_stock_sms_id"] = msg.id if msg else None
+    except Exception as exc:  # the scan must never fail because of alerting
+        result["low_stock_error"] = type(exc).__name__
     db.flush()
     return result

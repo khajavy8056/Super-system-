@@ -16,6 +16,8 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 class VoidIn(BaseModel):
     reason: str | None = None
+    #: §209 — admin password re-confirmation for voiding a PAID invoice
+    admin_password: str | None = None
 
 
 def _out(inv: Invoice) -> dict:
@@ -59,9 +61,21 @@ def void_invoice(invoice_id: int, body: VoidIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
     if inv.status == "PAID":
         # Voiding a paid invoice needs a stronger permission (§84).
-        from ..security import has_permission
+        from ..security import has_permission, verify_password
+        from ..services.audit import write_audit
+        from ..services.pos import get_setting
         if not has_permission(user, "pos.void_paid"):
             raise HTTPException(status_code=403, detail="Missing permission: pos.void_paid")
+        # §209 — a sensitive financial action needs the password typed again,
+        # even for a signed-in manager (a walked-away terminal must not suffice).
+        if get_setting(db, "security.require_admin_for_void_paid", "true").lower() == "true":
+            if not body.admin_password or not verify_password(body.admin_password, user.password_hash):
+                write_audit(db, action="VOID_DENIED", user_id=user.id, entity_type="Invoice",
+                            entity_id=inv.id, reference="admin password missing/invalid")
+                db.commit()
+                raise HTTPException(status_code=401, detail={
+                    "code": "ADMIN_PASSWORD_REQUIRED",
+                    "message": "برای ابطال فاکتور پرداخت‌شده، رمز عبور مدیر را وارد کنید"})
     try:
         pos_svc.void_invoice(db, invoice=inv, user=user, reason=body.reason)
         db.commit()
@@ -79,6 +93,20 @@ def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depe
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    from ..services.hardware import render_receipt
     ok, message = print_receipt(db, invoice=inv)
     db.commit()
-    return {"invoice_id": inv.id, "print_status": inv.print_status, "ok": ok, "message": message}
+    return {"invoice_id": inv.id, "print_status": inv.print_status, "ok": ok, "message": message,
+            "receipt_text": render_receipt(db, inv)}
+
+
+@router.get("/{invoice_id}/receipt")
+def receipt_preview(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+    """Rendered receipt text (what the thermal printer receives) — on-screen preview / browser print."""
+    from ..services.hardware import render_receipt, printer_profile
+    inv = db.get(Invoice, invoice_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    prof = printer_profile(db)
+    return {"invoice_id": inv.id, "invoice_number": inv.invoice_number, "columns": prof["columns"],
+            "print_status": inv.print_status, "receipt_text": render_receipt(db, inv)}

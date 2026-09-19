@@ -77,3 +77,19 @@ Total profit = Σ profit(InvoiceItems)   # بر اساس Batch واقعی، نه
 | Frontend | HTML/CSS/JS بدون فریم‌ورک (بدون build step، سبک برای POS) |
 | Installer | PyInstaller + Inno Setup |
 | Hardware | لایه انتزاعی؛ ESC/POS استاندارد |
+
+## 9. حسابداری دوطرفه (v1.4.0)
+
+- **اصل**: هر رویداد مالی یک سند متوازن در `acc_journal_entries/acc_journal_lines` می‌سازد؛ سند بدون توازن ذخیره نمی‌شود (سرویس `accounting.post_entry` پیش از commit جمع بدهکار/بستانکار را می‌سنجد و `AccountingError("UNBALANCED")` می‌دهد).
+- **منبع حقیقت**: موجودی و فروش همچنان در جداول عملیاتی (batches/invoices) هستند؛ حسابداری «بازتاب» آن‌هاست و در همان تراکنش DB ثبت می‌شود (`services/pos.checkout` → `accounting.record_sale`, `services/batches.receive` → `accounting.record_purchase`) تا ناسازگاری پیش نیاید. خطای حسابداری، فروش را rollback می‌کند.
+- **دوره‌ها**: ثبت در تاریخ متعلق به دورهٔ بسته ممنوع است (`PERIOD_CLOSED`). اصلاح فقط با سند برگشت (`/journal/{id}/reverse`)؛ هیچ سندی ویرایش/حذف نمی‌شود (سازگار با اصل تغییرناپذیری تاریخچهٔ قیمت).
+- **گزارش‌ها** همگی از ردیف‌های سند محاسبه می‌شوند (تراز آزمایشی، دفتر کل، سود و زیان، ترازنامه) — نه از جداول جداگانه؛ بنابراین همیشه با هم سازگارند.
+- **مجوزها**: `accounting.view/post/close` روی نقش‌های Admin/Manager؛ صندوق‌دار فقط شیفت خود.
+
+```
+POS checkout ──► invoice ──► record_sale ──► JE: Dr 1101/1102/1103/1201  Cr 4101 (+2201)
+                                       └─► JE: Dr 5101 (COGS FIFO)        Cr 1301
+Receive batch ─► batch ───► record_purchase ► JE: Dr 1301  Cr 2101 | 1101/1102/1103
+Expense ──────────────────► JE: Dr 61xx  Cr 1101/1102/1103
+Cheque RECEIVED clear ────► JE: Dr 1102  Cr 1201 ; ISSUED clear ► Dr 2101 Cr 1102
+```

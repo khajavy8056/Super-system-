@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -125,7 +127,15 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Cannot restore into an in-memory database")
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp)
+        head = file.file.read(2)
+        if head == b"\x1f\x8b":  # v3.0: gzip-compressed backup (e.g. the bundled demo store) is accepted too
+            import gzip
+            file.file.seek(0)
+            with gzip.open(file.file, "rb") as gz:
+                shutil.copyfileobj(gz, tmp, 1 << 20)
+        else:
+            tmp.write(head)
+            shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
     try:
@@ -139,7 +149,9 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
             raise HTTPException(status_code=400, detail=f"Backup file failed integrity check: {integrity}")
         if not _REQUIRED_TABLES <= tables:
             missing = _REQUIRED_TABLES - tables
-            raise HTTPException(status_code=400, detail=f"File is not a system backup (missing tables: {sorted(missing)})")
+            if {"batches", "kv", "ops"} <= tables:   # v3.1: a phone (سوپری من) backup picked on the PC
+                raise HTTPException(status_code=400, detail="این فایل پشتیبان نسخهٔ موبایل است؛ آن را در اپ موبایل (تنظیمات ← پشتیبان) بازیابی کنید.")
+            raise HTTPException(status_code=400, detail=f"این فایل پشتیبان سیستم نیست (جدول‌های {sorted(missing)} وجود ندارد)")
 
         # Safety backup of the current state before overwriting it.
         backup_dir = settings.data_dir / "backups"
@@ -159,8 +171,188 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
+    # v3.5 — the restored file was written by an older release, so it can be missing
+    # model columns and (always) the v3.3 performance indexes. Self-heal in place,
+    # otherwise the shop silently drops back to full table scans after a restore.
+    from ..database import heal_schema
+    heal = heal_schema()
+
     write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
-                reference=getattr(file, "filename", None))
+                reference=getattr(file, "filename", None),
+                after={"columns_added": len(heal["columns_added"]),
+                       "indexes_ensured": len(heal["indexes_ensured"])})
     db.commit()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
-            "safety_backup": str(safety)}
+            "safety_backup": str(safety),
+            "columns_added": heal["columns_added"], "indexes_ensured": len(heal["indexes_ensured"])}
+
+
+# ---------------------------------------------------------------------------
+# v3.0 — Backup panel: download a backup file, load the bundled demo store.
+# ---------------------------------------------------------------------------
+def _demo_backup_path() -> Path | None:
+    """The bundled one-year demo store. Shipped gzip-compressed (``demo_store.db.gz``, ~15 MB) and
+    inflated once into the data dir on first use; a plain ``demo_store.db`` is honoured as well."""
+    import sys as _sys
+    roots = (settings.data_dir / "demo", Path(__file__).resolve().parents[2] / "demo", Path(__file__).resolve().parents[3] / "demo",
+             Path(_sys.executable).resolve().parent / "demo")  # frozen Windows build: next to the exe
+    for root in roots:
+        if (root / "demo_store.db").exists():
+            return root / "demo_store.db"
+    for root in roots:
+        gz = root / "demo_store.db.gz"
+        if gz.exists():
+            import gzip, shutil as _sh
+            out_dir = settings.data_dir / "demo"; out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / "demo_store.db"; tmp = out.with_suffix(".tmp")
+            with gzip.open(gz, "rb") as src, open(tmp, "wb") as dst:
+                _sh.copyfileobj(src, dst, 1 << 20)
+            tmp.replace(out)
+            return out
+    return None
+
+
+@router.get("/backups/{name}/download")
+def download_backup(name: str, db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    if "/" in name or "\\" in name or not name.endswith(".db"):
+        raise HTTPException(status_code=400, detail="BAD_NAME")
+    f = settings.data_dir / "backups" / name
+    if not f.exists():
+        raise HTTPException(status_code=404, detail="BACKUP_NOT_FOUND")
+    return FileResponse(str(f), media_type="application/octet-stream", filename=name)
+
+
+@router.post("/backup/download")
+def backup_and_download(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """One click: make a fresh backup and stream it (for USB / Telegram / phone)."""
+    res = backup(db, user)
+    p = Path(res["path"])
+    return FileResponse(str(p), media_type="application/octet-stream", filename=p.name)
+
+
+@router.get("/demo")
+def demo_info(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    from ..services import demo_store
+    p = _demo_backup_path()
+    return {"available": p is not None, "size": p.stat().st_size if p else 0, "is_demo": demo_store.is_demo(db)}
+
+
+@router.post("/demo/load")
+def demo_load(db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+    """Replace the live database with the bundled one-year demo store (a safety backup is taken first)."""
+    p = _demo_backup_path()
+    if not p:
+        raise HTTPException(status_code=404, detail="DEMO_NOT_BUNDLED")
+    class _F:  # minimal UploadFile stand-in for restore()
+        filename = p.name
+        file = open(p, "rb")
+    try:
+        return restore(_F(), db, user)  # type: ignore[arg-type]
+    finally:
+        _F.file.close()
+
+
+# ---------------------------------------------------------------------------
+# Update system (§27–29)
+#
+# Mounted under /api (unlike the bare /health route above), so every client
+# reaches it through the same authenticated API surface.
+# ---------------------------------------------------------------------------
+update_router = APIRouter(prefix="/system", tags=["update"])
+
+
+class UpdateAuthIn(BaseModel):
+    password: str
+    download: bool = True
+
+
+# ---------------------------------------------------------------------------
+# v1.6 — graceful exit: backup → flush → stop the process (desktop launcher).
+# ---------------------------------------------------------------------------
+class ShutdownIn(BaseModel):
+    backup: bool = True
+    delay_seconds: float = 1.5
+
+
+def _sqlite_backup(db: Session) -> dict | None:
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        return None
+    db_path = settings.DATABASE_URL.split("///")[-1]
+    if db_path == ":memory:":
+        return None
+    backup_dir = settings.data_dir / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    dest = backup_dir / f"supermarket_{stamp}.db"
+    source = sqlite3.connect(db_path)
+    target = sqlite3.connect(str(dest))
+    with target:
+        source.backup(target)
+    source.close(); target.close()
+    _prune_backups(backup_dir, _backup_keep_count(db))
+    return {"path": str(dest), "size": dest.stat().st_size}
+
+
+@update_router.post("/shutdown")
+def shutdown(body: ShutdownIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Exit button (v1.6): take an online SQLite backup, write the audit row and
+    then stop the server so the desktop launcher's window closes cleanly.
+    Only the desktop build (or SUPERMARKET_ALLOW_SHUTDOWN=1) really exits the
+    process; a plain dev/LAN server just performs the backup."""
+    import os
+    import threading
+
+    result = _sqlite_backup(db) if body.backup else None
+    write_audit(db, action="APP_EXIT", user_id=user.id, entity_type="System",
+                after={"backup": (result or {}).get("path")})
+    db.commit()
+    will_exit = bool(os.environ.get("SUPERMARKET_ALLOW_SHUTDOWN") == "1" or getattr(__import__("sys"), "frozen", False))
+    if will_exit:
+        def _die():
+            import time
+            time.sleep(max(0.2, float(body.delay_seconds)))
+            os._exit(0)
+        threading.Thread(target=_die, daemon=True).start()
+    return {"ok": True, "backup": result, "exiting": will_exit}
+
+
+@update_router.get("/update/check")
+def check_update(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    """Report whether a newer release exists. Read-only and side-effect free.
+    Channel = GitHub (§269) or the configured update server (§270)."""
+    from ..services.updater import UpdateError, channel_from_settings, check_for_update
+
+    try:
+        channel = channel_from_settings(db)
+    except UpdateError as exc:
+        return {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
+                "detail": str(exc), "message": str(exc)}
+    out = check_for_update(channel)
+    out["channel"] = type(channel).__name__.replace("Channel", "").lower()
+    return out
+
+
+@update_router.post("/update/prepare")
+def prepare_update_endpoint(body: UpdateAuthIn, db: Session = Depends(get_db),
+                            user: User = Depends(require_permission("settings.manage"))):
+    """Owner-authenticated update: re-auth → backup → download → verify.
+
+    §28 requires password confirmation even for an already-signed-in admin,
+    because an open session is not proof of who is at the keyboard.
+    §29 makes the backup a blocking step — no backup, no update.
+    """
+    from ..security import verify_password
+    from ..services.updater import prepare_update
+
+    if not verify_password(body.password, user.password_hash):
+        write_audit(db, action="UPDATE_AUTH_FAILED", user_id=user.id,
+                    entity_type="System")
+        db.commit()
+        raise HTTPException(status_code=403, detail={
+            "code": "BAD_PASSWORD", "message": "رمز عبور نادرست است"})
+
+    result = prepare_update(db, download=body.download)
+    write_audit(db, action="UPDATE_PREPARE", user_id=user.id,
+                entity_type="System", after={"status": result["status"]})
+    db.commit()
+    return result

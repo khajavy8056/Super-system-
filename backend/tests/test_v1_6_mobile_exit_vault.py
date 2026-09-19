@@ -1,0 +1,132 @@
+"""v1.6 — exit-with-backup, offline licence horizon + encrypted vault, mobile pairing & sync."""
+from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
+
+import uuid
+from datetime import date, datetime, timedelta
+
+import pytest
+
+from app.services import license as lic
+
+
+def test_shutdown_makes_backup_but_does_not_exit_in_tests(client, auth_headers):
+    r = client.post("/api/system/shutdown", headers=auth_headers, json={"backup": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["exiting"] is False
+    assert body["backup"] and body["backup"]["size"] > 0
+    names = [b["name"] for b in client.get("/backups", headers=auth_headers).json()]
+    assert any(body["backup"]["path"].endswith(n) for n in names)
+
+
+def test_offline_horizon_is_expiry_date_and_vault_on_lock(client, monkeypatch, auth_headers):
+    from app.database import SessionLocal
+    good = {"status": "SUCCESS", "type": "FULL", "owner": "Demo", "expires": (_local_today() + timedelta(days=30)).isoformat()}
+    monkeypatch.setattr(lic, "fetch_remote", lambda url, key, hw: good)
+    assert client.post("/api/setup/license/activate", json={"key": "KEY-LGT1-XLWT-DN7D"}).status_code == 200
+    with SessionLocal() as db:
+        # 20 days without internet but the key is valid for 30 → still allowed
+        lic._set(db, "checked_at", (datetime.utcnow() - timedelta(days=20)).isoformat()); db.commit()
+        st = lic.state(db)
+        assert st["allowed"] is True and st["offline_until"] == good["expires"]
+        # past the expiry date → blocked, and the vault archive is written
+        lic._set(db, "expires", (_local_today() - timedelta(days=1)).isoformat()); db.commit()
+        st = lic.state(db)
+        assert st["allowed"] is False
+        out = lic.lock_vault(db, force=True); db.commit()
+        assert out and out["size"] > 0 and out["path"].endswith(".zip")
+        import pyzipper
+        with pyzipper.AESZipFile(out["path"]) as z:
+            z.setpassword(lic.vault_password().encode())
+            assert set(z.namelist()) == {"supermarket.db", "vault.json"}
+            assert z.read("supermarket.db")[:15] == b"SQLite format 3"
+        # wrong password must fail (really encrypted)
+        with pyzipper.AESZipFile(out["path"]) as z:
+            z.setpassword(b"wrong")
+            with pytest.raises(RuntimeError):
+                z.read("vault.json")
+        lic.clear(db); db.commit()
+
+
+def test_mobile_pair_info_and_devices(client, auth_headers):
+    r = client.get("/api/mobile/pair/info", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["qr_text"].startswith("SMKT:") and b["payload"]["token"] and b["payload"]["url"].startswith("http://")
+    assert b["qr_png"] is None or b["qr_png"].startswith("data:image/png;base64,")
+    devs = client.get("/api/mobile/devices", headers=auth_headers).json()
+    assert any(d["id"] == b["payload"]["device_id"] for d in devs)
+    # the minted token works as a bearer
+    tok = {"Authorization": "Bearer " + b["payload"]["token"]}
+    assert client.get("/api/auth/me", headers=tok).status_code == 200
+    assert client.delete(f"/api/mobile/devices/{b['payload']['device_id']}", headers=auth_headers).status_code == 200
+    assert all(d["id"] != b["payload"]["device_id"] for d in client.get("/api/mobile/devices", headers=auth_headers).json())
+
+
+def test_mobile_sync_push_is_idempotent_and_pull_returns_changes(client, auth_headers, milk, two_batches):
+    op_id = uuid.uuid4().hex
+    op = {"id": op_id, "type": "POS_CHECKOUT", "payload": {
+        "items": [{"product_id": milk["id"], "batch_id": two_batches["a"]["id"], "quantity": 1}],
+        "payments": [{"method": "CASH", "amount": 60000}]}}
+    r = client.post("/api/mobile/sync", headers=auth_headers,
+                    json={"device_id": "dev1", "push": [op], "cursor": None, "limit": 2000})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["applied"][0]["status"] == "APPLIED" and b["applied"][0]["result"]["invoice_number"]
+    # v3.5 — with the 13 570-line default bank one pull cannot carry everything,
+    # so the client must follow the cursor. Walk the pages the way a phone does
+    # and assert the catalogue really does arrive in full instead of stopping at
+    # page 1 (the old `cursor = now` reply made that impossible).
+    seen_products, seen_batches = set(), set()
+    cursor, guard = b["cursor"], 0
+    while True:
+        seen_products.update(p["id"] for p in b["pull"]["products"])
+        seen_batches.update(x["id"] for x in b["pull"]["batches"])
+        if not b.get("has_more") or guard > 60:
+            break
+        guard += 1
+        b = client.post("/api/mobile/sync", headers=auth_headers,
+                        json={"device_id": "dev1", "cursor": cursor, "pull": True,
+                              "push": [], "limit": 2000}).json()
+        cursor = b["cursor"]
+    assert milk["id"] in seen_products, f"catalogue incomplete after {guard} pages"
+    assert two_batches["a"]["id"] in seen_batches
+    # replay → duplicate, nothing sold twice
+    r2 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [op], "cursor": cursor, "pull": False})
+    assert r2.json()["applied"][0]["status"] == "DUPLICATE"
+    qty = client.get(f"/api/batches/{two_batches['a']['id']}", headers=auth_headers)
+    if qty.status_code == 200:
+        assert float(qty.json()["current_qty"]) == float(two_batches["a"]["current_qty"]) - 1
+    # unknown op type is rejected, not crashing
+    r3 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [{"id": "x1", "type": "NOPE", "payload": {}}], "pull": False})
+    assert r3.json()["applied"][0]["status"] == "REJECTED"
+
+
+def test_v181_offline_product_then_sale_by_barcode_replays(client, auth_headers):
+    BC = "6261" + uuid.uuid4().hex[:9].upper().translate(str.maketrans("ABCDEF", "123456"))
+    """v1.8.1 standalone phone: a product defined offline (temporary INT-L code),
+    a stock receipt and a sale that references the line only by barcode all
+    replay on the PC in one sync — and replaying the same batch is idempotent."""
+    ops = [
+        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": BC, "name": "پفک آفلاین"}},
+        {"id": uuid.uuid4().hex, "type": "STOCK_RECEIVE", "payload": {"barcode": BC, "quantity_received": 10, "buy_price": 5000, "sell_price": 8000}},
+        {"id": uuid.uuid4().hex, "type": "POS_CHECKOUT", "payload": {
+            "items": [{"barcode": BC, "quantity": 2}],
+            "payments": [{"method": "CASH", "amount": 16000}]}},
+        # phone-minted temporary code → PC must mint a real INT- code, never store INT-L
+        {"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": {"barcode": "INT-L00001", "name": "کالای بدون بارکد"}},
+    ]
+    r = client.post("/api/mobile/sync", headers=auth_headers, json={"device_id": "ph1", "push": ops, "cursor": None})
+    assert r.status_code == 200, r.text
+    applied = r.json()["applied"]
+    assert [a["status"] for a in applied] == ["APPLIED"] * 4, applied
+    assert applied[2]["result"]["invoice_number"]
+    p = client.get(f"/api/products/barcode/{BC}", headers=auth_headers).json()
+    assert p["name"] == "پفک آفلاین"
+    pid2 = applied[3]["result"]["product_id"]
+    p2 = client.get(f"/api/products/{pid2}", headers=auth_headers).json()
+    assert p2["barcode"].startswith("INT-") and not p2["barcode"].startswith("INT-L")
+    # second sync with the same PRODUCT_CREATE (different op id, same barcode) reuses, never duplicates
+    r2 = client.post("/api/mobile/sync", headers=auth_headers, json={"push": [{"id": uuid.uuid4().hex, "type": "PRODUCT_CREATE", "payload": ops[0]["payload"]}], "pull": False})
+    assert r2.json()["applied"][0]["result"].get("reused") is True

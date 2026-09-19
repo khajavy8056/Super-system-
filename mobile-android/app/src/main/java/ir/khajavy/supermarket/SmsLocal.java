@@ -1,0 +1,225 @@
+package ir.khajavy.supermarket;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * v2.3 — SMS straight from the phone (standalone mode, or paired but the PC is away).
+ * Same providers, same settings keys and the same invoice template as the PC
+ * (backend/app/services/sms.py): Melipayamak (line / pattern) and Kavenegar.
+ * Messages are queued in kv "sms_queue" and retried by {@link #flush()} (called
+ * after each checkout, on resume and by the 30-minute background checker), so a
+ * dead network never blocks a sale and every message is eventually delivered.
+ *
+ * In paired mode the PC sends the invoice SMS itself (routers/pos.py) — the phone
+ * only sends locally when Api.standalone() or when the PC is unreachable AND
+ * "sms.phone_fallback" is on.
+ */
+public final class SmsLocal {
+    private SmsLocal() {}
+    static final String[] KEYS = {"sms.provider", "sms.melipayamak_mode", "sms.username", "sms.password", "sms.sender", "sms.melipayamak_body_id", "sms.api_key", "sms.send_invoice", "sms.template.invoice", "sms.admin_phone", "sms.phone_fallback", "sms.sim.enabled", "sms.sim.sub_id", "sms.sim.split", "sms.sim.delivery"};
+    static final String DEFAULT_TEMPLATE = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}\nاز خرید شما سپاسگزاریم";
+
+    public static String get(String k, String def) { String v = Prefs.get("sms_" + k, ""); return v.isEmpty() ? def : v; }
+    public static void set(String k, String v) { Prefs.set("sms_" + k, v == null ? "" : v); }
+    /* ---------------- v2.8: SIM card of this phone ---------------- */
+    public static boolean simEnabled() { return "true".equals(get("sms.sim.enabled", "false")); }
+    public static boolean simPermitted(android.content.Context c) { return c.checkSelfPermission(android.Manifest.permission.SEND_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+
+    /**
+     * v3.6.2 — ask for SEND_SMS the way Android actually requires.
+     *
+     * The old code called requestPermissions() and nothing else. Once the user has denied a
+     * permission twice, Android answers that call immediately with DENIED and shows NO dialog at
+     * all, so the «اجازه دادن» button looked dead — the exact report: "pressing allow does
+     * nothing and it never takes the permission". There is no way to re-prompt in that state;
+     * the only path is the app's page in system Settings, so we detect it and offer that
+     * instead of silently doing nothing.
+     *
+     * @param a     the hosting activity (needs it for the rationale check and the callback)
+     * @param after runs after the user answers, so the screen can redraw
+     */
+    public static void askSimPermission(AppActivity a, Runnable after) {
+        if (a == null) return;
+        a.permCb = after;
+        if (simPermitted(a)) { if (after != null) after.run(); return; }
+        boolean asked = !"1".equals(Prefs.get("sms_perm_asked", ""));
+        // The rationale check is false both before the first ask and after a permanent denial;
+        // the "have we already asked" flag is what tells those two apart.
+        if (asked || a.shouldShowRequestPermissionRationale(android.Manifest.permission.SEND_SMS)) {
+            Prefs.set("sms_perm_asked", "1");
+            a.requestPermissions(new String[]{android.Manifest.permission.SEND_SMS,
+                                              android.Manifest.permission.READ_PHONE_STATE}, 9);
+            return;
+        }
+        Ui.toast("اجازهٔ پیامک قبلاً رد شده — آن را در تنظیمات برنامه فعال کنید");
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", a.getPackageName(), null));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            a.startActivity(i);
+        } catch (Exception ignore) { Ui.toast("تنظیمات برنامه باز نشد"); }
+    }
+    /** [subId, label, number] for every active SIM (needs READ_PHONE_STATE for names; falls back to slot numbers). */
+    public static java.util.List<String[]> sims(android.content.Context c) {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        try {
+            android.telephony.SubscriptionManager sm = (android.telephony.SubscriptionManager) c.getSystemService(android.content.Context.TELEPHONY_SUBSCRIPTION_SERVICE);
+            java.util.List<android.telephony.SubscriptionInfo> l = sm == null ? null : sm.getActiveSubscriptionInfoList();
+            if (l != null) for (android.telephony.SubscriptionInfo si : l) out.add(new String[]{String.valueOf(si.getSubscriptionId()), "سیم‌کارت " + Ui.fa(String.valueOf(si.getSimSlotIndex() + 1)) + (si.getCarrierName() == null ? "" : " · " + si.getCarrierName()), si.getNumber() == null ? "" : si.getNumber()});
+        } catch (Exception ignore) {}
+        if (out.isEmpty()) out.add(new String[]{"-1", "سیم‌کارت پیش‌فرض گوشی", ""});
+        return out;
+    }
+    public static String simLabel(android.content.Context c) { String id = get("sms.sim.sub_id", "-1"); for (String[] s : sims(c)) if (s[0].equals(id)) return s[1]; return "سیم‌کارت پیش‌فرض گوشی"; }
+    /** Send through the carrier network of the chosen SIM. Long Persian texts are split into a multipart message automatically. */
+    static String sendViaSim(String phone, String text) throws Exception {
+        android.content.Context c = Ui.ctx; if (c == null) throw new Exception("برنامه آماده نیست");
+        if (!simPermitted(c)) throw new Exception("اجازهٔ ارسال پیامک داده نشده — در تنظیمات → پیامک اجازه بدهید");
+        int sub = -1; try { sub = Integer.parseInt(get("sms.sim.sub_id", "-1")); } catch (Exception ignore) {}
+        android.telephony.SmsManager sm = sub >= 0 ? android.telephony.SmsManager.getSmsManagerForSubscriptionId(sub) : android.telephony.SmsManager.getDefault();
+        String to = phone.startsWith("0") || phone.startsWith("+") ? phone : "0" + phone;
+        java.util.ArrayList<String> parts = sm.divideMessage(text);
+        if (parts.size() == 1) sm.sendTextMessage(to, null, text, null, null); else sm.sendMultipartTextMessage(to, null, parts, null, null);
+        return "sim:" + sub + ":" + parts.size();
+    }
+    public static boolean configured() {
+        if (simEnabled()) return true; String p = get("sms.provider", ""); if ("melipayamak".equals(p)) return !get("sms.username", "").isEmpty() && !get("sms.password", "").isEmpty() && ("pattern".equals(get("sms.melipayamak_mode", "line")) ? !get("sms.melipayamak_body_id", "").isEmpty() : !get("sms.sender", "").isEmpty()); if ("kavenegar".equals(p)) return !get("sms.api_key", "").isEmpty(); return false; }
+    public static boolean sendInvoiceOn() { return !"false".equals(get("sms.send_invoice", "true")); }
+    /** which side texts the customer for this sale. */
+    public static boolean phoneShouldSend() { return simEnabled() || Api.standalone() || (!Api.online && "true".equals(get("sms.phone_fallback", "false"))); }
+
+    public static String renderInvoice(String invoiceNo, double amount) {
+        JSONObject inv = Local.one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", invoiceNo);
+        if (inv == null) throw new IllegalStateException("فاکتور ذخیره‌شده یافت نشد");
+        String store = Prefs.get("store_name", "فروشگاه").trim();
+        if (store.isEmpty()) store = "فروشگاه";
+        StringBuilder text = new StringBuilder(store).append("\nفاکتور ").append(invoiceNo)
+            .append("\nواحد مبالغ: ").append(Ui.currencyLabel);
+        int n = 0;
+        for (JSONObject it : Local.rows("SELECT * FROM invoice_items WHERE inv=? ORDER BY id", inv.optLong("id"))) {
+            JSONObject product = Db.productById(it.optLong("product_id"));
+            text.append("\n").append(++n).append(". ").append(product == null ? "کالا " + it.optLong("product_id") : product.optString("name"))
+                .append("\nتعداد ").append(Ui.num(it.optDouble("qty")))
+                .append(" × قیمت واحد ").append(Ui.num(it.optDouble("unit_sell_price")))
+                .append("\nتخفیف ").append(Ui.num(it.optDouble("discount")))
+                .append(" | جمع ").append(Ui.num(it.optDouble("subtotal")));
+        }
+        text.append("\nجمع پیش از تخفیف: ").append(Ui.num(inv.optDouble("subtotal")))
+            .append("\nتخفیف کل: ").append(Ui.num(inv.optDouble("discount")))
+            .append("\nمالیات: ").append(Ui.num(inv.optDouble("tax")))
+            .append("\nمبلغ نهایی: ").append(Ui.num(inv.optDouble("total"))).append(" ").append(Ui.currencyLabel)
+            .append("\nاز خرید شما سپاسگزاریم\n").append(store);
+        return text.toString();
+    }
+
+    /* ---------------- queue ---------------- */
+    public static JSONArray queue() { try { String j = Db.kv("sms_queue"); return j == null ? new JSONArray() : new JSONArray(j); } catch (Exception e) { return new JSONArray(); } }
+    static void save(JSONArray q) { Db.kv("sms_queue", q.toString()); }
+    /** v3.3: number of not-yet-sent messages (cheap; the queue is capped, but never parse it on the dashboard path if empty). */
+    public static int pendingCount() { try { String j = Db.kv("sms_queue"); if (j == null || j.length() < 3) return 0; JSONArray q = new JSONArray(j); int n = 0; for (int i = 0; i < q.length(); i++) if (!"SENT".equals(q.optJSONObject(i).optString("status"))) n++; return n; } catch (Exception e) { return 0; } }
+    public static void enqueue(String phone, String text, String ref) {
+        if (phone == null || phone.trim().isEmpty()) return;
+        JSONArray q = queue(); try { JSONObject m = new JSONObject(); m.put("id", "s" + System.currentTimeMillis()); m.put("phone", Db.norm(phone.trim())); m.put("text", text); m.put("ref", ref == null ? "" : ref); m.put("status", "PENDING"); m.put("tries", 0); m.put("at", Db.now()); q.put(m); } catch (Exception ignore) {}
+        while (q.length() > 300) q.remove(0);
+        save(q);
+    }
+    /** queue + try to deliver right now (never on the UI thread). */
+    public static void enqueueAndSend(String phone, String text, String ref) { enqueue(phone, text, ref); Api.bg(SmsLocal::flush); }
+
+    public static synchronized int flush() {
+        if (!configured()) return 0;
+        JSONArray q = queue(); int sent = 0; boolean dirty = false;
+        for (int i = 0; i < q.length(); i++) {
+            JSONObject m = q.optJSONObject(i); if (!"PENDING".equals(m.optString("status")) && !"RETRY".equals(m.optString("status"))) continue;
+            try { String resp = send(m.optString("phone"), m.optString("text")); m.put("status", "SENT"); m.put("sent_at", Db.now()); m.put("response", resp); sent++; }
+            catch (Exception e) { try { int tr = m.optInt("tries") + 1; m.put("tries", tr); m.put("error", String.valueOf(e.getMessage())); m.put("status", tr >= 5 ? "FAILED" : "RETRY"); } catch (Exception ignore) {} }
+            dirty = true;
+        }
+        if (dirty) save(q);
+        return sent;
+    }
+    public static void retry(String id) { JSONArray q = queue(); for (int i = 0; i < q.length(); i++) if (q.optJSONObject(i).optString("id").equals(id)) { try { q.optJSONObject(i).put("status", "PENDING"); q.optJSONObject(i).put("tries", 0); } catch (Exception ignore) {} } save(q); Api.bg(SmsLocal::flush); }
+
+    /* ---------------- providers (identical wire format to the PC) ---------------- */
+    public static String send(String phone, String text) throws Exception {
+        String p = get("sms.provider", "");
+        if (simEnabled()) return sendViaSim(phone, text);
+        if ("melipayamak".equals(p)) return melipayamak(phone, text);
+        if ("kavenegar".equals(p)) return kavenegar(phone, text);
+        throw new Exception("سرویس پیامک انتخاب نشده");
+    }
+    static final String MELI = "https://rest.payamak-panel.com/api/SendSMS";
+    static String melipayamak(String phone, String text) throws Exception {
+        String mode = get("sms.melipayamak_mode", "line");
+        StringBuilder form = new StringBuilder("username=" + enc(get("sms.username", "")) + "&password=" + enc(get("sms.password", "")));
+        String method;
+        if ("pattern".equals(mode)) { StringBuilder vars = new StringBuilder(); for (String part : text.split("\n")) { if (part.trim().isEmpty()) continue; if (vars.length() > 0) vars.append(';'); vars.append(part.trim()); } method = "BaseServiceNumber"; form.append("&text=").append(enc(vars.toString())).append("&to=").append(enc(phone)).append("&bodyId=").append(enc(get("sms.melipayamak_body_id", ""))); }
+        else { method = "SendSMS"; form.append("&to=").append(enc(phone)).append("&from=").append(enc(get("sms.sender", ""))).append("&text=").append(enc(text)).append("&isFlash=false"); }
+        String body = http("POST", MELI + "/" + method, form.toString().getBytes(StandardCharsets.UTF_8), "application/x-www-form-urlencoded");
+        JSONObject j = new JSONObject(body); int ret = j.optInt("RetStatus", -1);
+        if (ret != 1) throw new Exception(meliError(ret, j));
+        return body;
+    }
+    public static String melipayamakCredit() throws Exception {
+        String form = "username=" + enc(get("sms.username", "")) + "&password=" + enc(get("sms.password", ""));
+        JSONObject j = new JSONObject(http("POST", MELI + "/GetCredit", form.getBytes(StandardCharsets.UTF_8), "application/x-www-form-urlencoded"));
+        if (j.optInt("RetStatus", -1) != 1) throw new Exception(meliError(j.optInt("RetStatus", -1), j));
+        return j.optString("Value");
+    }
+    static String meliError(int code, JSONObject j) {
+        switch (code) { case 0: return "نام کاربری یا رمز وب‌سرویس اشتباه است"; case 2: return "اعتبار پنل کافی نیست"; case 3: return "محدودیت روزانه ارسال"; case 4: return "محدودیت حجم ارسال"; case 5: return "شمارهٔ فرستنده معتبر نیست"; case 6: return "سامانهٔ ملی‌پیامک در حال به‌روزرسانی است"; case 7: return "متن شامل کلمهٔ فیلترشده است"; case 9: return "ارسال از خط عمومی مجاز نیست (خط اختصاصی یا حالت الگو)"; case 10: return "کاربر وب‌سرویس فعال نیست"; case 11: return "ارسال نشد"; case 12: return "مدارک کاربر کامل نیست"; case 14: return "الگو تأیید نشده یا bodyId اشتباه است"; default: return "خطای ملی‌پیامک " + code + " " + j.optString("StrRetStatus", ""); }
+    }
+    static String kavenegar(String phone, String text) throws Exception {
+        String body = http("GET", "https://api.kavenegar.com/v1/" + enc(get("sms.api_key", "")) + "/sms/send.json?receptor=" + enc(phone) + "&message=" + enc(text), null, null);
+        JSONObject j = new JSONObject(body); JSONObject r = j.optJSONObject("return"); if (r != null && r.optInt("status") != 200) throw new Exception("کاوه‌نگار: " + r.optString("message"));
+        return body;
+    }
+    static String enc(String s) throws Exception { return java.net.URLEncoder.encode(s == null ? "" : s, "UTF-8"); }
+    static String http(String method, String url, byte[] body, String ctype) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            c.setConnectTimeout(10000); c.setReadTimeout(20000); c.setRequestMethod(method);
+            if (body != null) { c.setDoOutput(true); c.setRequestProperty("Content-Type", ctype); try (OutputStream os = c.getOutputStream()) { os.write(body); } }
+            int code = c.getResponseCode(); java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n; while (in != null && (n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            String txt = bo.toString("UTF-8"); if (code >= 400) throw new Exception("HTTP " + code + " " + txt.substring(0, Math.min(120, txt.length())));
+            return txt;
+        } finally { c.disconnect(); }
+    }
+
+    /* ---------------- v2.8: PC outbox → this phone's SIM ---------------- */
+    /** When the PC's SMS provider is «phone» and this device is the designated sender, fetch PENDING messages, send them from the SIM and report back. */
+    public static synchronized int relayPcOutbox() {
+        if (!simEnabled() || Api.standalone() || !Api.online) return 0; int sent = 0;
+        try {
+            Object r = Api.call("GET", "/sms/outbox?device_id=" + Api.q(Prefs.deviceIdStatic()), null, null);
+            JSONArray rows = r instanceof JSONArray ? (JSONArray) r : ((JSONObject) r).optJSONArray("messages"); if (rows == null) return 0;
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject m = rows.optJSONObject(i); JSONObject rep = new JSONObject(); rep.put("id", m.optLong("id"));
+                try { rep.put("response", sendViaSim(m.optString("phone"), m.optString("text"))); rep.put("status", "SENT"); sent++; }
+                catch (Exception e) { rep.put("status", "RETRYING"); rep.put("error", String.valueOf(e.getMessage())); }
+                try { Api.call("POST", "/sms/outbox/report", rep.toString(), "application/json"); } catch (Exception ignore) {}
+            }
+        } catch (Exception ignore) {}
+        return sent;
+    }
+
+    /** the same 8-step tutorial the PC shows (routers/sms.py:guide), for offline phones. */
+    public static final String[][] GUIDE = {
+        {"۱. ثبت‌نام در ملی‌پیامک", "در melipayamak.com ثبت‌نام کنید (موبایل + کد ملی؛ احراز هویت الزامی است) و وارد «پنل کاربری» شوید."},
+        {"۲. انتخاب نوع خط", "• خط خدماتی اشتراکی + الگو (پیشنهاد ما): بدون خرید خط، به شماره‌های مسدودِ تبلیغات هم می‌رسد. پنل → «ارسال الگو (پترن)» → «ایجاد الگوی جدید».\n• خط اختصاصی: از «خطوط» خط بخرید و شمارهٔ آن را در «شمارهٔ خط ارسال» بنویسید."},
+        {"۳. ساخت الگو (حالت الگو)", "متن را با متغیرهای ترتیبی بنویسید، مثلاً:\nفروشگاه {0} | فاکتور {1} | مبلغ {2} تومان\nاز خرید شما سپاسگزاریم\nپس از تأیید، «کد الگو (bodyId)» را در «شناسهٔ الگو» وارد کنید. تعداد خط‌های الگوی داخل برنامه باید با متغیرها یکی باشد."},
+        {"۴. کاربر وب‌سرویس", "پنل → «تنظیمات» → «وب‌سرویس» → «ایجاد نام کاربری وب‌سرویس». نام کاربری و رمزِ وب‌سرویس (نه رمز ورود پنل) را این‌جا وارد کنید."},
+        {"۵. شارژ اعتبار", "از «افزایش اعتبار» شارژ کنید؛ بدون اعتبار خطای «اعتبار کافی نیست» می‌گیرید."},
+        {"۶. تنظیم در برنامه", "سرویس = ملی‌پیامک، حالت = الگو یا خط، مقادیر را ذخیره کنید و «تست اتصال» را بزنید (اعتبار پنل را نشان می‌دهد)."},
+        {"۷. پیامک خودکار فاکتور", "«ارسال پیامک فاکتور» روشن باشد؛ مستقل از چاپ رسید است. به محض تأیید فاکتور برای مشتریِ دارای شمارهٔ موبایل ارسال می‌شود (مشتری آزاد = بدون پیامک)."},
+        {"۸. کاوه‌نگار (جایگزین)", "panel.kavenegar.com → تنظیمات → API Key را کپی کنید؛ سرویس = کاوه‌نگار و کلید را وارد کنید."},
+    };
+}

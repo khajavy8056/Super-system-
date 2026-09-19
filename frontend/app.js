@@ -1,20 +1,40 @@
 /* Supermarket System — Web Panel (vanilla JS SPA) */
 const $ = (sel) => document.querySelector(sel);
-const API = "/api";
+/* v1.9: on the Android app the same panel talks to the paired shop PC
+ * (window.SM_SERVER is set by index.html from the pairing); in a browser it stays relative. */
+const API = (window.SM_SERVER || "") + "/api";
 
 const state = {
-  token: localStorage.getItem("token") || "",
+  token: localStorage.getItem("token") || localStorage.getItem("m_token") || "",   // m_token = phone pairing token
   user: null,
   view: "dashboard",
   kiosk: localStorage.getItem("kiosk") === "1",
   kioskShortcut: "Ctrl+Shift+L",
+  currency: { code: "IRT", label: "تومان" },
+  units: [],
 };
 
 /* ---------- helpers ---------- */
-const fmt = (n) => Number(n || 0).toLocaleString("en-US");
-const money = (n) => fmt(n) + " ریال";
+const fmt = (n) => {
+  const v = Number(n || 0);
+  return (Math.abs(v) < 1000 && v % 1 !== 0)
+    ? v.toLocaleString("en-US", { maximumFractionDigits: 3 })
+    : Math.round(v).toLocaleString("en-US");
+};
+/* Currency label comes from the server: amounts are STORED in the configured
+   base unit, the UI only labels them (§39 — no silent rial/toman conversion). */
+const money = (n) => fmt(n) + " " + (state.currency ? state.currency.label : "");
+/* Quantity formatter — keeps 12.5 kg readable and 3 pcs clean (§25) */
+const qty = (n) => {
+  const v = Number(n || 0);
+  return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(3)));
+};
 
+/* v1.3: Jalali helpers live in jalali.js (loaded before this file). Guard so a
+ * stale service-worker shell that lacks it degrades to ISO dates, not a crash. */
+window.Jalali = window.Jalali || { attachAll() {}, attach(i) { return i; }, fromIso: (x) => (x || ""), toIso: (x) => x, todayIso: () => new Date().toISOString().slice(0, 10) };
 function toast(msg, kind = "ok") {
+  if (window.Sfx) Sfx.play(kind !== "ok" ? "error" : "note");
   const el = $("#toast");
   el.textContent = msg;
   el.className = "toast " + (kind === "ok" ? "ok" : "err");
@@ -24,7 +44,8 @@ function toast(msg, kind = "ok") {
 }
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const headers = { ...(opts.headers || {}) };
+  if (!(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
   const res = await fetch(API + path, { ...opts, headers });
   if (res.status === 204) return null;
@@ -33,9 +54,29 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const detail = body && body.detail;
     const msg = typeof detail === "object" ? (detail.message || detail.code || JSON.stringify(detail)) : (detail || res.statusText);
-    throw new Error(msg);
+    if (res.status === 402 && window.Onboarding && !window._licPrompt) {  // v1.5 licence gate
+      window._licPrompt = true;
+      fetch(API + "/setup/license").then((r) => r.json()).then((l) => Onboarding.licenseScreen(l, () => { window._licPrompt = false; Onboarding.closeOverlay(); location.reload(); })).catch(() => { window._licPrompt = false; });
+    }
+    const err = new Error(msg); err.status = res.status; err.code = typeof detail === "object" ? detail.code : undefined;
+    throw err;
   }
   return body;
+}
+
+/* Timestamps arrive as naive UTC ISO strings. Append the Z so the browser does
+ * not silently read them as local time, then render in the Jalali calendar.
+ * A missing/NULL timestamp must show "—", never epoch-ish 1348/10/11. */
+function faDateTime(iso, withTime = true) {
+  if (!iso) return "—";
+  const s = String(iso);
+  const d = new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z");
+  if (isNaN(d)) return "—";
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit", timeZone: (state.time && state.time.timezone) || "Asia/Tehran" };
+  if (withTime) { opts.hour = "2-digit"; opts.minute = "2-digit"; }
+  try {
+    return new Intl.DateTimeFormat("fa-IR-u-ca-persian", opts).format(d);
+  } catch (e) { return d.toLocaleString("fa-IR"); }
 }
 
 function openModal(html) {
@@ -81,8 +122,14 @@ $("#login-form").addEventListener("submit", async (e) => {
     localStorage.setItem("token", state.token);
     const me = await api("/auth/me");
     state.user = me;
+    if (window.Onboarding) await Onboarding.afterLogin();   // v1.5: licence recheck + loading
+    await loadRuntimeConfig();
     showApp();
     buildNav();
+    await applyTheme();
+    startStatusBar();
+    if (window.Onboarding) Onboarding.alertsStack();
+    if (window.Sfx) Sfx.play("welcome");
     if (state.kiosk) enterKiosk(); else go("dashboard");
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -90,29 +137,136 @@ $("#login-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#logout").addEventListener("click", () => {
+function doLogout() {
   localStorage.removeItem("token");
   state.token = ""; state.user = null;
   showLogin();
-});
+}
+$("#logout").addEventListener("click", () => exitPrompt());
+
+/* v1.6 — Exit button: "خروج از حساب" (back to login) or "بستن برنامه"
+ * (backup → save → close). The desktop launcher really exits the process
+ * (POST /system/shutdown); a browser tab shows the same loading and returns
+ * to the login screen when the backup is done. */
+function exitPrompt() {
+  openModal(`<h3>خروج</h3>
+    <p class="muted">قبل از بستن برنامه، یک نسخهٔ پشتیبان از اطلاعات گرفته می‌شود.</p>
+    <div class="grid grid-2" style="gap:10px;margin-top:12px">
+      <button class="btn" id="exit-logout">خروج از حساب کاربری</button>
+      <button class="btn btn-danger" id="exit-app">بستن برنامه (با پشتیبان‌گیری)</button>
+    </div>`);
+  $("#exit-logout").onclick = () => { closeModal(); doLogout(); };
+  $("#exit-app").onclick = () => { closeModal(); exitWithBackup(); };
+}
+window.exitPrompt = exitPrompt;
+
+async function exitWithBackup() {
+  const o = document.createElement("div");
+  o.className = "ob-overlay ob-exit"; o.id = "exit-overlay";
+  o.innerHTML = `<div class="ob-load ob-anim">
+      <img class="ob-logo" src="${(state.store && state.store.logo_path) || "/icons/logo.svg"}" alt="" />
+      <h1>در حال بستن برنامه</h1>
+      <p class="muted" id="exit-sub">ذخیرهٔ اطلاعات و تهیهٔ نسخهٔ پشتیبان…</p>
+      <div class="ob-ring"><svg viewBox="0 0 120 120"><circle class="bg" cx="60" cy="60" r="52"/><circle class="fg" id="exit-ring" cx="60" cy="60" r="52"/></svg><div class="ob-ring-txt"><b id="exit-pct">۰٪</b><span>لطفاً صبر کنید</span></div></div>
+      <ul class="ob-phases" id="exit-phases">${["ذخیرهٔ فاکتورهای باز", "پشتیبان‌گیری از پایگاه‌داده", "بستن اتصال‌ها", "خداحافظ"].map((t, i) => `<li data-i="${i}"><i></i><span>${t}</span><em></em></li>`).join("")}</ul>
+    </div>`;
+  document.body.append(o);
+  const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  const ring = $("#exit-ring"), C = 2 * Math.PI * 52; ring.style.strokeDasharray = C; ring.style.strokeDashoffset = C;
+  const setP = (p, ph) => { $("#exit-pct").textContent = fa(Math.round(p * 100)) + "٪"; ring.style.strokeDashoffset = C * (1 - p);
+    document.querySelectorAll("#exit-phases li").forEach((li) => { const k = +li.dataset.i; li.className = k < ph ? "done" : k === ph ? "active" : ""; li.querySelector("em").textContent = k < ph ? "✓" : ""; }); };
+  if (window.Sfx) Sfx.play("exit");
+  setP(0.1, 0);
+  try { localStorage.setItem("sm.held", JSON.stringify(heldInvoices())); } catch (_) {}
+  await new Promise((r) => setTimeout(r, 700));
+  setP(0.35, 1);
+  let res = null;
+  try { res = await api("/system/shutdown", { method: "POST", body: JSON.stringify({ backup: true, delay_seconds: 2.5 }) }); }
+  catch (e) { $("#exit-sub").textContent = "پشتیبان‌گیری انجام نشد: " + e.message; }
+  setP(0.7, 2);
+  await new Promise((r) => setTimeout(r, 900));
+  setP(1, 3);
+  $("#exit-sub").textContent = res && res.backup ? "نسخهٔ پشتیبان ذخیره شد" : "آماده";
+  await new Promise((r) => setTimeout(r, 900));
+  if (res && res.exiting) {
+    $("#exit-sub").textContent = "برنامه بسته می‌شود…";
+    try { window.close(); } catch (_) {}
+    return;
+  }
+  o.remove();
+  doLogout();
+}
+window.exitWithBackup = exitWithBackup;
+
+/* v1.6 — full-screen toggle (F11 also works in most browsers/WebView2). */
+function toggleFullscreen() {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => toast("مرورگر اجازهٔ تمام‌صفحه نداد", "err"));
+  else document.exitFullscreen().catch(() => {});
+}
+window.toggleFullscreen = toggleFullscreen;
+// v2.5 — the Windows panel is a kiosk: F11 / Esc must not drop it out of full screen.
+// (The native window is opened full-screen & frameless by the launcher; this only guards the web layer.)
+document.addEventListener("keydown", (e) => { if (e.key === "F11" || (e.key === "Escape" && document.fullscreenElement && !document.querySelector(".modal.open,.sheet.open,dialog[open]"))) { e.preventDefault(); e.stopPropagation(); } }, true);
+document.addEventListener("fullscreenchange", () => { const b = $("#sb-full"); if (b) b.textContent = document.fullscreenElement ? "⤡" : "⤢"; });
+
 
 /* ---------- security helpers ---------- */
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /* ---------- navigation (permission-aware) ---------- */
+/* ---------------------------------------------------------------------------
+ * Inline SVG icon set (shared vocabulary with the mobile app). Emoji were
+ * replaced because they render as empty boxes on Windows POS machines without
+ * an emoji font, and look consumer-grade on a commercial till.
+ * ------------------------------------------------------------------------ */
+const ICONS = {
+  dashboard: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>',
+  pos: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/>',
+  box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+  inbox: '<path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M4 13 6.5 5h11L20 13v6H4z"/>',
+  warehouse: '<path d="M3 21V9l9-5 9 5v12"/><path d="M8 21v-7h8v7"/>',
+  invoice: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+  user: '<circle cx="12" cy="8" r="3.6"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/>',
+  gift: '<rect x="3" y="9" width="18" height="12" rx="1.5"/><path d="M3 13h18M12 9v12"/><path d="M12 9C10 9 8 8 8 6.5S9.5 4 12 9zM12 9c2 0 4-1 4-2.5S14.5 4 12 9z"/>',
+  chart: '<path d="M4 20V4"/><path d="M4 20h16"/><path d="M8 16v-5M12 16V7M16 16v-8"/>',
+  printer: '<path d="M7 8V3h10v5"/><rect x="3" y="8" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M2 20c0-3.3 3-5.6 7-5.6s7 2.3 7 5.6"/><path d="M17 8.5a3 3 0 1 0 0-1M18 20c0-2.6-1-4.3-2.5-5.2"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
+  stethoscope: '<path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M6 3H4M14 3h2"/><path d="M10 13v2a5 5 0 0 0 10 0v-1"/><circle cx="20" cy="12" r="2"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  lifebuoy: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M5.6 5.6l3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/>',
+  barcode: '<path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/><path d="M12 5v14" stroke-width="2.6"/>',
+  scanner: '<path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3"/><path d="M7 12h10"/>',
+  ledger: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
+  cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 9h.01M18 15h.01"/>',
+  cheque: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h6M7 14h10"/>',
+  trend: '<path d="M3 17l5-6 4 4 6-8"/><path d="M14 7h4v4"/>',
+  cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.6 11h10L21 7H6"/>',
+};
+
+const icon = (name, size = 18) =>
+  `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
+     stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+
 const NAV = [
-  ["dashboard", "📊 داشبورد", "reports.view"],
-  ["pos", "🧾 صندوق (POS)", "pos.sell"],
-  ["products", "📦 کالاها", "products.view"],
-  ["batches", "📥 ورود کالا", "batches.manage"],
-  ["inventory", "🏬 انبار و انبارگردانی", "inventory.view"],
-  ["invoices", "🧮 فاکتورها", "reports.view"],
-  ["reports", "📈 گزارش‌ها", "reports.view"],
-  ["hardware", "🖨️ سخت‌افزار", "settings.manage"],
-  ["users", "👥 کاربران", "users.manage"],
-  ["settings", "⚙️ تنظیمات", "settings.manage"],
-  ["audit", "🕵️ لاگ‌ها", "audit.view"],
+  ["dashboard", "داشبورد", "reports.view", "dashboard"],
+  ["pos", "صندوق (POS)", "pos.sell", "pos"],
+  ["products", "کالاها", "products.view", "box"],
+  ["batches", "ورود کالا", "batches.manage", "inbox"],
+  ["inventory", "انبار و انبارگردانی", "inventory.view", "warehouse"],
+  ["invoices", "فاکتورها", "reports.view", "invoice"],
+  ["customers", "مشتریان", "pos.sell", "user"],
+  ["marketing", "جشنواره و کوپن", "reports.view", "gift"],
+  ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["accounting", "حسابداری", "accounting.view", "ledger"],
+  ["hardware", "سخت‌افزار", "settings.manage", "printer"],
+  ["users", "کاربران", "users.manage", "users"],
+  ["settings", "تنظیمات", "settings.manage", "gear"],
+  ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
+  ["support", "درخواست پشتیبانی", "pos.sell", "lifebuoy"],
+  ["audit", "لاگ‌ها", "audit.view", "shield"],
 ];
 
 function can(perm) {
@@ -120,13 +274,26 @@ function can(perm) {
   return (state.user.permissions || []).includes(perm);
 }
 
+/* v2.9 — sidebar grouped into sections (icon badge + label), like a premium back-office. */
+const NAV_GROUPS = [
+  ["فروش", ["pos", "customers", "invoices"]],
+  ["کالا و انبار", ["products", "batches", "inventory"]],
+  ["رشد و تحلیل", ["dashboard", "marketing", "reports", "accounting"]],
+  ["سامانه", ["hardware", "users", "settings", "diagnostics", "support", "audit"]],
+];
 function buildNav() {
   const nav = $("#nav");
   nav.innerHTML = "";
-  NAV.forEach(([key, label, perm]) => {
-    if (!can(perm)) return;
-    nav.append(el("button", { class: "nav-item" + (state.view === key ? " active" : ""),
-      onclick: () => go(key), text: label }));
+  const byKey = Object.fromEntries(NAV.map((n) => [n[0], n]));
+  NAV_GROUPS.forEach(([title, keys]) => {
+    const items = keys.map((k) => byKey[k]).filter((n) => n && can(n[2]));
+    if (!items.length) return;
+    const h = el("div", { class: "nav-sec" }); h.textContent = title; nav.append(h);
+    items.forEach(([key, label, perm, ico]) => {
+      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), onclick: () => go(key) });
+      btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
+      nav.append(btn);
+    });
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
 }
@@ -138,9 +305,12 @@ async function go(view) {
   $("#view-title").textContent = titles[view] || view;
   $("#topbar-actions").innerHTML = "";
   const viewEl = $("#view");
+  viewEl.className = "view view-" + view;
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
     await RENDER[view]();
+    Jalali.attachAll(viewEl);
+    if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
     viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${err.message}</p></div>`;
   }
@@ -152,22 +322,109 @@ const RENDER = {};
 RENDER.dashboard = async () => {
   const d = await api("/reports/dashboard");
   const v = $("#view");
-  v.innerHTML = "";
-  v.append(
-    el("div", { class: "grid grid-4" },
-      statCard("فروش امروز", money(d.sales.today), `${d.sales.invoice_count_today} فاکتور`),
-      statCard("فروش دیروز", money(d.sales.yesterday), ""),
-      statCard("فروش ماه", money(d.sales.month), `میانگین فاکتور: ${money(d.sales.avg_invoice_today)}`),
-      statCard("سود امروز", money(d.profit.today), `سود ماه: ${money(d.profit.month)}`),
-      statCard("ارزش موجودی", money(d.inventory.value), `${d.inventory.product_count} کالا`),
-      statCard("کم‌موجودی", d.inventory.low_stock_count, `${d.inventory.no_stock_count} بدون موجودی`),
-    ),
-    el("div", { class: "grid grid-2", style: "margin-top:14px" },
-      expiryCard("انقضا", d.expiry),
-      priceCard("تعارض قیمت (قدیم/جدید)", d.pricing),
-    ),
-  );
+  const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
+  const delta = d.sales.yesterday ? Math.round((d.sales.today - d.sales.yesterday) / d.sales.yesterday * 100) : (d.sales.today ? 100 : 0);
+  const monthTarget = Math.max(d.sales.month, d.sales.today * 30, 1);
+  const gaugePct = Math.min(100, Math.round(d.sales.today / (monthTarget / 30) * 100)) || 0;
+  const acc = d.accounting || {};
+  v.innerHTML = `
+    <div id="dash-alarms"></div>
+    <div class="dash">
+      <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
+      <section class="dcard dcard-gauge">
+        <h3>${icon("trend", 18)} فروش امروز</h3>
+        <div class="gauge" style="--p:${gaugePct}">
+          <svg viewBox="0 0 120 120"><defs><linearGradient id="gg" x1="0" x2="1"><stop offset="0" stop-color="#3dd6c4"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs>
+            <circle class="gauge-bg" cx="60" cy="60" r="50"/><circle class="gauge-fg" cx="60" cy="60" r="50" pathLength="100"/></svg>
+          <div class="gauge-c"><b>${fmt(d.sales.today)}</b><span>${esc(state.currency.label)}</span></div>
+        </div>
+        <div class="gauge-foot"><span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪ نسبت به دیروز</span><span class="muted">${fa(d.sales.invoice_count_today)} فاکتور · میانگین ${money(d.sales.avg_invoice_today)}</span></div>
+      </section>
+
+      <section class="dcard dcard-top">
+        <h3>${icon("box", 18)} پرفروش‌ترین کالاها <span class="muted">۳۰ روز</span></h3>
+        <div class="toplist">${(d.top_products || []).map((t, i) => `
+          <div class="topitem">
+            <div class="ring ring-sm" style="--p:${t.share_pct};--c:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"><span>${fa(Math.round(t.share_pct))}٪</span></div>
+            <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش · سود ${money(t.profit)}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
+            ${t.image_url ? `<img class="thumb" src="${esc(t.image_url)}" alt="" />` : `<span class="thumb thumb-empty">${icon("box", 20)}</span>`}
+          </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
+      </section>
+
+      <section class="dcard dcard-low">
+        <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
+        <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
+          ${d.inventory.no_stock_count ? `<div class="lowrow err"><span>بدون موجودی</span><b>${fa(d.inventory.no_stock_count)}</b></div>` : ""}</div>
+      </section>
+
+      <section class="dcard dcard-trend">
+        <h3>${icon("chart", 18)} روند فروش و سود <span class="muted">۷ روز اخیر</span></h3>
+        ${trendChart(d.trend || [])}
+      </section>
+
+      <section class="dcard dcard-recent">
+        <h3>${icon("invoice", 18)} تراکنش‌های اخیر</h3>
+        <table class="recent"><tbody>${(d.recent_invoices || []).map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
+      </section>
+
+      <section class="dcard dcard-quick">
+        <h3>${icon("gear", 18)} اقدام سریع</h3>
+        <div class="quick-grid">
+          ${can("products.manage") ? `<button class="qa qa-green" onclick="go('products')">${icon("box", 20)}<span>افزودن کالای جدید</span></button>` : ""}
+          ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("inbox", 20)}<span>ورود کالا</span></button>` : ""}
+          ${can("accounting.post") ? `<button class="qa qa-violet" onclick="AccountingUI.expenseModal()">${icon("cash", 20)}<span>ثبت هزینه</span></button>` : ""}
+          ${can("pos.sell") ? `<button class="qa qa-amber" onclick="go('pos')">${icon("pos", 20)}<span>صندوق فروش</span></button>` : ""}
+        </div>
+      </section>
+
+      <section class="dcard dcard-acc">
+        <h3>${icon("ledger", 18)} وضعیت مالی</h3>
+        <div class="acc-mini">
+          <div><span class="muted">صندوق</span><b>${money(acc.cash)}</b></div>
+          <div><span class="muted">بانک + کارت‌خوان</span><b>${money((acc.bank || 0) + (acc.card || 0))}</b></div>
+          <div><span class="muted">طلب از مشتریان</span><b class="amber">${money(acc.receivables)}</b></div>
+          <div><span class="muted">بدهی به تأمین‌کنندگان</span><b class="err">${money(acc.payables)}</b></div>
+          <div class="span2"><span class="muted">سود خالص این ماه</span><b class="${(acc.month_net_profit || 0) >= 0 ? "ok" : "err"}">${money(acc.month_net_profit)}</b></div>
+        </div>
+        ${acc.cheques_due ? `<div class="muted" style="margin-top:8px">${fa(acc.cheques_due)} چک در جریان</div>` : ""}
+      </section>
+
+      <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
+      <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
+      <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
+      <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
+      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
+    </div>`;
+  renderStocktakeAlarms("#dash-alarms");
+  if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
 };
+
+/* Smooth SVG area chart: sales + profit for the last N days. */
+function trendChart(rows) {
+  if (!rows.length) return `<div class="muted">داده‌ای نیست</div>`;
+  const W = 640, H = 200, P = 28, PL = 62;
+  const max = Math.max(1, ...rows.map((r) => r.sales));
+  const x = (i) => PL + (i * (W - PL - P)) / Math.max(1, rows.length - 1);
+  const y = (v) => H - P - (v / max) * (H - 2 * P);
+  const path = (key) => {
+    const pts = rows.map((r, i) => [x(i), y(r[key])]);
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+      const cx = (x0 + x1) / 2;
+      d += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+    }
+    return d;
+  };
+  const area = `${path("sales")} L ${x(rows.length - 1)} ${H - P} L ${x(0)} ${H - P} Z`;
+  const grid = [0, .25, .5, .75, 1].map((f) => `<line x1="${PL}" x2="${W - P}" y1="${y(max * f)}" y2="${y(max * f)}"/><text x="${PL - 8}" y="${y(max * f) + 4}" text-anchor="end">${fmt(max * f)}</text>`).join("");
+  const labels = rows.map((r, i) => `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${r.label}</text>`).join("");
+  const dots = rows.map((r, i) => `<circle cx="${x(i)}" cy="${y(r.sales)}" r="3.5"><title>${r.label}: ${fmt(r.sales)}</title></circle>`).join("");
+  return `<svg class="trend" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="ta" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3dd6c4" stop-opacity=".45"/><stop offset="1" stop-color="#3dd6c4" stop-opacity="0"/></linearGradient></defs>
+    <g class="grid">${grid}</g><path class="area" d="${area}"/><path class="line sales" d="${path("sales")}"/><path class="line profit" d="${path("profit")}"/><g class="dots">${dots}</g><g class="labels">${labels}</g></svg>
+    <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span><span><i style="background:#7c5cff"></i>سود</span></div>`;
+}
 
 function statCard(label, value, sub) {
   return el("div", { class: "card stat" },
@@ -206,41 +463,181 @@ function priceCard(title, pricing) {
 }
 
 /* ---------- POS — dedicated terminal screen (§6) + Kiosk lock (§7) ---------- */
-const posState = { cart: [], customer: null };
+function cardHtml(html) {
+  const node = document.createElement("div");
+  node.className = "card dash-block";
+  node.innerHTML = html;
+  return node;
+}
+
+function receivCard(title, r) {
+  if (!r) return el("div", { class: "card" });
+  const debtors = (r.top_debtors || [])
+    .map((t) => `<li>${esc(t.name)} <b>${money(t.balance)}</b></li>`).join("");
+  return cardHtml(
+    `<h3>${esc(title)}</h3>
+     <div class="grid grid-2">
+       <div class="mini-stat"><b>${money(r.customer_debt)}</b><span>بدهی مشتریان · ${r.debtor_count} نفر</span></div>
+       <div class="mini-stat"><b>${money(r.pending_amount)}</b><span>در انتظار تسویه · ${r.pending_count} فاکتور</span></div>
+     </div>
+     ${debtors
+       ? `<ul class="compact-list" style="margin-top:10px">${debtors}</ul>`
+       : `<div class="muted" style="margin-top:10px">مطلبی ثبت نشده است</div>`}`
+  );
+}
+
+function smsCard(title, m) {
+  if (!m) return el("div", { class: "card" });
+  const badge = m.configured
+    ? `<span class="sys-pill ok">فعال: ${esc(m.provider)}</span>`
+    : `<span class="sys-pill warn">تنظیم نشده</span>`;
+  return cardHtml(
+    `<h3>${esc(title)}</h3>
+     <div>${badge}</div>
+     <div class="grid grid-3" style="margin-top:10px">
+       <div class="mini-stat"><b>${m.sent}</b><span>ارسال‌شده</span></div>
+       <div class="mini-stat"><b>${m.pending}</b><span>در صف</span></div>
+       <div class="mini-stat"><b>${m.failed}</b><span>ناموفق</span></div>
+     </div>
+     ${m.last_error ? `<div class="muted" style="margin-top:8px">آخرین خطا: ${esc(m.last_error)}</div>` : ""}`
+  );
+}
+
+function systemCard(title, sys) {
+  if (!sys) return el("div", { class: "card" });
+  const cls = sys.status === "OK" ? "ok" : "warn";
+  const hw = Object.entries(sys.hardware || {}).map(([k, v]) => {
+    const on = v === "CONNECTED";
+    return `<span class="sb-item"><i class="hw-dot" style="background:${on ? "var(--green)" : "var(--muted)"}"></i>${esc(k)}</span>`;
+  }).join(" ") || `<span class="muted">سخت‌افزاری تعریف نشده</span>`;
+  const diag = sys.last_diagnostics
+    ? `آخرین تست اتصال: ${sys.last_diagnostics.passed}/${sys.last_diagnostics.total} موفق`
+    : "تست اتصال اجرا نشده";
+  const issues = (sys.issues || []).map((i) => `<li>${esc(i)}</li>`).join("");
+  return cardHtml(
+    `<h3>${esc(title)}</h3>
+     <div><span class="sys-pill ${cls}">${sys.status === "OK" ? "سالم" : "نیازمند بررسی"}</span> <span class="muted">نسخهٔ ${esc(sys.version)}</span></div>
+     <div style="margin-top:10px">${hw}</div>
+     <div class="muted" style="margin-top:8px">${diag}${sys.disk_free_gb != null ? ` · ${sys.disk_free_gb} گیگ فضا` : ""}</div>
+     ${issues ? `<ul class="compact-list" style="margin-top:8px">${issues}</ul>` : ""}`
+  );
+}
+
+const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null };
+window.posState = posState;   // v3.0: shared with insights.js (POS whisper-suggestions)
+
+/* ---------------------------------------------------------------------------
+ * v1.6 — Parked ("held") invoices. A customer steps away → the cashier parks the
+ * open invoice (F6); it collapses into a chip on the dock UNDER the POS (no
+ * browser tabs), the next customer is served, and the chip restores it.
+ * Up to 10 at once; persisted in localStorage so a crash/exit never loses them.
+ * ------------------------------------------------------------------------ */
+const HELD_MAX = 10;
+function heldInvoices() { try { return JSON.parse(localStorage.getItem("sm.held") || "[]"); } catch (_) { return []; } }
+function saveHeld(list) { localStorage.setItem("sm.held", JSON.stringify(list.slice(0, HELD_MAX))); renderHeldDock(); }
+function posSnapshot() {
+  return { cart: JSON.parse(JSON.stringify(posState.cart)), customer: posState.customer, coupon: posState.coupon,
+           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount };
+}
+function posRestore(snap) {
+  posState.cart = snap.cart || []; posState.customer = snap.customer || null; posState.coupon = snap.coupon || null;
+  posState.couponInfo = snap.couponInfo || null; posState.invoiceDiscount = snap.invoiceDiscount || 0;
+}
+function posHold(label) {
+  if (!posState.cart.length) { toast("سبد خالی است؛ چیزی برای نگه‌داشتن نیست", "err"); return false; }
+  const list = heldInvoices();
+  if (!posState.heldId && list.length >= HELD_MAX) { toast(`حداکثر ${HELD_MAX} فاکتور همزمان قابل نگه‌داری است`, "err"); return false; }
+  const total = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+  const entry = { id: posState.heldId || ("h" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)), at: Date.now(),
+                  label: label || (posState.customer ? posState.customer.name : `مشتری ${list.length + 1}`),
+                  count: posState.cart.reduce((a, it) => a + Number(it.quantity), 0), total, snap: posSnapshot() };
+  const idx = list.findIndex((h) => h.id === entry.id);
+  if (idx >= 0) list[idx] = entry; else list.unshift(entry);
+  posState.cart = []; posState.customer = null; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; posState.heldId = null;
+  saveHeld(list);
+  renderPosCart(); if (window.Sfx) Sfx.play("hold");
+  toast(`فاکتور «${entry.label}» نگه داشته شد`);
+  const sc = $("#pos-scan"); if (sc) sc.focus();
+  return true;
+}
+window.posHold = posHold;
+window.posResume = (id) => {
+  const list = heldInvoices(); const h = list.find((x) => x.id === id); if (!h) return;
+  if (posState.cart.length && !posHold()) return;   // park the current one first so nothing is lost
+  posRestore(h.snap); posState.heldId = h.id;
+  saveHeld(heldInvoices().filter((x) => x.id !== id));
+  renderPosCart(); if (window.Sfx) Sfx.play("resume");
+  toast(`فاکتور «${h.label}» بازگردانده شد`);
+};
+window.posDropHeld = (id) => {
+  const list = heldInvoices(); const h = list.find((x) => x.id === id); if (!h) return;
+  if (!confirm(`فاکتور «${h.label}» حذف شود؟`)) return;
+  saveHeld(list.filter((x) => x.id !== id)); if (window.Sfx) Sfx.play("void");
+};
+function renderHeldDock() {
+  const dock = $("#pos-held"); if (!dock) return;
+  const list = heldInvoices();
+  const title = $("#pos-cart-title"); if (title) title.textContent = posState.heldId ? "سبد خرید (فاکتور بازگردانده‌شده)" : "سبد خرید فعلی";
+  dock.classList.remove("empty");
+  const head = `<div class="held-title">${icon("invoice", 16)} فاکتورهای نگه‌داشته‌شده <b>${list.length}</b>/${HELD_MAX}
+      <span class="muted held-hint">${list.length ? "برای بازکردن روی فاکتور بزنید" : "با «نگه‌داشتن فاکتور» (F6) فاکتور فعلی این‌جا می‌آید و با یک کلیک دوباره باز می‌شود"}</span></div>`;
+  if (!list.length) { dock.innerHTML = head; return; }
+  dock.innerHTML = head + `<div class="held-chips">${list.map((h, i) => `
+      <div class="held-chip">
+        <button class="held-main" onclick="posResume('${h.id}')" title="بازگردانی این فاکتور">
+          <b>${icon("invoice", 14)} ${esc(h.label)}</b><span class="muted">${qty(h.count)} قلم · ${money(h.total)} · ${new Date(h.at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" })}</span>
+        </button>
+        <button class="held-x" onclick="posDropHeld('${h.id}')" title="حذف">✕</button>
+      </div>`).join("")}</div>`;
+}
 
 function posGross(it) { return (it.unit_sell_price || 0) * it.quantity; }
 
 function renderPosCart() {
   const tbl = $("#pos-cart-table");
   if (!tbl) return;
+  renderHeldDock();
+  const cnt = $("#pos-cart-count"); if (cnt) cnt.textContent = `تعداد کل کالاها: ${posState.cart.reduce((a, it) => a + Number(it.quantity), 0)}`;
   if (!posState.cart.length) {
-    tbl.innerHTML = `<tbody><tr><td class="muted" style="padding:24px;text-align:center">سبد خالی است — بارکد را اسکن کنید</td></tr></tbody>`;
+    tbl.innerHTML = `<div class="cart-empty">${icon("barcode", 48)}<b>سبد خالی است</b><span class="muted">بارکد را اسکن کنید یا نام کالا را جستجو کنید</span></div>`;
   } else {
-    const showCost = can("pricing.view_cost");
-    const rows = posState.cart.map((it, idx) => `
-      <tr>
-        <td>${esc(it.product_name)}<div class="muted" style="font-size:11px">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + esc(it.expiry_date) : ""}</div></td>
-        <td class="qty"><button class="btn btn-sm" onclick="posQty(${idx},1)">+</button>
-          <input value="${it.quantity}" onchange="posQty(${idx},0,this.value)" />
-          <button class="btn btn-sm" onclick="posQty(${idx},-1)">−</button></td>
-        <td>${money(it.unit_sell_price)}</td>
-        <td>${it.discount ? "<div class=\"muted\" style=\"font-size:11px\">−" + money(it.discount) + "</div>" : ""}${money(posGross(it) - (it.discount || 0))}</td>
-        <td><button class="btn btn-sm btn-danger" onclick="posRemove(${idx})">✕</button></td>
-      </tr>`).join("");
-    tbl.innerHTML = `<thead><tr><th>کالا</th><th>تعداد</th><th>فی</th><th>جمع</th><th></th></tr></thead><tbody>${rows}</tbody>`;
+    tbl.innerHTML = posState.cart.map((it, idx) => `
+      <div class="citem">
+        ${it.image_url ? `<img class="cimg" src="${esc(it.image_url)}" alt="" />` : `<span class="cimg cimg-empty">${icon("box", 22)}</span>`}
+        <div class="cinfo">
+          <b>${esc(it.product_name)}</b>
+          <span class="muted">${esc(it.batch_number || "")}${it.expiry_date ? " · انقضا " + Jalali.fromIso(it.expiry_date) : ""}</span>
+          <span class="cmeta"><span>${qty(it.quantity)}${it.unit_symbol ? " " + esc(it.unit_symbol) : ""}</span><span class="sep">|</span><span>قیمت ${money(it.unit_sell_price)}</span>${it.discount ? `<span class="sep">|</span><span class="err">تخفیف −${money(it.discount)}</span>` : ""}</span>
+        </div>
+        <div class="cqty"><button class="qbtn" onclick="posQty(${idx},1)">+</button><input inputmode="decimal" value="${qty(it.quantity)}" onchange="posQty(${idx},0,this.value)" /><button class="qbtn" onclick="posQty(${idx},-1)">−</button></div>
+        <div class="ctotal"><b>${money(posGross(it) - (it.discount || 0))}</b><button class="cdel" onclick="posRemove(${idx})" title="حذف">✕</button></div>
+      </div>`).join("");
   }
   // totals
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
-  const count = posState.cart.reduce((a, it) => a + it.quantity, 0);
-  const showCost = can("pricing.view_cost");
-  const profit = posState.cart.reduce((a, it) => a + (posGross(it) - (it.discount || 0) - (it.unit_buy_price || 0) * it.quantity), 0);
+  const count = posState.cart.reduce((a, it) => a + Number(it.quantity), 0);
+  const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
+  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon));
+  // v1.7.1: the register never shows profit/cost (management figures live in reports)
   $("#pos-totals").innerHTML = `
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
     <div class="row"><span class="muted">جمع</span><span>${money(gross)}</span></div>
     ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
-    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc)}</span></div>
-    ${showCost ? `<div class="row"><span class="muted">سود تخمینی</span><span class="ok">${money(profit)}</span></div>` : ""}`;
+    ${invDisc ? `<div class="row"><span class="muted">تخفیف فاکتور <a href="#" onclick="posState.invoiceDiscount=0;renderPosCart();return false;" class="muted">✕</a></span><span class="err">−${money(invDisc)}</span></div>` : ""}
+    ${coupon ? `<div class="row"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>`;
+  const cpEl = $("#pos-coupon-state");
+  if (cpEl) {
+    cpEl.innerHTML = posState.couponInfo
+      ? (posState.couponInfo.ok
+          ? `<span class="badge badge-green">${icon("gift", 14)} ${esc(posState.coupon)} — ${money(posState.couponInfo.discount)}</span>
+             <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`
+          : `<span class="badge badge-red">${esc(posState.couponInfo.message || "کوپن نامعتبر")}</span>
+             <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`)
+      : `<span class="muted">بدون کوپن (F9)</span>`;
+  }
+  if (window.PosNudges) PosNudges.refresh();   // v3.0 whisper-suggestions (only when enabled in settings)
   $("#pos-customer").innerHTML = posState.customer
     ? `👤 ${esc(posState.customer.name)} ${posState.customer.phone ? "· " + esc(posState.customer.phone) : ""} <button class="btn btn-sm" onclick="posClearCustomer()">✕</button>`
     : `<span class="muted">بدون مشتری (F8)</span>`;
@@ -249,17 +646,57 @@ function renderPosCart() {
 window.posQty = (idx, delta, direct) => {
   const it = posState.cart[idx];
   if (!it) return;
-  if (delta === 0 && direct !== undefined) it.quantity = Math.max(1, parseInt(direct || "1", 10) || 1);
-  else it.quantity = Math.max(1, it.quantity + delta);
+  const u = unitById(it.unit_id);
+  const step = u && u.allow_decimal ? 0.5 : 1;
+  const min = u && u.allow_decimal ? 0.001 : 1;
+  let next;
+  if (delta === 0 && direct !== undefined) next = parseFloat(direct);
+  else next = Number(it.quantity) + delta * step;
+  if (!isFinite(next) || next <= 0) next = min;
+  if (!(u && u.allow_decimal)) next = Math.max(1, Math.round(next));
+  else next = Math.max(min, parseFloat(next.toFixed(3)));
+  if (it.available != null && next > it.available) {
+    toast(`حداکثر موجودی این بچ ${qty(it.available)} است`, "err");
+    next = it.available;
+  }
+  it.quantity = next;
   renderPosCart();
+  posRevalidateCoupon();
 };
 window.posRemove = (idx) => { posState.cart.splice(idx, 1); renderPosCart(); };
 window.posClearCustomer = () => { posState.customer = null; renderPosCart(); };
 
+/* The receipt clock must show STORE-local time (the configured timezone), not
+ * the workstation's. A till whose Windows clock/timezone is wrong would
+ * otherwise print a misleading time on every receipt. We anchor to the
+ * server's time once and tick locally from that offset. */
+let _posClockOffsetMs = null;
+
+async function syncPosClock() {
+  try {
+    const t = await api("/settings/time");
+    // offset between store-local wall clock and this machine's clock
+    _posClockOffsetMs = new Date(t.local.slice(0, 19) + "Z") - new Date(
+      new Date().toISOString().slice(0, 19) + "Z");
+    state.serverTime = t;
+  } catch (e) { _posClockOffsetMs = null; }
+}
+
 function posClock() {
   const el = $("#pos-clock");
   if (!el) return;
-  el.textContent = new Date().toLocaleTimeString("fa-IR");
+  const tick = () => {
+    const node = $("#pos-clock");
+    if (!node) { clearInterval(window._posClockTimer); return; }
+    const base = new Date(Date.now() + (_posClockOffsetMs || 0));
+    const hhmm = base.toISOString().slice(11, 19);
+    node.textContent = _posClockOffsetMs === null
+      ? new Date().toLocaleTimeString("fa-IR")
+      : hhmm.replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  };
+  syncPosClock().then(tick);
+  clearInterval(window._posClockTimer);
+  window._posClockTimer = setInterval(tick, 1000);
 }
 
 RENDER.pos = async () => {
@@ -269,85 +706,250 @@ RENDER.pos = async () => {
   $("#view").innerHTML = `
     <div class="pos-screen" id="pos-screen">
       <div class="pos-header">
-        <div class="pos-store">🏪 ${esc(cfg.store_name)}</div>
+        <div class="pos-store">${icon("cart", 20)} ${esc(cfg.store_name)}</div>
         <div class="pos-register">صندوق: ${esc(state.user ? state.user.full_name || state.user.username : "")}</div>
         <div class="pos-clock" id="pos-clock"></div>
-        <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "🔓 خروج کیوسک" : "🔒 قفل (میان‌بر)"}</button>
+        <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "خروج از قفل" : "قفل صندوق (میان‌بر)"}</button>
       </div>
       <div class="pos-main">
-        <div class="pos-cart"><table class="pos-cart-table" id="pos-cart-table"></table></div>
+        <div class="pos-cart">
+          <div class="pos-cart-head"><h3 id="pos-cart-title">سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
+          <div class="pos-cart-list" id="pos-cart-table"></div>
+          <div id="pos-receipt"></div>
+        </div>
         <div class="pos-side">
-          <input id="pos-scan" class="pos-scan" placeholder="＝ اسکن بارکد…" autocomplete="off" autofocus />
-          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
+          <div class="scan-field pos-scan-wrap">${icon("barcode", 22)}<input id="pos-scan" class="pos-scan scan-input" placeholder="اسکن بارکد یا جستجوی نام کالا…" autocomplete="off" autofocus /><span class="scan-state" id="pos-scan-state" title="بارکدخوان">${icon("scanner", 18)}</span></div>
+          <div id="pos-suggest" class="pos-suggest hidden"></div>
+          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
           <div id="pos-customer" class="pos-customer"></div>
+          <div id="pos-nudge" class="pos-nudge hidden"></div>
+          <div id="pos-coupon-state" class="pos-customer"></div>
           <div id="pos-totals" class="pos-totals"></div>
           <div class="pos-actions">
-            <button class="pos-btn pos-btn-pay" id="pos-pay">پرداخت (F2)</button>
-            <button class="pos-btn" id="pos-discount-btn">تخفیف (F4)</button>
-            <button class="pos-btn" id="pos-customer-btn">مشتری (F8)</button>
-            <button class="pos-btn pos-btn-danger" id="pos-clear-btn">خالی کردن (Esc)</button>
+            <button class="pos-btn pos-btn-pay" id="pos-pay">${icon("cash", 22)} پرداخت <span class="kbd">F2</span></button>
+            <button class="pos-btn pos-btn-blue" id="pos-customer-btn">${icon("user", 18)} مشتری <span class="kbd">F8</span></button>
+            <button class="pos-btn pos-btn-violet" id="pos-coupon-btn">${icon("gift", 18)} کوپن <span class="kbd">F9</span></button>
+            <button class="pos-btn pos-btn-amber" id="pos-discount-btn">تخفیف <span class="kbd">F4</span></button>
+            <button class="pos-btn pos-btn-hold" id="pos-hold-btn">نگه‌داشتن فاکتور <span class="kbd">F6</span></button>
+            <button class="pos-btn pos-btn-danger" id="pos-clear-btn">لغو کردن <span class="kbd">Esc</span></button>
           </div>
         </div>
       </div>
-      <div id="pos-receipt"></div>
+      <div class="pos-held" id="pos-held"></div>
     </div>`;
+  $("#pos-hold-btn").addEventListener("click", () => posHold());
+  renderHeldDock();
   $("#pos-scan").addEventListener("keydown", async (e) => {
+    if (e.key === "ArrowDown") {
+      const first = document.querySelector(".pos-suggest .sug");
+      if (first) { e.preventDefault(); first.focus(); }
+      return;
+    }
     if (e.key !== "Enter") return;
-    const bc = e.target.value.trim();
+    e.preventDefault();
+    const term = e.target.value.trim();
+    const scanned = e.scanBarcode === true;
     e.target.value = "";
-    if (bc) await posAddByBarcode(bc);
+    hideSuggest();
+    if (term) await (scanned ? posAddByBarcode(term) : posAddByTerm(term));
   });
+  /* Typed searches (name / SKU / code) show live suggestions; a hardware
+     scanner types too fast for this to interfere — it ends with Enter. */
+  $("#pos-scan").addEventListener("input", debounce(async (e) => {
+    const term = e.target.value.trim();
+    if (term.length < 2 || /^\d{8,}$/.test(term)) { hideSuggest(); return; }
+    try {
+      const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`);
+      showSuggest(r.items);
+    } catch (err) { hideSuggest(); }
+  }, 220));
   $("#pos-pay").addEventListener("click", () => posCheckoutModal());
   $("#pos-discount-btn").addEventListener("click", () => posDiscountModal());
   $("#pos-customer-btn").addEventListener("click", () => posCustomerModal());
-  $("#pos-clear-btn").addEventListener("click", () => { posState.cart = []; renderPosCart(); });
+  $("#pos-coupon-btn").addEventListener("click", () => posCouponModal());
+  $("#pos-clear-btn").addEventListener("click", () => {
+    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; renderPosCart();
+  });
   $("#pos-kiosk-btn").addEventListener("click", () => (state.kiosk ? exitKioskPrompt() : enterKiosk()));
   posClock();
   renderPosCart();
   $("#pos-scan").focus();
 };
 
+function hideSuggest() {
+  const box = $("#pos-suggest");
+  if (box) { box.classList.add("hidden"); box.innerHTML = ""; }
+}
+
+function showSuggest(items) {
+  const box = $("#pos-suggest");
+  if (!box) return;
+  if (!items || !items.length) {
+    box.innerHTML = `<div class="sug-empty muted">کالایی یافت نشد</div>`;
+    box.classList.remove("hidden");
+    return;
+  }
+  box.innerHTML = items.map((i) => `
+    <button class="sug" data-id="${i.product_id}" tabindex="0">
+      <span class="sug-name">${esc(i.name)}</span>
+      <span class="sug-meta">${esc(i.barcode)} · موجودی ${qty(i.available_qty)}${i.unit ? " " + esc(i.unit.name || "") : ""}
+        ${i.price_count > 1 ? ` · <em>${i.price_count} قیمت</em>` : ""}</span>
+    </button>`).join("");
+  box.classList.remove("hidden");
+  box.querySelectorAll(".sug").forEach((node) => node.addEventListener("click", async () => {
+    const item = items.find((x) => String(x.product_id) === node.dataset.id);
+    $("#pos-scan").value = ""; hideSuggest();
+    await posAddResolved(item);
+  }));
+}
+
+/* Accepts a barcode OR a typed term; a single exact match is added directly. */
+async function posAddByTerm(term) {
+  if (/^[0-9۰-۹٠-٩]+$/.test(term)) return posAddByBarcode(term);
+  try {
+    const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`);
+    if (!r.items.length) { await posAddByBarcode(term); return; }
+    const exact = r.items.filter((i) => i.exact);
+    if (exact.length === 1) { await posAddResolved(exact[0]); return; }
+    if (r.items.length === 1) { await posAddResolved(r.items[0]); return; }
+    showSuggest(r.items);
+  } catch (e) { await posAddByBarcode(term); }
+}
+
+async function posAddResolved(item) {
+  if (!item) return;
+  const product = { id: item.product_id, name: item.name, image_url: item.image_url, unit_id: item.unit ? unitIdByName(item.unit.name) : null };
+  const opts = item.batches || [];
+  if (!opts.length) { toast("موجودی قابل فروش ندارد", "err"); return; }
+  if (opts.length === 1) { posAskQuantity(product, opts[0]); return; }
+  posBatchChooser(product, opts);
+}
+
+const unitIdByName = (name) => {
+  const u = state.units.find((x) => x.name === name);
+  return u ? u.id : null;
+};
+
+function posBatchChooser(product, opts) {
+  const rows = opts.map((o) => `
+    <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
+      <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
+      <div class="b-meta">موجودی: ${qty(o.current_qty)}${o.expiry_date ? " · انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+    </div>`).join("");
+  openModal(`<h3>${esc(product.name)} — انتخاب قیمت / بچ</h3>${rows}
+    <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ بچ واقعی قفسه را شما انتخاب می‌کنید.</p>`);
+  document.querySelectorAll(".batch-option").forEach((node) =>
+    node.addEventListener("click", () => {
+      const b = opts.find((o) => String(o.batch_id) === node.dataset.batch);
+      closeModal(); posAskQuantity(product, b);
+    }));
+}
+
 async function posAddByBarcode(barcode) {
+  // v3.5 — the catalogue is local now: the bundled bank carries 13 570 products
+  // with exact GTINs, so a scan resolves straight from the database. The old
+  // "look this barcode up on the internet" step is gone; when the code is not in
+  // the bank the operator registers the product by hand instead of waiting on a
+  // network round-trip that no longer exists.
   let p;
   try {
     p = await api(`/products/barcode/${encodeURIComponent(barcode)}`);
   } catch (err) {
-    try {
-      const r = await api(`/barcode/resolve/${encodeURIComponent(barcode)}`);
-      if (r.origin === "local" && r.product) p = r.product;
-      else toast(r.message || "بارکد ناشناخته — ثبت دستی لازم است", "err");
-    } catch (e2) { toast("کالا یافت نشد", "err"); }
+    toast("بارکد ناشناخته — کالا را دستی ثبت کنید", "err");
     $("#pos-scan").focus();
-    if (!p) return;
+    return;
   }
   let options;
   try { options = await api(`/pos/batch-options/${p.id}`); } catch (e) { toast(e.message, "err"); return; }
   const opts = options.options || [];
   if (!opts.length) { toast("موجودی قابل فروش ندارد", "err"); return; }
-  if (opts.length === 1) { posPushCart(p, opts[0], 1); return; }
+  if (opts.length === 1) { posAskQuantity(p, opts[0]); return; }
   // چند Batch / قیمت قدیم-جدید (§16): صندوق‌دار انتخاب می‌کند
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + esc(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
     </div>`).join("");
   openModal(`<h3>${esc(p.name)} — انتخاب قیمت / Batch</h3>${rows}
     <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ Batch واقعی قفسه را شما انتخاب می‌کنید.</p>`);
   document.querySelectorAll(".batch-option").forEach((node) =>
     node.addEventListener("click", () => {
       const b = opts.find((o) => o.batch_id == node.dataset.batch);
-      closeModal(); posPushCart(p, b, 1);
+      closeModal(); posAskQuantity(p, b);
     }));
 }
 
-function posPushCart(p, batch, qty) {
+function posPushCart(p, batch, amount) {
+  if (window.Sfx) Sfx.play("add");
+  const u = unitById(p.unit_id);
   const existing = posState.cart.find((i) => i.product_id === p.id && i.batch_id === batch.batch_id);
-  if (existing) existing.quantity += qty;
+  if (existing) existing.quantity = parseFloat((Number(existing.quantity) + Number(amount)).toFixed(3));
   else posState.cart.push({ product_id: p.id, product_name: p.name, batch_id: batch.batch_id,
-    batch_number: batch.batch_number, quantity: qty, unit_sell_price: batch.sell_price,
+    batch_number: batch.batch_number, quantity: Number(amount), image_url: p.image_url || null,
+    unit_id: p.unit_id, unit_symbol: u ? u.name : null,
+    available: batch.current_qty,
+    unit_sell_price: batch.sell_price,
     unit_buy_price: batch.buy_price, expiry_date: batch.expiry_date, discount: 0 });
   renderPosCart();
-  $("#pos-scan").focus();
+  posRevalidateCoupon();
+  const scan = $("#pos-scan");
+  if (scan) scan.focus();
+}
+
+/* Weighted goods: ask for the exact amount when the unit is divisible (§25) */
+function posAskQuantity(p, batch) {
+  const u = unitById(p.unit_id);
+  if (!u || !u.allow_decimal) { posPushCart(p, batch, 1); return; }
+  openModal(`<h3>${esc(p.name)}</h3>
+    <p class="muted">واحد: ${esc(u.name)} — موجودی این بچ: ${qty(batch.current_qty)} ${esc(u.symbol || "")}</p>
+    <label>مقدار (${esc(u.symbol || u.name)})</label>
+    <input id="pq-val" inputmode="decimal" value="1" autofocus />
+    <button id="pq-ok" class="btn btn-primary btn-block" style="margin-top:14px">افزودن به سبد</button>`);
+  const submit = () => {
+    const val = parseFloat($("#pq-val").value);
+    if (!isFinite(val) || val <= 0) { toast("مقدار نامعتبر", "err"); return; }
+    closeModal(); posPushCart(p, batch, parseFloat(val.toFixed(3)));
+  };
+  $("#pq-ok").addEventListener("click", submit);
+  $("#pq-val").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  $("#pq-val").focus(); $("#pq-val").select();
+}
+
+/* ---------- POS coupon (§31–38) ---------- */
+window.posClearCoupon = () => { posState.coupon = null; posState.couponInfo = null; renderPosCart(); };
+
+function posCouponModal() {
+  openModal(`<h3>🎁 کد تخفیف</h3>
+    <label>کد کوپن</label><input id="cp-input" autocomplete="off" autofocus
+      value="${esc(posState.coupon || "")}" placeholder="مثال: NEXT-AB12CD34" />
+    <p class="muted">کوپن هنگام ثبت نهایی فروش مصرف می‌شود؛ اگر فروش ثبت نشود کوپن سوخت نمی‌شود.</p>
+    <button id="cp-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال</button>`);
+  const apply = async () => {
+    const code = $("#cp-input").value.trim();
+    if (!code) return;
+    posState.coupon = code;
+    closeModal();
+    await posRevalidateCoupon(true);
+  };
+  $("#cp-apply").addEventListener("click", apply);
+  $("#cp-input").addEventListener("keydown", (e) => { if (e.key === "Enter") apply(); });
+}
+
+async function posRevalidateCoupon(announce) {
+  if (!posState.coupon) return;
+  const gross = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+  if (gross <= 0) { posState.couponInfo = null; renderPosCart(); return; }
+  try {
+    const r = await api("/marketing/coupons/validate", { method: "POST", body: JSON.stringify({
+      code: posState.coupon, amount: gross,
+      customer_id: posState.customer ? posState.customer.id : null }) });
+    posState.couponInfo = { ok: true, discount: r.discount };
+    if (announce) toast(`کوپن اعمال شد: ${money(r.discount)} تخفیف`);
+  } catch (e) {
+    posState.couponInfo = { ok: false, message: e.message };
+    if (announce) toast(e.message, "err");
+  }
+  renderPosCart();
 }
 
 /* POS: discount (line or whole cart, split proportionally) */
@@ -357,7 +959,7 @@ function posDiscountModal() {
     `<option value="${idx}">${esc(it.product_name)} (${money(posGross(it))})</option>`).join("");
   openModal(`<h3>تخفیف</h3>
     <label>اعمال روی</label>
-    <select id="disc-target"><option value="-1">کل سبد</option>${options}</select>
+    <select id="disc-target"><option value="-2">تخفیف روی فاکتور (یک‌جا)</option><option value="-1">کل سبد (تقسیم روی خط‌ها)</option>${options}</select>
     <label>مبلغ تخفیف (ریال)</label>
     <input id="disc-amount" type="number" min="0" value="0" />
     <button id="disc-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال</button>`);
@@ -365,6 +967,12 @@ function posDiscountModal() {
     const target = parseInt($("#disc-target").value, 10);
     const amount = Number($("#disc-amount").value || 0);
     if (amount <= 0) { toast("مبلغ نامعتبر", "err"); return; }
+    if (target === -2) {
+      const net = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+      if (amount > net) { toast("تخفیف از جمع سبد بیشتر است", "err"); return; }
+      posState.invoiceDiscount = amount;
+      closeModal(); renderPosCart(); return;
+    }
     if (target >= 0) {
       const it = posState.cart[target];
       if (amount > posGross(it)) { toast("تخفیف از مبلغ خط بیشتر است", "err"); return; }
@@ -388,7 +996,7 @@ function posDiscountModal() {
 function posCustomerModal() {
   openModal(`<h3>مشتری</h3>
     <label>شماره موبایل</label><input id="cust-phone" autocomplete="off" />
-    <label>نام (برای مشتری جدید)</label><input id="cust-name" autocomplete="off" />
+    <label>نام (اختیاری — برای مشتری جدید)</label><input id="cust-name" autocomplete="off" />
     <button id="cust-save" class="btn btn-primary btn-block" style="margin-top:14px">انتخاب / ایجاد</button>`);
   $("#cust-save").addEventListener("click", async () => {
     const phone = $("#cust-phone").value.trim();
@@ -399,8 +1007,7 @@ function posCustomerModal() {
       if (phone) {
         try { c = await api(`/customers/phone/${encodeURIComponent(phone)}`); } catch (e) { c = null; }
       }
-      if (!c && name) c = await api("/customers", { method: "POST", body: JSON.stringify({ name: name || phone, phone: phone || null }) });
-      if (!c && phone) { toast("مشتری یافت نشد؛ نام را هم وارد کنید", "err"); return; }
+      if (!c) c = await api("/customers", { method: "POST", body: JSON.stringify({ name: name || null, phone: phone || null }) });
       posState.customer = c; closeModal(); renderPosCart();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -411,11 +1018,24 @@ function posCheckoutModal() {
   if (!posState.cart.length) { toast("سبد خالی است", "err"); return; }
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
-  const total = gross - disc;
+  const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
+  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon;
   openModal(`<h3>پرداخت</h3>
+    ${coupon ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
     <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
     <label>روش پرداخت</label>
-    <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option></select>
+    <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option>${
+      posState.customer ? `<option value="ACCOUNT">افزودن به حساب دفتری (نسیه)</option>` : ""}</select>
+    ${posState.customer
+      ? `<p class="muted">مشتری: ${esc(posState.customer.name)}${
+          posState.customer.balance ? ` — مانده فعلی ${money(posState.customer.balance)}` : ""}</p>`
+      : `<p class="muted">مشتری آزاد — برای فروش نسیه ابتدا مشتری را انتخاب کنید (F4).</p>
+         <label>شماره موبایل برای پیامک فاکتور <span class="muted">(اختیاری — به‌طور خودکار در دفتر مشتریان ذخیره می‌شود)</span></label>
+         <input id="pay-phone" inputmode="tel" placeholder="0912…" autocomplete="off" />`}
+    <div id="pay-account" class="hidden" style="margin-top:8px">
+      <p class="muted">این مبلغ به‌عنوان <strong>بدهی</strong> در حساب دفتری مشتری ثبت می‌شود
+        و وجهی دریافت نمی‌گردد.</p>
+    </div>
     <div id="pay-cash-area" style="margin-top:8px">
       <label>دریافتی نقدی</label><input id="pay-cash" type="number" value="${total}" />
       <div id="pay-change" class="muted"></div>
@@ -433,11 +1053,13 @@ function posCheckoutModal() {
     const m = e.target.value;
     $("#pay-cash-area").classList.toggle("hidden", m !== "CASH");
     $("#pay-split").classList.toggle("hidden", m !== "MIXED");
+    $("#pay-account").classList.toggle("hidden", m !== "ACCOUNT");
   });
   $("#pay-cash").addEventListener("input", updChange); updChange();
   $("#btn-pay").addEventListener("click", () => doCheckout(total));
   $("#pay-cash").focus();
   $("#pay-cash").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCheckout(total); } });
+  const pp = $("#pay-phone"); if (pp) pp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCheckout(total); } });
 }
 
 async function doCheckout(total) {
@@ -447,25 +1069,60 @@ async function doCheckout(total) {
     const cash = Number($("#pay-cash2").value || 0), card = Number($("#pay-card").value || 0);
     payments = [{ method: "CASH", amount: cash }, { method: "CARD", amount: card }];
   } else payments = [{ method, amount: total }];
+
+  if (method === "ACCOUNT" && !posState.customer) {
+    toast("فروش نسیه فقط برای مشتری ثبت‌شده ممکن است", "err");
+    return;
+  }
   try {
     const inv = await api("/pos/checkout", {
       method: "POST",
       body: JSON.stringify({
         items: posState.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id,
                                            quantity: i.quantity, discount: i.discount || 0 })),
-        payments, customer_id: posState.customer ? posState.customer.id : null }),
+        payments,
+        customer_id: posState.customer ? posState.customer.id : null,
+        // v3.1: a phone typed only for the SMS is enough — the backend files it in the customer book
+        customer_phone: !posState.customer && $("#pay-phone") && $("#pay-phone").value.trim() ? $("#pay-phone").value.trim() : null,
+        invoice_discount: posState.invoiceDiscount || 0,
+        coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
     });
-    posState.cart = []; posState.customer = null;
+    posState.cart = []; posState.customer = null; posState.invoiceDiscount = 0;
+    posState.coupon = null; posState.couponInfo = null; posState.heldId = null; renderHeldDock();
+    if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
+      toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
-    toast(`فروش ثبت شد: ${inv.invoice_number}`);
+    if (window.Sfx) Sfx.play("success");
+    toast(inv.payment_status === "ON_ACCOUNT"
+      ? `ثبت شد (نسیه): ${inv.invoice_number}`
+      : `فروش ثبت شد: ${inv.invoice_number}`);
+    if (inv.issued_coupon) {
+      openModal(`<h3>🎁 کوپن خرید بعدی</h3>
+        <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
+        <p class="muted">${inv.issued_coupon.valid_until ? "اعتبار تا " + esc(inv.issued_coupon.valid_until.slice(0, 10)) : ""}
+          — همراه پیامک فاکتور ارسال می‌شود.</p>
+        <button class="btn btn-primary btn-block" onclick="closeModal()">باشه</button>`);
+    }
     try {
       const pr = await api(`/invoices/${inv.invoice_id}/print`, { method: "POST" });
-      if (pr.ok && typeof pr.message === "string" && pr.message.includes("\n"))
-        $("#pos-receipt").innerHTML = `<pre class="receipt">${esc(pr.message)}</pre>`;
-      else toast("چاپ: " + pr.message, pr.ok ? "ok" : "err");
+      const PRINT_FA = { PRINTER_NOT_CONFIGURED: "پرینتری ثبت نشده است", PRINTER_OFFLINE: "پرینتر در دسترس نیست", PRINTER_ERROR: "خطای پرینتر", NOT_SUPPORTED: "نوع اتصال پشتیبانی نمی‌شود" };
+      const code = String(pr.message || "").split(":")[0].trim();
+      const status = pr.ok ? `<span class="badge badge-green">چاپ شد</span>`
+        : `<span class="badge badge-red">چاپ نشد — ${esc(PRINT_FA[code] || pr.message)}</span> <button class="btn btn-sm" onclick="reprintInvoice(${inv.invoice_id})">چاپ مجدد</button>`;
+      $("#pos-receipt").innerHTML = `<div class="card" style="margin-top:12px"><div class="row" style="justify-content:space-between;align-items:center"><strong>رسید ${esc(inv.invoice_number)}</strong>${status}</div>
+        <pre class="receipt">${esc(pr.receipt_text || "")}</pre></div>`;
+      if (!pr.ok) toast("چاپ: " + (PRINT_FA[code] || pr.message), "err");
     } catch (e) { /* printing never blocks the sale */ }
   } catch (err) { toast(err.message, "err"); }
 }
+
+async function reprintInvoice(id) {
+  try {
+    const pr = await api(`/invoices/${id}/print`, { method: "POST" });
+    toast(pr.ok ? "چاپ شد" : "چاپ نشد: " + pr.message, pr.ok ? "ok" : "err");
+  } catch (e) { toast(e.message, "err"); }
+}
+window.reprintInvoice = reprintInvoice;
 
 /* ---------- Kiosk / Lock mode (§7) ---------- */
 async function enterKiosk() {
@@ -521,8 +1178,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "F2") { e.preventDefault(); if (!modalOpen) posCheckoutModal(); }
   else if (e.key === "F4") { e.preventDefault(); if (!modalOpen) posDiscountModal(); }
   else if (e.key === "F8") { e.preventDefault(); if (!modalOpen) posCustomerModal(); }
+  else if (e.key === "F9") { e.preventDefault(); if (!modalOpen) posCouponModal(); }
+  else if (e.key === "F6") { e.preventDefault(); if (!modalOpen) posHold(); }
   else if (e.key === "Delete" && !modalOpen) { posState.cart.pop(); renderPosCart(); }
-  else if (e.key === "Escape" && !modalOpen) { posState.cart = []; renderPosCart(); }
+  else if (e.key === "Escape" && !modalOpen) {
+    posState.cart = []; posState.coupon = null; posState.couponInfo = null; renderPosCart();
+  }
   const tag = ((document.activeElement && document.activeElement.tagName) || "").toLowerCase();
   if (!modalOpen && tag !== "input" && tag !== "textarea" && tag !== "select" && e.key.length === 1) {
     $("#pos-scan").focus();
@@ -531,138 +1192,759 @@ document.addEventListener("keydown", (e) => {
 
 setInterval(() => { if (state.view === "pos") posClock(); }, 1000);
 
+/* =====================================================================
+ * §178–§190 — Global barcode-scanner wedge.
+ * A hardware scanner types a burst of characters (<30 ms apart) and ends
+ * with Enter. We capture that burst ANYWHERE in the app, recognise it as a
+ * scan (not typing), and route it to the field that owns barcodes on the
+ * current screen — or jump to the POS if the screen has none. Typing in a
+ * normal input is never affected because human inter-key gaps are ~100 ms+.
+ * ===================================================================== */
+const SCAN_TARGETS = { pos: "#pos-scan", batches: "#b-barcode", products: "#p-barcode", inventory: "#i-search" };
+const scanWedge = { buf: "", last: 0, timer: null, gaps: [] };
+function scanEnterEvent() {
+  const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+  Object.defineProperty(event, "scanBarcode", { value: true });
+  return event;
+}
+function scanDeliver(code) {
+  const sel = SCAN_TARGETS[state.view];
+  const input = sel && document.querySelector(sel);
+  const modalOpen = !$("#modal").classList.contains("hidden");
+  if (modalOpen) {
+    const mi = document.querySelector("#modal input.scan-input, #modal input[data-scan]");
+    if (mi) { mi.value = code; mi.dispatchEvent(scanEnterEvent()); return; }
+  }
+  if (input) {
+    input.value = code;
+    input.focus();
+    input.dispatchEvent(scanEnterEvent());
+    flashScan(input);
+  } else if (can("pos.sell")) {
+    go("pos").then(() => { const i = $("#pos-scan"); if (i) { i.value = code; i.dispatchEvent(scanEnterEvent()); flashScan(i); } });
+  }
+  api("/hardware/scanner/detect", { method: "POST", body: JSON.stringify({ intervals_ms: scanWedge.gaps.slice(-12) }) }).catch(() => {});
+}
+function flashScan(input) {
+  const w = input.closest(".scan-field") || input;
+  w.classList.add("scan-hit");
+  setTimeout(() => w.classList.remove("scan-hit"), 600);
+}
+document.addEventListener("keydown", (e) => {
+  if (!state.user || e.scanBarcode) return;
+  const now = performance.now();
+  const gap = now - scanWedge.last;
+  const active = document.activeElement;
+  const tag = ((active && active.tagName) || "").toLowerCase();
+  const inScanField = active && (active.matches(SCAN_TARGETS[state.view] || "#none") || active.classList.contains("scan-input"));
+  if (e.key === "Enter") {
+    if (scanWedge.buf.length >= 4 && gap < 60 && scanWedge.gaps.length >= 3 && Math.max(...scanWedge.gaps) < 45) {
+      const code = scanWedge.buf;
+      scanWedge.buf = ""; scanWedge.gaps = [];
+      e.preventDefault(); e.stopPropagation();
+      scanDeliver(code);
+      return;
+    }
+    scanWedge.buf = ""; scanWedge.gaps = [];
+    return;
+  }
+  if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (gap > 60) { scanWedge.buf = ""; scanWedge.gaps = []; } else if (scanWedge.buf) scanWedge.gaps.push(gap);
+  scanWedge.buf += e.key;
+  scanWedge.last = now;
+  clearTimeout(scanWedge.timer);
+  scanWedge.timer = setTimeout(() => { scanWedge.buf = ""; scanWedge.gaps = []; }, 400);
+  // Burst typed while focus is NOT in an input: swallow so it does not leak into the page.
+  if (tag !== "input" && tag !== "textarea" && tag !== "select" && scanWedge.buf.length >= 3 && Math.max(...scanWedge.gaps) < 45) {
+    e.preventDefault();
+  }
+}, true);
+
 /* ---------- products ---------- */
 RENDER.products = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card" style="margin-bottom:14px">
     <h3>ثبت کالای جدید</h3>
+    <p class="muted">بارکد را اسکن کنید تا نام، برند، دسته و تصویر به‌صورت
+      خودکار از منابع مجاز بازیابی شود. داده‌های بیرونی همیشه پیش از ثبت
+      نیازمند تأیید شما هستند.</p>
     <div class="form-row">
-      <div><label>بارکد</label><input id="p-barcode" placeholder="اسکن یا تایپ بارکد" /></div>
+      <div><label>بارکد</label>
+        <div class="scan-field">${icon("barcode", 20)}<input id="p-barcode" class="scan-input" placeholder="اسکن یا تایپ بارکد" autocomplete="off" /></div></div>
+      <div style="align-self:end">
+        <button id="p-lookup" class="btn btn-ghost">بازیابی خودکار اطلاعات</button></div>
+    </div>
+    <div id="p-resolve-status" class="muted" style="margin-top:8px"></div>
+    <div class="form-row" style="margin-top:8px">
       <div><label>نام کالا</label><input id="p-name" /></div>
+      <div><label>برند</label><input id="p-brand" /></div>
+      <div><label>دسته (زیردسته با «/»: لبنیات / پنیر)</label><input id="p-category" list="p-category-list" /><datalist id="p-category-list"></datalist></div>
       <div><label>حداقل موجودی هشدار</label><input id="p-min" type="number" value="5" /></div>
     </div>
+    <div id="p-image-box" class="hidden" style="margin-top:10px">
+      <label>تصویر کالا</label>
+      <div class="img-preview">
+        <img id="p-image" alt="تصویر کالا" />
+        <div class="img-meta"><span id="p-image-meta" class="muted"></span>
+          <button id="p-image-clear" class="btn btn-ghost btn-sm">حذف تصویر</button></div>
+      </div>
+    </div>
+    <input id="p-image-url" type="hidden" />
     <button id="p-add" class="btn btn-primary" style="margin-top:12px">ثبت کالا</button>
   </div>
+  <div class="card" style="margin-bottom:14px">
+    <h3>دریافت محصولات پیش‌فرض</h3>
+    <p class="muted" id="p-starter-info">بانک کامل کالاهای سوپرمارکت و داروخانه — با نام کامل، بارکد دقیق، دسته و زیردسته و تصویر — آمادهٔ ورود است. همهٔ کالاها با <b>موجودی صفر</b> ساخته می‌شوند و موجودی فقط با رسید ورود اضافه می‌شود؛ به این ترتیب با اسکن بارکد، کالا شناخته می‌شود و رسید ورودش را ثبت می‌کنید. اجرای دوباره، کالای تکراری نمی‌سازد.</p>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="p-starter" class="btn btn-primary">دریافت محصولات پیش‌فرض</button>
+      <label class="btn btn-ghost file-btn">انتخاب فایل CSV<input type="file" id="p-csv" accept=".csv,text/csv" /></label>
+      <span id="p-csv-name" class="muted"></span>
+      <button id="p-csv-up" class="btn btn-ghost">ورود فایل CSV فروشگاه</button>
+      <a class="muted" href="${API}/products/import/default" target="_blank" rel="noopener" style="font-size:12px">ستون‌ها: category, subcategory, name, brand, unit, min_stock_alert, barcode, image_url, images</a>
+    </div>
+    <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
+  </div>
+  <div id="p-catalog-holder"></div>
   <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+
+  renderCatalogFolderCard($("#p-catalog-holder"), { compact: true });
+
+  const starterOut = (r) => {
+    $("#p-starter-out").textContent = r.ok === false ? (r.message || "خطا")
+      : `${r.created} کالا ایجاد شد، ${r.skipped} مورد از قبل موجود بود، ${r.categories} دسته و ${r.subcategories} زیردسته، ${r.with_image} کالا با تصویر${r.errors && r.errors.length ? `، ${r.errors.length} خطا` : ""}. ${r.stock_note || ""}`;
+  };
+  api("/products/import/default").then((i) => {
+    $("#p-starter-info").textContent += ` (بانک آماده: ${i.products} کالا در ${i.categories} دسته و ${i.subcategories} زیردسته، ${i.with_image} کالا با تصویر)`;
+  }).catch(() => {});
+  $("#p-starter").addEventListener("click", async () => {
+    if (!confirm("محصولات پیش‌فرض با موجودی صفر وارد شود؟")) return;
+    $("#p-starter").disabled = true; $("#p-starter").textContent = "در حال ورود…";
+    try { starterOut(await api("/products/import/default", { method: "POST" })); toast("محصولات پیش‌فرض وارد شد"); RENDER.products(); }
+    catch (e) { toast(e.message, "err"); }
+    finally { $("#p-starter").disabled = false; $("#p-starter").textContent = "دریافت محصولات پیش‌فرض"; }
+  });
+  $("#p-csv").addEventListener("change", () => { $("#p-csv-name").textContent = ($("#p-csv").files[0] || {}).name || ""; });
+  $("#p-csv-up").addEventListener("click", async () => {
+    const f = $("#p-csv").files[0];
+    if (!f) { toast("ابتدا فایل CSV را انتخاب کنید", "err"); return; }
+    const fd = new FormData(); fd.append("file", f, f.name);
+    try { starterOut(await api("/products/import/csv", { method: "POST", body: fd })); toast("فایل وارد شد"); }
+    catch (e) { toast(e.message, "err"); }
+  });
+
+  // §78/§79 — existing categories (with parent path) as suggestions
+  api("/products/categories").then((cats) => {
+    const dl = $("#p-category-list"); if (!dl) return;
+    dl.innerHTML = cats.map((c) => `<option value="${esc(c.path || c.name)}"></option>`).join("");
+  }).catch(() => {});
+
+  const setImage = (path) => {
+    $("#p-image-url").value = path || "";
+    const box = $("#p-image-box");
+    if (path) {
+      $("#p-image").src = path.startsWith("http") ? path : `/media/${path.replace(/^\/?media\//, "")}`;
+      box.classList.remove("hidden");
+    } else { box.classList.add("hidden"); $("#p-image").removeAttribute("src"); }
+  };
+  $("#p-image-clear").addEventListener("click", () => { setImage(null); $("#p-image-meta").textContent = ""; });
+
+  /* Scan -> multi-source lookup -> fill the form. The operator still confirms. */
+  const lookup = async () => {
+    const code = $("#p-barcode").value.trim();
+    if (!code) return;
+    const status = $("#p-resolve-status");
+    status.className = "muted";
+    status.textContent = "در حال شناسایی بارکد…";
+    try {
+      const r = await api(`/barcode/scan?barcode=${encodeURIComponent(code)}`,
+        { method: "POST", body: JSON.stringify({ with_image: true }) });
+
+      if (r.origin === "invalid") {
+        status.className = "err"; status.textContent = r.message; return;
+      }
+      if (r.origin === "local" || r.origin === "cache") {
+        status.className = "err";
+        status.textContent = `${r.message} — «${(r.product || {}).name || ""}»`;
+        return;
+      }
+      const d = r.draft || {};
+      if (d.name) $("#p-name").value = d.name;
+      if (d.brand) $("#p-brand").value = d.brand;
+      if (d.category) $("#p-category").value = d.category;
+      setImage(d.image_url || null);
+      if (r.image && r.image.stored) {
+        // Credit the source whose bytes were actually kept, not merely the
+        // first candidate tried — several sources may offer an image.
+        const won = (r.image.candidates || []).find(
+          (c) => c.local_path && c.local_path === r.image.best_local_path);
+        const dim = won && won.validation && won.validation.width
+          ? ` · ${won.validation.width}×${won.validation.height}` : "";
+        $("#p-image-meta").textContent = `تصویر کالا${dim} · ذخیره‌شدهٔ محلی`;
+      }
+
+      const tried = (r.sources || []).length;
+      const failed = (r.sources || []).filter((x) => !x.ok);
+      if (r.origin === "bank" && d.name) {
+        status.className = "ok";
+        status.textContent = "شناسایی شد (بانک کالا)" + (d.brand ? ` · ${d.brand}` : "") + (r.image && r.image.stored ? " + تصویر" : "") + " — لطفاً بررسی و تأیید کنید.";
+      } else if (r.coverage && r.coverage.fields_found) {
+        status.className = "ok";
+        status.textContent = "شناسایی شد" + (d.brand ? ` · ${d.brand}` : "") +
+          (r.coverage.image_found ? " + تصویر" : " (بدون تصویر)") +
+          " — لطفاً بررسی و تأیید کنید. این بارکد از این پس آفلاین هم شناخته می‌شود.";
+      } else {
+        status.className = "err";
+        // Be explicit about WHY nothing came back; silence here was the old bug (no vendor names — v2.7).
+        const kinds = [...new Set(failed.map((f) => (f.error || {}).kind).filter(Boolean))];
+        const net = kinds.some((k) => /NETWORK|TIMEOUT|RATE|HTTP|UNAVAILABLE/.test(k));
+        status.textContent = net
+          ? "اتصال اینترنت برقرار نشد یا سرویس شناسایی در دسترس نیست — نام کالا را دستی وارد کنید؛ برای اسکن‌های بعدی به بانک کالا اضافه می‌شود."
+          : "این بارکد شناسایی نشد — نام کالا را دستی وارد کنید؛ برای اسکن‌های بعدی (و گوشی‌ها) به بانک کالا اضافه می‌شود.";
+      }
+    } catch (e) {
+      status.className = "err"; status.textContent = `خطا در بازیابی: ${e.message}`;
+    }
+  };
+  $("#p-lookup").addEventListener("click", lookup);
+  // A hardware barcode gun ends its burst with Enter.
+  $("#p-barcode").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); lookup(); }
+  });
+
   $("#p-add").addEventListener("click", async () => {
     try {
-      await api("/products", { method: "POST", body: JSON.stringify({
-        barcode: $("#p-barcode").value.trim(), name: $("#p-name").value.trim(),
-        min_stock_alert: Number($("#p-min").value || 5) }) });
+      const barcode = $("#p-barcode").value.trim();
+      const name = $("#p-name").value.trim();
+      if (!name) { toast("نام کالا الزامی است", "err"); return; }
+
+      // Brand/category were typed by the operator but never sent — resolve
+      // the free-text names to real rows so the FKs stop being null.
+      const brandName = $("#p-brand").value.trim();
+      const catName = $("#p-category").value.trim();
+      const brand = brandName
+        ? await api("/products/brands", { method: "POST", body: JSON.stringify({ name: brandName }) })
+        : null;
+      // §78/§79 — "والد / فرزند" creates (or reuses) the parent, then the child.
+      let category = null;
+      if (catName) {
+        const parts = catName.split("/").map((x) => x.trim()).filter(Boolean);
+        let parentId = null;
+        for (const part of parts) {
+          category = await api("/products/categories", { method: "POST",
+            body: JSON.stringify({ name: part, parent_id: parentId }) });
+          parentId = category.id;
+        }
+      }
+
+      // §33 — warn before creating a probable duplicate. Advisory: the
+      // operator may confirm, because two real products can share a name.
+      const dup = await api("/products/check-duplicate", { method: "POST",
+        body: JSON.stringify({ name, barcode: barcode || null,
+                               brand_id: brand ? brand.id : null }) });
+      if (dup.has_warning) {
+        const lines = dup.exact_barcode_match
+          ? `کالایی با همین بارکد وجود دارد: ${dup.exact_barcode_match.name}`
+          : "کالاهای مشابه: " + dup.possible_duplicates
+              .map((c) => `${c.name} (${Math.round(c.confidence * 100)}٪)`).join("، ");
+        if (!confirm(`${lines}\n\nآیا مطمئن هستید که این کالای جدیدی است؟`)) return;
+      }
+
+      const body = {
+        name, min_stock_alert: Number($("#p-min").value || 5),
+        // §16 — no barcode typed means a loose/bulk item; the server mints
+        // an internal INT- code instead of rejecting the product.
+        has_own_barcode: Boolean(barcode),
+      };
+      if (barcode) body.barcode = barcode;
+      if (brand) body.brand_id = brand.id;
+      if (category) body.category_id = category.id;
+      const img = $("#p-image-url").value.trim();
+      if (img) body.image_url = img;
+      const created = await api("/products", { method: "POST", body: JSON.stringify(body) });
+      if (!barcode) toast(`بارکد داخلی ساخته شد: ${created.barcode}`);
       toast("کالا ثبت شد");
-      $("#p-barcode").value = ""; $("#p-name").value = "";
       RENDER.products();
     } catch (e) { toast(e.message, "err"); }
   });
+
   const { items } = await api("/products?limit=200");
   const rows = items.map((p) => el("tr", {},
-    el("td", { text: p.barcode }), el("td", { text: p.name }), el("td", { text: p.min_stock_alert }),
-    el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" }))));
+    el("td", {}, p.image_url
+      ? el("img", { class: "thumb thumb-find", title: "تغییر تصویر (انتخاب از فروشگاه‌ها یا عکس خودم)", src: p.image_url.startsWith("http") ? p.image_url
+          : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "", onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })
+      : el("button", { class: "thumb thumb-empty thumb-find", title: "انتخاب تصویر", text: "🔍",
+          onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })),
+    el("td", {}, el("span", {
+      // §16 — an internal code is visibly distinct from a real GTIN so staff
+      // know it means nothing to external catalogues.
+      class: p.has_own_barcode === false ? "badge badge-gray" : "",
+      text: p.barcode })),
+    el("td", { text: p.name }),
+    el("td", { text: p.min_stock_alert }),
+    el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" })),
+    el("td", {}, el("button", { class: "btn btn-ghost btn-sm",
+      text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
   const tbl = $("#p-table");
   tbl.innerHTML = "";
+  // v3.4 — pictures come from the shop's own catalogue folder (Settings → بانک محصولات); just show the count
+  try {
+    const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+    const st = await api("/products/images/status");
+    let bar = $("#p-images-bar");
+    if (!bar) { bar = el("div", { id: "p-images-bar", class: "muted", style: "display:flex;gap:10px;align-items:center;margin:6px 0" }); tbl.parentElement.insertBefore(bar, tbl); }
+    bar.innerHTML = "";
+    bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (st.missing ? ` · ${fa(st.missing)} بدون تصویر — از «بانک محصولات» (اکسل + پوشهٔ pic) وارد کنید` : " · همه دارای تصویر") }));
+  } catch (e) { /* status is cosmetic */ }
   tbl.append(el("thead", {}, el("tr", {},
-    el("th", { text: "بارکد" }), el("th", { text: "نام" }), el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }))),
+    el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
+    el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }),
+    el("th", { text: "" }))),
     el("tbody", {}, ...rows));
 };
 
+/* ---------- §5: product detail — one identity, all its batches ----------
+ * The batch list is the product's price history. Depleted batches are shown
+ * in a separate, dimmed section rather than hidden, because deleting them
+ * would erase the record of what each purchase actually cost. */
+/* v2.5.1 — picture picker: retail pack photos first, own photo upload as the final word */
+window.pickProductImage = async function pickProductImage(productId, after) {
+  const mediaSrc = (u) => (!u ? "" : u.startsWith("http") ? u : `/media/${u.replace(/^\/?media\//, "")}`);
+  openModal(`<div class="modal-wide"><h3>تصویر کالا</h3><div id="pi-body" class="muted">در حال جست‌وجوی خودکار تصویر کالا…</div>
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label class="btn btn-ghost btn-sm" style="cursor:pointer">📷 عکس خودم (فایل/دوربین)<input id="pi-file" type="file" accept="image/*" capture="environment" style="display:none"></label>
+      <input id="pi-url" class="input" placeholder="یا نشانی تصویر را بچسبانید (https://…)" style="flex:1;min-width:220px">
+      <button class="btn btn-ghost btn-sm" id="pi-url-btn">ثبت نشانی</button>
+      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeModal()">بستن</button></div></div>`);
+  const done = (r) => { toast("تصویر کالا ثبت شد"); closeModal(); if (after) after(r); };
+  $("#pi-file").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    try { const fd = new FormData(); fd.append("file", f); done(await api(`/products/${productId}/image/upload`, { method: "POST", body: fd })); }
+    catch (e) { toast("تصویر نامعتبر: " + e.message, "err"); }
+  });
+  $("#pi-url-btn").addEventListener("click", async () => {
+    const u = $("#pi-url").value.trim(); if (!u) return;
+    try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: u, source: "manual-url" }) })); }
+    catch (e) { toast("دریافت تصویر ناموفق: " + e.message, "err"); }
+  });
+  try {
+    const c = await api(`/products/${productId}/image/candidates`);
+    const body = $("#pi-body"); body.innerHTML = ""; body.className = "";
+    if (c.current) body.append(el("div", { class: "muted", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, el("img", { class: "thumb", src: mediaSrc(c.current), alt: "" }), el("span", { text: "تصویر فعلی" })));
+    if (!c.candidates.length) { body.append(el("p", { class: "muted", text: "تصویری در بانک محصولات برای این کالا نیست — از پوشهٔ بانک محصولات وارد کنید یا عکس خودتان را بارگذاری کنید. به‌عنوان آخرین راه می‌توانید عکس خودتان را بارگذاری کنید." })); return; }
+    const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px" });
+    for (const x of c.candidates) {
+      const src = x.source === "bank" ? "گالری بانک کالا" : "تصویر ثبت‌شده";
+      const card = el("div", { class: "card", style: "padding:6px;cursor:pointer;text-align:center", title: x.title },
+        el("img", { src: x.url, alt: "", style: "width:100%;height:120px;object-fit:contain;background:#fff;border-radius:6px", loading: "lazy", referrerpolicy: "no-referrer" }),
+        el("div", { class: "muted", style: "font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", text: x.title || "—" }),
+        el("div", { class: "badge " + (x.source === "bank" ? "badge-green" : "badge-gray"), text: src }));
+      card.addEventListener("click", async () => { card.style.opacity = ".5"; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: x.url, source: x.source }) })); } catch (e) { card.style.opacity = "1"; toast("دریافت این تصویر ناموفق بود؛ گزینهٔ دیگری را انتخاب کنید", "err"); } });
+      card.addEventListener("error", () => card.remove(), true);
+      grid.append(card);
+    }
+    const top = c.candidates[0];
+    const auto = el("div", { class: "card", style: "display:flex;gap:12px;align-items:center;padding:10px;margin-bottom:10px" },
+      el("img", { src: top.url, alt: "", style: "width:96px;height:96px;object-fit:contain;background:#fff;border-radius:8px", referrerpolicy: "no-referrer" }),
+      el("div", { style: "flex:1" }, el("div", { text: "پیشنهاد خودکار: " + (top.title || "") }), el("div", { class: "muted", text: "تطابق " + Math.round(top.score * 100) + "٪" })),
+      el("button", { class: "btn btn-primary", text: "✓ همین را بگذار", onclick: async (ev) => { ev.target.disabled = true; try { done(await api(`/products/${productId}/image/pick`, { method: "POST", body: JSON.stringify({ url: top.url, source: top.source }) })); } catch (e) { ev.target.disabled = false; toast("دریافت ناموفق؛ گزینهٔ دیگری بزنید", "err"); } } }));
+    body.append(auto, el("p", { class: "muted", style: "margin:0 0 8px", text: "یا یکی از نتایج دیگر را انتخاب کنید. بارگذاری عکس خودتان فقط وقتی لازم است که هیچ‌کدام درست نباشد." }), grid);
+  } catch (e) { $("#pi-body").textContent = "خطا: " + e.message; }
+};
+
+window.showProductDetail = async function showProductDetail(productId) {
+  try {
+    const d = await api(`/products/${productId}/detail`);
+    const p = d.product;
+
+    const money = (n) => (n === null || n === undefined ? "—" : fmt(n));
+    const batchTable = (list, dim) => {
+      if (!list.length) return el("p", { class: "muted", text: "موردی نیست." });
+      const rows = list.map((b) => el("tr", { style: dim ? "opacity:.62" : "" },
+        el("td", { text: b.batch_number }),
+        el("td", { text: b.current_qty + " / " + b.quantity_received }),
+        el("td", { text: money(b.buy_price) }),
+        el("td", { text: money(b.sell_price) }),
+        el("td", { text: money(b.consumer_price) }),
+        el("td", { text: b.discount ? money(b.discount) : "—" }),
+        el("td", { text: b.tax ? money(b.tax) : "—" }),
+        el("td", { text: b.expiry_date ? Jalali.fromIso(b.expiry_date) : "—" }),
+        el("td", { text: faDateTime(b.received_at, false) })));
+      const t = el("table", {});
+      t.append(el("thead", {}, el("tr", {},
+        el("th", { text: "شماره بچ" }), el("th", { text: "موجودی/دریافتی" }),
+        el("th", { text: "خرید" }),
+        el("th", { text: "فروش" }), el("th", { text: "مصرف‌کننده" }),
+        el("th", { text: "تخفیف" }), el("th", { text: "مالیات" }),
+        el("th", { text: "انقضا" }), el("th", { text: "تاریخ ورود" }))),
+        el("tbody", {}, ...rows));
+      return t;
+    };
+
+    const body = el("div", {});
+    body.append(el("p", { class: "muted", text:
+      `بارکد ${p.barcode}${p.has_own_barcode === false ? " (بارکد داخلی — کالای فله)" : ""}` +
+      ` · موجودی کل: ${d.total_stock} · تعداد بچ: ${d.batch_count}` }));
+    body.append(el("h4", { text: "بچ‌های فعال" }));
+    body.append(batchTable(d.active_batches, false));
+    body.append(el("h4", { text: "بچ‌های تمام‌شده (تاریخچهٔ قیمت — حذف نمی‌شوند)",
+                           style: "margin-top:16px" }));
+    body.append(batchTable(d.depleted_batches, true));
+
+    // openModal takes an HTML string, so render a shell then mount the
+    // built nodes into it (keeps names/notes escaped as text, not HTML).
+    // Ten price/date columns need more room than the default modal width.
+    openModal(`<div class="modal-wide"><h3 id="pd-title"></h3><div id="pd-body"></div>
+      <div style="margin-top:14px;text-align:left">
+        <button class="btn btn-ghost" onclick="closeModal()">بستن</button></div></div>`);
+    $("#pd-title").textContent = p.name;
+    const picRow = el("div", { style: "display:flex;gap:10px;align-items:center;margin:4px 0 10px" });
+    if (p.image_url) picRow.append(el("img", { class: "thumb", style: "width:72px;height:72px", src: p.image_url.startsWith("http") ? p.image_url : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "" }));
+    picRow.append(el("button", { class: "btn btn-ghost btn-sm", text: p.image_url ? "تغییر تصویر کالا" : "انتخاب تصویر کالا", onclick: () => pickProductImage(p.id, () => showProductDetail(p.id)) }));
+    $("#pd-body").append(picRow, body);
+  } catch (e) { toast(e.message, "err"); }
+};
+
 /* ---------- batches (receiving) ---------- */
+/* v1.3: one purchase price + one consumer price + sell price. The separate
+ * "supplier price" box was a duplicate of the purchase price and is gone from
+ * the UI (the column stays nullable in the DB for old rows). The barcode box
+ * shows live matches (name + picture) while typing, so a half-typed barcode
+ * or a product name is enough to pick the right item. */
 RENDER.batches = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card" style="margin-bottom:14px">
-    <h3>ورود کالا (ایجاد Batch جدید)</h3>
-    <div class="form-row">
-      <div><label>بارکد</label><input id="b-barcode" placeholder="اسکن بارکد" /></div>
-      <div><label>تعداد</label><input id="b-qty" type="number" value="1" /></div>
-      <div><label>قیمت خرید</label><input id="b-buy" type="number" /></div>
-      <div><label>قیمت مصرف‌کننده</label><input id="b-consumer" type="number" /></div>
-      <div><label>قیمت فروش</label><input id="b-sell" type="number" /></div>
-      <div><label>تاریخ انقضا</label><input id="b-expiry" type="date" /></div>
+    <div class="card-head"><h3>ورود کالا (ایجاد بچ جدید)</h3><span class="muted">قیمت‌ها و تاریخ انقضا به هر بچ تعلق دارد، نه به کالا</span></div>
+    <div class="recv-grid">
+      <div class="recv-barcode">
+        <label>بارکد یا نام کالا</label>
+        <div class="scan-field">${icon("barcode", 20)}<input id="b-barcode" class="scan-input" placeholder="اسکن یا تایپ کنید…" autocomplete="off" /></div>
+        <div id="b-suggest" class="pos-suggest hidden"></div>
+        <div id="b-picked" class="recv-picked hidden"></div>
+      </div>
+      <div><label>تعداد</label><input id="b-qty" type="number" value="1" min="0" step="any" /></div>
+      <div><label>قیمت خرید (تومان)</label><input id="b-buy" type="number" min="0" /></div>
+      <div><label>قیمت مصرف‌کننده</label><input id="b-consumer" type="number" min="0" /></div>
+      <div><label>قیمت فروش</label><input id="b-sell" type="number" min="0" /></div>
+      <div><label>تخفیف بچ</label><input id="b-discount" type="number" min="0" /></div>
+      <div><label>مالیات بچ</label><input id="b-tax" type="number" min="0" /></div>
+      <div><label>تاریخ انقضا (شمسی)</label><input id="b-expiry" type="date" /></div>
+      <div><label>شماره بچ (اختیاری)</label><input id="b-number" placeholder="خودکار" /></div>
+      <div><label>تأمین‌کننده</label><select id="b-supplier"><option value="">— بدون تأمین‌کننده</option></select></div>
+      <div><label>نحوهٔ پرداخت خرید</label><select id="b-paid"><option value="PAYABLE">نسیه (بدهی به تأمین‌کننده)</option><option value="CASH">نقد از صندوق</option><option value="BANK">بانک</option><option value="CARD">کارت</option></select></div>
     </div>
-    <button id="b-receive" class="btn btn-primary" style="margin-top:12px">ثبت ورود</button>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button id="b-receive" class="btn btn-primary">ثبت ورود</button>
+      <span id="b-status" class="muted"></span>
+    </div>
   </div>
-  <div class="card"><h3>Batch های اخیر</h3><table id="b-table"></table></div>`;
+  <div class="card"><div class="card-head"><h3>بچ‌های اخیر</h3></div><div class="table-wrap"><table id="b-table"></table></div></div>`;
+  Jalali.attachAll(v);
+
+  let picked = null;
+  const bBox = $("#b-suggest"), bPicked = $("#b-picked"), bInput = $("#b-barcode");
+  const hideB = () => { bBox.classList.add("hidden"); bBox.innerHTML = ""; };
+  const pick = (item) => {
+    picked = item; hideB();
+    bInput.value = item.barcode || "";
+    bPicked.classList.remove("hidden");
+    bPicked.innerHTML = `${item.image_url ? `<img class="thumb" src="${esc(item.image_url)}" alt="" />` : `<span class="thumb thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></span>`}
+      <div><b>${esc(item.name)}</b><div class="muted">${esc(item.barcode || "")}${item.unit ? " · " + esc(item.unit.name || "") : ""} · موجودی فعلی ${qty(item.available_qty ?? 0)}</div></div>
+      <button class="btn btn-sm btn-ghost" id="b-unpick">تغییر</button>`;
+    $("#b-unpick").onclick = () => { picked = null; bPicked.classList.add("hidden"); bInput.value = ""; bInput.focus(); };
+    // pre-fill prices from the latest batch so a repeat purchase is two keystrokes
+    const last = (item.batches || [])[0];
+    if (last) { if (!$("#b-sell").value) $("#b-sell").value = last.sell_price ?? ""; if (!$("#b-consumer").value) $("#b-consumer").value = last.consumer_price ?? ""; }
+    $("#b-qty").focus(); $("#b-qty").select();
+  };
+  const search = debounce(async () => {
+    const term = bInput.value.trim();
+    if (term.length < 2) { hideB(); return; }
+    try {
+      const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`);
+      if (!r.items.length) { bBox.innerHTML = `<div class="sug-empty muted">کالایی با این بارکد/نام نیست — از «کالاها» ثبتش کنید.</div>`; bBox.classList.remove("hidden"); return; }
+      bBox.innerHTML = r.items.map((i) => `
+        <button class="sug sug-img" data-id="${i.product_id}" type="button">
+          ${i.image_url ? `<img class="thumb" src="${esc(i.image_url)}" alt="" />` : `<span class="thumb thumb-empty"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></span>`}
+          <span><span class="sug-name">${esc(i.name)}</span>
+          <span class="sug-meta">${esc(i.barcode)} · موجودی ${qty(i.available_qty)}${i.unit ? " " + esc(i.unit.name || "") : ""}</span></span>
+        </button>`).join("");
+      bBox.classList.remove("hidden");
+      bBox.querySelectorAll(".sug").forEach((n) => n.addEventListener("click", () => pick(r.items.find((x) => String(x.product_id) === n.dataset.id))));
+    } catch (e) { hideB(); }
+  }, 180);
+  bInput.addEventListener("input", () => { picked = null; bPicked.classList.add("hidden"); search(); });
+  bInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Escape") hideB();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = bBox.querySelector(".sug");
+      if (first && !bBox.classList.contains("hidden")) { first.click(); return; }
+      const term = bInput.value.trim();
+      if (!term) return;
+      try { const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`); const ex = r.items.find((i) => i.exact) || (r.items.length === 1 ? r.items[0] : null); if (ex) pick(ex); else search(); } catch (_) {}
+    }
+  });
+
+  if (can("accounting.view")) api("/accounting/suppliers").then((sups) => {
+    const sel = $("#b-supplier"); if (sel) sups.forEach((x) => sel.insertAdjacentHTML("beforeend", `<option value="${x.id}">${esc(x.name)}</option>`));
+  }).catch(() => {});
   $("#b-receive").addEventListener("click", async () => {
     try {
-      const body = { barcode: $("#b-barcode").value.trim(), quantity_received: Number($("#b-qty").value),
+      const body = { quantity_received: Number($("#b-qty").value),
         buy_price: Number($("#b-buy").value), consumer_price: Number($("#b-consumer").value || 0) || null,
-        sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null };
+        sell_price: Number($("#b-sell").value || 0) || null, expiry_date: $("#b-expiry").value || null,
+        discount: Number($("#b-discount").value || 0) || null,
+        tax: Number($("#b-tax").value || 0) || null,
+        batch_number: $("#b-number").value.trim() || null,
+        paid_from: $("#b-paid").value, supplier_id: $("#b-supplier").value ? Number($("#b-supplier").value) : null };
+      if (picked) body.product_id = picked.product_id; else body.barcode = bInput.value.trim();
+      if (!body.product_id && !body.barcode) throw new Error("ابتدا کالا را انتخاب یا بارکد را وارد کنید");
+      if (!(body.quantity_received > 0)) throw new Error("تعداد باید بزرگ‌تر از صفر باشد");
       await api("/batches/receive", { method: "POST", body: JSON.stringify(body) });
       toast("ورود کالا ثبت شد");
       RENDER.batches();
     } catch (e) { toast(e.message, "err"); }
   });
   const batches = await api("/batches");
+  const names = {};
+  try { const pr = await api("/products?limit=1000"); pr.items.forEach((p) => { names[p.id] = p; }); } catch (_) {}
   const rows = batches.slice(0, 50).map((b) => el("tr", {},
-    el("td", { text: b.batch_number }), el("td", { text: b.buy_price && fmt(b.buy_price) }),
-    el("td", { text: fmt(b.sell_price) }), el("td", { text: b.current_qty }),
-    el("td", { text: b.expiry_date || "—" }),
-    el("td", {}, el("span", { class: "badge " + (b.status === "ACTIVE" ? "badge-green" : "badge-gray"), text: b.status }))));
+    el("td", {}, el("b", { text: (names[b.product_id] || {}).name || ("#" + b.product_id) }), el("div", { class: "muted", text: b.batch_number })),
+    el("td", { text: b.buy_price && fmt(b.buy_price) }),
+    el("td", { text: fmt(b.sell_price) }), el("td", { text: qty(b.current_qty) }),
+    el("td", { text: b.expiry_date ? Jalali.fromIso(b.expiry_date) : "—" }),
+    el("td", { text: faDateTime(b.received_at, false) }),
+    el("td", {}, el("span", { class: "badge " + (b.status === "ACTIVE" ? "badge-green" : "badge-gray"), text: STATUS_FA[b.status] || b.status }))));
   const tbl = $("#b-table");
   tbl.innerHTML = "";
   tbl.append(el("thead", {}, el("tr", {},
-    el("th", { text: "شماره Batch" }), el("th", { text: "خرید" }), el("th", { text: "فروش" }),
-    el("th", { text: "موجودی" }), el("th", { text: "انقضا" }), el("th", { text: "وضعیت" }))),
+    el("th", { text: "کالا / بچ" }), el("th", { text: "خرید" }), el("th", { text: "فروش" }),
+    el("th", { text: "موجودی" }), el("th", { text: "انقضا" }), el("th", { text: "ورود" }), el("th", { text: "وضعیت" }))),
     el("tbody", {}, ...rows));
 };
+
+const STATUS_FA = { ACTIVE: "فعال", SOLD_OUT: "تمام‌شده", EXPIRED: "منقضی", BLOCKED: "مسدود", DRAFT: "پیش‌نویس", IN_PROGRESS: "در حال شمارش",
+  PENDING_APPROVAL: "در انتظار تأیید", ADJUSTED: "اعمال‌شده", COMPLETED: "تکمیل", CANCELLED: "لغو" };
 
 /* ---------- inventory + stocktaking ---------- */
 RENDER.inventory = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="grid grid-2">
-    <div class="card"><h3>موجودی کالاها</h3><table id="i-table"></table></div>
-    <div class="card">
-      <h3>انبارگردانی</h3>
-      <div class="form-row"><div><label>نام</label><input id="st-name" value="انبارگردانی دوره‌ای" /></div></div>
-      <button id="st-create" class="btn btn-primary" style="margin-top:12px">ایجاد انبارگردانی</button>
-      <div id="st-list" style="margin-top:14px"></div>
+  v.innerHTML = `
+  <div id="st-alarms"></div>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-head"><h3>موجودی کالاها</h3><input id="i-q" placeholder="جستجو…" style="max-width:220px" /></div><div class="table-wrap"><table id="i-table"></table></div></div>
+    <div class="card" id="wh-card"><h3>انبارها و محل نگهداری</h3><div id="wh-body" class="muted">…</div></div>
+    <div class="card st-plan">
+      <div class="card-head"><h3>برنامه‌ریزی انبارگردانی</h3><span class="muted">یک جلسهٔ شمارش با هشدار زمان‌بندی‌شده</span></div>
+      <div class="form-grid">
+        <div><label>نام جلسه</label><input id="st-name" value="انبارگردانی دوره‌ای" /></div>
+        <div><label>تاریخ شروع (شمسی)</label><input id="st-date" type="date" /></div>
+        <div><label>انبار</label><select id="st-wh"><option value="">همهٔ انبارها</option></select></div>
+        <div><label>یادآوری</label><input id="st-note" placeholder="مثلاً: قفسه‌های یخچالی اول" /></div>
+      </div>
+      <label class="inline" style="margin-top:8px"><input type="checkbox" id="st-zero" checked /> بچ‌های با موجودی صفر هم شمرده شوند</label>
+      <button id="st-create" class="btn btn-primary btn-block" style="margin-top:12px">ایجاد جلسهٔ انبارگردانی</button>
     </div>
+    <div class="card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
   </div>`;
+  Jalali.attachAll(v);
+
   const stock = await api("/inventory/stock");
-  const rows = stock.map((s) => el("tr", {},
-    el("td", { text: s.name }), el("td", { text: s.barcode }), el("td", { text: s.total_stock }),
-    el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
-      text: s.total_stock <= s.min_stock_alert ? "کم‌موجود" : "عادی" }))));
-  const t = $("#i-table");
-  t.innerHTML = "";
-  t.append(el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "بارکد" }),
-    el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  const drawStock = (q) => {
+    const list = q ? stock.filter((s) => (s.name || "").includes(q) || (s.barcode || "").includes(q)) : stock;
+    const rows = list.slice(0, 300).map((s) => el("tr", {},
+      el("td", { text: s.name }), el("td", { class: "ltr", text: s.barcode }), el("td", { text: qty(s.total_stock) }),
+      el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
+        text: s.total_stock <= s.min_stock_alert ? "کم‌موجود" : "عادی" }))));
+    const t = $("#i-table");
+    t.innerHTML = "";
+    t.append(el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "بارکد" }),
+      el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  };
+  drawStock("");
+  $("#i-q").addEventListener("input", (e) => drawStock(e.target.value.trim()));
+
+  try {
+    const whs = await api("/warehouses");
+    (whs.items || whs).forEach((w) => $("#st-wh").append(el("option", { value: w.id, text: w.name })));
+  } catch (_) {}
 
   $("#st-create").addEventListener("click", async () => {
     try {
-      const st = await api("/inventory/stocktakes", { method: "POST", body: JSON.stringify({ name: $("#st-name").value }) });
-      toast("انبارگردانی ایجاد شد");
-      window._stDetail(st.id);
+      const body = { name: $("#st-name").value.trim() || "انبارگردانی", include_zero: $("#st-zero").checked,
+        scheduled_for: $("#st-date").value || null, reminder_note: $("#st-note").value.trim() || null,
+        warehouse_id: Number($("#st-wh").value) || null };
+      const st = await api("/inventory/stocktakes", { method: "POST", body: JSON.stringify(body) });
+      toast(body.scheduled_for ? "جلسه ایجاد شد و هشدار زمان‌بندی فعال است" : "جلسهٔ انبارگردانی ایجاد شد");
+      if (!body.scheduled_for || body.scheduled_for <= Jalali.todayIso()) window._stWizard(st.id); else RENDER.inventory();
     } catch (e) { toast(e.message, "err"); }
   });
+  await renderWarehousesCard();
+  await renderStocktakeAlarms();
   const list = await api("/inventory/stocktakes");
-  $("#st-list").innerHTML = list.map((s) =>
-    `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span>${s.name}</span><span class="badge badge-${s.status === "COMPLETED" ? "green" : "blue"}">${s.status}</span>
-      <button class="btn btn-sm" onclick="window._stDetail(${s.id})">مشاهده</button></div>`).join("");
+  const box = $("#st-list");
+  if (!list.length) box.innerHTML = `<p class="muted empty">هنوز جلسه‌ای ثبت نشده است.</p>`;
+  box.innerHTML = list.slice(0, 30).map((s) => {
+    const open = s.status === "DRAFT" || s.status === "IN_PROGRESS";
+    const cls = s.status === "ADJUSTED" || s.status === "COMPLETED" ? "green" : s.status === "CANCELLED" ? "gray" : s.status === "PENDING_APPROVAL" ? "amber" : "blue";
+    return `<div class="st-row">
+      <div><b>${esc(s.name)}</b><div class="muted">${s.scheduled_for ? "زمان‌بندی: " + Jalali.fromIso(s.scheduled_for) + " · " : ""}${s.items} قلم${s.completed_at ? " · پایان " + faDateTime(s.completed_at, false) : ""}</div></div>
+      <span class="badge badge-${cls}">${STATUS_FA[s.status] || s.status}</span>
+      <button class="btn btn-sm ${open ? "btn-primary" : ""}" onclick="window._stWizard(${s.id})">${open ? "شروع / ادامهٔ شمارش" : "مشاهده"}</button>
+    </div>`; }).join("");
 };
 
-window._stDetail = async (id) => {
+/* Alarm strip: planned/overdue/open stocktakes (v1.3). Also mounted on the
+ * dashboard so the reminder is seen wherever the day starts. */
+async function renderStocktakeAlarms(targetSel = "#st-alarms") {
+  const host = $(targetSel);
+  if (!host) return;
+  let list = [];
+  try { list = await api("/inventory/stocktakes-upcoming?horizon_days=14"); } catch (_) { return; }
+  const alarms = list.filter((a) => a.days_left !== null || a.status === "IN_PROGRESS");
+  if (!alarms.length) { host.innerHTML = ""; return; }
+  host.innerHTML = alarms.map((a) => {
+    const lvl = a.level === "overdue" ? "bad" : a.level === "today" ? "warn" : a.level === "soon" ? "soon" : "info";
+    const when = a.days_left === null ? "" : a.days_left < 0 ? `${Math.abs(a.days_left)} روز از موعد گذشته` : a.days_left === 0 ? "امروز" : `${a.days_left} روز دیگر`;
+    const prog = a.total ? ` · پیشرفت ${a.counted}/${a.total}` : "";
+    return `<div class="alarm ${lvl}">
+      <span class="alarm-ic">${a.level === "overdue" ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>' : '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M8 15h3"/></svg>'}</span>
+      <div class="alarm-body"><b>انبارگردانی «${esc(a.name)}»</b> ${when ? "— " + when : ""}${prog}
+        ${a.reminder_note ? `<div class="muted">${esc(a.reminder_note)}</div>` : ""}</div>
+      <button class="btn btn-sm btn-primary" onclick="window._stWizard(${a.id})">${a.status === "IN_PROGRESS" ? "ادامه" : "شروع"}</button>
+    </div>`; }).join("");
+}
+
+/* ====== Stocktake wizard: one product per screen, picture + place + batches,
+ * big count box, Enter = save & next. Runs full-screen inside the view. ===== */
+window._stWizard = async (id) => {
+  state.view = "inventory";
+  const v = $("#view");
   const st = await api(`/inventory/stocktakes/${id}`);
-  const prog = await api(`/inventory/stocktakes/${id}/progress`);
-  const rows = st.items.map((i) => `
-    <tr>
-      <td>${i.product_id}</td><td>${i.batch_id || "—"}</td><td>${i.system_qty}</td>
-      <td><input type="number" id="count-${i.id}" value="${i.physical_qty ?? i.system_qty}" /></td>
-      <td>${i.difference ?? 0}</td>
-      <td><button class="btn btn-sm" onclick="window._count(${i.id})">ثبت</button></td>
-    </tr>`).join("");
-  const pct = prog.total ? Math.round((prog.counted / prog.total) * 100) : 0;
-  let actions = "";
-  if (st.status === "PENDING_APPROVAL")
-    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._approve(${id})">تأیید مدیر و اعمال تطبیق</button>`;
-  else if (st.status !== "ADJUSTED" && st.status !== "CANCELLED")
-    actions = `<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="window._complete(${id})">پایان شمارش (ارسال برای تأیید)</button>`;
-  openModal(`<h3>${esc(st.name)}</h3>
-    <p class="muted">وضعیت: ${st.status} | پیشرفت: ${prog.counted}/${prog.total} (${pct}%) — با بستن پنجره، شمارش‌ها ذخیره می‌ماند و بعداً قابل ادامه است.</p>
-    <table><thead><tr><th>کالا</th><th>Batch</th><th>سیستم</th><th>فیزیکی</th><th>اختلاف</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table>
-    ${actions}`);
+  if (st.status === "DRAFT") { try { await api(`/inventory/stocktakes/${id}/start`, { method: "POST" }); st.status = "IN_PROGRESS"; } catch (_) {} }
+  const items = st.items;
+  // group batch rows by product so the operator sees "this product has N batches"
+  const groups = [];
+  const byPid = new Map();
+  items.forEach((it) => {
+    if (!byPid.has(it.product_id)) { byPid.set(it.product_id, { product_id: it.product_id, name: it.product_name, barcode: it.barcode, image_url: it.image_url, rows: [] }); groups.push(byPid.get(it.product_id)); }
+    byPid.get(it.product_id).rows.push(it);
+  });
+  const readOnly = !(st.status === "IN_PROGRESS" || st.status === "DRAFT");
+  let idx = Math.max(0, groups.findIndex((g) => g.rows.some((r) => r.status === "PENDING")));
+  if (readOnly) idx = 0;
+  $("#view-title").textContent = "انبارگردانی — " + st.name;
+
+  const draw = () => {
+    const total = items.length, done = items.filter((r) => r.status !== "PENDING").length;
+    const pct = total ? Math.round(done * 100 / total) : 0;
+    const g = groups[idx];
+    if (!g) {
+      v.innerHTML = `<div class="card st-done"><h2>آیتمی برای شمارش نیست</h2>
+        <button class="btn" onclick="RENDER.inventory()">بازگشت</button></div>`; return;
+    }
+    const rows = g.rows.map((r, i) => `
+      <div class="st-batch ${r.status !== "PENDING" ? "counted" : ""}" data-i="${i}">
+        <div class="st-batch-head">
+          <div><b>بچ ${esc(r.batch_number || ("#" + r.batch_id))}</b>
+            <span class="muted">${r.expiry_date ? " · انقضا " + Jalali.fromIso(r.expiry_date) : ""}${r.location ? " · " + esc(r.location) : ""}</span></div>
+          ${r.status !== "PENDING" ? `<span class="badge ${r.difference ? "badge-amber" : "badge-green"}">${r.difference ? "اختلاف " + fmtSigned(r.difference) : "مطابق"}</span>` : `<span class="badge badge-blue">در انتظار</span>`}
+        </div>
+        <div class="st-qty">
+          <div class="st-sys"><span class="muted">موجودی سیستم</span><b>${qty(r.system_qty)}</b></div>
+          <div class="st-real"><span class="muted">شمارش واقعی</span>
+            <input class="st-input" type="number" inputmode="decimal" min="0" step="any" data-item="${r.id}" data-sys="${r.system_qty}"
+              value="${r.physical_qty ?? ""}" placeholder="؟" ${readOnly ? "disabled" : ""} /></div>
+          <div class="st-diff muted" data-diff="${r.id}">${r.physical_qty != null ? fmtSigned(r.difference) : ""}</div>
+        </div>
+      </div>`).join("");
+    v.innerHTML = `
+      <div class="st-wiz">
+        <div class="st-top">
+          <button class="btn btn-ghost" onclick="RENDER.inventory()">‹ خروج (پیشرفت ذخیره می‌شود)</button>
+          <div class="st-progress"><div class="progress"><div style="width:${pct}%"></div></div>
+            <span>${fa(done)} از ${fa(total)} قلم · ${fa(pct)}٪</span></div>
+          <span class="badge badge-${readOnly ? "gray" : "blue"}">${STATUS_FA[st.status] || st.status}</span>
+        </div>
+        <div class="st-card">
+          <div class="st-media">${g.image_url ? `<img src="${esc(g.image_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'st-noimg',textContent:'بدون تصویر'}))" />` : `<div class="st-noimg"><svg class="st-noimg-ic" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg>بدون تصویر</div>`}</div>
+          <div class="st-info">
+            <div class="st-kicker">کالای ${fa(idx + 1)} از ${fa(groups.length)}</div>
+            <h2>${esc(g.name)}</h2>
+            <div class="muted ltr">${esc(g.barcode || "")}</div>
+            <div class="st-meta">${g.rows.length > 1 ? `<span class="badge badge-blue">${fa(g.rows.length)} بچ</span>` : ""}
+              ${g.rows[0]?.location ? `<span class="badge badge-gray">محل: ${esc(g.rows[0].location)}</span>` : ""}</div>
+            <div class="st-batches">${rows}</div>
+          </div>
+        </div>
+        <div class="st-nav">
+          <button class="btn" id="st-prev" ${idx === 0 ? "disabled" : ""}>‹ قبلی</button>
+          <input id="st-jump" placeholder="اسکن بارکد برای پرش" class="ltr" />
+          ${readOnly ? `<button class="btn" id="st-next">بعدی ›</button>` : `<button class="btn btn-primary" id="st-save">ذخیره و بعدی ⏎</button>`}
+          ${!readOnly ? `<button class="btn btn-danger" id="st-finish">پایان شمارش</button>` : ""}
+          ${st.status === "PENDING_APPROVAL" ? `<button class="btn btn-primary" id="st-approve">تأیید مدیر و اعمال</button>` : ""}
+        </div>
+      </div>`;
+    const inputs = [...v.querySelectorAll(".st-input")];
+    inputs.forEach((inp) => {
+      inp.addEventListener("input", () => { const d = v.querySelector(`[data-diff="${inp.dataset.item}"]`); const val = inp.value === "" ? null : Number(inp.value); d.textContent = val === null ? "" : fmtSigned(val - Number(inp.dataset.sys)); d.className = "st-diff " + (val === null ? "muted" : (val - Number(inp.dataset.sys)) ? "warn" : "ok"); });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); const k = inputs.indexOf(inp); if (k < inputs.length - 1) { inputs[k + 1].focus(); inputs[k + 1].select(); } else $("#st-save")?.click(); }
+      });
+    });
+    const first = inputs.find((i) => i.value === "") || inputs[0];
+    if (first && !readOnly) { first.focus(); first.select(); }
+    $("#st-prev").onclick = () => { if (idx > 0) { idx--; draw(); } };
+    $("#st-next") && ($("#st-next").onclick = () => { if (idx < groups.length - 1) { idx++; draw(); } });
+    $("#st-jump").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const bc = e.target.value.trim(); e.target.value = "";
+      const k = groups.findIndex((gg) => gg.barcode === bc || (gg.name || "").includes(bc));
+      if (k >= 0) { idx = k; draw(); } else toast("کالایی با این بارکد در این جلسه نیست", "err");
+    });
+    $("#st-save") && ($("#st-save").onclick = async () => {
+      const counts = inputs.filter((i) => i.value !== "").map((i) => ({ item_id: Number(i.dataset.item), physical_qty: Number(i.value) }));
+      if (!counts.length) { toast("حداقل یک شمارش وارد کنید", "err"); return; }
+      try {
+        const r = await api("/inventory/stocktakes/count/bulk", { method: "POST", body: JSON.stringify({ counts }) });
+        counts.forEach((c) => { const it = items.find((x) => x.id === c.item_id); it.physical_qty = c.physical_qty; it.difference = c.physical_qty - it.system_qty; it.status = "COUNTED"; });
+        const nextIdx = groups.findIndex((gg, i) => i > idx && gg.rows.some((rr) => rr.status === "PENDING"));
+        if (nextIdx >= 0) { idx = nextIdx; draw(); }
+        else if (items.every((x) => x.status !== "PENDING")) { draw(); toast("همهٔ اقلام شمرده شد — می‌توانید «پایان شمارش» را بزنید"); }
+        else { idx = Math.max(0, groups.findIndex((gg) => gg.rows.some((rr) => rr.status === "PENDING"))); draw(); }
+      } catch (e) { toast(e.message, "err"); }
+    });
+    $("#st-finish") && ($("#st-finish").onclick = async () => {
+      const pending = items.filter((x) => x.status === "PENDING").length;
+      if (pending && !confirm(`${pending} قلم هنوز شمرده نشده. شمارش پایان یابد؟`)) return;
+      try { await api(`/inventory/stocktakes/${id}/complete`, { method: "POST" }); toast("شمارش پایان یافت؛ در انتظار تأیید مدیر"); RENDER.inventory(); } catch (e) { toast(e.message, "err"); }
+    });
+    $("#st-approve") && ($("#st-approve").onclick = () => window._approve(id));
+  };
+  draw();
 };
+window._stDetail = window._stWizard;
+function fa(n) { return String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]); }
+/* v3.5 — staged list rendering: build `page` rows now, the rest behind a «نمایش N مورد بعدی» button.
+   Never inflates hundreds of nodes at once (that froze the tab on long invoice lists). */
+function pagedAppend(host, items, page, make, opts = {}) {
+  let pos = 0;
+  const step = () => {
+    const end = Math.min(items.length, pos + page);
+    const frag = document.createDocumentFragment();
+    for (; pos < end; pos++) { try { const n = make(items[pos], pos); if (n) frag.append(n); } catch (e) { console.warn("row failed", e); } }
+    host.append(frag);
+    const left = items.length - pos;
+    if (left > 0) {
+      const b = el(opts.tag || "button", { class: "btn btn-ghost btn-sm w-full", text: `نمایش ${fa(Math.min(page, left))} مورد بعدی (${fa(left)} مانده)` });
+      b.onclick = () => { b.remove(); requestAnimationFrame(step); };
+      host.append(opts.wrap ? opts.wrap(b) : b);
+    }
+  };
+  step();
+}
+window.pagedAppend = pagedAppend;
+function fmtSigned(n) { const x = Number(n) || 0; return (x > 0 ? "+" : "") + qty(x); }
 
 window._approve = async (id) => {
   try {
@@ -672,27 +1954,12 @@ window._approve = async (id) => {
   } catch (e) { toast(e.message, "err"); }
 };
 
-window._count = async (itemId) => {
-  try {
-    await api("/inventory/stocktakes/count", { method: "POST", body: JSON.stringify({ item_id: itemId, physical_qty: Number(document.getElementById(`count-${itemId}`).value) }) });
-    toast("شمارش ثبت شد");
-  } catch (e) { toast(e.message, "err"); }
-};
-
-window._complete = async (id) => {
-  try {
-    await api(`/inventory/stocktakes/${id}/complete`, { method: "POST" });
-    closeModal(); toast("شمارش پایان یافت؛ در انتظار تأیید مدیر");
-    RENDER.inventory();
-  } catch (e) { toast(e.message, "err"); }
-};
-
 /* ---------- invoices ---------- */
 RENDER.invoices = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="card"><h3>فاکتورها</h3><table id="inv-table"></table></div>`;
-  const { items } = await api("/invoices?limit=100");
-  const rows = items.map((i) => el("tr", {},
+  const { items } = await api("/invoices?limit=400");
+  const mkRow = (i) => el("tr", {},
     el("td", { text: i.invoice_number }), el("td", { text: money(i.total_amount) }),
     el("td", { text: i.payment_method }),
     el("td", {}, el("span", { class: "badge " + (i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-gray"), text: i.status })),
@@ -703,20 +1970,88 @@ RENDER.invoices = async () => {
         if (p.ok && typeof p.message === "string") openModal(`<pre class="receipt">${p.message}</pre>`);
         else toast(p.message, p.ok ? "ok" : "err");
       } }),
-      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: async () => {
-        if (!confirm("فاکتور ابطال شود؟")) return;
-        try { await api(`/invoices/${i.id}/void`, { method: "POST", body: JSON.stringify({}) }); RENDER.invoices(); } catch (e) { toast(e.message, "err"); }
-      } }))));
+      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })));
   const t = $("#inv-table");
   t.innerHTML = "";
+  const tb = el("tbody", {});
   t.append(el("thead", {}, el("tr", {}, el("th", { text: "شماره" }), el("th", { text: "مبلغ" }),
-    el("th", { text: "پرداخت" }), el("th", { text: "وضعیت" }), el("th", { text: "تاریخ" }), el("th", {}))),
-    el("tbody", {}, ...rows));
+    el("th", { text: "پرداخت" }), el("th", { text: "وضعیت" }), el("th", { text: "تاریخ" }), el("th", {}))), tb);
+  pagedAppend(tb, items, 50, mkRow, { wrap: (b) => el("tr", {}, el("td", { colspan: "6" }, b)) });
 };
+
+/* §109/§130/§131 — warehouses, storage locations, transfers */
+async function renderWarehousesCard() {
+  const box = $("#wh-body"); if (!box) return;
+  let list = [];
+  try { list = await api("/warehouses"); } catch (e) { box.textContent = e.message; return; }
+  box.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>انبار</th><th>کد</th><th>موجودی</th><th>ارزش</th><th>محل‌ها</th><th></th></tr></thead>
+      <tbody>${list.map((w) => `<tr>
+        <td>${esc(w.name)} ${w.is_default ? '<span class="badge badge-green">پیش‌فرض</span>' : ""}</td>
+        <td class="muted">${esc(w.code || "—")}</td><td>${w.total_qty}</td><td>${money(w.stock_value)}</td>
+        <td class="muted">${w.locations.map((l) => esc(l.name)).join("، ") || "—"}</td>
+        <td><button class="btn btn-sm" onclick="addLocationModal(${w.id})">+ محل</button></td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="toolbar" style="margin-top:10px">
+      <button class="btn btn-sm" id="wh-add">+ انبار جدید</button>
+      <button class="btn btn-sm btn-primary" id="wh-transfer">انتقال موجودی بین انبارها</button>
+    </div>`;
+  $("#wh-add").addEventListener("click", () => {
+    openModal(`<h3>انبار جدید</h3><label>نام</label><input id="wh-name" /><label>کد</label><input id="wh-code" />
+      <label>آدرس</label><input id="wh-addr" /><button id="wh-save" class="btn btn-primary btn-block" style="margin-top:12px">ذخیره</button>`);
+    $("#wh-save").addEventListener("click", async () => {
+      try { await api("/warehouses", { method: "POST", body: JSON.stringify({ name: $("#wh-name").value, code: $("#wh-code").value || null, address: $("#wh-addr").value || null }) });
+        closeModal(); toast("انبار ثبت شد"); renderWarehousesCard(); } catch (e) { toast(e.message, "err"); }
+    });
+  });
+  $("#wh-transfer").addEventListener("click", async () => {
+    const batches = (await api("/batches")).filter((b) => b.current_qty > 0);
+    const stock = await api("/inventory/stock");
+    const pname = Object.fromEntries(stock.map((p) => [p.product_id, p.name]));
+    openModal(`<h3>انتقال موجودی</h3>
+      <label>Batch مبدأ</label><select id="tr-batch">${batches.map((b) => `<option value="${b.id}">${esc(pname[b.product_id] || b.product_id)} — ${b.batch_number} (${b.current_qty}) [انبار ${b.warehouse_id || "پیش‌فرض"}]</option>`).join("")}</select>
+      <label>تعداد</label><input id="tr-qty" type="number" min="0" step="any" />
+      <label>انبار مقصد</label><select id="tr-wh">${list.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join("")}</select>
+      <label>علت</label><input id="tr-reason" />
+      <button id="tr-go" class="btn btn-primary btn-block" style="margin-top:12px">ثبت انتقال</button>`);
+    $("#tr-go").addEventListener("click", async () => {
+      try { const r = await api("/warehouses/transfer", { method: "POST", body: JSON.stringify({ batch_id: Number($("#tr-batch").value), quantity: Number($("#tr-qty").value), to_warehouse_id: Number($("#tr-wh").value), reason: $("#tr-reason").value || null }) });
+        closeModal(); toast(`انتقال ثبت شد (Batch مقصد #${r.dest_batch_id})`); RENDER.inventory(); } catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+window.addLocationModal = (wid) => {
+  openModal(`<h3>محل نگهداری جدید</h3><label>نام (قفسه / یخچال / سردخانه)</label><input id="loc-name" /><label>کد</label><input id="loc-code" />
+    <button id="loc-save" class="btn btn-primary btn-block" style="margin-top:12px">ذخیره</button>`);
+  $("#loc-save").addEventListener("click", async () => {
+    try { await api(`/warehouses/${wid}/locations`, { method: "POST", body: JSON.stringify({ name: $("#loc-name").value, code: $("#loc-code").value || null }) });
+      closeModal(); toast("محل ثبت شد"); renderWarehousesCard(); } catch (e) { toast(e.message, "err"); }
+  });
+};
+
+/* §14/§209 — void needs a reason and, for PAID invoices, the admin password */
+function voidInvoiceModal(i) {
+  openModal(`<h3>ابطال فاکتور ${esc(i.invoice_number)}</h3>
+    <p class="muted">کالاها به همان Batch برمی‌گردند و سند معکوس ثبت می‌شود.</p>
+    <label>علت ابطال</label><input id="void-reason" autocomplete="off" />
+    ${i.status === "PAID" ? `<label>رمز عبور مدیر (تأیید عملیات حساس)</label><input id="void-pass" type="password" autocomplete="current-password" />` : ""}
+    <button id="void-go" class="btn btn-danger btn-block" style="margin-top:14px">ابطال فاکتور</button>`);
+  $("#void-go").addEventListener("click", async () => {
+    const body = { reason: $("#void-reason").value.trim() || null };
+    const pass = $("#void-pass"); if (pass) body.admin_password = pass.value;
+    try {
+      await api(`/invoices/${i.id}/void`, { method: "POST", body: JSON.stringify(body) });
+      closeModal(); if (window.Sfx) Sfx.play("void"); toast("فاکتور ابطال شد"); RENDER.invoices();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
 
 /* ---------- reports (§49) ---------- */
 const REPORT_TABS = [
   ["daily", "فروش روزانه", "reports.view"],
+  ["weekly", "فروش هفتگی", "reports.view"],
+  ["monthly", "فروش ماهانه (شمسی)", "reports.view"],
   ["cashiers", "صندوق‌دارها", "reports.view"],
   ["profit", "سود به تفکیک Batch", "reports.view"],
   ["inventory", "ارزش موجودی", "reports.view"],
@@ -731,13 +2066,14 @@ RENDER.reports = async () => {
   const today = new Date().toISOString().slice(0, 10);
   v.innerHTML = `
     <div class="card" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <input type="date" id="rep-start" value="${today}" style="max-width:170px" />
+      <input type="date" id="rep-start" value="${today}" style="max-width:190px" />
       <span class="muted">تا</span>
       <input type="date" id="rep-end" value="${today}" style="max-width:170px" />
       <button id="rep-refresh" class="btn btn-primary" style="max-width:120px">بروزرسانی</button>
     </div>
     <div id="rep-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
     <div id="rep-out"></div>`;
+  Jalali.attachAll(v);
   $("#rep-refresh").addEventListener("click", () => runReport(state.repTab || "daily"));
   const tabs = $("#rep-tabs");
   REPORT_TABS.forEach(([key, label, perm]) => {
@@ -765,6 +2101,18 @@ async function runReport(tab) {
         el("h3", { text: `فروش روزانه (مجموع: ${money(d.total_sales)} در ${d.invoice_count} فاکتور)` }),
         el("table", {}, el("thead", {}, el("tr", {},
           el("th", { text: "تاریخ" }), el("th", { text: "فاکتور" }), el("th", { text: "فروش" }))),
+          el("tbody", {}, ...rows))));
+    } else if (tab === "weekly" || tab === "monthly") {
+      const d = await api(`/reports/sales?start=${start}&end=${end}&group=${tab}`);
+      const rows = (d.groups || []).map((g) => el("tr", {},
+        el("td", { text: g.period }), el("td", { class: "muted", text: `${g.first_day} → ${g.last_day}` }),
+        el("td", { text: g.invoice_count }), el("td", { text: money(g.total) })));
+      out.innerHTML = "";
+      out.append(el("div", { class: "card" },
+        el("h3", { text: `${tab === "monthly" ? "فروش ماهانه" : "فروش هفتگی"} (مجموع: ${money(d.total_sales)} در ${d.invoice_count} فاکتور)` }),
+        el("table", {}, el("thead", {}, el("tr", {},
+          el("th", { text: tab === "monthly" ? "ماه شمسی" : "هفته" }), el("th", { text: "بازه" }),
+          el("th", { text: "فاکتور" }), el("th", { text: "فروش" }))),
           el("tbody", {}, ...rows))));
     } else if (tab === "cashiers") {
       const rows = await api(`/reports/cashiers?start=${start}&end=${end}`);
@@ -823,7 +2171,7 @@ async function runReport(tab) {
           el("h3", {}, el("span", { class: "badge " + cls, text: label }), ` ${items.length} مورد`),
           el("table", {}, el("tbody", {}, ...items.slice(0, 30).map((i) => el("tr", {},
             el("td", { text: i.product_name }), el("td", { text: i.qty + " عدد" }),
-            el("td", { text: "انقضا: " + i.expiry }), el("td", { text: money(i.value) }))))));
+            el("td", { text: "انقضا: " + Jalali.fromIso(i.expiry) }), el("td", { text: money(i.value) }))))));
       });
       out.append(...cards);
     } else if (tab === "adjustments") {
@@ -858,14 +2206,20 @@ async function runReport(tab) {
 /* ---------- hardware ---------- */
 RENDER.hardware = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="grid grid-2">
+  v.innerHTML = `<div class="card scanner-card" style="margin-bottom:14px">
+    <div class="card-head"><h3>${icon("scanner", 20)} بارکدخوان</h3><button id="h-scan-discover" class="btn">جستجوی خودکار بارکدخوان</button></div>
+    <div id="h-scanners" class="muted">برای شناسایی خودکار بارکدخوان‌های USB روی «جستجوی خودکار» بزنید. بارکدخوان‌های صفحه‌کلیدی (HID) بدون درایور کار می‌کنند؛ برای مدل‌های سریال، لینک درایور سازنده نمایش داده می‌شود.</div>
+    <div class="scan-test"><label>تست اسکن — همین‌جا یک بارکد بزنید</label><div class="scan-field">${icon("barcode", 20)}<input id="h-scan-test" class="scan-input" placeholder="منتظر اسکن…" autocomplete="off" /></div><div id="h-scan-result" class="muted"></div></div>
+  </div>
+  <div class="grid grid-2">
     <div class="card"><h3>وضعیت سخت‌افزار</h3><div id="h-status"></div></div>
     <div class="card"><h3>ثبت دستگاه</h3>
       <div class="form-row">
         <div><label>نوع</label><select id="h-type"><option>PRINTER</option><option>BARCODE_SCANNER</option><option>CASH_DRAWER</option></select></div>
         <div><label>نام</label><input id="h-name" /></div>
-        <div><label>اتصال (اختیاری)</label><input id="h-conn" placeholder="file:///receipt.txt یا پورت" /></div>
+        <div><label>اتصال</label><input id="h-conn" placeholder="tcp://192.168.1.50:9100 | escpos:usb:04b8:0e15 | escpos:win:POS-80 | file:///receipt.txt" /></div>
       </div>
+      <p class="muted" style="margin-top:6px">پرینتر شبکه: <code>tcp://IP:9100</code> (بدون نیاز به درایور) · USB: <code>escpos:usb:VID:PID</code> · اسپولر ویندوز: <code>escpos:win:نام‌چاپگر</code>. کشوی پول از طریق همین پرینتر (ESC p) باز می‌شود؛ پین و فعال‌بودن آن در تنظیمات ← «کشوی پول».</p>
       <button id="h-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
       <div style="margin-top:14px">
         <button id="h-test-print" class="btn">تست چاپ</button>
@@ -873,13 +2227,50 @@ RENDER.hardware = async () => {
       </div>
     </div>
   </div>`;
-  const health = await api("/hardware/health");
-  $("#h-status").innerHTML = `<p>پرینتر: <span class="badge badge-${health.printer === "CONNECTED" ? "green" : "red"}">${health.printer}</span></p>
-    <p>اسکنر: <span class="badge badge-${health.scanner === "CONNECTED" ? "green" : "red"}">${health.scanner}</span></p>
-    <p>کشوی پول: <span class="badge badge-${health.cash_drawer === "CONNECTED" ? "green" : "red"}">${health.cash_drawer}</span></p>`;
+  const HW_FA = { CONNECTED: "متصل", DISCONNECTED: "قطع", UNKNOWN: "نامشخص", NOT_CONFIGURED: "پیکربندی‌نشده", ERROR: "خطا" };
+  const hwBadge = (st) => `<span class="badge badge-${st === "CONNECTED" ? "green" : "red"}">${esc(HW_FA[st] || st)}</span>`;
+  RENDER.hardware.refreshHealth = async () => {
+    const health = await api("/hardware/health");
+    const node = $("#h-status");
+    if (node) node.innerHTML = `<p>پرینتر: ${hwBadge(health.printer)}</p>
+    <p>بارکدخوان: ${hwBadge(health.scanner)}</p>
+    <p>کشوی پول: ${hwBadge(health.cash_drawer)}</p>`;
+  };
+  await RENDER.hardware.refreshHealth();
   $("#h-add").addEventListener("click", async () => {
     try { await api("/hardware", { method: "POST", body: JSON.stringify({ device_type: $("#h-type").value, name: $("#h-name").value, connection: $("#h-conn").value || null }) });
       toast("ثبت شد"); RENDER.hardware(); } catch (e) { toast(e.message, "err"); }
+  });
+  $("#h-scan-discover").addEventListener("click", async () => {
+    const box = $("#h-scanners");
+    box.innerHTML = `<span class="muted">در حال جستجو…</span>`;
+    try {
+      const r = await api("/hardware/scanner/discover");
+      if (!r.scanners.length) { box.innerHTML = `<div class="alarm info"><span class="alarm-ic">${icon("scanner", 22)}</span><div class="alarm-body">${esc(r.message)}</div></div>`; return; }
+      box.innerHTML = r.scanners.map((d) => `<div class="alarm ${d.ready ? "ok" : "soon"}"><span class="alarm-ic">${icon("scanner", 22)}</span>
+        <div class="alarm-body"><b>${esc(d.name)}</b> ${d.vendor ? `<span class="muted">· ${esc(d.vendor)}</span>` : ""}
+          <div class="muted">${esc(d.note)}${d.vid != null ? ` · VID ${d.vid.toString(16).padStart(4, "0")} PID ${(d.pid || 0).toString(16).padStart(4, "0")}` : ""}</div>
+          ${d.driver_url ? `<a href="${esc(d.driver_url)}" target="_blank" rel="noopener">دانلود درایور سازنده</a>` : ""}</div>
+        <span class="badge ${d.ready ? "badge-green" : "badge-amber"}">${d.ready ? "آماده" : "نیاز به بررسی"}</span></div>`).join("")
+        + (r.registered ? `<div class="muted" style="margin-top:6px">ثبت شد: ${esc(r.registered.name)} (${esc(r.registered.status)})</div>` : "");
+      RENDER.hardware.refreshHealth && RENDER.hardware.refreshHealth();
+    } catch (e) { box.innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+  });
+  const scanTimes = [];
+  $("#h-scan-test").addEventListener("keydown", async (e) => {
+    const now = performance.now();
+    if (e.key.length === 1) scanTimes.push(now);
+    if (e.key !== "Enter") return;
+    const gaps = scanTimes.slice(1).map((t, i) => t - scanTimes[i]);
+    const code = e.target.value.trim(); e.target.value = ""; scanTimes.length = 0;
+    if (!code) return;
+    try {
+      const r = await api("/hardware/scanner/detect", { method: "POST", body: JSON.stringify({ intervals_ms: gaps }) });
+      $("#h-scan-result").innerHTML = r.is_scanner
+        ? `<span class="ok">✓ بارکدخوان شناسایی شد — کد <span class="ltr">${esc(code)}</span> (${gaps.length} کاراکتر، بیشینهٔ فاصله ${Math.round(Math.max(0, ...gaps))} ms)</span>`
+        : `<span class="muted">ورودی به‌صورت تایپ دستی تشخیص داده شد (فاصلهٔ کلیدها ${Math.round(Math.max(0, ...gaps))} ms). با بارکدخوان اسکن کنید.</span>`;
+      if (r.is_scanner) { await api("/hardware/scanner/discover").catch(() => {}); RENDER.hardware.refreshHealth && RENDER.hardware.refreshHealth(); }
+    } catch (err) { $("#h-scan-result").textContent = err.message; }
   });
   $("#h-test-print").addEventListener("click", async () => { const r = await api("/hardware/test/print", { method: "POST" }); toast(r.message, r.ok ? "ok" : "err"); });
   $("#h-test-drawer").addEventListener("click", async () => { const r = await api("/hardware/test/drawer", { method: "POST" }); toast(r.message, r.ok ? "ok" : "err"); });
@@ -915,32 +2306,906 @@ RENDER.users = async () => {
 };
 
 /* ---------- settings ---------- */
+/* §36 — the settings page used to be one undifferentiated key/value dump.
+   It is now grouped into Persian categories with a tab bar, so an operator
+   changing the receipt footer never has to scroll past SMS credentials. */
+/* Persian descriptions for every settings key (§246 — no English leaks in the UI). */
+const SETTING_FA = {
+ "images.auto_find": "یافتن خودکار تصویر کالا هنگام ثبت",
+ "images.web_fallback": "جست‌وجوی تصویر در وب وقتی منابع اصلی نتیجه ندارند",
+ "images.generic_fallback": "استفاده از عکس‌های عمومی وقتی عکس بسته‌بندی پیدا نشود",
+ "images.retail.digikala": "شناسایی و تصویر کالا: منبع فروشگاهی ۱",
+ "images.retail.okala": "شناسایی و تصویر کالا: منبع فروشگاهی ۲ (نیاز به پیکربندی — پیش‌فرض خاموش)",
+ "images.retail.basalam": "شناسایی و تصویر کالا: منبع فروشگاهی ۳",
+ "images.retail.torob": "شناسایی و تصویر کالا: منبع فروشگاهی ۴ (پیش‌فرض خاموش)",
+ "pos.tax_rate": "نرخ مالیات (درصد)",
+ "pos.allocation_policy": "سیاست انتخاب Batch پیش‌فرض (FIFO/FEFO)",
+ "pos.batch_selection_mode": "حالت انتخاب Batch در صندوق (خودکار/پرسش)",
+ "pos.currency": "واحد پول پایه: IRT تومان | IRR ریال (مبالغ با همین واحد ذخیره می‌شوند)",
+ "pos.coupon_enabled": "فعال‌بودن کوپن در صندوق",
+ "pos.print_after_checkout": "چاپ خودکار رسید پس از پرداخت",
+ "pos.allow_negative_stock": "اجازهٔ فروش با موجودی منفی",
+ "pos.kiosk_shortcut": "کلید میانبر حالت قفل صندوق",
+ "expiry.block_sale": "مسدودکردن فروش کالای منقضی",
+ "expiry.days.today": "آستانهٔ هشدار: امروز (روز)",
+ "expiry.days.three": "آستانهٔ هشدار: ۳ روز",
+ "expiry.days.seven": "آستانهٔ هشدار: ۷ روز",
+ "expiry.days.thirty": "آستانهٔ هشدار: ۳۰ روز",
+ "barcode.scanner.min_interval_ms": "حداقل فاصلهٔ کلیدها برای تشخیص بارکدخوان (میلی‌ثانیه)",
+ "sms.provider": "سرویس پیامک: phone (سیم‌کارت گوشی متصل) | melipayamak | kavenegar | file | خالی=غیرفعال",
+ "sms.send_invoice": "ارسال خودکار پیامک فاکتور به مشتری (مستقل از چاپ رسید)",
+ "sms.send_immediately": "ارسال فوری به محض تأیید فاکتور (در غیر این صورت با نوبت صف)",
+ "sms.username": "نام کاربری پنل پیامک",
+ "sms.password": "رمز/کلید API پنل پیامک",
+ "sms.api_key": "کلید API (کاوه‌نگار)",
+ "sms.sender": "شمارهٔ خط ارسال (حالت خط اختصاصی)",
+ "sms.melipayamak_mode": "حالت ملی‌پیامک: line (خط اختصاصی) | pattern (الگو/خط خدماتی)",
+ "sms.melipayamak_body_id": "شناسهٔ الگو (bodyId) در حالت pattern",
+ "sms.melipayamak_url": "آدرس REST جایگزین (پروکسی/آزمون)؛ خالی = رسمی",
+ "sms.file_path": "مسیر فایل خروجی سرویس file (آزمایشی)",
+ "sms.template.debt_reminder": "الگوی پیامک یادآوری بدهی",
+ "sms.template.invoice": "الگوی پیامک فاکتور",
+ "sms.template.coupon": "الگوی پیامک کوپن",
+ "sms.template.low_stock": "الگوی پیامک هشدار انبار",
+ "sms.template.daily_report": "الگوی پیامک گزارش روزانهٔ مدیریت",
+ "sms.admin_phone": "شمارهٔ مدیر برای هشدار/گزارش (پیش‌فرض: همراه فروشگاه)",
+ "sms.low_stock_alert": "ارسال هشدار کمبود موجودی پس از اسکن انبار",
+ "sms.send_invoice": "ارسال پیامک فاکتور به مشتری ثبت‌شده",
+ "sms.max_retries": "حداکثر تلاش ارسال پیش از FAILED",
+ "sms.worker_interval_seconds": "فاصلهٔ اجرای صف پیامک (ثانیه)",
+ "printer.paper_width_mm": "عرض کاغذ پرینتر حرارتی (۵۸/۷۶/۸۰ میلی‌متر)",
+ "printer.cut": "برش کاغذ پس از هر رسید (ESC/POS)",
+ "printer.drawer.enabled": "باز کردن کشوی پول در فروش نقدی",
+ "printer.drawer.pin": "پین کشوی پول (۲ یا ۵)",
+ "printer.header": "متن سربرگ رسید",
+ "printer.footer": "متن پای رسید",
+ "inventory.default_min_stock": "حداقل موجودی پیش‌فرض کالای جدید",
+ "inventory.low_stock_alert": "اعلان کمبود موجودی در داشبورد",
+ "products.autofill_requires_confirm": "داده‌های Resolver پیش از ثبت نیاز به تأیید دارند",
+ "pricing.default_margin_percent": "درصد سود پیش‌فرض برای پیشنهاد قیمت",
+ "pricing.round_to": "گردکردن قیمت به مضرب",
+ "customers.default_credit_limit": "سقف اعتبار پیش‌فرض مشتری",
+ "ledger.block_over_limit": "مسدودکردن فروش دفتری بالاتر از سقف",
+ "marketing.coupon_prefix": "پیشوند کد کوپن",
+ "marketing.max_discount_percent": "حداکثر درصد تخفیف مجاز",
+ "network.lan_port": "پورت سرویس در شبکهٔ داخلی",
+ "security.session_minutes": "مدت اعتبار نشست (دقیقه)",
+ "security.require_admin_for_void_paid": "ابطال فاکتور پرداخت‌شده نیازمند رمز مدیر",
+ "backup.keep": "تعداد نسخه‌های پشتیبان نگه‌داشته‌شده",
+ "sync.worker_interval_seconds": "فاصلهٔ اجرای صف همگام‌سازی (ثانیه)",
+ "stocktake.require_approval": "نهایی‌سازی انبارگردانی نیازمند تأیید مدیر",
+ "store.name": "نام فروشگاه",
+ "store.legal_name": "نام حقوقی",
+ "store.phone": "تلفن",
+ "store.mobile": "همراه",
+ "store.address": "آدرس",
+ "store.city": "شهر",
+ "store.postal_code": "کد پستی",
+ "store.tax_id": "شناسهٔ مالیاتی",
+ "store.logo_path": "مسیر لوگو (از تب پروفایل بارگذاری کنید)",
+ "store.receipt_note": "یادداشت پای فاکتور",
+ "time.timezone": "منطقهٔ زمانی",
+ "time.calendar": "تقویم نمایش (jalali)",
+ "time.ntp_enabled": "همگام‌سازی ساعت با NTP",
+ "time.ntp_servers": "سرورهای NTP",
+ "time.max_drift_seconds": "حداکثر اختلاف مجاز ساعت (ثانیه)",
+ "update.channel": "کانال به‌روزرسانی: github | server",
+ "update.server_url": "آدرس manifest سرور به‌روزرسانی (JSON: version, asset_url, sha256 …)",
+ "update.server_token": "توکن Bearer سرور به‌روزرسانی (اختیاری)",
+ "ui.theme": "پوسته: light | dark | auto",
+ "ui.theme_light_at": "ساعت شروع حالت روشن (auto)",
+ "ui.theme_dark_at": "ساعت شروع حالت تیره (auto)"
+};
+
+const SET_CATEGORIES = [
+  { id: "store",    label: "پروفایل فروشگاه", prefixes: ["store."], panel: "store" },
+  { id: "general",  label: "عمومی و زمان",    prefixes: ["time.", "sync."], panel: "general" },
+  { id: "pos",      label: "صندوق (POS)",     prefixes: ["pos."], exclude: ["pos.currency"] },
+  { id: "currency", label: "واحد پول (تومان/ریال)", prefixes: ["pos.currency"] },
+  { id: "inv",      label: "انبار",           prefixes: ["stocktake.", "inventory."] },
+  { id: "expiry",   label: "تاریخ انقضا",     prefixes: ["expiry."] },
+  { id: "products", label: "محصولات",         prefixes: ["products."] },
+  { id: "barcode",  label: "بارکد و اسکنر",   prefixes: ["barcode."] },
+  { id: "pricing",  label: "قیمت‌گذاری",      prefixes: ["pricing."] },
+  { id: "customers",label: "مشتریان",         prefixes: ["customers."] },
+  { id: "ledger",   label: "حساب دفتری",      prefixes: ["ledger."] },
+  { id: "campaign", label: "جشنواره و تخفیف", prefixes: ["marketing."] },
+  { id: "sms",      label: "پیامک",           prefixes: ["sms."], exclude: ["sms.template."], panel: "sms" },
+  { id: "smstpl",   label: "الگوهای پیامک",   prefixes: ["sms.template."] },
+  { id: "print",    label: "پرینتر حرارتی",   prefixes: ["printer."], exclude: ["printer.drawer."] },
+  { id: "drawer",   label: "کشوی پول",        prefixes: ["printer.drawer."] },
+  { id: "network",  label: "شبکه",            prefixes: ["network."] },
+  { id: "security", label: "امنیت",           prefixes: ["security."] },
+  { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."], panel: "backup" },
+  { id: "catalog",  label: "بانک محصولات (اکسل + تصاویر)", prefixes: [], panel: "catalog" },
+  { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
+  { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
+  { id: "license",  label: "لایسنس",          prefixes: [], panel: "license" },
+  { id: "mobile",   label: "موبایل (اندروید)", prefixes: [], panel: "mobile" },
+  { id: "cloud",    label: "همگام‌سازی ابری (اینترنت)", prefixes: ["cloud."], panel: "cloud" },
+  { id: "ai",       label: "هوش فروشگاه",     prefixes: ["insights.", "ai."], panel: "ai" },
+  { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
+];
+
 RENDER.settings = async () => {
   const v = $("#view");
-  v.innerHTML = `<div class="card"><h3>تنظیمات سیستم</h3><table id="s-table"></table></div>`;
-  const rows = await api("/settings");
-  const t = $("#s-table");
-  const trs = rows.map((s) => el("tr", {},
-    el("td", { text: s.key }),
+  const allRows = await api("/settings");
+
+  v.innerHTML = `<div class="set-tabs" id="set-tabs"></div><div id="set-body"></div>`;
+  const tabsEl = $("#set-tabs");
+  SET_CATEGORIES.forEach((cat, i) => {
+    const b = el("button", { class: "set-tab" + (i === 0 ? " active" : ""), text: cat.label, "data-cat": cat.id,
+      onclick: () => {
+        tabsEl.querySelectorAll(".set-tab").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        renderSettingsPanel(cat, allRows);
+      } });
+    tabsEl.append(b);
+  });
+  renderSettingsPanel(SET_CATEGORIES[0], allRows);
+};
+
+
+/* ---------- v3.4 — «بانک محصولات» از پوشه: Excel + pic folders → products, images, catalog.pack ---------- */
+const CATALOG_HELP = `پوشهٔ بانک محصولات را باز کنید و کل پوشه‌های خود را (با همان ساختار) داخل آن کپی کنید:
+هر پوشه یک فایل اکسل با ستون‌های «نام محصول | دسته | زیر دسته | بارکد | تصویر ۱ | تصویر ۲ | تصویر ۳» و یک پوشهٔ «pic» با تصاویر همان اکسل.
+سپس «وارد کردن» را بزنید. عکس‌های اکسل با نام .jpg نوشته شده باشند ولی فایل واقعی .webp باشد هم مشکلی نیست. اجرای دوباره، فقط موارد جدید/تغییرکرده را به‌روز می‌کند.`;
+
+async function renderCatalogFolderCard(holder, opts = {}) {
+  if (!holder) return;
+  const fa = (n) => String(n ?? 0).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+  const mb = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " KB";
+  const card = el("div", { class: "card", id: "catalog-card", style: "margin-bottom:14px" });
+  holder.innerHTML = ""; holder.append(card);
+  card.innerHTML = `<h3>بانک محصولات فروشگاه (اکسل + تصاویر، کاملاً آفلاین)</h3>
+    <p class="muted" style="white-space:pre-line">${CATALOG_HELP}</p>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="muted">پوشه:</span><code id="cat-root" dir="ltr" style="user-select:all"></code>
+      <button id="cat-open" class="btn btn-ghost btn-sm">باز کردن پوشه</button>
+    </div>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <button id="cat-scan" class="btn btn-ghost">بررسی پوشه (بدون تغییر)</button>
+      <button id="cat-import" class="btn btn-primary">وارد کردن محصولات و تصاویر</button>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="cat-replace"/> تصاویر قبلی کالاها هم با تصویر پوشه جایگزین شود</label>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="cat-dl"/> اگر تصویری در پوشه نبود و در اکسل نشانی اینترنتی داشت، دانلود شود (نیاز به اینترنت)</label>
+    </div>
+    <div id="cat-progress" style="margin-top:10px;display:none"><div class="muted" id="cat-prog-text"></div><div style="height:8px;background:var(--border,#ddd);border-radius:4px;overflow:hidden;margin-top:4px"><div id="cat-prog-bar" style="height:100%;width:0;background:var(--primary,#3b82f6)"></div></div></div>
+    <div id="cat-out" class="muted" style="margin-top:8px"></div>
+    <hr style="margin:12px 0;border:0;border-top:1px solid var(--border,#eee)"/>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <b>بستهٔ گوشی (catalog.pack):</b> <span id="cat-pack" class="muted">—</span>
+      <a id="cat-pack-dl" class="btn btn-ghost btn-sm" href="#">دانلود برای کپی روی گوشی</a>
+      <button id="cat-pack-build" class="btn btn-ghost btn-sm">ساخت دوبارهٔ بسته</button>
+    </div>
+    <p class="muted" style="margin:6px 0 0">گوشی‌های همراه (اندروید) در تنظیمات → «بانک محصولات» → «دریافت از رایانه» همین بسته را از طریق شبکهٔ داخلی می‌گیرند؛ یا فایل را با کابل/بلوتوث روی گوشی کپی و از همان صفحه انتخاب کنید.</p>`;
+  let timer = null;
+  const showResult = (r) => {
+    if (!r) return;
+    const out = $("#cat-out"); out.innerHTML = "";
+    if (r.error) { out.append(el("span", { class: "err", text: r.error })); return; }
+    const line = `${fa(r.sheets)} فایل اکسل · ${fa(r.rows)} محصول (${fa(r.with_image)} با تصویر، ${fa(r.without_image)} بدون تصویر)` +
+      (r.created !== undefined ? ` → ${fa(r.created)} جدید، ${fa(r.updated)} به‌روزرسانی، ${fa(r.images)} تصویر ذخیره شد · ${fa(r.seconds)} ثانیه` : "") +
+      (r.duplicates ? ` · ${fa(r.duplicates)} بارکد تکراری ادغام شد` : "") + (r.downloadable ? ` · ${fa(r.downloadable)} مورد بدون فایل محلی ولی با نشانی اینترنتی (تیک دانلود)` : "") + (r.at ? ` · آخرین اجرا: ${new Date(r.at).toLocaleString("fa-IR")}` : "");
+    out.append(el("div", { text: line }));
+    if (r.errors && r.errors.length) out.append(el("div", { class: "err", text: "خطاها: " + r.errors.join(" | ") }));
+    if (r.missing && r.missing.length) {
+      const det = el("details", {}, el("summary", { text: `تصاویر پیدا نشده (${fa(r.missing.length)} مورد اول)` }));
+      const ul = el("ul", { style: "max-height:200px;overflow:auto;font-size:12px" });
+      r.missing.forEach((m) => ul.append(el("li", { text: `${m.name} — ${m.barcode} — ${(m.images || []).join(", ") || "بدون نام تصویر"} (${m.sheet})` })));
+      det.append(ul); out.append(det);
+    }
+    if (r.pack) $("#cat-pack").textContent = `${fa(r.pack.items)} محصول، ${fa(r.pack.images)} تصویر، ${mb(r.pack.bytes)}`;
+  };
+  const refresh = async () => {
+    let st; try { st = await api("/catalog/folder"); } catch (e) { $("#cat-out").textContent = e.message; return; }
+    $("#cat-root").textContent = st.root;
+    $("#cat-pack").textContent = st.pack && st.pack.exists ? `${mb(st.pack.bytes)} · ${new Date(st.pack.at).toLocaleString("fa-IR")}` : "هنوز ساخته نشده";
+    const j = st.job || {};
+    const prog = $("#cat-progress");
+    if (j.running) {
+      prog.style.display = ""; $("#cat-import").disabled = true;
+      const pct = j.total ? Math.round(j.done * 100 / j.total) : 0;
+      $("#cat-prog-text").textContent = j.total ? `در حال وارد کردن ${fa(j.done)} از ${fa(j.total)} — ${j.current || ""}` : "در حال خواندن پوشه…";
+      $("#cat-prog-bar").style.width = pct + "%";
+      if (!timer) timer = setInterval(refresh, 1500);
+    } else {
+      prog.style.display = "none"; $("#cat-import").disabled = false;
+      if (timer) { clearInterval(timer); timer = null; if (st.result) { toast("وارد کردن بانک محصولات تمام شد"); if (RENDER.products && location.hash.includes("products")) setTimeout(() => RENDER.products(), 300); } }
+      if (j.error) $("#cat-out").innerHTML = `<span class="err">خطا: ${j.error}</span>`;
+      else showResult(st.result || st.last);
+    }
+  };
+  $("#cat-open").addEventListener("click", async () => { try { await api("/catalog/folder/open", { method: "POST" }); } catch (e) { toast("پوشه را دستی باز کنید: " + $("#cat-root").textContent, "err"); } });
+  $("#cat-scan").addEventListener("click", async () => {
+    $("#cat-out").textContent = "در حال بررسی پوشه…";
+    try { showResult(await api("/catalog/folder/scan", { method: "POST", body: JSON.stringify({}) })); } catch (e) { $("#cat-out").innerHTML = `<span class="err">${e.message}</span>`; }
+  });
+  $("#cat-import").addEventListener("click", async () => {
+    try { const r = await api("/catalog/folder/import", { method: "POST", body: JSON.stringify({ replace_images: $("#cat-replace").checked, download_missing: $("#cat-dl").checked }) }); if (r.started === false) toast("وارد کردن قبلی هنوز در جریان است"); }
+    catch (e) { toast(e.message, "err"); }
+    refresh();
+  });
+  $("#cat-pack-build").addEventListener("click", async () => { $("#cat-pack").textContent = "در حال ساخت…"; try { const r = await api("/catalog/pack/build", { method: "POST" }); $("#cat-pack").textContent = `${fa(r.items)} محصول، ${fa(r.images)} تصویر، ${mb(r.bytes)}`; toast("بسته ساخته شد"); } catch (e) { toast(e.message, "err"); refresh(); } });
+  $("#cat-pack-dl").addEventListener("click", async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API}/catalog/pack`, { headers: { Authorization: "Bearer " + state.token } });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const blob = await res.blob(); const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "catalog.pack"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (err) { toast(String(err.message || err), "err"); }
+  });
+  await refresh();
+}
+
+async function renderSettingsPanel(cat, allRows) {
+  const body = $("#set-body");
+  body.innerHTML = "";
+
+  if (cat.panel === "store") {
+    const card = el("div", { class: "card", id: "store-card" });
+    card.innerHTML = `<h3>پروفایل فروشگاه</h3>
+      <p class="muted">این اطلاعات روی فاکتور چاپی، نوار وضعیت و صفحهٔ ورود نمایش داده می‌شود.</p>
+      <div class="form-grid" id="store-form"></div>
+      <button class="btn btn-primary" id="store-save" style="margin-top:12px">ذخیره پروفایل</button>`;
+    body.append(card);
+    await renderStoreProfile();
+    return;
+  }
+  if (cat.panel === "theme") {
+    const card = el("div", { class: "card" });
+    card.innerHTML = `<h3>ظاهر و پوسته</h3><div id="theme-box" class="muted">…</div>`;
+    body.append(card);
+    await renderThemeBox();
+    // v1.5.1 sound effects (per-device setting)
+    const sc = el("div", { class: "card", id: "sfx-card" });
+    const on = window.Sfx ? Sfx.enabled() : false;
+    sc.innerHTML = `<h3>صداها</h3><p class="muted">صدای کوتاه برای فروش موفق، افزودن کالا، خطا، ورود و هشدارها (فقط روی همین دستگاه ذخیره می‌شود).</p>
+      <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+        <label class="row" style="gap:6px"><input type="checkbox" id="sfx-on" ${on ? "checked" : ""}/> فعال</label>
+        <label class="row" style="gap:6px">بلندی <input type="range" id="sfx-vol" min="0" max="1" step="0.05" value="${window.Sfx ? Sfx.volume() : 0.5}" style="width:160px"/></label>
+        <button class="btn btn-sm" id="sfx-test-success">تست: فروش موفق</button>
+        <button class="btn btn-sm" id="sfx-test-add">تست: افزودن کالا</button>
+        <button class="btn btn-sm" id="sfx-test-alert">تست: هشدار</button>
+        <button class="btn btn-sm" id="sfx-test-welcome">تست: موسیقی خوش‌آمد</button>
+        <button class="btn btn-sm" id="sfx-test-void">تست: ابطال فاکتور</button>
+      </div>`;
+    body.append(sc);
+    $("#sfx-on").onchange = (e) => { Sfx.setEnabled(e.target.checked); if (e.target.checked) Sfx.play("ready"); };
+    $("#sfx-vol").oninput = (e) => { Sfx.setVolume(e.target.value); };
+    $("#sfx-vol").onchange = () => Sfx.play("add");
+    $("#sfx-test-success").onclick = () => Sfx.play("success");
+    $("#sfx-test-add").onclick = () => Sfx.play("add");
+    $("#sfx-test-alert").onclick = () => Sfx.play("alert");
+    $("#sfx-test-welcome").onclick = () => Sfx.play("welcome");
+    $("#sfx-test-void").onclick = () => Sfx.play("void");
+    return;
+  }
+  if (cat.panel === "general") {
+    const grid = el("div", { class: "grid grid-2" });
+    const timeCard = el("div", { class: "card" });
+    timeCard.innerHTML = `<h3>تاریخ و ساعت</h3><div id="time-box" class="muted">…</div>
+      <button class="btn btn-sm" id="time-verify" style="margin-top:10px">بررسی با سرور زمان (NTP)</button>
+      <div id="time-result" style="margin-top:8px"></div>`;
+    grid.append(timeCard);
+    body.append(grid);
+    await renderTimeBox();
+  }
+  if (cat.panel === "update") {
+    const card = el("div", { class: "card" });
+    card.innerHTML = `<h3>به‌روزرسانی سامانه</h3><div id="upd-box" class="muted">در حال بررسی…</div>
+      <div id="upd-steps" style="margin-top:10px"></div>`;
+    body.append(card);
+    renderUpdateBox();  // settings table for update.* follows below (no return)
+  }
+  if (cat.panel === "mobile") {
+    await renderMobilePanel(body);
+    return;
+  }
+  if (cat.panel === "cloud") {
+    await renderCloudPanel(body);
+    return;
+  }
+  if (cat.panel === "license") {
+    const card = el("div", { class: "card", id: "license-card" });
+    body.append(card);
+    if (window.Onboarding) await Onboarding.licensePanel(card);
+    return;
+  }
+
+  if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
+  if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
+  if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
+  if (cat.panel === "about") {
+    const card = el("div", { class: "card" });
+    card.innerHTML = `<h3>درباره سامانه</h3><div id="about-box" class="muted">…</div>`;
+    body.append(card);
+    await renderAbout();
+    return;
+  }
+
+  if (cat.panel === "sms") {
+    const tools = el("div", { class: "card" });
+    tools.innerHTML = `<h3>ابزار پیامک</h3>
+      <div class="toolbar">
+        <button class="btn btn-sm" id="sms-test">تست اتصال سرویس پیامک</button>
+        <button class="btn btn-sm" id="sms-report">ارسال پیامک گزارش مدیریت</button>
+        <button class="btn btn-sm" id="sms-dispatch">پردازش صف ارسال</button>
+      </div>
+      <div id="sms-tool-result" class="muted" style="margin-top:8px"></div>
+      <h4 style="margin-top:14px">صف / تاریخچه ارسال</h4>
+      <div class="table-wrap"><table id="sms-log"></table></div>`;
+    body.append(tools);
+    const res = $("#sms-tool-result");
+    $("#sms-test").addEventListener("click", async () => {
+      try { const r = await api("/sms/test-connection", { method: "POST" });
+        res.innerHTML = `<span class="badge badge-${r.status === "PASS" ? "green" : r.status === "FAIL" ? "red" : "amber"}">${r.status}</span> ${esc(r.detail || "")}`; }
+      catch (e) { res.textContent = e.message; }
+    });
+    $("#sms-report").addEventListener("click", async () => {
+      try { const r = await api("/sms/daily-report", { method: "POST" }); toast("پیامک گزارش در صف قرار گرفت"); res.innerHTML = `<pre class="receipt">${esc(r.text)}</pre>`; renderSmsLog(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    $("#sms-dispatch").addEventListener("click", async () => {
+      try { const r = await api("/sms/dispatch", { method: "POST" }); res.textContent = `ارسال‌شده: ${r.sent} · در انتظار تلاش مجدد: ${r.retrying} · ناموفق: ${r.failed ?? 0}`; renderSmsLog(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    await renderSmsLog();
+    // v2.3 — in-app tutorial: what to do inside the Melipayamak / Kavenegar panel, plus live readiness
+    const guide = el("div", { class: "card", id: "sms-guide" });
+    guide.innerHTML = `<h3>آموزش راه‌اندازی پیامک (قدم‌به‌قدم)</h3><div class="muted">در حال بارگذاری…</div>`;
+    body.append(guide);
+    try {
+      const g = await api("/sms/guide");
+      const st = g.state; const miss = st.missing || [];
+      const status = st.ready
+        ? `<span class="badge badge-green">آمادهٔ ارسال</span> سرویس ${esc(st.provider)} پیکربندی شده است.`
+        : `<span class="badge badge-amber">ناقص</span> هنوز لازم است: ${miss.map((k) => `<code>${esc(SETTING_FA[k] || k)}</code>`).join("، ") || "انتخاب سرویس"}`;
+      guide.innerHTML = `<h3>آموزش راه‌اندازی پیامک (قدم‌به‌قدم)</h3>
+        <div style="margin:6px 0 10px">${status}</div>
+        <div class="muted" style="margin-bottom:8px">پیامک فاکتور: <b>${st.send_invoice ? "روشن" : "خاموش"}</b> · ارسال فوری پس از تأیید فاکتور: <b>${st.send_immediately ? "روشن" : "خاموش"}</b> · چاپ خودکار رسید: <b>${st.print_after_checkout ? "روشن" : "خاموش"}</b> — این سه مستقل‌اند؛ می‌توانید چاپ را خاموش و فقط پیامک را روشن بگذارید.</div>
+        <ol class="guide-steps">${g.steps.map((x) => `<li><b>${esc(x.title)}</b>${x.site ? ` — <a href="${x.site}" target="_blank" rel="noopener">${esc(x.site.replace("https://", ""))}</a>` : ""}<div class="muted" style="white-space:pre-line;margin-top:2px">${esc(x.text)}</div></li>`).join("")}</ol>
+        <div class="muted">تنظیمات مربوطه در همین صفحه (جدول پایین) ذخیره می‌شوند: ${g.settings.map((k) => `<code>${esc(k)}</code>`).join(" ")}</div>`;
+    } catch (e) { guide.querySelector(".muted").textContent = e.message; }
+  }
+
+  // raw-key category: show the grouped key/value table for this prefix set.
+  const rows = allRows.filter((r) => cat.prefixes.some((px) => r.key.startsWith(px))
+    && !(cat.exclude || []).some((px) => r.key.startsWith(px)));
+  const card = el("div", { class: "card" });
+  card.append(el("h3", { text: cat.label }));
+  if (!rows.length) { card.append(el("p", { class: "muted", text: "تنظیمی در این دسته نیست." })); body.append(card); return; }
+  const trs = rows.map((r) => el("tr", { class: "kv-row" },
+    el("td", { text: r.key }),
     el("td", {}, (() => {
-      const input = el("input", { id: "set-" + s.key.replace(/\./g, "_") });
-      if (s.is_secret) {
+      const input = el("input", { id: "set-" + r.key.replace(/\./g, "_") });
+      if (r.is_secret) {
         input.setAttribute("type", "password");
-        input.setAttribute("placeholder", s.has_value ? "(بدون تغییر)" : "خالی");
+        input.setAttribute("placeholder", r.has_value ? "(بدون تغییر)" : "خالی");
         input.setAttribute("autocomplete", "new-password");
-      } else input.value = s.value;
+      } else input.value = r.value;
       return input;
     })()),
-    el("td", { text: s.description || "" }),
+    el("td", { text: SETTING_FA[r.key] || r.description || "" }),
     el("td", {}, el("button", { class: "btn btn-sm btn-primary", text: "ذخیره", onclick: async () => {
-      const input = document.getElementById("set-" + s.key.replace(/\./g, "_"));
+      const input = document.getElementById("set-" + r.key.replace(/\./g, "_"));
       let value = input.value;
-      if (s.is_secret && value === "") value = "__KEEP__"; // sentinel: keep stored secret
-      try { await api("/settings", { method: "PUT", body: JSON.stringify({ key: s.key, value, is_secret: !!s.is_secret }) });
+      if (r.is_secret && value === "") value = "__KEEP__";
+      try { await api("/settings", { method: "PUT", body: JSON.stringify({ key: r.key, value, is_secret: !!r.is_secret }) });
         toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
     } }))));
-  t.append(el("thead", {}, el("tr", {}, el("th", { text: "کلید" }), el("th", { text: "مقدار" }),
+  const table = el("table", { class: "s-table set-panel" });
+  table.append(el("thead", {}, el("tr", {}, el("th", { text: "کلید" }), el("th", { text: "مقدار" }),
     el("th", { text: "توضیح" }), el("th", {}))), el("tbody", {}, ...trs));
+  card.append(table);
+  body.append(card);
+}
+
+/* ---------- Settings sub-panels (§22, §23, §25, §27–29, §59) ---------- */
+const STORE_FIELDS = [
+  ["name", "نام فروشگاه"], ["legal_name", "نام حقوقی"],
+  ["phone", "تلفن"], ["mobile", "همراه"],
+  ["address", "آدرس", true], ["city", "شهر"],
+  ["postal_code", "کد پستی"], ["tax_id", "شناسه مالیاتی"],
+  ["receipt_note", "یادداشت پای فاکتور", true],
+];
+
+/* §214 — store logo is shown everywhere the system logo used to be. */
+function applyStoreLogo(path) {
+  const src = path || "/icons/logo.svg";
+  document.querySelectorAll(".brand-logo, .about-logo, .login-logo").forEach((img) => { img.src = src; });
+}
+
+/* v1.6 — Android companion: pairing QR + paired devices. */
+async function renderMobilePanel(body) {
+  const card = el("div", { class: "card", id: "mobile-card" });
+  card.innerHTML = `<h3>اتصال گوشی اندروید</h3>
+    <p class="muted">برنامهٔ «سوپری من» را روی گوشی نصب کنید و گوشی را به همان Wi‑Fi رایانه وصل کنید. دو راه ساده دارید: اسکن کد QR، یا وارد کردن <b>کد ۶ رقمی</b> در برنامه. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ اگر آدرس رایانه در شبکه عوض شود، گوشی با «کلید اتصال» دوباره رایانه را پیدا می‌کند.</p>
+    <div class="row" style="gap:22px;align-items:flex-start;flex-wrap:wrap;justify-content:center">
+      <div id="mob-qr" class="mob-qr"><span class="muted">در حال ساخت کد…</span></div>
+      <div style="flex:1;min-width:280px">
+        <h4 style="margin:0 0 6px">راه دوم: کد ۶ رقمی</h4>
+        <p class="muted" style="margin:0 0 8px">در گوشی: «اتصال به رایانه» → «کد ۶ رقمی» را بزنید و این عدد را وارد کنید (۱۰ دقیقه اعتبار دارد).</p>
+        <div id="mob-code" class="pair-code">— — — — — —</div>
+        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-primary" id="mob-code-new">ساخت کد ۶ رقمی</button>
+          <button class="btn btn-sm" id="mob-regen">ساخت QR جدید</button>
+          <a class="btn btn-sm" href="https://github.com/khajavy8056/Super-system-/releases/latest" target="_blank" rel="noopener">دانلود برنامهٔ اندروید</a>
+        </div>
+        <div id="mob-info" class="muted" style="margin-top:12px"></div>
+      </div>
+    </div>`;
+  body.append(card);
+  const dev = el("div", { class: "card", id: "mobile-devices" }); dev.innerHTML = `<h3>گوشی‌های متصل</h3><div id="mob-devs" class="muted">…</div>`;
+  body.append(dev);
+  async function loadDevices() {
+    try {
+      const list = await api("/mobile/devices");
+      $("#mob-devs").innerHTML = list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>نام</th><th>کاربر</th><th>ایجاد</th><th>آخرین همگام‌سازی</th><th>انقضا</th><th></th></tr></thead><tbody>${list.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.user)}</td><td>${faDateTime(d.created_at)}</td><td>${d.last_sync_at ? faDateTime(d.last_sync_at) : "—"}</td><td>${faDateTime(d.expires_at, false)}</td><td><button class="btn btn-sm btn-danger" onclick="mobRevoke('${d.id}')">لغو دسترسی</button></td></tr>`).join("")}</tbody></table></div>` : `<span class="muted">هنوز گوشی‌ای متصل نشده است.</span>`;
+    } catch (e) { $("#mob-devs").textContent = e.message; }
+  }
+  window.mobRevoke = async (id) => { if (!confirm("دسترسی این گوشی لغو شود؟")) return; try { await api(`/mobile/devices/${id}`, { method: "DELETE" }); toast("دسترسی لغو شد"); loadDevices(); } catch (e) { toast(e.message, "err"); } };
+  let codeTimer = null;
+  async function newCode() {
+    try {
+      const r = await api("/mobile/pair/code", { method: "POST", body: "{}" });
+      const box = $("#mob-code"); let left = r.expires_in;
+      box.textContent = r.code.split("").join(" ");
+      clearInterval(codeTimer);
+      codeTimer = setInterval(() => { left -= 1; if (left <= 0) { clearInterval(codeTimer); box.textContent = "— — — — — —"; box.title = ""; } else box.title = `اعتبار: ${fa(Math.ceil(left / 60))} دقیقه`; }, 1000);
+      loadDevices();
+    } catch (e) { toast(e.message, "err"); }
+  }
+  async function gen() {
+    $("#mob-qr").innerHTML = `<span class="muted">در حال ساخت کد…</span>`;
+    try {
+      const r = await api("/mobile/pair/info");
+      // v2.1: the QR is drawn as a scalable SVG inside a fixed square white box with
+      // a real quiet zone (was cropped by an overflow:hidden 232px container).
+      let html = "";
+      try {
+        if (window.qrcode) {
+          const q = window.qrcode(0, "L"); q.addData(r.qr_text); q.make();
+          html = `<div class="qr-box">${q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }).replace("<svg", '<svg preserveAspectRatio="xMidYMid meet" shape-rendering="crispEdges"')}</div>`;
+        }
+      } catch (_) { html = ""; }
+      if (!html && r.qr_png) html = `<div class="qr-box"><img src="${r.qr_png}" alt="QR" style="image-rendering:pixelated;object-fit:contain"/></div>`;
+      if (!html) html = `<div class="error">ساخت تصویر QR ممکن نشد — از کد ۶ رقمی استفاده کنید.</div>`;
+      $("#mob-qr").innerHTML = html + `<span class="muted">راه اول: این کد را در برنامهٔ گوشی اسکن کنید</span><details style="align-self:stretch"><summary class="muted">کد متنی (ورود دستی)</summary><textarea readonly class="ltr" style="width:100%;height:80px;font-size:10px" onclick="this.select()">${esc(r.qr_text)}</textarea></details>`;
+      $("#mob-info").innerHTML = `<div>آدرس رایانه در شبکه: ${r.addresses.map((a) => `<code class="ltr">http://${a}:${r.port}</code>`).join(" · ")}</div>
+        <div style="margin-top:6px">کلید اتصال این رایانه: <code class="ltr">${esc(r.payload.link_key || "")}</code> — گوشی با این کلید، حتی پس از تغییر IP، رایانه را در شبکه پیدا می‌کند.</div>
+        <div style="margin-top:6px">هر کد شامل یک کلید دسترسی یک‌ساله برای گوشی است؛ آن را در اختیار دیگران قرار ندهید.</div>`;
+      loadDevices();
+    } catch (e) { $("#mob-qr").innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+  }
+  $("#mob-regen").onclick = gen;
+  $("#mob-code-new").onclick = newCode;
+  gen();
+}
+
+
+/* ---------- Settings → همگام‌سازی ابری (v1.7) ----------
+ * Internet sync via the owner's own Google Drive (hidden app folder). Sign-in
+ * uses Google's device flow: a short code is shown here, the owner types it
+ * at google.com/device on any phone/PC, and this machine picks up the token. */
+async function renderCloudPanel(body) {
+  const card = el("div", { class: "card", id: "cloud-card" });
+  body.append(card);
+  let pollTimer = null;
+  async function draw() {
+    let st = {};
+    try { st = await api("/cloud/status"); } catch (e) { card.innerHTML = `<span class="error">${esc(e.message)}</span>`; return; }
+    card.innerHTML = `<h3>همگام‌سازی ابری (اینترنت)</h3>
+      <p class="muted">وقتی گوشی و رایانه در یک شبکه نیستند، تغییرات از طریق پوشهٔ مخفی برنامه در حساب Google Drive شما رد و بدل می‌شود (برنامه به فایل‌های شخصی شما دسترسی ندارد). یک نسخهٔ پشتیبان از پایگاه داده هم آنجا نگه داشته می‌شود.</p>
+      <div class="grid grid-3" style="margin:10px 0">
+        <div class="kpi"><span class="k">وضعیت</span><b>${st.connected ? "متصل ✓" : "غیرفعال"}</b></div>
+        <div class="kpi"><span class="k">حساب</span><b class="ltr">${esc(st.account || "—")}</b></div>
+        <div class="kpi"><span class="k">آخرین همگام‌سازی</span><b>${st.last_push_at ? faDateTime(st.last_push_at) : "—"}</b></div>
+      </div>
+      ${st.last_error ? `<div class="error" style="margin-bottom:8px">آخرین خطا: ${esc(st.last_error)}</div>` : ""}
+      ${st.connected ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="cl-sync">همگام‌سازی اکنون</button>
+          <button class="btn btn-danger" id="cl-off">قطع اتصال حساب</button>
+        </div>
+        <p class="muted" style="margin-top:10px">برای گوشی کافی است دوباره کد QR بخش «موبایل (اندروید)» را اسکن کنید؛ دسترسی ابری داخل همان کد قرار می‌گیرد. همگام‌سازی خودکار هر ۵ دقیقه انجام می‌شود.</p>`
+      : `
+        <details ${st.configured ? "" : "open"}>
+          <summary>مرحلهٔ ۱ — کلید سرویس (یک‌بار)</summary>
+          <p class="muted">در <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> یک OAuth Client از نوع «Desktop app» بسازید، Google Drive API را فعال کنید و مقادیر را اینجا وارد کنید. رایگان است و فقط یک‌بار لازم است.</p>
+          <div class="form-grid">
+            <div><label>Client ID</label><input id="cl-id" class="ltr" placeholder="xxxx.apps.googleusercontent.com" /></div>
+            <div><label>Client Secret</label><input id="cl-secret" class="ltr" type="password" /></div>
+          </div>
+        </details>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="cl-start">مرحلهٔ ۲ — ورود با حساب Google (داخل برنامه)</button>
+          <button class="btn btn-ghost" id="cl-start-code">روش جایگزین: کد روی دستگاه دیگر</button>
+        </div>
+        <p class="muted" style="margin-top:6px">با «ورود با حساب Google» صفحهٔ انتخاب حساب گوگل باز می‌شود؛ حساب را انتخاب کنید و خودکار به برنامه برمی‌گردید. اگر دسترسی به گوگل در شبکهٔ شما محدود است، از روش جایگزین (کد روی گوشی) یا همان همگام‌سازی شبکهٔ داخلی استفاده کنید.</p>
+        <div id="cl-code" style="margin-top:10px"></div>`}`;
+    if ($("#cl-sync")) $("#cl-sync").onclick = async () => { $("#cl-sync").disabled = true; try { const r = await api("/cloud/sync-now", { method: "POST" }); toast(`همگام شد — ${r.files} فایل، ${r.applied} عملیات اعمال شد`); } catch (e) { toast(e.message, "err"); } draw(); };
+    if ($("#cl-off")) $("#cl-off").onclick = async () => { if (!confirm("اتصال حساب ابری قطع شود؟")) return; await api("/cloud/disconnect", { method: "POST" }); toast("قطع شد"); draw(); };
+    const creds = () => { const body = { client_id: $("#cl-id").value.trim(), client_secret: $("#cl-secret").value.trim() }; if (!st.configured && (!body.client_id || !body.client_secret)) { toast("Client ID و Secret را وارد کنید", "err"); return null; } return body; };
+    // v2.1: in-app sign-in — Google's account picker opens in a popup and lands back on this PC
+    if ($("#cl-start")) $("#cl-start").onclick = async () => {
+      const body = creds(); if (!body) return;
+      try {
+        const d = await api("/cloud/oauth/start", { method: "POST", body: JSON.stringify(body) });
+        const w = window.open(d.url, "cloud-oauth", "width=520,height=680");
+        $("#cl-code").innerHTML = `<div class="card" style="text-align:center"><div class="muted" id="cl-wait">صفحهٔ ورود Google باز شد؛ حساب خود را انتخاب کنید…</div>${w ? "" : `<div><a href="${esc(d.url)}" target="_blank" rel="noopener">اگر پنجره باز نشد، اینجا را بزنید</a></div>`}</div>`;
+        const onMsg = (ev) => { if (ev.data && ev.data.type === "cloud-oauth") { window.removeEventListener("message", onMsg); clearInterval(pollTimer); if (ev.data.ok) { toast("حساب Google متصل شد"); if (window.Sfx) Sfx.play("success"); } draw(); } };
+        window.addEventListener("message", onMsg);
+        clearInterval(pollTimer);
+        pollTimer = setInterval(async () => { try { const s2 = await api("/cloud/status"); if (s2.connected) { clearInterval(pollTimer); window.removeEventListener("message", onMsg); toast("حساب متصل شد: " + s2.account); draw(); } } catch (_) {} }, 3000);
+      } catch (e) { toast(e.message, "err"); }
+    };
+    if ($("#cl-start-code")) $("#cl-start-code").onclick = async () => {
+      const body = creds(); if (!body) return;
+      try {
+        const d = await api("/cloud/connect/start", { method: "POST", body: JSON.stringify(body) });
+        $("#cl-code").innerHTML = `<div class="card" style="text-align:center"><div class="muted">در مرورگر (روی همین رایانه یا گوشی) به نشانی زیر بروید و این کد را وارد کنید:</div>
+          <div class="ltr" style="font-size:18px;margin:6px 0"><a href="${esc(d.verification_url)}" target="_blank" rel="noopener">${esc(d.verification_url)}</a></div>
+          <div class="ltr" style="font-size:34px;letter-spacing:4px;font-weight:700">${esc(d.user_code)}</div>
+          <div class="muted" id="cl-wait">در انتظار تأیید…</div></div>`;
+        clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+          try { const p = await api("/cloud/connect/poll", { method: "POST" }); if (p.status === "CONNECTED") { clearInterval(pollTimer); toast("حساب متصل شد: " + p.account); if (window.Sfx) Sfx.play("success"); draw(); } }
+          catch (e) { clearInterval(pollTimer); $("#cl-wait").textContent = e.message; }
+        }, (d.interval || 5) * 1000);
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+  draw();
+  // v2.3 — online relay (self-hosted): phones reach this PC from ANY network, instantly.
+  const relay = el("div", { class: "card", id: "relay-card" });
+  body.append(relay);
+  async function drawRelay() {
+    let st = {};
+    try { st = await api("/cloud/relay/status"); } catch (e) { relay.innerHTML = `<span class="error">${esc(e.message)}</span>`; return; }
+    relay.innerHTML = `<h3>رلهٔ آنلاین (اتصال از هر جا)</h3>
+      <p class="muted">سه راه اتصال گوشی‌ها: <b>۱)</b> وای‌فای فروشگاه — رایگان، خودکار، حتی با تغییر IP (پورت ثابت ۸۷۶۵ + بیکن). <b>۲)</b> Google Drive — رایگان، با تأخیر چند دقیقه. <b>۳)</b> رلهٔ آنلاین — یک سرویس کوچک روی هاست خودتان (پوشهٔ <code>relay/</code> مخزن، راهنمای ۵ دقیقه‌ای)؛ همهٔ امکانات، آنی، از هر شبکه‌ای. رایانه خودش به رله وصل می‌شود؛ روی مودم هیچ تنظیمی لازم نیست. گوشی‌ها خودکار بهترین مسیر (وای‌فای ← رله ← Drive) را انتخاب می‌کنند.</p>
+      <div class="grid grid-3" style="margin:10px 0">
+        <div class="kpi"><span class="k">وضعیت</span><b>${!st.configured ? "تنظیم‌نشده" : st.online ? "رایانه به رله متصل است ✓" : "قطع"}</b></div>
+        <div class="kpi"><span class="k">شناسهٔ فروشگاه</span><b class="ltr">${esc(st.store || "—")}</b></div>
+        <div class="kpi"><span class="k">درخواست‌های پاسخ‌داده</span><b>${fa(st.served || 0)}</b></div>
+      </div>
+      ${st.last_error ? `<div class="muted">آخرین خطا: ${esc(st.last_error)}</div>` : ""}
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input id="relay-url" class="ltr" placeholder="https://relay.example.ir" value="${esc(st.url || "")}" style="min-width:320px"/>
+        <label class="row" style="gap:6px"><input type="checkbox" id="relay-en" ${st.enabled ? "checked" : ""}/> فعال</label>
+        <button class="btn btn-sm" id="relay-save">ذخیره</button>
+        <button class="btn btn-sm" id="relay-test">تست اتصال</button>
+        <button class="btn btn-sm" id="relay-regen" title="گوشی‌ها باید دوباره جفت شوند">تولید کلید جدید</button>
+      </div>
+      <div id="relay-res" class="muted" style="margin-top:6px"></div>
+      <div class="muted" style="margin-top:6px">پس از ذخیره، آدرس و کلید رله داخل QR جفت‌سازی قرار می‌گیرد؛ گوشی‌های قبلاً جفت‌شده در اولین اتصال وای‌فای آن را دریافت می‌کنند.</div>`;
+    const save = async (regen) => {
+      try { await api("/cloud/relay", { method: "PUT", body: JSON.stringify({ url: $("#relay-url").value.trim(), enabled: $("#relay-en").checked, regenerate_key: !!regen }) }); toast("ذخیره شد"); setTimeout(drawRelay, 1500); }
+      catch (e) { toast(e.message, "err"); }
+    };
+    $("#relay-save").onclick = () => save(false);
+    $("#relay-regen").onclick = () => { if (confirm("کلید جدید ساخته شود؟ همهٔ گوشی‌ها باید دوباره جفت شوند.")) save(true); };
+    $("#relay-test").onclick = async () => { try { const r = await api("/cloud/relay/test", { method: "POST" }); $("#relay-res").innerHTML = `<span class="badge badge-${r.ok ? "green" : "red"}">${r.ok ? "OK" : "خطا"}</span> ${esc(r.message)}`; } catch (e) { $("#relay-res").textContent = e.message; } };
+  }
+  drawRelay();
+}
+
+async function renderStoreProfile() {
+  let p = {};
+  try { p = await api("/settings/store-profile"); } catch (e) { /* empty form */ }
+  $("#store-form").innerHTML = STORE_FIELDS.map(([key, label, full]) =>
+    `<div class="${full ? "full" : ""}"><label>${label}</label>
+       <input id="sp-${key}" value="${esc(p[key] || "")}" /></div>`).join("") +
+    `<div class="full"><label>لوگوی فروشگاه (PNG/JPEG/SVG، حداکثر ۲ مگابایت)</label>
+       <div class="row" style="align-items:center;gap:12px">
+         <img id="sp-logo-preview" src="${esc(p.logo_path || "/icons/logo.svg")}" alt="لوگو" style="width:56px;height:56px;object-fit:contain;border-radius:8px;background:var(--bg2)" />
+         <label class="btn btn-sm btn-ghost file-btn">انتخاب تصویر<input type="file" id="sp-logo" accept="image/png,image/jpeg,image/svg+xml,image/webp" /></label>
+         <span id="sp-logo-name" class="muted"></span>
+         <button class="btn btn-sm" id="sp-logo-up">بارگذاری</button>
+         <button class="btn btn-sm btn-ghost" id="sp-logo-del">حذف لوگو</button>
+       </div></div>`;
+  $("#sp-logo").addEventListener("change", () => { $("#sp-logo-name").textContent = ($("#sp-logo").files[0] || {}).name || ""; });
+  $("#sp-logo-up").addEventListener("click", async () => {
+    const f = $("#sp-logo").files[0];
+    if (!f) { toast("ابتدا یک فایل انتخاب کنید", "err"); return; }
+    const fd = new FormData(); fd.append("file", f, f.name);
+    try {
+      const r = await api("/settings/store-profile/logo", { method: "POST", body: fd });
+      $("#sp-logo-preview").src = r.logo_path; applyStoreLogo(r.logo_path);
+      if (state.store) state.store.logo_path = r.logo_path;
+      toast("لوگو ذخیره شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $("#sp-logo-del").addEventListener("click", async () => {
+    try {
+      await api("/settings/store-profile/logo", { method: "DELETE" });
+      $("#sp-logo-preview").src = "/icons/logo.svg"; applyStoreLogo("");
+      if (state.store) state.store.logo_path = "";
+      toast("لوگوی پیش‌فرض بازگردانده شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $("#store-save").addEventListener("click", async () => {
+    const body = {};
+    STORE_FIELDS.forEach(([key]) => { body[key] = $("#sp-" + key).value.trim(); });
+    try {
+      state.store = await api("/settings/store-profile",
+        { method: "PUT", body: JSON.stringify(body) });
+      const sb = $("#sb-store"); if (sb) sb.textContent = state.store.name || "";
+      const brand = document.querySelector(".brand span");
+      if (brand && state.store.name) brand.textContent = state.store.name;
+      toast("پروفایل فروشگاه ذخیره شد");
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+async function renderSmsLog() {
+  const t = $("#sms-log"); if (!t) return;
+  const rows = await api("/sms").catch(() => []);
+  const badge = (st) => st === "SENT" ? "green" : st === "FAILED" ? "red" : "amber";
+  t.innerHTML = `<thead><tr><th>شماره</th><th>متن</th><th>وضعیت</th><th>تلاش</th><th>خطا</th><th></th></tr></thead>
+    <tbody>${rows.length ? rows.map((m) => `<tr><td>${esc(m.phone)}</td><td class="muted" style="max-width:280px;white-space:pre-wrap">${esc(m.text)}</td>
+      <td><span class="badge badge-${badge(m.status)}">${m.status}</span></td><td>${m.retry_count}</td>
+      <td class="muted">${esc(m.error_message || "")}</td>
+      <td>${m.status === "FAILED" ? `<button class="btn btn-sm" onclick="smsRetry(${m.id})">تلاش مجدد</button>` : ""}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">پیامکی ثبت نشده است</td></tr>`}</tbody>`;
+}
+window.smsRetry = async (id) => {
+  try { await api(`/sms/${id}/retry`, { method: "POST" }); toast("در صف قرار گرفت"); renderSmsLog(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+async function renderThemeBox() {
+  const t = await api("/settings/theme").catch(() => null);
+  if (!t) return;
+  const box = $("#theme-box");
+  box.innerHTML = `
+    <label>حالت نمایش</label>
+    <select id="th-mode">
+      <option value="auto" ${t.theme === "auto" ? "selected" : ""}>خودکار (بر اساس ساعت)</option>
+      <option value="light" ${t.theme === "light" ? "selected" : ""}>روشن</option>
+      <option value="dark" ${t.theme === "dark" ? "selected" : ""}>تیره</option>
+    </select>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>شروع پوستهٔ روشن</label><input id="th-light" value="${esc(t.light_at)}" /></div>
+      <div><label>شروع پوستهٔ تیره</label><input id="th-dark" value="${esc(t.dark_at)}" /></div>
+    </div>
+    <p class="muted" style="margin-top:8px">اکنون: پوستهٔ
+      <strong>${t.resolved === "dark" ? "تیره" : "روشن"}</strong> اعمال شده است.</p>
+    <button class="btn btn-primary btn-sm" id="th-save">ذخیره</button>`;
+  $("#th-save").addEventListener("click", async () => {
+    try {
+      await api("/settings/theme", { method: "PUT", body: JSON.stringify({
+        theme: $("#th-mode").value,
+        light_at: $("#th-light").value.trim(),
+        dark_at: $("#th-dark").value.trim() })});
+      await applyTheme();
+      toast("پوسته ذخیره شد");
+      renderThemeBox();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+async function renderTimeBox() {
+  const t = await api("/settings/time").catch(() => null);
+  if (!t) return;
+  $("#time-box").innerHTML = `
+    <div><strong>${esc(t.weekday)} ${esc(t.jalali)}</strong></div>
+    <div class="muted">میلادی: ${esc(t.gregorian)} · منطقهٔ زمانی: ${esc(t.timezone)}</div>
+    <div class="muted">UTC ذخیره‌شده: ${esc(t.utc)}</div>`;
+  $("#time-verify").addEventListener("click", async () => {
+    $("#time-result").innerHTML = `<span class="muted">در حال تماس با سرور زمان…</span>`;
+    try {
+      const r = await api("/settings/time/verify", { method: "POST" });
+      const cls = r.status === "PASS" ? "green" : r.status === "WARNING" ? "amber" : "blue";
+      $("#time-result").innerHTML =
+        `<span class="badge badge-${cls}">${esc(r.status)}</span> ${esc(r.message)}`;
+    } catch (e) { $("#time-result").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  });
+}
+
+async function renderAbout() {
+  const a = await api("/settings/about").catch(() => null);
+  if (!a) return;
+  $("#about-box").innerHTML = `
+    <div class="about-head">
+      <img class="about-logo" src="/icons/logo.svg" alt="لوگوی سامانه" />
+      <div>
+        <div style="font-size:15px;color:var(--text)"><strong>${esc(a.app_name)}</strong></div>
+        <div class="muted">${esc(a.app_name_en)} — نسخهٔ ${esc(a.version)}</div>
+      </div>
+    </div>
+    <p style="margin:10px 0">${esc(a.description)}</p>
+    <div class="muted">طراحی و توسعه توسط <strong>${esc(a.developer)}</strong></div>`;
+}
+
+async function renderUpdateBox() {
+  const box = $("#upd-box");
+  try {
+    const r = await api("/system/update/check");
+    const chan = r.channel === "updateserver" || r.channel === "server"
+      ? "سرور به‌روزرسانی داخلی" : "GitHub Releases";
+    const chanLine = `<div class="muted" style="margin-top:6px">کانال: ${chan} — در تنظیمات همین بخش
+      (<code>update.channel</code> = github | server، <code>update.server_url</code>) قابل تغییر است.
+      بستهٔ دریافتی همیشه با SHA-256 اعلام‌شده تطبیق داده می‌شود.</div>`;
+    if (r.status === "CONFIG_MISSING") {
+      box.innerHTML = `<span class="badge badge-amber">پیکربندی ناقص</span> ${esc(r.message)} ${chanLine}`;
+      return;
+    }
+    if (r.status === "UNAVAILABLE") {
+      box.innerHTML = `<span class="badge badge-blue">بدون دسترسی</span>
+        ${esc(r.message)} <span class="muted">(نسخهٔ فعلی ${esc(r.current_version)})</span>${chanLine}`;
+      return;
+    }
+    if (!r.update_available) {
+      box.innerHTML = `<span class="badge badge-green">به‌روز</span>
+        نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.${chanLine}`;
+      return;
+    }
+    box.innerHTML = `<span class="badge badge-amber">نسخهٔ جدید</span>
+      نسخهٔ <strong>${esc(r.latest.version)}</strong> منتشر شده است
+      <span class="muted">(فعلی: ${esc(r.current_version)})</span>
+      <p class="muted" style="margin:8px 0">${esc((r.latest.notes || "").slice(0, 400))}</p>
+      ${r.installable ? `<button class="btn btn-primary" id="upd-go">دریافت و آماده‌سازی نصب</button>`
+        : `<span class="muted">فایل نصب ویندوز برای این نسخه منتشر نشده است.</span>`}
+      <p class="muted" style="margin-top:8px">پیش از هر به‌روزرسانی، به‌صورت خودکار از
+        پایگاه‌داده پشتیبان گرفته می‌شود؛ در صورت شکست پشتیبان‌گیری، عملیات متوقف می‌شود.</p>`;
+    const go = $("#upd-go");
+    if (go) go.addEventListener("click", startUpdate);
+  } catch (e) {
+    box.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+function startUpdate() {
+  openModal(`<h3>تأیید به‌روزرسانی</h3>
+    <p class="muted">به دلیل حساسیت عملیات، رمز عبور خود را دوباره وارد کنید (§28).</p>
+    <label>رمز عبور</label><input id="upd-pass" type="password" autocomplete="current-password" />
+    <button class="btn btn-primary btn-block" id="upd-run" style="margin-top:12px">
+      پشتیبان‌گیری و دریافت به‌روزرسانی</button>`);
+  $("#upd-run").addEventListener("click", async () => {
+    const pass = $("#upd-pass").value;
+    $("#upd-run").disabled = true;
+    $("#upd-run").textContent = "در حال اجرا…";
+    try {
+      const r = await api("/system/update/prepare", { method: "POST",
+        body: JSON.stringify({ password: pass, download: true }) });
+      closeModal();
+      $("#upd-steps").innerHTML = r.steps.map((st) => `
+        <div class="update-step"><span class="st ${esc(st.status)}">${esc(st.status)}</span>
+          <span>${esc(st.name)}</span>
+          <span class="muted" style="margin-inline-start:auto">${esc(st.detail || "")}</span>
+        </div>`).join("") +
+        `<p class="${r.status === "READY" ? "" : "err"}" style="margin-top:8px">${esc(r.message)}</p>`;
+      toast(r.message, r.status === "READY" || r.status === "UP_TO_DATE" ? "ok" : "err");
+    } catch (e) {
+      toast(e.message, "err");
+      $("#upd-run").disabled = false;
+      $("#upd-run").textContent = "تلاش دوباره";
+    }
+  });
+}
+
+/* ---------- support requests (v1.7) ----------
+ * The shop files a request (bug / feature / question …); it is stored locally
+ * and delivered to the support inbox in the background (retries while
+ * offline). The exact location is attached ONLY when the operator allows the
+ * browser prompt. */
+window.getGeo = () => new Promise((resolve) => {
+  if (!navigator.geolocation) return resolve(null);
+  navigator.geolocation.getCurrentPosition(
+    (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy }),
+    () => resolve(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+});
+RENDER.support = async () => {
+  const v = $("#view");
+  let meta = { types: [], priorities: [] };
+  try { meta = await api("/support/types"); } catch (e) { toast(e.message, "err"); }
+  v.innerHTML = `<div class="grid grid-2">
+    <div class="card">
+      <h3>ثبت درخواست پشتیبانی</h3>
+      <p class="muted">خرابی، پیشنهاد امکان جدید، سؤال یا مشکل سخت‌افزاری را همین‌جا ثبت کنید. درخواست همراه با مشخصات فروشگاه برای تیم پشتیبانی ارسال می‌شود؛ اگر اینترنت قطع باشد، ذخیره شده و به‌محض اتصال ارسال می‌شود.</p>
+      <form id="sup-form" class="form-grid">
+        <div><label>نوع درخواست</label><select id="sup-type">${meta.types.map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join("")}</select></div>
+        <div><label>اولویت</label><select id="sup-prio">${meta.priorities.map((p) => `<option value="${p.id}" ${p.id === "NORMAL" ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select></div>
+        <div class="full"><label>موضوع</label><input id="sup-subject" required minlength="3" maxlength="160" placeholder="مثلاً: چاپگر رسید چاپ نمی‌کند" /></div>
+        <div class="full"><label>شرح</label><textarea id="sup-desc" rows="5" maxlength="4000" placeholder="چه اتفاقی افتاد؟ چه زمانی؟ چه پیامی دیدید؟"></textarea></div>
+        <div><label>راه تماس (اختیاری)</label><input id="sup-contact" class="ltr" placeholder="09xxxxxxxxx" /></div>
+        <div><label class="checkbox"><input type="checkbox" id="sup-geo" checked /> ارسال موقعیت مکانی دقیق این دستگاه (برای اعزام سریع‌تر)</label></div>
+        <div class="full" style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary" type="submit" id="sup-send">ثبت و ارسال</button>
+          <span id="sup-status" class="muted"></span>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>درخواست‌های قبلی</h3><button class="btn btn-sm" id="sup-refresh">بازخوانی</button></div>
+      <div id="sup-list" class="muted">در حال بارگذاری…</div>
+    </div>
+  </div>`;
+  async function loadList() {
+    try {
+      const rows = await api("/support/tickets?limit=50");
+      if (!$("#sup-list")) return; // user already left the view
+      $("#sup-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>شماره</th><th>نوع</th><th>موضوع</th><th>وضعیت</th><th>زمان</th><th>گفتگو</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr class="${t.unread ? "sup-unread" : ""}">
+        <td class="ltr">${esc(t.number)}</td><td>${esc(t.type_label)}</td><td>${esc(t.subject)}</td>
+        <td><span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></td>
+        <td>${faDateTime(t.created_at)}</td>
+        <td><button class="btn btn-sm ${t.unread ? "btn-primary" : ""}" onclick="supOpen(${t.id})">${t.unread ? `${t.unread} پاسخ جدید` : "مشاهده / پاسخ"}</button></td>
+        <td>${t.status === "FAILED" || t.status === "NEW" ? `<button class="btn btn-sm" onclick="supResend(${t.id})">ارسال دوباره</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+        : `<span class="muted">هنوز درخواستی ثبت نشده است.</span>`;
+    } catch (e) { const el = $("#sup-list"); if (el) el.textContent = e.message; }
+  }
+  window.supResend = async (id) => { try { const t = await api(`/support/tickets/${id}/resend`, { method: "POST" }); toast(t.status === "SENT" ? "ارسال شد" : "هنوز ارسال نشد؛ بعداً دوباره تلاش می‌شود", t.status === "SENT" ? "ok" : "err"); loadList(); } catch (e) { toast(e.message, "err"); } };
+  // v1.7.1 — conversation: support replies land here; the store can answer with text + one attachment
+  window.supOpen = async (id) => {
+    let conv;
+    try { conv = await api(`/support/tickets/${id}/messages`); } catch (e) { toast(e.message, "err"); return; }
+    const t = conv.ticket;
+    const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 1024 ? Math.round(n / 1024) + " KB" : (n || 0) + " B";
+    const bubble = (m) => `<div class="sup-msg ${m.direction === "IN" ? "in" : "out"}">
+        <div class="sup-msg-head">${m.direction === "IN" ? "پشتیبانی" : "شما"} · ${faDateTime(m.created_at)}${m.direction === "OUT" ? ` · <span class="muted">${esc(m.status_label)}</span>` : ""}</div>
+        ${m.text ? `<div class="sup-msg-text">${esc(m.text).replace(/\n/g, "<br/>")}</div>` : ""}
+        ${m.attachment_url ? `<a class="sup-att" href="${m.attachment_url}" target="_blank" download="${esc(m.attachment_name || "")}">📎 ${esc(m.attachment_name || "پیوست")} <span class="muted">(${fmtSize(m.attachment_size)})</span></a>` : ""}
+      </div>`;
+    openModal(`<div class="sup-conv">
+      <div class="modal-head"><h3>${esc(t.number)} — ${esc(t.subject)}</h3><button class="btn btn-sm" onclick="closeModal()">بستن</button></div>
+      <div class="muted" style="margin-bottom:8px">${esc(t.type_label)} · ${esc(t.priority_label)} · <span class="badge ${t.status === "SENT" ? "badge-green" : t.status === "CLOSED" ? "badge-blue" : "badge-orange"}">${esc(t.status_label)}</span></div>
+      <div class="sup-thread" id="sup-thread">
+        <div class="sup-msg out"><div class="sup-msg-head">شما · ${faDateTime(t.created_at)}</div><div class="sup-msg-text">${esc(t.description || t.subject).replace(/\n/g, "<br/>")}</div></div>
+        ${conv.messages.map(bubble).join("")}
+        ${conv.messages.some((m) => m.direction === "IN") ? "" : `<div class="muted" style="text-align:center;padding:8px">هنوز پاسخی دریافت نشده است؛ پاسخ پشتیبانی به‌صورت خودکار همین‌جا نمایش داده می‌شود.</div>`}
+      </div>
+      <form id="sup-reply" class="sup-reply">
+        <textarea id="sup-reply-text" rows="2" placeholder="پیام شما به پشتیبانی…"></textarea>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <label class="btn btn-sm">📎 پیوست فایل<input type="file" id="sup-reply-file" style="display:none" /></label>
+          <span id="sup-reply-fname" class="muted"></span>
+          <span class="muted" style="font-size:11px">تصویر، PDF، لاگ، ZIP — حداکثر ۵۰ مگابایت</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-sm" type="button" id="sup-poll">بررسی پاسخ جدید</button>
+          <button class="btn btn-primary" type="submit" id="sup-reply-send">ارسال</button>
+        </div>
+      </form>
+    </div>`);
+    const th = $("#sup-thread"); if (th) th.scrollTop = th.scrollHeight;
+    $("#sup-reply-file").addEventListener("change", (e) => { const f = e.target.files[0]; $("#sup-reply-fname").textContent = f ? `${f.name} (${fmtSize(f.size)})` : ""; });
+    $("#sup-poll").onclick = async () => { try { const r = await api("/support/poll", { method: "POST" }); toast(r.received ? `${r.received} پاسخ جدید دریافت شد` : "پاسخ جدیدی نیست"); if (r.received) supOpen(id); } catch (e) { toast(e.message, "err"); } };
+    $("#sup-reply").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = $("#sup-reply-text").value.trim(); const f = $("#sup-reply-file").files[0];
+      if (!text && !f) { toast("متن یا پیوست لازم است", "err"); return; }
+      if (f && f.size > 50 * 1024 * 1024) { toast("حجم پیوست حداکثر ۵۰ مگابایت است", "err"); return; }
+      const fd = new FormData(); if (text) fd.append("text", text); if (f) fd.append("file", f, f.name);
+      $("#sup-reply-send").disabled = true;
+      try {
+        const r = await fetch(`${API}/support/tickets/${id}/messages`, { method: "POST", headers: { Authorization: "Bearer " + state.token }, body: fd });
+        if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error((b.detail && (b.detail.message || b.detail)) || r.statusText); }
+        const m = await r.json();
+        toast(m.status === "SENT" ? "پیام ارسال شد" : "پیام ذخیره شد و به‌محض اتصال ارسال می‌شود", m.status === "SENT" ? "ok" : "err");
+        supOpen(id); loadList();
+      } catch (err) { toast(err.message, "err"); $("#sup-reply-send").disabled = false; }
+    });
+    loadList(); refreshSupportBadge();
+  };
+  $("#sup-refresh").onclick = loadList;
+  $("#sup-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const btn = $("#sup-send"); btn.disabled = true; $("#sup-status").textContent = "در حال آماده‌سازی…";
+    const geo = $("#sup-geo").checked ? await window.getGeo() : null;
+    const body = { type: $("#sup-type").value, priority: $("#sup-prio").value, subject: $("#sup-subject").value.trim(),
+      description: $("#sup-desc").value.trim() || null, contact: $("#sup-contact").value.trim() || null,
+      device: window.SupermarketAndroid ? "Android" : (/Windows/i.test(navigator.userAgent) ? "Windows" : "Web"), ...(geo || {}) };
+    try {
+      const t = await api("/support/tickets", { method: "POST", body: JSON.stringify(body) });
+      if (window.Sfx) Sfx.play(t.status === "SENT" ? "success" : "note");
+      toast(t.status === "SENT" ? `درخواست ${t.number} ثبت و ارسال شد` : `درخواست ${t.number} ذخیره شد و به‌محض اتصال ارسال می‌شود`);
+      $("#sup-form").reset(); $("#sup-status").textContent = "";
+      loadList();
+    } catch (e) { toast(e.message, "err"); $("#sup-status").textContent = ""; }
+    btn.disabled = false;
+  });
+  loadList();
 };
 
 /* ---------- audit ---------- */
@@ -960,17 +3225,543 @@ RENDER.audit = async () => {
     el("tbody", {}, ...rows));
 };
 
+
+/* ---------- Marketing: campaigns & coupons (§31–38) ---------- */
+RENDER.marketing = async () => {
+  const v = $("#view");
+  v.innerHTML = `<div class="grid grid-4" id="mk-stats"></div>
+    <div class="grid grid-2" style="margin-top:14px">
+      <div class="card">
+        <div class="card-head"><h3>کوپن‌ها</h3>
+          <button class="btn btn-primary btn-sm" id="mk-new-coupon">+ کوپن جدید</button></div>
+        <div class="toolbar"><input id="mk-q" placeholder="جستجوی کد یا شماره موبایل…" />
+          <select id="mk-status"><option value="">همه وضعیت‌ها</option>
+            <option value="ACTIVE">فعال</option><option value="USED">مصرف‌شده</option>
+            <option value="EXPIRED">منقضی</option><option value="BLOCKED">مسدود</option></select></div>
+        <div class="table-wrap"><table id="mk-coupons"></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>جشنواره‌ها (کمپین)</h3>
+          <button class="btn btn-primary btn-sm" id="mk-new-camp">+ کمپین جدید</button></div>
+        <div class="table-wrap"><table id="mk-camps"></table></div>
+      </div>
+    </div>`;
+  $("#mk-new-coupon").addEventListener("click", couponModal);
+  $("#mk-new-camp").addEventListener("click", campaignModal);
+  $("#mk-q").addEventListener("input", debounce(loadCoupons, 300));
+  $("#mk-status").addEventListener("change", loadCoupons);
+  await Promise.all([loadMarketingStats(), loadCoupons(), loadCampaigns()]);
+};
+
+async function loadMarketingStats() {
+  const s = await api("/marketing/stats");
+  const by = s.by_status || {};
+  $("#mk-stats").innerHTML = "";
+  $("#mk-stats").append(
+    statCard("کل کوپن‌ها", fmt(s.total_coupons), `${s.campaigns} کمپین`),
+    statCard("فعال", fmt(by.ACTIVE || 0), ""),
+    statCard("مصرف‌شده", fmt(by.USED || 0), ""),
+    statCard("ارزش تخفیف داده‌شده", money(s.redeemed_value), ""),
+  );
+}
+
+const COUPON_BADGE = { ACTIVE: "green", USED: "blue", EXPIRED: "amber", BLOCKED: "red" };
+
+async function loadCoupons() {
+  const params = new URLSearchParams();
+  if ($("#mk-q").value.trim()) params.set("q", $("#mk-q").value.trim());
+  if ($("#mk-status").value) params.set("status", $("#mk-status").value);
+  const rows = await api("/marketing/coupons?" + params.toString());
+  const body = rows.map((c) => `<tr>
+      <td><code>${esc(c.code)}</code>${c.customer_phone ? `<div class="muted">${esc(c.customer_phone)}</div>` : ""}</td>
+      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}
+        ${c.max_discount ? `<div class="muted">سقف ${money(c.max_discount)}</div>` : ""}</td>
+      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+      <td>${c.used_count}/${c.usage_limit}</td>
+      <td><span class="badge badge-${COUPON_BADGE[c.status] || "blue"}">${esc(c.status)}</span></td>
+      <td>${c.valid_until ? esc(c.valid_until.slice(0, 10)) : "—"}</td>
+      <td>${c.status === "ACTIVE" ? `<button class="btn btn-sm btn-danger" onclick="window._blockCoupon(${c.id})">مسدود</button>` : ""}</td>
+    </tr>`).join("");
+  $("#mk-coupons").innerHTML = `<thead><tr><th>کد</th><th>تخفیف</th><th>حداقل خرید</th>
+      <th>مصرف</th><th>وضعیت</th><th>اعتبار تا</th><th></th></tr></thead>
+    <tbody>${body || `<tr><td colspan="7" class="muted empty">کوپنی ثبت نشده است</td></tr>`}</tbody>`;
+}
+
+window._blockCoupon = async (id) => {
+  try { await api(`/marketing/coupons/${id}/block`, { method: "POST" });
+    toast("کوپن مسدود شد"); loadCoupons(); loadMarketingStats();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+async function loadCampaigns() {
+  const rows = await api("/marketing/campaigns");
+  const body = rows.map((c) => `<tr>
+      <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
+      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
+      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+      <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
+    </tr>`).join("");
+  $("#mk-camps").innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
+    <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+}
+
+function couponModal() {
+  openModal(`<h3>کوپن جدید</h3>
+    <div class="form-row">
+      <div><label>کد (خالی = تولید خودکار)</label><input id="cp-code" placeholder="AUTO" /></div>
+      <div><label>نوع تخفیف</label><select id="cp-type">
+        <option value="PERCENT">درصدی</option><option value="FIXED">مبلغ ثابت</option></select></div>
+    </div>
+    <div class="form-row">
+      <div><label>مقدار تخفیف</label><input id="cp-value" type="number" value="10" /></div>
+      <div><label>سقف تخفیف (اختیاری)</label><input id="cp-max" type="number" placeholder="بدون سقف" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>حداقل مبلغ خرید</label><input id="cp-min" type="number" value="0" /></div>
+      <div><label>تعداد دفعات مجاز</label><input id="cp-limit" type="number" value="1" min="1" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>موبایل مشتری (اختصاصی)</label><input id="cp-phone" placeholder="اختیاری — 0912…" /></div>
+      <div><label>اعتبار تا</label><input id="cp-until" type="date" /></div>
+    </div>
+    <button id="cp-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کوپن</button>`);
+  Jalali.attachAll($("#modal"));
+  $("#cp-save").addEventListener("click", async () => {
+    const until = $("#cp-until").value;
+    try {
+      const c = await api("/marketing/coupons", { method: "POST", body: JSON.stringify({
+        code: $("#cp-code").value.trim() || null,
+        discount_type: $("#cp-type").value,
+        discount_value: Number($("#cp-value").value || 0),
+        max_discount: $("#cp-max").value ? Number($("#cp-max").value) : null,
+        min_purchase: Number($("#cp-min").value || 0),
+        usage_limit: Number($("#cp-limit").value || 1),
+        customer_phone: $("#cp-phone").value.trim() || null,
+        valid_until: until ? until + "T23:59:59" : null,
+      }) });
+      closeModal(); toast("کوپن ساخته شد: " + c.code);
+      loadCoupons(); loadMarketingStats();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+function campaignModal() {
+  openModal(`<h3>کمپین / جشنواره جدید</h3>
+    <label>نام</label><input id="cm-name" placeholder="جشنواره پاییز" />
+    <div class="form-row">
+      <div><label>نوع تخفیف</label><select id="cm-type">
+        <option value="PERCENT">درصدی</option><option value="FIXED">مبلغ ثابت</option></select></div>
+      <div><label>مقدار</label><input id="cm-value" type="number" value="10" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>حداقل خرید بعدی</label><input id="cm-min" type="number" value="400000" /></div>
+      <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="1000000" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="1000000" /></div>
+      <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="30" /></div>
+    </div>
+    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.</p>
+    <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کمپین</button>`);
+  $("#cm-save").addEventListener("click", async () => {
+    try {
+      await api("/marketing/campaigns", { method: "POST", body: JSON.stringify({
+        name: $("#cm-name").value.trim() || "کمپین",
+        discount_type: $("#cm-type").value,
+        discount_value: Number($("#cm-value").value || 0),
+        min_purchase: Number($("#cm-min").value || 0),
+        max_discount: Number($("#cm-max").value || 0) || null,
+        auto_issue_threshold: Number($("#cm-thr").value || 0) || null,
+        auto_issue_validity_days: Number($("#cm-days").value || 30),
+      }) });
+      closeModal(); toast("کمپین ثبت شد"); loadCampaigns(); loadMarketingStats();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+
+/* ---------- Customers phone book (§30) ---------- */
+RENDER.customers = async () => {
+  const v = $("#view");
+  v.innerHTML = `<div class="card">
+      <div class="card-head"><h3>دفترچه مشتریان</h3>
+        <button class="btn btn-primary btn-sm" id="cu-new">+ مشتری جدید</button></div>
+      <div class="toolbar"><input id="cu-q" placeholder="جستجوی نام یا شماره تماس…" /></div>
+      <div class="table-wrap"><table id="cu-table"></table></div>
+    </div>`;
+  $("#cu-q").addEventListener("input", debounce(loadCustomers, 300));
+  $("#cu-new").addEventListener("click", () => {
+    openModal(`<h3>مشتری جدید</h3>
+      <div class="form-grid">
+        <div><label>نام</label><input id="nc-name" /></div>
+        <div><label>نام خانوادگی</label><input id="nc-last" /></div>
+        <div><label>شماره تماس</label><input id="nc-phone" placeholder="0912…" /></div>
+        <div><label>سقف اعتبار (۰ = بدون سقف)</label><input id="nc-limit" inputmode="numeric" value="0" /></div>
+        <div class="full"><label>آدرس</label><input id="nc-address" /></div>
+        <div class="full"><label>یادداشت</label><input id="nc-notes" /></div>
+      </div>
+      <p class="muted">ثبت فقط با شماره تماس هم مجاز است؛ نام را می‌توان بعداً تکمیل کرد.</p>
+      <button id="nc-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت</button>`);
+    $("#nc-save").addEventListener("click", async () => {
+      try {
+        await api("/customers", { method: "POST", body: JSON.stringify({
+          name: $("#nc-name").value.trim() || $("#nc-phone").value.trim(),
+          last_name: $("#nc-last").value.trim() || null,
+          phone: $("#nc-phone").value.trim() || null,
+          address: $("#nc-address").value.trim() || null,
+          notes: $("#nc-notes").value.trim() || null,
+          credit_limit: Number($("#nc-limit").value || 0) }) });
+        closeModal(); toast("مشتری ثبت شد"); loadCustomers();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  });
+  await loadCustomers();
+};
+
+async function loadCustomers() {
+  const q = $("#cu-q") ? $("#cu-q").value.trim() : "";
+  const params = new URLSearchParams({ with_debt: "true" });
+  if (q) params.set("q", q);
+  const rows = await api("/customers?" + params.toString());
+  const body = rows.map((c) => {
+    const bal = Number(c.balance || 0);
+    return `<tr>
+      <td>${esc(c.name)} ${esc(c.last_name || "")}</td>
+      <td>${esc(c.phone || "—")}</td>
+      <td class="${bal > 0 ? "ledger-amount debit" : "muted"}">
+        ${bal > 0 ? money(bal) : "تسویه"}</td>
+      <td>
+        <button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>
+        <button class="btn btn-ghost btn-sm" onclick="window._custHistory(${c.id}, '${esc(c.name)}')">سوابق خرید</button>
+      </td>
+    </tr>`;
+  }).join("");
+  $("#cu-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
+    <tbody>${body || `<tr><td colspan="4" class="muted empty">مشتری‌ای ثبت نشده است</td></tr>`}</tbody>`;
+}
+
+window._custHistory = async (id, name) => {
+  const invoices = await api("/invoices?customer_id=" + id).catch(() => ({ items: [] }));
+  const list = (invoices.items || invoices || []).filter((i) => i.customer_id === id);
+  const coupons = await api("/marketing/coupons?customer_id=" + id).catch(() => []);
+  openModal(`<h3>سوابق ${esc(name)}</h3>
+    <h4>فاکتورها</h4>
+    <table><thead><tr><th>شماره</th><th>مبلغ</th><th>وضعیت</th></tr></thead><tbody>
+      ${list.map((i) => `<tr><td>${esc(i.invoice_number)}</td><td>${money(i.total_amount)}</td><td>${esc(i.status)}</td></tr>`).join("")
+        || `<tr><td colspan="3" class="muted">فاکتوری ثبت نشده</td></tr>`}
+    </tbody></table>
+    <h4 style="margin-top:14px">کوپن‌ها</h4>
+    <table><thead><tr><th>کد</th><th>وضعیت</th></tr></thead><tbody>
+      ${coupons.map((c) => `<tr><td><code>${esc(c.code)}</code></td><td>${esc(c.status)}</td></tr>`).join("")
+        || `<tr><td colspan="2" class="muted">کوپنی ندارد</td></tr>`}
+    </tbody></table>`);
+};
+
+/* ---------- Connection diagnostics (§42–44) ---------- */
+const DIAG_BADGE = { PASS: "green", FAIL: "red", WARN: "amber", SKIPPED: "blue" };
+
+RENDER.diagnostics = async () => {
+  const v = $("#view");
+  v.innerHTML = `<div class="card">
+      <div class="card-head"><h3>تست اتصالات سیستم</h3>
+        <div>
+          <label class="inline"><input type="checkbox" id="dg-ext" checked /> شامل منابع خارجی</label>
+          <button class="btn btn-primary" id="dg-run">▶ اجرای تست کامل</button>
+        </div>
+      </div>
+      <p class="muted">هر تست یک عملیات واقعی انجام می‌دهد (نوشتن/خواندن دیتابیس، دسترسی شبکه،
+        فراخوانی منبع، نوشتن روی پرینتر). سرویسی که سخت‌افزار یا تنظیمات آن موجود نیست،
+        «رد شده» گزارش می‌شود و هرگز سبز نمایش داده نمی‌شود.</p>
+      <div id="dg-summary"></div>
+      <div id="dg-results"></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>صف همگام‌سازی آفلاین</h3><div id="dg-sync"></div></div>
+    <div class="card" style="margin-top:14px"><h3>تاریخچه تست‌ها</h3><div id="dg-history"></div></div>`;
+  $("#dg-run").addEventListener("click", runDiagnostics);
+  await Promise.all([loadSyncPanel(), loadDiagHistory()]);
+};
+
+async function runDiagnostics() {
+  const btn = $("#dg-run");
+  btn.disabled = true; btn.textContent = "در حال اجرا…";
+  $("#dg-results").innerHTML = `<p class="muted">در حال تست اتصال‌ها…</p>`;
+  try {
+    const ext = $("#dg-ext").checked;
+    const r = await api(`/diagnostics/run?include_external=${ext}`, { method: "POST" });
+    renderDiagnostics(r);
+    await loadDiagHistory();
+  } catch (e) { toast(e.message, "err"); $("#dg-results").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  btn.disabled = false; btn.textContent = "▶ اجرای تست کامل";
+}
+
+function renderDiagnostics(r) {
+  $("#dg-summary").innerHTML = `<div class="diag-summary">
+      <span class="badge badge-green">موفق ${r.passed}</span>
+      <span class="badge badge-red">ناموفق ${r.failed}</span>
+      <span class="badge badge-blue">رد/هشدار ${r.skipped}</span>
+      <span class="muted">مجموع ${r.total} تست</span></div>`;
+  $("#dg-results").innerHTML = r.checks.map((c) => `
+    <div class="diag-row">
+      <div class="diag-head">
+        <span class="badge badge-${DIAG_BADGE[c.status] || "blue"}">${esc(c.status)}</span>
+        <strong>${esc(c.name)}</strong>
+        <span class="muted">${c.duration_ms} ms</span>
+      </div>
+      <div class="diag-detail">${esc(c.detail || "")}</div>
+      ${(c.steps || []).length ? `<div class="diag-steps">${c.steps.map((s) =>
+        `<span class="step ${s.ok ? "ok" : "bad"}">${s.ok ? "✓" : "✗"} ${esc(s.step)}${s.note ? " — " + esc(s.note) : ""}</span>`).join("")}</div>` : ""}
+    </div>`).join("");
+}
+
+async function loadSyncPanel() {
+  const s = await api("/diagnostics/sync/stats");
+  const jobs = await api("/diagnostics/sync/jobs?limit=20");
+  $("#dg-sync").innerHTML = `
+    <div class="diag-summary">
+      <span class="badge badge-amber">در انتظار ${s.pending}</span>
+      <span class="badge badge-red">ناموفق ${s.failed}</span>
+      <button class="btn btn-sm" onclick="window._runSync()">اجرای صف</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>نوع</th><th>وضعیت</th><th>تلاش</th><th>خطا</th><th></th></tr></thead>
+      <tbody>${jobs.map((j) => `<tr><td>${esc(j.job_type)}</td>
+        <td><span class="badge badge-${j.status === "COMPLETED" ? "green" : j.status === "FAILED" ? "red" : "amber"}">${esc(j.status)}</span></td>
+        <td>${j.attempts}/${j.max_attempts}</td><td class="muted">${esc((j.last_error || "").slice(0, 60))}</td>
+        <td>${j.status === "FAILED" ? `<button class="btn btn-sm" onclick="window._retryJob(${j.id})">تلاش مجدد</button>` : ""}</td></tr>`).join("")
+        || `<tr><td colspan="5" class="muted empty">صف خالی است</td></tr>`}</tbody></table></div>`;
+}
+
+window._runSync = async () => {
+  try { const r = await api("/diagnostics/sync/run", { method: "POST" });
+    toast(`پردازش ${r.processed} کار — موفق ${r.succeeded}`); loadSyncPanel();
+  } catch (e) { toast(e.message, "err"); }
+};
+window._retryJob = async (id) => {
+  try { await api(`/diagnostics/sync/jobs/${id}/retry`, { method: "POST" });
+    toast("در صف تلاش مجدد قرار گرفت"); loadSyncPanel();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+async function loadDiagHistory() {
+  const h = await api("/diagnostics/history");
+  $("#dg-history").innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>زمان</th><th>موفق</th><th>ناموفق</th><th>رد شده</th><th></th></tr></thead>
+    <tbody>${h.map((r) => `<tr><td>${esc(r.started_at.slice(0, 16).replace("T", " "))}</td>
+      <td class="ok">${r.passed}</td><td class="error">${r.failed}</td><td>${r.skipped}</td>
+      <td><button class="btn btn-sm" onclick="window._showRun(${r.id})">مشاهده</button></td></tr>`).join("")
+      || `<tr><td colspan="5" class="muted empty">هنوز تستی اجرا نشده است</td></tr>`}</tbody></table></div>`;
+}
+
+window._showRun = async (id) => {
+  const r = await api(`/diagnostics/runs/${id}`);
+  renderDiagnostics({ ...r, checks: r.checks });
+  window.scrollTo(0, 0);
+};
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+/* ---------- runtime config (currency + units) ---------- */
+async function loadRuntimeConfig() {
+  try { state.currency = await api("/settings/currency"); } catch (e) { /* defaults */ }
+  try { state.time = await api("/settings/time"); } catch (e) { state.time = { timezone: "Asia/Tehran", utc_offset: "+03:30" }; }
+  try { state.units = await api("/units"); } catch (e) { state.units = []; }
+  try {
+    state.store = await api("/settings/store-profile");
+    const el = $("#sb-store");
+    if (el && state.store.name) el.textContent = state.store.name;
+    if (state.store.logo_path) applyStoreLogo(state.store.logo_path);
+    if (state.store.name) {
+      const brand = document.querySelector(".brand span");
+      if (brand) brand.textContent = state.store.name;
+    }
+  } catch (e) { state.store = {}; }
+}
+const unitById = (id) => state.units.find((u) => u.id === id) || null;
+
+
+/* ===========================================================================
+ * Theme engine (§23) and status bar (§21).
+ * The resolved theme comes from the server so the light/dark schedule lives in
+ * one place (settings) instead of being reimplemented per client.
+ * ========================================================================= */
+async function applyTheme(pref) {
+  try {
+    if (pref) await api("/settings/theme", { method: "PUT", body: JSON.stringify({ theme: pref }) });
+    const t = await api("/settings/theme");
+    state.theme = t;
+    document.documentElement.setAttribute("data-theme", t.resolved);
+    const btn = $("#sb-theme");
+    if (btn) {
+      btn.textContent = t.theme === "auto" ? "◐" : (t.resolved === "dark" ? "☾" : "☀");
+      btn.title = t.theme === "auto"
+        ? `خودکار (روشن ${t.light_at} تا ${t.dark_at}) — اکنون ${t.resolved === "dark" ? "تیره" : "روشن"}`
+        : `پوستهٔ ${t.resolved === "dark" ? "تیره" : "روشن"} (دستی)`;
+    }
+  } catch (e) { /* keep whatever theme is already applied */ }
+}
+
+/* auto mode must flip at the scheduled time without a reload */
+function scheduleThemeRefresh() {
+  clearInterval(window._themeTimer);
+  window._themeTimer = setInterval(() => {
+    if (state.theme && state.theme.theme === "auto") applyTheme();
+  }, 60000);
+}
+
+window.cycleTheme = async () => {
+  const order = ["auto", "light", "dark"];
+  const next = order[(order.indexOf((state.theme || {}).theme || "auto") + 1) % 3];
+  await applyTheme(next);
+  toast(`پوسته: ${next === "auto" ? "خودکار" : next === "light" ? "روشن" : "تیره"}`);
+};
+
+async function refreshStatusBar() {
+  const online = navigator.onLine;
+  const dot = $("#sb-net-dot"), net = $("#sb-net");
+  if (dot) dot.className = "sb-dot" + (online ? " on" : "");
+  if (net) net.textContent = online ? "متصل" : "آفلاین";
+
+  const user = $("#sb-user");
+  if (user && state.user) user.textContent = state.user.full_name || state.user.username;
+
+  try {
+    const t = await api("/settings/time");
+    state.serverTime = t;
+    const d = $("#sb-date"), c = $("#sb-clock");
+    if (d) d.textContent = `${t.weekday} ${t.jalali_date}`;
+    // Use the store-local time the server already computed. Re-parsing it with
+    // the browser's timezone showed a UTC client the wrong wall-clock time.
+    if (c) {
+      const hhmm = String(t.local).slice(11, 16);
+      c.textContent = hhmm.replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+    }
+    const db = $("#sb-db");
+    if (db) { db.textContent = "پایگاه‌داده"; db.className = "sb-item ok"; }
+  } catch (e) {
+    const db = $("#sb-db");
+    if (db) { db.textContent = "بدون اتصال به سرور"; db.className = "sb-item bad"; }
+  }
+}
+
+/* v1.7.1 — unread support replies: badge on the nav item + soft note sound */
+let _supUnread = 0;
+async function refreshSupportBadge() {
+  if (!state.token || !can("pos.sell")) return;
+  try {
+    const r = await api("/support/unread");
+    const b = $("#nav-sup-badge");
+    if (b) { b.textContent = r.unread > 0 ? String(r.unread).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]) : ""; b.classList.toggle("hidden", !r.unread); }
+    if (r.unread > _supUnread && _supUnread >= 0 && window.Sfx && document.visibilityState !== "hidden" && state.view !== "support") { try { Sfx.play("note"); } catch (_) {} toast("پاسخ جدید از پشتیبانی رسید — منوی «درخواست پشتیبانی»"); }
+    _supUnread = r.unread;
+  } catch (_) {}
+}
+function startStatusBar() {
+  refreshSupportBadge(); clearInterval(window._supTimer); window._supTimer = setInterval(refreshSupportBadge, 30000);
+  const btn = $("#sb-theme");
+  if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", cycleTheme); }
+  window.addEventListener("online", refreshStatusBar);
+  window.addEventListener("offline", refreshStatusBar);
+  refreshStatusBar();
+  clearInterval(window._sbTimer);
+  window._sbTimer = setInterval(refreshStatusBar, 30000);
+  scheduleThemeRefresh();
+}
+
+/* ===========================================================================
+ * Customer ledger (§30–35)
+ * ========================================================================= */
+window.showCustomerLedger = async (id) => {
+  let data;
+  try { data = await api(`/customers/${id}/ledger`); }
+  catch (e) { toast(e.message, "err"); return; }
+
+  const c = data.customer;
+  const bal = Number(data.balance || 0);
+  const rows = data.entries.map((e) => {
+    const amt = Number(e.amount);
+    const label = {
+      CREDIT_SALE: "فروش نسیه", PAYMENT: "پرداخت مشتری",
+      RETURN_REFUND: "برگشت کالا", ADJUSTMENT_DEBIT: "اصلاح (بدهکار)",
+      ADJUSTMENT_CREDIT: "اصلاح (بستانکار)", OPENING_BALANCE: "مانده ابتدای دوره",
+    }[e.entry_type] || e.entry_type;
+    return `<tr>
+      <td>${esc(faDateTime(e.created_at))}</td>
+      <td>${esc(label)}</td>
+      <td class="ledger-amount ${amt > 0 ? "debit" : "credit"}">
+        ${amt > 0 ? "+" : "−"}${money(Math.abs(amt))}</td>
+      <td>${money(e.balance_after)}</td>
+      <td class="muted">${esc(e.note || "")}${e.method ? ` (${esc(e.method)})` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  openModal(`<h3>حساب دفتری — ${esc(c.name)} ${esc(c.last_name || "")}</h3>
+    <div class="balance-hero ${bal > 0 ? "debt" : "clear"}">
+      <span class="muted">مانده حساب</span>
+      <b>${money(bal)}</b>
+      <span class="muted">${bal > 0 ? "بدهکار" : "تسویه"}</span>
+      <span class="sb-grow"></span>
+      <span class="muted">جمع خرید ${money(data.total_charged)} · جمع پرداخت ${money(data.total_paid)}</span>
+    </div>
+    ${bal > 0 ? `<div class="toolbar">
+      <input id="lg-amt" inputmode="numeric" placeholder="مبلغ دریافتی…" />
+      <select id="lg-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option>
+        <option value="TRANSFER">انتقال</option></select>
+      <button class="btn btn-primary btn-sm" onclick="doSettle(${id}, false)">ثبت پرداخت</button>
+      <button class="btn btn-sm" onclick="doSettle(${id}, true)">تسویه کامل (${money(bal)})</button>
+      <button class="btn btn-ghost btn-sm" onclick="smsDebtReminder(${id})">پیامک یادآوری</button>
+    </div>` : ""}
+    <div class="table-wrap"><table>
+      <thead><tr><th>تاریخ</th><th>نوع</th><th>مبلغ</th><th>مانده</th><th>توضیح</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="empty">تراکنشی ثبت نشده است</td></tr>`}</tbody>
+    </table></div>
+    <p class="muted" style="margin-top:8px">
+      این دفتر فقط-افزودنی است: اصلاح‌ها به‌صورت سند معکوس ثبت می‌شوند و هیچ
+      سطری حذف یا بازنویسی نمی‌شود.</p>
+  `);
+};
+
+window.doSettle = async (id, full) => {
+  const body = { method: ($("#lg-method") || {}).value || "CASH" };
+  if (!full) {
+    const v = parseFloat(($("#lg-amt") || {}).value);
+    if (!isFinite(v) || v <= 0) { toast("مبلغ نامعتبر", "err"); return; }
+    body.amount = v;
+  }
+  try {
+    const r = await api(`/customers/${id}/settle`, { method: "POST", body: JSON.stringify(body) });
+    toast(r.settled_in_full ? "حساب تسویه شد" : `ثبت شد — مانده ${money(r.balance)}`);
+    closeModal();
+    showCustomerLedger(id);
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.smsDebtReminder = async (id) => {
+  /* The server renders the configured template and enforces "no debt, no
+     nag" — the client must not compose the message itself. */
+  try {
+    const r = await api(`/customers/${id}/debt-reminder`, { method: "POST",
+      body: JSON.stringify({}) });
+    toast(`پیامک یادآوری در صف ارسال قرار گرفت: ${r.phone}`);
+  } catch (e) { toast(e.message, "err"); }
+};
+
 /* ---------- boot ---------- */
 async function boot() {
+  if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {
     state.user = await api("/auth/me");
+    if (window.Onboarding) await Onboarding.afterLogin();
+    await loadRuntimeConfig();
     showApp();
     buildNav();
+    await applyTheme();
+    startStatusBar();
+    if (window.Onboarding) Onboarding.alertsStack();
     go("dashboard");
   } catch (e) {
     localStorage.removeItem("token"); state.token = "";
     showLogin();
   }
 }
-boot();
+if (!window.__NO_AUTOBOOT) boot();

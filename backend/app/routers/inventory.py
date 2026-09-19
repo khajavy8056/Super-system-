@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -16,22 +19,28 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 class AdjustIn(BaseModel):
     batch_id: int
-    new_current_qty: int = Field(ge=0)
+    new_current_qty: Decimal = Field(ge=0)  # decimal-aware (§25)
     reason: str | None = None
 
 
 class StocktakeIn(BaseModel):
     name: str
     area: str | None = None
+    warehouse_id: int | None = None
     product_ids: list[int] | None = None
     batch_ids: list[int] | None = None
     include_zero: bool = True  # snapshot believed-empty batches too (BUG-018)
+    #: v1.3 — ISO date (Gregorian) the count is planned for; UI enters Jalali
+    scheduled_for: date | None = None
+    reminder_note: str | None = None
 
 
 class CountIn(BaseModel):
     item_id: int
-    physical_qty: int = Field(ge=0)
+    physical_qty: Decimal = Field(ge=0)
     reason: str | None = None
+    #: optional client key so a replayed offline count is applied only once
+    client_key: str | None = None
 
 
 @router.get("/stock")
@@ -44,12 +53,15 @@ def stock_summary(db: Session = Depends(get_db), _: User = Depends(require_permi
     out = []
     for p in products:
         rows = by_product.get(p.id, [])
-        total = sum(b.current_qty for b in rows)
+        total = float(sum((Decimal(b.current_qty) for b in rows), Decimal("0")))
         out.append({
             "product_id": p.id, "name": p.name, "barcode": p.barcode,
             "total_stock": total, "min_stock_alert": p.min_stock_alert,
+            "unit_id": p.unit_id, "image_url": p.image_url,
             "batches": [{"batch_id": b.id, "batch_number": b.batch_number,
-                         "current_qty": b.current_qty, "status": b.status,
+                         "current_qty": float(b.current_qty), "status": b.status,
+                         "buy_price": float(b.buy_price), "sell_price": float(b.sell_price),
+                         "consumer_price": float(b.consumer_price),
                          "expiry_date": str(b.expiry_date) if b.expiry_date else None}
                         for b in rows],
         })
@@ -66,7 +78,8 @@ def adjust(body: AdjustIn, db: Session = Depends(get_db),
         inv.adjust_batch(db, batch=batch, new_current_qty=body.new_current_qty,
                          user=user, reason=body.reason)
         db.commit()
-        return {"batch_id": batch.id, "current_qty": batch.current_qty, "status": batch.status}
+        return {"batch_id": batch.id, "current_qty": float(batch.current_qty),
+                "status": batch.status}
     except InventoryError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -81,7 +94,7 @@ def waste(body: AdjustIn, db: Session = Depends(get_db),
     try:
         inv.record_waste(db, batch=batch, qty=body.new_current_qty, user=user, reason=body.reason)
         db.commit()
-        return {"batch_id": batch.id, "current_qty": batch.current_qty}
+        return {"batch_id": batch.id, "current_qty": float(batch.current_qty)}
     except InventoryError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -101,11 +114,13 @@ def create_stocktake(body: StocktakeIn, db: Session = Depends(get_db),
                      user: User = Depends(require_permission("inventory.stocktake"))):
     st = inv.create_stocktake(db, name=body.name, area=body.area, user=user,
                               product_ids=body.product_ids, batch_ids=body.batch_ids,
-                              include_zero=body.include_zero)
+                              include_zero=body.include_zero, warehouse_id=body.warehouse_id,
+                              scheduled_for=body.scheduled_for, reminder_note=body.reminder_note)
     db.commit()
     return {"id": st.id, "name": st.name, "status": st.status,
+            "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
-                       "system_qty": i.system_qty} for i in st.items]}
+                       "system_qty": float(i.system_qty)} for i in st.items]}
 
 
 @router.get("/stocktakes")
@@ -122,14 +137,38 @@ def get_stocktake(stocktake_id: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="STOCKTAKE_NOT_FOUND")
     pids = [i.product_id for i in st.items]
     products = {p.id: p for p in db.execute(select(Product).where(Product.id.in_(pids))).scalars()} if pids else {}
+    bids = [i.batch_id for i in st.items if i.batch_id]
+    batches = {b.id: b for b in db.execute(select(ProductBatch).where(ProductBatch.id.in_(bids))).scalars()} if bids else {}
+    from ..models import StorageLocation, Warehouse
+    locs = {l.id: l for l in db.execute(select(StorageLocation)).scalars()}
+    whs = {w.id: w for w in db.execute(select(Warehouse)).scalars()}
+
+    def _place(b):
+        if not b:
+            return None
+        loc = locs.get(b.location_id) if b.location_id else None
+        wh = whs.get(b.warehouse_id) if b.warehouse_id else None
+        parts = [x for x in [(wh.name if wh else None), (loc.name if loc else None)] if x]
+        return " / ".join(parts) if parts else None
+
     return {"id": st.id, "name": st.name, "status": st.status, "area": st.area,
+            "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
+            "reminder_note": st.reminder_note,
             "items": [{"id": i.id, "product_id": i.product_id, "batch_id": i.batch_id,
                        "product_name": (products.get(i.product_id).name if products.get(i.product_id) else f"#{i.product_id}"),
                        "barcode": (products.get(i.product_id).barcode if products.get(i.product_id) else None),
                        "image_url": (products.get(i.product_id).image_url if products.get(i.product_id) else None),
-                       "system_qty": i.system_qty, "physical_qty": i.physical_qty,
-                       "difference": i.difference, "status": i.status, "reason": i.reason}
-                      for i in st.items]}
+                       "unit_id": (products.get(i.product_id).unit_id if products.get(i.product_id) else None),
+                       "batch_number": (batches[i.batch_id].batch_number if i.batch_id in batches else None),
+                       "expiry_date": (str(batches[i.batch_id].expiry_date) if i.batch_id in batches and batches[i.batch_id].expiry_date else None),
+                       "location": _place(batches.get(i.batch_id)) if i.batch_id else None,
+                       "system_qty": float(i.system_qty),
+                       "physical_qty": float(i.physical_qty) if i.physical_qty is not None else None,
+                       "difference": float(i.difference), "status": i.status,
+                       "reason": i.reason,
+                       "counted_at": i.counted_at.isoformat() if i.counted_at else None}
+                      for i in sorted(st.items, key=lambda x: x.id)],
+            "progress": inv.stocktake_progress(db, st.id)}
 
 
 @router.get("/stocktakes/{stocktake_id}/progress")
@@ -171,9 +210,11 @@ def item_by_barcode(stocktake_id: int, barcode: str, db: Session = Depends(get_d
                                                      "message": "این کالا در فهرست این انبارگردانی نیست"})
     return {"product": {"id": product.id, "name": product.name, "barcode": product.barcode,
                         "image_url": product.image_url},
-            "items": [{"id": i.id, "batch_id": i.batch_id, "system_qty": i.system_qty,
-                       "physical_qty": i.physical_qty, "status": i.status,
-                       "difference": i.difference} for i in items]}
+            "items": [{"id": i.id, "batch_id": i.batch_id,
+                       "system_qty": float(i.system_qty),
+                       "physical_qty": float(i.physical_qty) if i.physical_qty is not None else None,
+                       "status": i.status,
+                       "difference": float(i.difference)} for i in items]}
 
 
 @router.post("/stocktakes/count")
@@ -182,9 +223,12 @@ def count_item(body: CountIn, db: Session = Depends(get_db),
     try:
         item = inv.count_stocktake_item(db, item_id=body.item_id, physical_qty=body.physical_qty,
                                         reason=body.reason, user=user)
+        progress = inv.stocktake_progress(db, item.stocktake_id)
         db.commit()
-        return {"item_id": item.id, "system_qty": item.system_qty, "physical_qty": item.physical_qty,
-                "difference": item.difference, "status": item.status}
+        return {"item_id": item.id, "system_qty": float(item.system_qty),
+                "physical_qty": float(item.physical_qty),
+                "difference": float(item.difference), "status": item.status,
+                "progress": progress}
     except InventoryError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(e))
@@ -237,3 +281,103 @@ def cancel_stocktake(stocktake_id: int, db: Session = Depends(get_db),
     except InventoryError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Mobile stocktaking helpers (§12–14) -----------------------------------------
+
+@router.get("/stocktakes/{stocktake_id}/items")
+def stocktake_items(stocktake_id: int, status: str | None = None,
+                    cursor: int | None = None, limit: int = Query(default=50, le=500),
+                    db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("inventory.stocktake"))):
+    """Paged item feed for the phone: image + name + barcode + system qty.
+
+    ``cursor`` is the last item id already loaded, so a resumed session fetches
+    only what it still needs (works over a flaky Wi-Fi link).
+    """
+    st = db.get(Stocktake, stocktake_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="STOCKTAKE_NOT_FOUND")
+    items = sorted(st.items, key=lambda i: i.id)
+    if status:
+        items = [i for i in items if i.status == status.upper()]
+    if cursor:
+        items = [i for i in items if i.id > cursor]
+    page = items[:limit]
+    pids = {i.product_id for i in page}
+    products = {p.id: p for p in db.execute(
+        select(Product).where(Product.id.in_(pids))).scalars()} if pids else {}
+    batches = {b.id: b for b in db.execute(
+        select(ProductBatch).where(
+            ProductBatch.id.in_({i.batch_id for i in page if i.batch_id}))
+    ).scalars()} if page else {}
+    out = []
+    for i in page:
+        p = products.get(i.product_id)
+        b = batches.get(i.batch_id) if i.batch_id else None
+        out.append({
+            "id": i.id, "product_id": i.product_id,
+            "product_name": p.name if p else f"#{i.product_id}",
+            "barcode": p.barcode if p else None,
+            "image_url": p.image_url if p else None,
+            "unit_id": p.unit_id if p else None,
+            "batch_id": i.batch_id,
+            "batch_number": b.batch_number if b else None,
+            "expiry_date": str(b.expiry_date) if b and b.expiry_date else None,
+            "system_qty": float(i.system_qty),
+            "physical_qty": float(i.physical_qty) if i.physical_qty is not None else None,
+            "difference": float(i.difference),
+            "status": i.status,
+        })
+    return {"items": out, "next_cursor": page[-1].id if len(page) == limit else None,
+            "progress": inv.stocktake_progress(db, stocktake_id)}
+
+
+@router.get("/stocktakes-upcoming")
+def upcoming_stocktakes(horizon_days: int = Query(default=14, ge=0, le=365),
+                        db: Session = Depends(get_db),
+                        _: User = Depends(get_current_user)):
+    """v1.3 alarm feed: planned/open stocktakes with days_left + level."""
+    return inv.upcoming_stocktakes(db, horizon_days=horizon_days)
+
+
+@router.get("/stocktake-sessions/active")
+def active_stocktakes(db: Session = Depends(get_db),
+                      _: User = Depends(require_permission("inventory.stocktake"))):
+    """Sessions the operator can resume right now (§14 — Continue Stocktaking)."""
+    rows = db.execute(
+        select(Stocktake).where(Stocktake.status.in_(["DRAFT", "IN_PROGRESS"]))
+        .order_by(Stocktake.id.desc())
+    ).scalars().all()
+    return [inv.stocktake_progress(db, s.id) for s in rows]
+
+
+class BulkCountIn(BaseModel):
+    counts: list[CountIn]
+
+
+@router.post("/stocktakes/count/bulk")
+def bulk_count(body: BulkCountIn, db: Session = Depends(get_db),
+               user: User = Depends(require_permission("inventory.stocktake"))):
+    """Replay a phone's offline queue in one round-trip.
+
+    Each entry succeeds or fails independently and reports why, so a single
+    rejected row (e.g. a session closed meanwhile) never discards the rest.
+    """
+    results = []
+    for c in body.counts:
+        try:
+            item = inv.count_stocktake_item(db, item_id=c.item_id,
+                                            physical_qty=c.physical_qty,
+                                            reason=c.reason, user=user)
+            db.commit()
+            results.append({"item_id": c.item_id, "ok": True,
+                            "client_key": c.client_key,
+                            "difference": float(item.difference),
+                            "status": item.status})
+        except InventoryError as e:
+            db.rollback()
+            results.append({"item_id": c.item_id, "ok": False,
+                            "client_key": c.client_key, "error": str(e)})
+    applied = sum(1 for r in results if r["ok"])
+    return {"applied": applied, "rejected": len(results) - applied, "results": results}

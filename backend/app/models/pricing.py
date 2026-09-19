@@ -13,6 +13,7 @@ from ..database import Base
 from .base import TimestampMixin
 
 MONEY = Numeric(14, 2)
+QTY = Numeric(14, 3)  # decimal quantities (Kg / gram / liter support)
 
 
 class PriceVersion(TimestampMixin, Base):

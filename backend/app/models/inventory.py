@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 from .base import TimestampMixin
-from .pricing import MONEY
+from .pricing import MONEY, QTY
 
 
 class ProductBatch(TimestampMixin, Base):
@@ -23,12 +23,22 @@ class ProductBatch(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_number: Mapped[str] = mapped_column(String(64), index=True)
-    quantity_received: Mapped[int] = mapped_column(Integer, default=0)
-    current_qty: Mapped[int] = mapped_column(Integer, default=0)
+    quantity_received: Mapped[Decimal] = mapped_column(QTY, default=0)
+    current_qty: Mapped[Decimal] = mapped_column(QTY, default=0)
 
+    # §6 — every money figure belongs to the BATCH, never to the Product.
+    # The same product bought twice at different prices keeps both histories,
+    # so margin per batch stays computable years later.
     buy_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: What the supplier invoiced, when it differs from the landed buy_price
+    #: (freight, rebates). Kept separate so buy_price stays the costing basis.
+    supplier_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     consumer_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
     sell_price: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: Per-batch discount and tax; a clearance batch can be marked down without
+    #: touching the product or any other batch.
+    discount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    tax: Mapped[Decimal] = mapped_column(MONEY, default=0)
 
     production_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -38,6 +48,7 @@ class ProductBatch(TimestampMixin, Base):
 
     # Future multi-branch/warehouse support (§145–147), optional in v1.
     warehouse_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # v3.0: supplier scorecard
     location_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -54,7 +65,7 @@ class StockMovement(TimestampMixin, Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
     movement_type: Mapped[str] = mapped_column(String(24), index=True)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False)  # signed
+    quantity: Mapped[Decimal] = mapped_column(QTY, nullable=False)  # signed
     reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit_cost: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
@@ -76,6 +87,14 @@ class Stocktake(TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    completed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    warehouse_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: last item the operator was on — lets a phone resume mid-session (§14)
+    cursor_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: v1.3: planned date — drives the "stocktake starts in N days" alarm
+    scheduled_for: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: v1.3: free-text reminder shown with the alarm
+    reminder_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     items: Mapped[list["StocktakeItem"]] = relationship(back_populates="stocktake")
 
@@ -87,12 +106,40 @@ class StocktakeItem(Base):
     stocktake_id: Mapped[int] = mapped_column(ForeignKey("stocktakes.id"), index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("product_batches.id"), nullable=True)
-    system_qty: Mapped[int] = mapped_column(Integer, default=0)
-    physical_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    difference: Mapped[int] = mapped_column(Integer, default=0)
+    system_qty: Mapped[Decimal] = mapped_column(QTY, default=0)
+    physical_qty: Mapped[Decimal | None] = mapped_column(QTY, nullable=True)
+    difference: Mapped[Decimal] = mapped_column(QTY, default=0)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    counted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    counted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     stocktake: Mapped["Stocktake"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship()
     batch: Mapped["ProductBatch | None"] = relationship()
+
+
+class Warehouse(TimestampMixin, Base):
+    """A physical store / warehouse (§130). ``is_default`` marks the sales floor
+    that receiving lands in when no warehouse is chosen."""
+
+    __tablename__ = "warehouses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class StorageLocation(TimestampMixin, Base):
+    """Shelf / bin / cold-room inside a warehouse (§131)."""
+
+    __tablename__ = "storage_locations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)

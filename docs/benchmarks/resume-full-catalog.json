@@ -1,0 +1,131 @@
+{
+  "pause_evidence": {
+    "invoices_after_pause": 995,
+    "checkpoint_json_bytes": 5952145,
+    "final_file_after_pause": false
+  },
+  "result": {
+    "simulation_only": true,
+    "summary": {
+      "days": 3,
+      "start_date": "2026-09-15",
+      "end_date": "2026-09-17",
+      "products": 75,
+      "long_tail_products": 13570,
+      "suppliers": 15,
+      "customers": 8800,
+      "insights": {
+        "errors": {},
+        "generated": 61,
+        "accepted": 0,
+        "measured": 0,
+        "open": 54
+      },
+      "invoices": 3603,
+      "lines": 13722,
+      "sales": 1124055536,
+      "voids": 68,
+      "returns": 51,
+      "credit": 128,
+      "accepted_insights": 0,
+      "lost_sales": 267,
+      "path": "/home/user/resume-benchmark/store.db.gz",
+      "bytes": 7755220,
+      "compressed": true,
+      "tables": 51
+    },
+    "validation": {
+      "integrity": "ok",
+      "tables": 51,
+      "missing": [],
+      "counts": {
+        "products": 13645,
+        "invoices": 3603,
+        "invoice_items": 13722,
+        "product_batches": 13645,
+        "stock_movements": 27643,
+        "customers": 8800,
+        "acc_suppliers": 15,
+        "ai_insights": 54,
+        "acc_cheques": 9,
+        "acc_expenses": 0,
+        "returns": 51,
+        "audit_logs": 31156
+      },
+      "uncompressed_bytes": 47427584,
+      "foreign_key_errors": [],
+      "daily_invoices": [
+        [
+          "2026-09-15",
+          995
+        ],
+        [
+          "2026-09-16",
+          1112
+        ],
+        [
+          "2026-09-17",
+          1496
+        ]
+      ],
+      "economic": {
+        "ok": true,
+        "checks": {
+          "unbalanced_journals": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "invalid_journal_lines": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "batch_movement_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "negative_stock": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "invoice_gross_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "invoice_total_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "invoice_payment_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "customer_running_balance_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "sale_journal_date_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "missing_cash_settlement_journal": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "receivables_subledger_mismatch": {
+            "violations": 0,
+            "sample_ids": []
+          },
+          "missing_sale_journal": {
+            "violations": 0,
+            "sample_ids": []
+          }
+        },
+        "scope": "accounting_and_inventory_consistency_not_model_accuracy"
+      }
+    },
+    "elapsed_seconds": 270.659,
+    "requested_days": 3,
+    "requested_invoices_per_day": 1100.0,
+    "model_effect_is_causal_evidence": false
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "simulation_only": true,
+  "summary": {
+    "days": 1,
+    "start_date": "2026-09-17",
+    "end_date": "2026-09-17",
+    "products": 75,
+    "long_tail_products": 13570,
+    "suppliers": 15,
+    "customers": 160,
+    "insights": {
+      "errors": {},
+      "generated": 30,
+      "accepted": 0,
+      "measured": 0,
+      "open": 30
+    },
+    "invoices": 39,
+    "lines": 151,
+    "sales": 13973686,
+    "voids": 1,
+    "returns": 0,
+    "credit": 5,
+    "accepted_insights": 0,
+    "lost_sales": 0,
+    "path": "temporary smoke-test backup (not distributed)",
+    "bytes": 5346404,
+    "compressed": true,
+    "tables": 51
+  },
+  "validation": {
+    "integrity": "ok",
+    "tables": 51,
+    "missing": [],
+    "counts": {
+      "products": 13645,
+      "invoices": 39,
+      "invoice_items": 151,
+      "product_batches": 13645,
+      "stock_movements": 13800,
+      "customers": 160,
+      "acc_suppliers": 15,
+      "ai_insights": 30,
+      "acc_cheques": 0,
+      "acc_expenses": 0,
+      "returns": 0,
+      "audit_logs": 27407
+    },
+    "uncompressed_bytes": 33087488,
+    "foreign_key_errors": [],
+    "daily_invoices": [
+      [
+        "2026-09-17",
+        39
+      ]
+    ],
+    "economic": {
+      "ok": true,
+      "checks": {
+        "unbalanced_journals": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "invalid_journal_lines": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "batch_movement_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "negative_stock": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "invoice_gross_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "invoice_total_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "invoice_payment_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "customer_running_balance_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "sale_journal_date_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "missing_cash_settlement_journal": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "receivables_subledger_mismatch": {
+          "violations": 0,
+          "sample_ids": []
+        },
+        "missing_sale_journal": {
+          "violations": 0,
+          "sample_ids": []
+        }
+      },
+      "scope": "accounting_and_inventory_consistency_not_model_accuracy"
+    }
+  },
+  "elapsed_seconds": 141.81,
+  "requested_days": 1,
+  "requested_invoices_per_day": 20.0,
+  "model_effect_is_causal_evidence": false,
+  "test_environment": "Linux; packaged source kit; NOT a Windows bootstrap or Android-device test",
+  "generator_bundle_sha256": "c8d0e36f00d19d41ef6d18bba9f172d3a2d9246be58249891b53f63386514a4f"
+}
