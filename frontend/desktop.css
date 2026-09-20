@@ -1,0 +1,120 @@
+/* 3.6.6 — desktop workspace: RTL, adaptive columns, readable data, scoped overflow. */
+:root { --workspace-radius: 18px; }
+html:not(.m-shell) body { background: var(--bg); line-height: 1.7; }
+html:not(.m-shell) .sidebar { width: 238px; flex: 0 0 238px; position: sticky; top: 0; height: 100dvh; background: linear-gradient(165deg,#101c38,#0b1328); color: #edf3ff; border-color: #263453; }
+html:not(.m-shell) .sidebar .muted, html:not(.m-shell) .nav-item { color: #b5c3dd; }
+html:not(.m-shell) .nav-item.active { color: white; background: linear-gradient(110deg,#255ee9,#7450e8); box-shadow: 0 4px 16px #0002; }
+html:not(.m-shell) .nav-item { margin: 4px 0; padding: 11px 14px; }
+html:not(.m-shell) .brand { padding: 24px 18px; border-color: #ffffff16; }
+html:not(.m-shell) .sidebar-footer { border-color: #ffffff16; }
+html:not(.m-shell) .topbar { padding: 17px 28px; min-height: 80px; background: var(--bg2); backdrop-filter: none; flex-wrap: wrap; }
+#topbar-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.topbar h2 { flex-shrink: 0; }
+html:not(.m-shell) .view { padding: 28px; width: 100%; max-width: 1760px; margin-inline: auto; }
+.main, .view, .card, .dcard, .grid > *, .form-grid > *, .ins-card, .st-info { min-width: 0; }
+.card, .ins-card, .dcard { box-shadow: 0 4px 20px #00000008; }
+.card { border-radius: var(--workspace-radius); padding: 22px; }
+.card-head { flex-wrap: wrap; gap: 12px; align-items: center; }
+h2,h3,h4 { text-wrap: balance; }
+.page-intro { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 24px 28px; margin-bottom: 22px; border: 1px solid var(--border); border-radius: 20px; background: linear-gradient(120deg, color-mix(in srgb,var(--primary) 11%,var(--card)),var(--card)); }
+.page-intro h2 { margin: 5px 0; font-size: clamp(21px,2vw,29px); }
+.page-intro p { color: var(--muted); margin: 0; max-width: 68ch; }
+.eyebrow { font-size: 12px; font-weight: 700; color: var(--primary); }
+.intro-badge { padding: 8px 14px; border: 1px solid var(--border); border-radius: 99px; font-size: 12px; background: var(--bg2); }
+.ins-wrap .page-intro { margin-bottom: 0; }
+.btn { min-height: 40px; line-height: 1.6; white-space: normal; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input:not([type=checkbox]):not([type=radio]), select, textarea { min-width: 0; max-width: 100%; }
+.toolbar { flex-wrap: wrap; align-items: center; }
+.toolbar > input, .toolbar > select { flex: 1 1 180px; }
+.grid-2 { grid-template-columns: repeat(auto-fit,minmax(min(100%,340px),1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit,minmax(min(100%,210px),1fr)); }
+.table-wrap { max-width: 100%; overscroll-behavior-inline: contain; scrollbar-width: thin; }
+html:not(.m-shell) .table-wrap { overflow: auto; }
+html:not(.m-shell) th { padding: 13px 12px; white-space: nowrap; }
+html:not(.m-shell) td { padding: 12px; }
+html:not(.m-shell) tbody tr:nth-child(even) { background: color-mix(in srgb,var(--bg) 38%,transparent); }
+.set-tabs, .acc-tabs { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.set-tab { white-space: normal; }
+.ins-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,330px),1fr)); align-items: stretch; }
+.ins-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.ins-kpi b { font-size: clamp(18px,1.7vw,25px); overflow-wrap: anywhere; }
+.ins-card { border-inline-start-width: 3px; padding: 22px; gap: 14px; }
+.ins-body { line-height: 1.95; }
+.ins-foot { flex-wrap: wrap; }
+.ins-bar { grid-template-columns: minmax(90px,1fr) minmax(20px,.6fr) minmax(100px,auto); }
+.ins-bar > * { min-width: 0; overflow-wrap: anywhere; }
+.view-feedback { padding: 24px; text-align: center; }
+.inventory-grid { grid-template-columns: minmax(0,1.4fr) minmax(300px,1fr); align-items: start; }
+.inventory-stock { grid-row: span 2; }
+.inventory-stock .table-wrap { max-height: 540px; overflow: auto; }
+.inventory-stock td:first-child { min-width: 160px; max-width: 400px; white-space: normal; }
+.list-pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.list-pager > span { margin-inline-end: auto; }
+.st-row { grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 16px 0; }
+.st-row > button { grid-column: 1/-1; justify-self: start; }
+.st-row b { overflow-wrap: anywhere; }
+.st-card { grid-template-columns: minmax(160px,.65fr) minmax(0,1.6fr); padding: 24px; gap: 24px; }
+.st-info h2 { font-size: clamp(19px,2vw,27px); overflow-wrap: anywhere; }
+.st-top, .st-progress, .st-batch-head { flex-wrap: wrap; }
+.st-qty { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.st-real .st-input { width: 100%; padding: 10px 6px; }
+.st-nav { display: flex; flex-wrap: wrap; padding: 14px; border: 1px solid var(--border); background: var(--bg2); border-radius: 16px; }
+.st-nav input { flex: 1 1 180px; width: auto; }
+.st-nav .btn { flex: 1 1 120px; }
+.modal { max-width: min(900px,calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; }
+@media(min-width:1450px) { .ins-kpis { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+@media(max-width:1150px) {
+  html:not(.m-shell) .sidebar { width: 208px; flex-basis: 208px; }
+  html:not(.m-shell) .view { padding: 20px; }
+  .inventory-grid { grid-template-columns: minmax(0,1fr); }
+  .inventory-stock { grid-row: auto; }
+  .pos-main { grid-template-columns: minmax(0,1fr); }
+}
+@media(max-width:760px) {
+  .page-intro { padding: 18px; }
+  .card { padding: 16px; }
+  .st-card { grid-template-columns: minmax(0,1fr); padding: 16px; }
+  .st-media { max-width: 160px; margin-inline: auto; }
+  .st-qty { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .st-diff { grid-column: 1/-1; }
+  .ins-kpis { grid-template-columns: minmax(0,1fr); }
+  html.m-shell .topbar { height: auto; min-height: 56px; flex-wrap: wrap; padding-block: 10px; }
+  html.m-shell #topbar-actions { width: 100%; flex-wrap: wrap; }
+  .ins-bars { grid-template-columns: minmax(0,1fr); }
+  .ins-bar { grid-template-columns: minmax(0,1fr) auto; }
+  .ins-bar i { display: none; }
+}
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+:root, [data-theme="dark"] { --bg:#0d1426; --bg2:#121d34; --card:#19253d; --border:#2b3a55; --text:#edf2fc; --muted:#a4b1c9; --primary:#658cff; --accent:#a089ff; --grad:linear-gradient(120deg,#315ce4,#7752dd); }
+[data-theme="light"] { --bg:#f2f5fb; --bg2:#fff; --card:#fff; --border:#e0e6f0; --text:#1a2740; --muted:#61718d; --primary:#315bdc; --accent:#7551d5; --green:#138267; }
+html:not(.m-shell) .topbar { border-radius:0; box-shadow:0 1px 0 var(--border); }
+.card h3::before { background:var(--primary); }
+.card-head .row, .form-row { min-width:0; }
+.card-head .row { flex-wrap:wrap; }
+.ob-alerts { max-height: min(70dvh,560px); overflow:auto; padding:4px; }
+.ob-alerts:not(.expanded) .ob-alert { display:none; }
+.alerts-toggle { pointer-events:auto; background:var(--bg2); border:1px solid var(--border); color:var(--text); box-shadow:0 5px 22px #0002; align-self:start; }
+@media(min-width:761px) and (max-width:1024px) {
+  html:not(.m-shell) .sidebar { width:76px; flex-basis:76px; }
+}
+@media(max-width:500px) { .form-row { grid-template-columns: minmax(0,1fr); } }
+.kpi, .kpi > div, .mini-stat { min-width:0; }
+.kpi-val, .mini-stat b { overflow-wrap:anywhere; }
+.acc-tabs { max-width:100%; }
+@media(max-width:500px) {
+  html.m-shell .kpi-grid { grid-template-columns:minmax(0,1fr) !important; }
+  .pl-rows > div, .compact-list li { flex-wrap:wrap; }
+}
+.ins-hero, .st-card { box-shadow:0 4px 20px #0000000a; }
+.ob-alerts:not(.expanded) { position:static; width:auto; max-height:none; overflow:visible; padding:0; flex:none; }
+.ob-alerts.expanded { position:absolute; inset-inline-end:16px; top:100%; bottom:auto; left:auto; }
+html.m-shell .topbar { border-radius:0; flex-shrink:0; }
+html.m-shell .main { min-height:0; height:100dvh; }
+html.m-shell #view, html.m-shell #view.view-pos { overflow:auto; min-height:0; }
+@media print { .page-intro, .list-pager, .alerts-toggle { display:none !important; } }
+html:not(.m-shell) .sidebar-footer .btn { color:#e0e9ff; border-color:#ffffff24; }
+@media(min-width:761px) and (max-width:1024px) {
+  html:not(.m-shell) .sidebar .nav-item .nav-ic { display:inline-flex; }
+}

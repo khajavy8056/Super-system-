@@ -301,6 +301,7 @@
   /* ---------- bottom alert stack ---------- */
   function alertsStack() {
     let host = q("#ob-alerts"); if (!host) { host = document.createElement("div"); host.id = "ob-alerts"; host.className = "ob-alerts"; document.body.appendChild(host); }
+    const topbar = q(".topbar"); if (topbar && host.parentElement !== topbar) topbar.append(host);
     const dismissed = new Set(JSON.parse(sessionStorage.getItem("sm.alerts.dismissed") || "[]"));
     const load = async () => {
       const tok = localStorage.getItem("token");
@@ -316,6 +317,13 @@
         ${i.kind === "EXPIRY" ? `<button class="ob-alert-go" data-go="inventory" title="نمایش در انبار">›</button>` : i.id === "lic-blocked" || i.kind === "LICENSE" ? `<button class="ob-alert-go" data-go="settings" title="تنظیمات">›</button>` : ""}
         <button class="ob-alert-x" title="بستن">×</button></div>`).join("");
       host.querySelectorAll(".ob-alert-x").forEach((b) => (b.onclick = () => { const id = b.parentElement.dataset.id; dismissed.add(id); sessionStorage.setItem("sm.alerts.dismissed", JSON.stringify([...dismissed])); b.parentElement.remove(); }));
+      if (items.length) {
+        const toggle = document.createElement("button"); toggle.className = "btn alerts-toggle";
+        const update = () => { const count = host.querySelectorAll(".ob-alert").length; toggle.textContent = (host.classList.contains("expanded") ? "بستن هشدارها" : "هشدارهای فروشگاه") + " (" + _fa(count) + ")"; toggle.setAttribute("aria-expanded", String(host.classList.contains("expanded"))); };
+        toggle.onclick = () => { host.classList.toggle("expanded"); update(); };
+        host.prepend(toggle); update();
+        host.querySelectorAll(".ob-alert-x").forEach(button => button.addEventListener("click", update));
+      }
       host.querySelectorAll(".ob-alert-go").forEach((b) => (b.onclick = () => { if (typeof go === "function") go(b.dataset.go); }));
     };
     load(); clearInterval(window._obAlertsTimer); window._obAlertsTimer = setInterval(load, 5 * 60 * 1000);

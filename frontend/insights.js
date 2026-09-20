@@ -295,24 +295,38 @@
   function refreshCurrent() { if (state.view === "insights") RENDER.insights(); else if (state.view === "dashboard") RENDER.dashboard(); }
 
   // ---------------------------------------------------------------- insights view
-  let insTab = "NEW", insGroup = "";
+  let insTab = "NEW", insGroup = "", insRequest = 0;
   RENDER.insights = async () => {
+    const request = ++insRequest;
     const v = $("#view");
     v.innerHTML = `<div class="ins-wrap">
+      <div class="page-intro"><div><span class="eyebrow">تصمیم بهتر، بر پایهٔ داده</span><h2>هوش فروشگاه</h2><p>پیشنهادها را بررسی کنید، آگاهانه تصمیم بگیرید و نتیجهٔ اجرا را بسنجید.</p></div><span class="intro-badge">تحلیل داده‌های فروشگاه</span></div>
       <section class="ins-hero" id="ins-hero"><div class="muted">در حال تحلیل…</div></section>
       <div class="set-tabs" id="ins-tabs"></div>
       <div id="ins-list" class="ins-grid"></div></div>`;
     $("#topbar-actions").innerHTML = "";
-    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "تحلیل دوباره", onclick: async () => { toast("در حال تحلیل داده‌ها…"); const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created)} پیشنهاد جدید، ${fa(r.refreshed)} به‌روزرسانی`); RENDER.insights(); } }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "تحلیل دوباره", onclick: async (event) => {
+      const button = event.currentTarget; button.disabled = true;
+      try { const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created || 0)} پیشنهاد جدید، ${fa(r.refreshed || 0)} به‌روزرسانی`); if (state.view === "insights") await RENDER.insights(); }
+      catch (e) { toast(e.message, "err"); } finally { button.disabled = false; }
+    } }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "مشاور هوش مصنوعی", onclick: aiAdvisor }));
-    const [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
-    if (!list.length && insTab === "NEW" && !s.accepted && !s.open) {
-      // first visit: run analyzers
-      try { await api("/insights/run", { method: "POST" }); return RENDER.insights(); } catch (_) { /* fallthrough */ }
+    let s, list, gr;
+    try {
+      [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
+      if (!Array.isArray(list)) throw new Error("پاسخ فهرست تحلیل‌ها معتبر نیست؛ دوباره تلاش کنید.");
+    } catch (error) {
+      if (request !== insRequest || !v.querySelector("#ins-hero")) return;
+      const host = v.querySelector("#ins-hero");
+      host.innerHTML = `<div class="view-feedback" role="alert"><h3>دریافت تحلیل‌ها انجام نشد</h3><p>${esc(error.message)}</p><button class="btn" id="ins-retry">تلاش دوباره</button></div>`;
+      host.querySelector("#ins-retry").onclick = () => RENDER.insights();
+      return;
     }
+    if (request !== insRequest || !v.querySelector("#ins-hero")) return;
+    // Reading a page must not recursively POST /run when there is no data.
     hero(s, $("#ins-hero"));
     const tabs = [["NEW", "پیشنهادهای باز", s.open], ["ACCEPTED,MEASURED", "اجراشده و اثر", s.accepted], ["SNOOZED", "به تعویق"], ["DISMISSED,EXPIRED", "بایگانی"]];
     const t = $("#ins-tabs"); t.innerHTML = "";
@@ -324,8 +338,8 @@
       t.after(gs);
     }
     const grid = $("#ins-list"); grid.innerHTML = "";
-    if (!list.length) grid.innerHTML = `<div class="card muted">موردی نیست. ${insTab === "NEW" ? "همه چیز مرتب است — تحلیل بعدی به‌طور خودکار انجام می‌شود." : ""}</div>`;
-    pagedAppend(grid, list, 12, card);   // v3.5 staged — long lists no longer freeze the page
+    if (!list.length) grid.innerHTML = `<div class="card muted">موردی نیست. ${insTab === "NEW" ? "هنوز پیشنهادی برای این فیلتر موجود نیست. نبود پیشنهاد به معنی بی‌نقص بودن فروشگاه نیست؛ می‌توانید «تحلیل دوباره» را اجرا کنید." : ""}</div>`;
+    pagedAppend(grid, list, 12, (item) => card(item, false));   // v3.5 staged — long lists no longer freeze the page
   };
 
   function hero(s, host) {

@@ -1,0 +1,494 @@
+{
+  "results": [
+    {
+      "width": 1440,
+      "view": "dashboard",
+      "overflow": 0,
+      "chars": 2806
+    },
+    {
+      "width": 1440,
+      "view": "insights",
+      "overflow": 0,
+      "chars": 6553
+    },
+    {
+      "width": 1440,
+      "view": "inventory",
+      "overflow": 0,
+      "chars": 3979
+    },
+    {
+      "width": 1440,
+      "view": "products",
+      "overflow": 0,
+      "chars": 15898
+    },
+    {
+      "width": 1440,
+      "view": "batches",
+      "overflow": 0,
+      "chars": 3944
+    },
+    {
+      "width": 1440,
+      "view": "pos",
+      "overflow": 0,
+      "chars": 832
+    },
+    {
+      "width": 1440,
+      "view": "customers",
+      "overflow": 0,
+      "chars": 11355
+    },
+    {
+      "width": 1440,
+      "view": "invoices",
+      "overflow": 0,
+      "chars": 3269
+    },
+    {
+      "width": 1440,
+      "view": "marketing",
+      "overflow": 0,
+      "chars": 3147
+    },
+    {
+      "width": 1440,
+      "view": "accounting",
+      "overflow": 0,
+      "chars": 1015
+    },
+    {
+      "width": 1440,
+      "view": "reports",
+      "overflow": 0,
+      "chars": 240
+    },
+    {
+      "width": 1440,
+      "view": "settings",
+      "overflow": 0,
+      "chars": 722
+    },
+    {
+      "width": 1440,
+      "view": "hardware",
+      "overflow": 0,
+      "chars": 710
+    },
+    {
+      "width": 1440,
+      "view": "users",
+      "overflow": 0,
+      "chars": 262
+    },
+    {
+      "width": 1440,
+      "view": "audit",
+      "overflow": 0,
+      "chars": 10700
+    },
+    {
+      "width": 1440,
+      "view": "diagnostics",
+      "overflow": 0,
+      "chars": 543
+    },
+    {
+      "width": 1440,
+      "view": "support",
+      "overflow": 0,
+      "chars": 683
+    },
+    {
+      "width": 1440,
+      "view": "insightsPlan",
+      "overflow": 0,
+      "chars": 14650
+    },
+    {
+      "width": 1440,
+      "view": "insightsCustomers",
+      "overflow": 0,
+      "chars": 4981
+    },
+    {
+      "width": 1024,
+      "view": "dashboard",
+      "overflow": 0,
+      "chars": 3295
+    },
+    {
+      "width": 1024,
+      "view": "insights",
+      "overflow": 0,
+      "chars": 6553
+    },
+    {
+      "width": 1024,
+      "view": "inventory",
+      "overflow": 0,
+      "chars": 3979
+    },
+    {
+      "width": 1024,
+      "view": "products",
+      "overflow": 0,
+      "chars": 15898
+    },
+    {
+      "width": 1024,
+      "view": "batches",
+      "overflow": 0,
+      "chars": 3944
+    },
+    {
+      "width": 1024,
+      "view": "pos",
+      "overflow": 0,
+      "chars": 840
+    },
+    {
+      "width": 1024,
+      "view": "customers",
+      "overflow": 0,
+      "chars": 11355
+    },
+    {
+      "width": 1024,
+      "view": "invoices",
+      "overflow": 0,
+      "chars": 3269
+    },
+    {
+      "width": 1024,
+      "view": "marketing",
+      "overflow": 0,
+      "chars": 3147
+    },
+    {
+      "width": 1024,
+      "view": "accounting",
+      "overflow": 0,
+      "chars": 1015
+    },
+    {
+      "width": 1024,
+      "view": "reports",
+      "overflow": 0,
+      "chars": 240
+    },
+    {
+      "width": 1024,
+      "view": "settings",
+      "overflow": 0,
+      "chars": 436
+    },
+    {
+      "width": 1024,
+      "view": "hardware",
+      "overflow": 0,
+      "chars": 710
+    },
+    {
+      "width": 1024,
+      "view": "users",
+      "overflow": 0,
+      "chars": 262
+    },
+    {
+      "width": 1024,
+      "view": "audit",
+      "overflow": 0,
+      "chars": 10700
+    },
+    {
+      "width": 1024,
+      "view": "diagnostics",
+      "overflow": 0,
+      "chars": 543
+    },
+    {
+      "width": 1024,
+      "view": "support",
+      "overflow": 0,
+      "chars": 683
+    },
+    {
+      "width": 1024,
+      "view": "insightsPlan",
+      "overflow": 0,
+      "chars": 14650
+    },
+    {
+      "width": 1024,
+      "view": "insightsCustomers",
+      "overflow": 0,
+      "chars": 4981
+    },
+    {
+      "width": 820,
+      "view": "dashboard",
+      "overflow": 0,
+      "chars": 3295
+    },
+    {
+      "width": 820,
+      "view": "insights",
+      "overflow": 0,
+      "chars": 6553
+    },
+    {
+      "width": 820,
+      "view": "inventory",
+      "overflow": 0,
+      "chars": 3979
+    },
+    {
+      "width": 820,
+      "view": "products",
+      "overflow": 0,
+      "chars": 15970
+    },
+    {
+      "width": 820,
+      "view": "batches",
+      "overflow": 0,
+      "chars": 3944
+    },
+    {
+      "width": 820,
+      "view": "pos",
+      "overflow": 0,
+      "chars": 832
+    },
+    {
+      "width": 820,
+      "view": "customers",
+      "overflow": 0,
+      "chars": 11355
+    },
+    {
+      "width": 820,
+      "view": "invoices",
+      "overflow": 0,
+      "chars": 3269
+    },
+    {
+      "width": 820,
+      "view": "marketing",
+      "overflow": 0,
+      "chars": 3147
+    },
+    {
+      "width": 820,
+      "view": "accounting",
+      "overflow": 0,
+      "chars": 1015
+    },
+    {
+      "width": 820,
+      "view": "reports",
+      "overflow": 0,
+      "chars": 240
+    },
+    {
+      "width": 820,
+      "view": "settings",
+      "overflow": 0,
+      "chars": 436
+    },
+    {
+      "width": 820,
+      "view": "hardware",
+      "overflow": 0,
+      "chars": 710
+    },
+    {
+      "width": 820,
+      "view": "users",
+      "overflow": 0,
+      "chars": 262
+    },
+    {
+      "width": 820,
+      "view": "audit",
+      "overflow": 0,
+      "chars": 10700
+    },
+    {
+      "width": 820,
+      "view": "diagnostics",
+      "overflow": 0,
+      "chars": 543
+    },
+    {
+      "width": 820,
+      "view": "support",
+      "overflow": 0,
+      "chars": 672
+    },
+    {
+      "width": 820,
+      "view": "insightsPlan",
+      "overflow": 0,
+      "chars": 14650
+    },
+    {
+      "width": 820,
+      "view": "insightsCustomers",
+      "overflow": 0,
+      "chars": 4981
+    },
+    {
+      "width": 390,
+      "view": "dashboard",
+      "overflow": 0,
+      "chars": 3295
+    },
+    {
+      "width": 390,
+      "view": "insights",
+      "overflow": 0,
+      "chars": 6553
+    },
+    {
+      "width": 390,
+      "view": "inventory",
+      "overflow": 0,
+      "chars": 3979
+    },
+    {
+      "width": 390,
+      "view": "products",
+      "overflow": 0,
+      "chars": 15970
+    },
+    {
+      "width": 390,
+      "view": "batches",
+      "overflow": 0,
+      "chars": 3944
+    },
+    {
+      "width": 390,
+      "view": "pos",
+      "overflow": 0,
+      "chars": 840
+    },
+    {
+      "width": 390,
+      "view": "customers",
+      "overflow": 0,
+      "chars": 11355
+    },
+    {
+      "width": 390,
+      "view": "invoices",
+      "overflow": 0,
+      "chars": 3269
+    },
+    {
+      "width": 390,
+      "view": "marketing",
+      "overflow": 0,
+      "chars": 3147
+    },
+    {
+      "width": 390,
+      "view": "accounting",
+      "overflow": 0,
+      "chars": 1015
+    },
+    {
+      "width": 390,
+      "view": "reports",
+      "overflow": 0,
+      "chars": 240
+    },
+    {
+      "width": 390,
+      "view": "settings",
+      "overflow": 0,
+      "chars": 436
+    },
+    {
+      "width": 390,
+      "view": "hardware",
+      "overflow": 0,
+      "chars": 710
+    },
+    {
+      "width": 390,
+      "view": "users",
+      "overflow": 0,
+      "chars": 262
+    },
+    {
+      "width": 390,
+      "view": "audit",
+      "overflow": 0,
+      "chars": 10700
+    },
+    {
+      "width": 390,
+      "view": "diagnostics",
+      "overflow": 0,
+      "chars": 543
+    },
+    {
+      "width": 390,
+      "view": "support",
+      "overflow": 0,
+      "chars": 683
+    },
+    {
+      "width": 390,
+      "view": "insightsPlan",
+      "overflow": 0,
+      "chars": 14650
+    },
+    {
+      "width": 390,
+      "view": "insightsCustomers",
+      "overflow": 0,
+      "chars": 4981
+    },
+    {
+      "width": 1440,
+      "view": "stocktake-wizard",
+      "overflow": 0
+    },
+    {
+      "width": 1024,
+      "view": "stocktake-wizard",
+      "overflow": 0
+    },
+    {
+      "width": 390,
+      "view": "stocktake-wizard",
+      "overflow": 0
+    },
+    {
+      "width": 1366,
+      "theme": "dark",
+      "view": "insights",
+      "overflow": 0
+    },
+    {
+      "width": 1366,
+      "theme": "dark",
+      "view": "inventory",
+      "overflow": 0
+    },
+    {
+      "width": 1366,
+      "theme": "dark",
+      "view": "accounting",
+      "overflow": 11
+    }
+  ],
+  "errors": []
+}

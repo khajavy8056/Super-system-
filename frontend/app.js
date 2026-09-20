@@ -290,7 +290,7 @@ function buildNav() {
     if (!items.length) return;
     const h = el("div", { class: "nav-sec" }); h.textContent = title; nav.append(h);
     items.forEach(([key, label, perm, ico]) => {
-      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), onclick: () => go(key) });
+      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
       btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
       nav.append(btn);
     });
@@ -1730,9 +1730,10 @@ const STATUS_FA = { ACTIVE: "فعال", SOLD_OUT: "تمام‌شده", EXPIRED: 
 RENDER.inventory = async () => {
   const v = $("#view");
   v.innerHTML = `
+  <div class="page-intro"><div><span class="eyebrow">کنترل دقیق، موجودی مطمئن</span><h2>انبار و انبارگردانی</h2><p>موجودی را بررسی کنید، شمارش را برنامه‌ریزی کنید و اختلاف‌ها را پیگیری کنید.</p></div><span class="intro-badge">ثبت مرحله‌ای شمارش</span></div>
   <div id="st-alarms"></div>
-  <div class="grid grid-2">
-    <div class="card"><div class="card-head"><h3>موجودی کالاها</h3><input id="i-q" placeholder="جستجو…" style="max-width:220px" /></div><div class="table-wrap"><table id="i-table"></table></div></div>
+  <div class="grid inventory-grid">
+    <div class="card inventory-stock"><div class="card-head"><h3>موجودی کالاها</h3><input id="i-q" placeholder="جستجو…" style="max-width:220px" /></div><div class="table-wrap"><table id="i-table"></table></div><div id="i-pager" class="list-pager" aria-live="polite"></div></div>
     <div class="card" id="wh-card"><h3>انبارها و محل نگهداری</h3><div id="wh-body" class="muted">…</div></div>
     <div class="card st-plan">
       <div class="card-head"><h3>برنامه‌ریزی انبارگردانی</h3><span class="muted">یک جلسهٔ شمارش با هشدار زمان‌بندی‌شده</span></div>
@@ -1750,9 +1751,11 @@ RENDER.inventory = async () => {
   Jalali.attachAll(v);
 
   const stock = await api("/inventory/stock");
+  let stockPage = 0;
+  const stockPageSize = 40;
   const drawStock = (q) => {
     const list = q ? stock.filter((s) => (s.name || "").includes(q) || (s.barcode || "").includes(q)) : stock;
-    const rows = list.slice(0, 300).map((s) => el("tr", {},
+    const rows = list.slice(stockPage * stockPageSize, (stockPage + 1) * stockPageSize).map((s) => el("tr", {},
       el("td", { text: s.name }), el("td", { class: "ltr", text: s.barcode }), el("td", { text: qty(s.total_stock) }),
       el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
         text: s.total_stock <= s.min_stock_alert ? "کم‌موجود" : "عادی" }))));
@@ -1760,9 +1763,15 @@ RENDER.inventory = async () => {
     t.innerHTML = "";
     t.append(el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "بارکد" }),
       el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+    const pager = $("#i-pager"); pager.innerHTML = "";
+    pager.append(el("span", { class: "muted", text: list.length ? `${fa(stockPage * stockPageSize + 1)} تا ${fa(Math.min(list.length, (stockPage + 1) * stockPageSize))} از ${fa(list.length)} کالا` : "کالایی با این جست‌وجو پیدا نشد" }));
+    for (const [label, delta, disabled] of [["قبلی", -1, stockPage === 0], ["بعدی", 1, (stockPage + 1) * stockPageSize >= list.length]]) {
+      const button = el("button", { class: "btn btn-sm", text: label, onclick: () => { stockPage += delta; drawStock(q); } });
+      button.disabled = disabled; pager.append(button);
+    }
   };
   drawStock("");
-  $("#i-q").addEventListener("input", (e) => drawStock(e.target.value.trim()));
+  $("#i-q").addEventListener("input", (e) => { stockPage = 0; drawStock(e.target.value.trim()); });
 
   try {
     const whs = await api("/warehouses");
@@ -1784,6 +1793,7 @@ RENDER.inventory = async () => {
   const list = await api("/inventory/stocktakes");
   const box = $("#st-list");
   if (!list.length) box.innerHTML = `<p class="muted empty">هنوز جلسه‌ای ثبت نشده است.</p>`;
+  if (!list.length) return;
   box.innerHTML = list.slice(0, 30).map((s) => {
     const open = s.status === "DRAFT" || s.status === "IN_PROGRESS";
     const cls = s.status === "ADJUSTED" || s.status === "COMPLETED" ? "green" : s.status === "CANCELLED" ? "gray" : s.status === "PENDING_APPROVAL" ? "amber" : "blue";
@@ -1819,6 +1829,8 @@ async function renderStocktakeAlarms(targetSel = "#st-alarms") {
  * big count box, Enter = save & next. Runs full-screen inside the view. ===== */
 window._stWizard = async (id) => {
   state.view = "inventory";
+  $("#topbar-actions").innerHTML = "";
+  $("#view").className = "view view-inventory";
   const v = $("#view");
   const st = await api(`/inventory/stocktakes/${id}`);
   if (st.status === "DRAFT") { try { await api(`/inventory/stocktakes/${id}/start`, { method: "POST" }); st.status = "IN_PROGRESS"; } catch (_) {} }
@@ -2892,9 +2904,11 @@ async function renderCloudPanel(body) {
 }
 
 async function renderStoreProfile() {
+  const form = $("#store-form");
   let p = {};
   try { p = await api("/settings/store-profile"); } catch (e) { /* empty form */ }
-  $("#store-form").innerHTML = STORE_FIELDS.map(([key, label, full]) =>
+  if (!form || !form.isConnected || form !== $("#store-form")) return;
+  form.innerHTML = STORE_FIELDS.map(([key, label, full]) =>
     `<div class="${full ? "full" : ""}"><label>${label}</label>
        <input id="sp-${key}" value="${esc(p[key] || "")}" /></div>`).join("") +
     `<div class="full"><label>لوگوی فروشگاه (PNG/JPEG/SVG، حداکثر ۲ مگابایت)</label>

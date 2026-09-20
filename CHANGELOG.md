@@ -3,6 +3,15 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.6.6] - 2026-09-21
+
+- Desktop workspace redesign: adaptive grids, forms, tables, compact navigation, accessible focus and light/dark layouts.
+- Inventory paging replaces the first-300 cap; responsive stocktake controls and reachable save buttons. Alerts collapse into a header control instead of covering work.
+- Stop recursive auto-analysis on empty intelligence pages, add retry/error and stale-response handling, and fix paged cards incorrectly rendering as compact.
+- Guard late store-profile responses after navigation; update the service-worker shell cache.
+- Publish a Windows frontend override ZIP for existing 3.6.x installations (not a replacement EXE or full installer), plus an aligned signed Android APK. Windows BAT execution and Setup.exe build remain unverified/unavailable.
+- Verified 82 Chromium page/viewport/theme cases and 512 backend tests (one skipped). See docs/desktop-3.6.6/README.fa.md.
+
 ## [3.6.5] - 2026-09-18
 
 - Recursively import all six workbooks under docs/200: 6,096 rows, 3,383 additional barcode identities, 16,953 total products. New products have no images or stock; original catalog entries remain unchanged.
