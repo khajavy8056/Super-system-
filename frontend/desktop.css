@@ -118,3 +118,25 @@ html:not(.m-shell) .sidebar-footer .btn { color:#e0e9ff; border-color:#ffffff24;
 @media(min-width:761px) and (max-width:1024px) {
   html:not(.m-shell) .sidebar .nav-item .nav-ic { display:inline-flex; }
 }
+/* 3.6.7 work in progress: fit the actual desktop window, not a wide document. */
+html:not(.m-shell) .view-inventory .inventory-grid { grid-template-columns:minmax(0,1fr); }
+.view-inventory #i-table, .product-catalog #p-table { width:100%; table-layout:fixed; }
+.view-inventory #i-table th, .view-inventory #i-table td,
+.product-catalog #p-table th, .product-catalog #p-table td { white-space:normal; overflow-wrap:anywhere; min-width:0; font-size:clamp(11px,1vw,14px); }
+.view-inventory #i-table th:first-child { width:45%; }
+.product-catalog #p-table th:first-child { width:64px; }
+.product-catalog #p-table th:nth-child(3) { width:32%; }
+.st-wiz { container-type:inline-size; width:100%; }
+.st-card, .st-qty, .st-nav { min-width:0; }
+@container (max-width:720px) { .st-card { grid-template-columns:minmax(0,1fr); } .st-media { max-width:140px; margin-inline:auto; } .st-qty { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+/* Same base palette as native Android Ui.applyTheme(). */
+html:not(.m-shell), html:not(.m-shell)[data-theme="dark"] {
+  --bg:#030b1d; --bg2:#08142e; --card:#091733; --border:#304780;
+  --text:#f5f6ff; --muted:#adb9dc; --primary:#2563eb; --accent:#9654ff;
+  --grad:linear-gradient(135deg,#9654ff,#2563eb);
+}
+html:not(.m-shell)[data-theme="light"] {
+  --bg:#f2f4ff; --bg2:#ffffff; --card:#ffffff; --border:#c4cded;
+  --text:#101c3c; --muted:#546489;
+}

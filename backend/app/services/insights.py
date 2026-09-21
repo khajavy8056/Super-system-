@@ -778,11 +778,12 @@ def a_season(ctx: Ctx) -> list[Draft]:
 WEEKDAY_FA = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه"]
 
 
-def customer_patterns(ctx: Ctx, *, min_visits: int = 5, horizon_days: int = 3) -> list[dict]:
+def customer_patterns(ctx: Ctx, *, min_visits: int = 8, horizon_days: int = 3) -> list[dict]:
     """Per-customer rhythm model: median gap between visits (robust to one-off trips), its spread,
     the usual weekday/hour, the usual basket and the predicted next visit. Returns the customers
     whose predicted visit falls inside [today − 1, today + horizon] and who have not come yet,
-    sorted by monthly profit — the list a shop owner should message *today*."""
+    sorted by monthly profit. Sample guards are NOT prospective validation;
+    a durable shadow-prediction gate is still required before deployment."""
     visits: dict[int, list[datetime]] = defaultdict(list)
     totals: dict[int, float] = defaultdict(float)
     profit: dict[int, float] = defaultdict(float)
@@ -797,9 +798,17 @@ def customer_patterns(ctx: Ctx, *, min_visits: int = 5, horizon_days: int = 3) -
             items[l["cust"]][l["pid"]] += 1
     out = []
     now = ctx.now_utc
+    # Aggregate visit-days, not raw years of invoice lines, for the rhythm sample.
+    history = defaultdict(list)
+    day = func.date(Invoice.created_at)
+    for cid, value in ctx.db.execute(select(Invoice.customer_id, day)
+            .where(Invoice.status == PAID, Invoice.customer_id.is_not(None),
+                   Invoice.created_at >= ctx.now_utc - timedelta(days=730), Invoice.created_at <= ctx.now_utc)
+            .group_by(Invoice.customer_id, day).order_by(Invoice.customer_id, day)):
+        history[cid].append(date.fromisoformat(value))
     for cid, vs in visits.items():
-        days = sorted({v.date() for v in vs})
-        if len(days) < min_visits:
+        days = history.get(cid, [])
+        if len(days) < max(8, min_visits) or (days[-1] - days[0]).days < 90:
             continue
         gaps = [(b - a).days for a, b in zip(days, days[1:]) if (b - a).days > 0]
         if len(gaps) < 3:
@@ -1267,8 +1276,16 @@ def nudges(db: Session, product_ids: list[int]) -> list[dict]:
     out, seen = [], set()
     for r in rules:
         if r["if"] in cart and r["then"] not in cart and r["then"] not in seen:
-            seen.add(r["then"])
-            out.append({"product_id": r["then"], "name": r["then_name"], "because": r["if_name"], "confidence": r["confidence"]})
+            from . import pos as pos_service
+            product = db.get(Product, r["then"])
+            if not product or product.deleted_at is not None or not product.is_active:
+                continue
+            options = pos_service.get_batch_options(db, product)
+            if not options:
+                continue
+            seen.add(product.id)
+            out.append({"product_id": product.id, "name": product.name, "because": r["if_name"],
+                        "confidence": r["confidence"], "purpose": "sell_now"})
         if len(out) >= 2:
             break
     return out

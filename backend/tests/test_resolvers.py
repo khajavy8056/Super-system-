@@ -331,14 +331,14 @@ def test_13_duplicate_product(client, H, db):
     # product instead of being refused with 409. The barcode is the identity
     # (§32), so a second resolve is by definition the same product — refusing
     # left the operator unable to enrich a sparse record from another source.
-    before = client.get("/api/products?limit=1000", headers=H).json()["items"]
+    before = client.get("/api/products", params={"q": BC_LOCAL, "limit":1000}, headers=H).json()["items"]
     n_before = len([p for p in before if p["barcode"] == BC_LOCAL])
 
     r = client.post("/api/barcode/apply", headers=H, json={"barcode": BC_LOCAL, "name": "Dup"})
     assert r.status_code in (200, 201), r.text
     assert r.json()["created"] is False
 
-    after = client.get("/api/products?limit=1000", headers=H).json()["items"]
+    after = client.get("/api/products", params={"q": BC_LOCAL, "limit":1000}, headers=H).json()["items"]
     assert len([p for p in after if p["barcode"] == BC_LOCAL]) == n_before == 1, \
         "resolver apply must never create a duplicate product"
 

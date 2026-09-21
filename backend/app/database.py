@@ -32,6 +32,9 @@ def _make_engine(url: str | None = None):
 
         @event.listens_for(engine, "connect")
         def _set_sqlite_pragma(dbapi_connection, connection_record):  # pragma: no cover
+            from .services.product_search import normalize, compare_names
+            dbapi_connection.create_function("product_search_normalize", 1, normalize, deterministic=True)
+            dbapi_connection.create_collation("PERSIAN", compare_names)
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")

@@ -7,8 +7,11 @@ def test_desktop_bundle_is_complete_and_does_not_replace_shop_data():
     path=ROOT/'releases/windows/SupermarketDesktopUI-3.6.6.zip'
     assert hashlib.sha256(path.read_bytes()).hexdigest() == path.with_suffix('.zip.sha256').read_text().split()[0]
     with zipfile.ZipFile(path) as z:
-        for p in (ROOT/'frontend').rglob('*'):
-            if p.is_file(): assert z.read(p.relative_to(ROOT).as_posix()) == p.read_bytes()
+        # This is an immutable historical release, not the next version's source.
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == 'c60648813ec84df4d347fa901da0f857095b608914c0170415d63cea7061c011'
+        for name in ('index.html','app.js','desktop.css','insights.js','sw.js'):
+            assert z.read('frontend/'+name)
+        assert b'desktop.css' in z.read('frontend/index.html')
         bat=z.read('START-WINDOWS-UI.bat').decode()
         assert 'set "FRONTEND_DIR=%~dp0frontend"' in bat
         assert 'taskkill' not in bat.lower()

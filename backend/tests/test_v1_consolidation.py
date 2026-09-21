@@ -357,12 +357,11 @@ def test_release_workflow_is_real_and_version_dynamic():
 def test_launcher_opens_a_dedicated_window_not_the_default_browser():
     """§19 — a real Windows app, not a tab in whatever browser is default."""
     src = (WINDOWS_DIR / "run_supermarket.py").read_text(encoding="utf-8")
-    assert "--app=" in src, "no app-mode window: the launcher still only opens a browser tab"
-    assert "msedge" in src.lower(), "Edge (present on every Windows 10/11) is not tried"
-    # the browser must remain as the last-resort fallback, not the first choice
-    assert "webbrowser.open" in src
-    assert src.index("--app=") < src.index("webbrowser.open"), \
-        "the default browser is still preferred over the dedicated window"
+    # The current contract explicitly rejects the old browser/app-mode fallback.
+    assert "webview.create_window" in src and '"edgechromium"' in src
+    assert "webbrowser.open" not in src and "--app=" not in src
+    assert "native_window_error(log_file)" in src
+
 
 
 def test_launcher_is_testable_on_linux():
@@ -376,10 +375,9 @@ def test_launcher_is_testable_on_linux():
     sys.modules["_launcher_probe"] = mod
     spec.loader.exec_module(mod)
 
-    assert hasattr(mod, "find_app_mode_browser")
-    # On Linux there is no Edge/Chrome app mode contract to honour; the helper
-    # must say so instead of raising, so the launcher can fall back cleanly.
-    assert mod.find_app_mode_browser() is None or isinstance(mod.find_app_mode_browser(), tuple)
+    assert callable(mod.open_native_window)
+    assert callable(mod.native_window_error)
+
 
 
 # --- §49 branding --------------------------------------------------------------

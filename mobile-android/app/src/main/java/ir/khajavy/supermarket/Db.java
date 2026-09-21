@@ -30,7 +30,7 @@ public final class Db extends SQLiteOpenHelper {
     public static java.io.File file(Context c) { return c.getDatabasePath("supermarket_native.db"); }
     /** v3.0: close before a restore replaces the file; the next db() call reopens and re-runs onOpen(). */
     public static synchronized void shutdown() { try { if (I != null) I.close(); } catch (Exception ignore) {} }
-    @Override public void onConfigure(SQLiteDatabase d) { super.onConfigure(d); try { d.enableWriteAheadLogging(); } catch (Exception ignore) {} }   // v3.3: readers never block on a long write (restore/import)
+    @Override public void onConfigure(SQLiteDatabase d) { super.onConfigure(d); d.setLocale(new java.util.Locale("fa", "IR")); try { d.enableWriteAheadLogging(); } catch (Exception ignore) {} }   // v3.3: readers never block on a long write (restore/import)
     @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} try { indexes(d); } catch (Exception ignore) {} }
     /** v3.3 — indexes for stores with years of history (tens of thousands of invoices): every dashboard /
      *  report query is now a range scan on an index instead of a full-table scan. Idempotent. */
@@ -576,52 +576,38 @@ public final class Db extends SQLiteOpenHelper {
         "(SELECT product_id, SUM(current_qty) s FROM batches"
         + " WHERE status='ACTIVE' AND current_qty>0 GROUP BY product_id)";
 
-    public static List<JSONObject> searchProducts(String q, int limit) {
-        List<JSONObject> out = new ArrayList<>(); q = norm(q);
+    private static String searchLike(String q) {
+        return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+    private static final String PRODUCT_MATCH = "(p.name LIKE ? ESCAPE '\\' OR p.barcode LIKE ? ESCAPE '\\' OR p.sku LIKE ? ESCAPE '\\')";
+    public static int productCount(String query) {
+        String q = norm(query), like = "%" + searchLike(q) + "%";
+        try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM products p WHERE p.is_active=1" + (q.isEmpty() ? "" : " AND " + PRODUCT_MATCH), q.isEmpty() ? null : new String[]{like,like,like})) {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        }
+    }
+    public static List<JSONObject> searchProducts(String q, int limit) { return searchProducts(q, limit, 0); }
+    /** Bounded SQL pages; stock precedes relevance, except an exact scanned identifier. */
+    public static List<JSONObject> searchProducts(String query, int limit, int offset) {
+        List<JSONObject> out = new ArrayList<>(); String q = norm(query), escaped = searchLike(q);
         boolean stock = hasAnyStock();
-        SQLiteDatabase d = w();
-        if (q.isEmpty()) {
-            String sql = stock
-                ? "SELECT p.json FROM products p LEFT JOIN " + STOCK_AGG + " x ON x.product_id=p.id"
-                  + " WHERE p.is_active=1 ORDER BY (x.s>0) DESC, p.name LIMIT ?"
-                : "SELECT json FROM products WHERE is_active=1 ORDER BY name LIMIT ?";
-            java.util.HashSet<Long> seen = seen();
-            try (Cursor c = d.rawQuery(sql, new String[]{String.valueOf(limit)})) {
-                while (c.moveToNext() && out.size() < limit) addHit(out, seen, c.getString(0), stock);
-            } catch (Exception ignore) {}
-            return out;
-        }
-        // v3.5.4 — the old statement OR-ed four predicates together
-        // (barcode=? OR sku=? OR name LIKE ? OR barcode LIKE ?). SQLite can drive
-        // neither ix_p_bc nor ix_p_name from an OR spanning columns, so it scanned
-        // all 13 570 rows and sorted them on every keystroke: 13.8–15.2 ms measured
-        // on the real catalogue. Three separate steps, each of which CAN use an
-        // index and stop as soon as the page is full, return the same page in
-        // 3.1–5.3 ms. Scanning still wins because the exact code is looked up first.
-        java.util.HashSet<Long> seen = seen();
-        String like = "%" + q + "%";
-        try (Cursor c = d.rawQuery("SELECT json FROM products WHERE barcode=? OR sku=? LIMIT ?",
-                                   new String[]{q, q, String.valueOf(limit)})) {
-            while (c.moveToNext() && out.size() < limit) addHit(out, seen, c.getString(0), stock);
-        } catch (Exception ignore) {}
-        if (out.size() < limit) {
-            String sql = stock
-                ? "SELECT p.json FROM products p LEFT JOIN " + STOCK_AGG + " x ON x.product_id=p.id"
-                  + " WHERE p.is_active=1 AND p.name LIKE ? ORDER BY (x.s>0) DESC, p.name LIMIT ?"
-                : "SELECT json FROM products WHERE is_active=1 AND name LIKE ? ORDER BY name LIMIT ?";
-            try (Cursor c = d.rawQuery(sql, new String[]{like, String.valueOf(limit - out.size())})) {
-                while (c.moveToNext() && out.size() < limit) addHit(out, seen, c.getString(0), stock);
-            } catch (Exception ignore) {}
-        }
-        // partial barcode, kept so a half-remembered code still finds its product
-        if (out.size() < limit) {
-            try (Cursor c = d.rawQuery("SELECT json FROM products WHERE is_active=1 AND barcode LIKE ? ORDER BY name LIMIT ?",
-                                       new String[]{like, String.valueOf(limit - out.size())})) {
-                while (c.moveToNext() && out.size() < limit) addHit(out, seen, c.getString(0), stock);
-            } catch (Exception ignore) {}
-        }
+        String join = stock ? " LEFT JOIN " + STOCK_AGG + " x ON x.product_id=p.id" : "";
+        String stockOrder = stock ? "(COALESCE(x.s,0)>0) DESC," : "";
+        String sql = "SELECT p.json FROM products p" + join + " WHERE p.is_active=1";
+        List<String> args = new ArrayList<>();
+        if (!q.isEmpty()) {
+            sql += " AND " + PRODUCT_MATCH;
+            for(int i=0;i<3;i++) args.add("%"+escaped+"%");
+            sql += " ORDER BY CASE WHEN p.barcode=? OR p.sku=? THEN 0 ELSE 1 END," + stockOrder
+                + "CASE WHEN p.name=? THEN 0 WHEN p.name LIKE ? ESCAPE '\\' THEN 1 WHEN p.name LIKE ? ESCAPE '\\' THEN 2 ELSE 3 END,";
+            args.add(q); args.add(q); args.add(q); args.add(escaped+"%"); args.add("% "+escaped+"%");
+        } else sql += " ORDER BY " + stockOrder;
+        sql += "p.name COLLATE LOCALIZED,p.id LIMIT ? OFFSET ?";
+        args.add(String.valueOf(Math.max(1,Math.min(1000,limit)))); args.add(String.valueOf(Math.max(0,offset)));
+        try(Cursor c=w().rawQuery(sql,args.toArray(new String[0]))) { while(c.moveToNext()) out.add(withBatches(c.getString(0), stock)); }
         return out;
     }
+
     private static java.util.HashSet<Long> seen() { return new java.util.HashSet<Long>(); }
     /** one result row, de-duplicated across the three look-ups above. */
     private static void addHit(List<JSONObject> out, java.util.HashSet<Long> seen, String json, boolean stock) {
@@ -637,6 +623,16 @@ public final class Db extends SQLiteOpenHelper {
     public static JSONObject productById(long id) {
         try (Cursor c = w().rawQuery("SELECT json FROM products WHERE id=?", new String[]{String.valueOf(id)})) { return c.moveToFirst() ? withBatches(c.getString(0)) : null; }
     }
+    /** Live eligibility for a POS action, distinct from inventory (which must show expired stock). */
+    public static JSONObject sellableProductById(long id) {
+        try (Cursor c=w().rawQuery("SELECT json FROM products WHERE id=? AND is_active=1",new String[]{String.valueOf(id)})) {
+            if(!c.moveToFirst()) return null;
+            JSONObject p=withBatches(c.getString(0)); JSONArray all=p.optJSONArray("batches"), good=new JSONArray(); double total=0;
+            boolean block="true".equals(Local.setting("expiry.block_sale","true")); String today=Jalali.todayIso().substring(0,10);
+            for(int i=0;all!=null&&i<all.length();i++){JSONObject b=all.optJSONObject(i);String expiry=b.isNull("expiry_date")?"":b.optString("expiry_date");if(block&&!expiry.isEmpty()&&expiry.compareTo(today)<0)continue;good.put(b);total+=b.optDouble("current_qty");}
+            p.put("batches",good);p.put("available_qty",total);return p;
+        } catch(Exception e) { return null; }
+    }
     /** product json + "batches": [active batches with stock, FEFO order] + available_qty. */
     private static JSONObject withBatches(String json) { return withBatches(json, true); }
     /** v3.5.4 — {@code loadBatches} false skips the per-row batch query entirely. A
@@ -646,8 +642,8 @@ public final class Db extends SQLiteOpenHelper {
         try {
             JSONObject p = new JSONObject(json); JSONArray bs = new JSONArray(); double total = 0;
             if (loadBatches) {
-                try (Cursor c = w().rawQuery("SELECT json, current_qty FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0 ORDER BY (expiry_date IS NULL), expiry_date, id", new String[]{String.valueOf(p.optLong("id"))})) {
-                    while (c.moveToNext()) { JSONObject b = new JSONObject(c.getString(0)); b.put("batch_id", b.optLong("id")); if (!b.has("sell_price")) b.put("sell_price", b.optDouble("unit_sell_price", 0)); b.put("is_recommended", bs.length() == 0); bs.put(b); total += c.getDouble(1); }
+                try (Cursor c = w().rawQuery("SELECT json, current_qty, expiry_date FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0 ORDER BY (expiry_date IS NULL), expiry_date, id", new String[]{String.valueOf(p.optLong("id"))})) {
+                    while (c.moveToNext()) { JSONObject b = new JSONObject(c.getString(0)); b.put("current_qty",c.getDouble(1)); b.put("expiry_date",c.isNull(2)?JSONObject.NULL:c.getString(2)); b.put("batch_id", b.optLong("id")); if (!b.has("sell_price")) b.put("sell_price", b.optDouble("unit_sell_price", 0)); b.put("is_recommended", bs.length() == 0); bs.put(b); total += c.getDouble(1); }
                 }
             }
             p.put("batches", bs); p.put("available_qty", total); p.put("product_id", p.optLong("id")); return p;

@@ -1260,6 +1260,26 @@ document.addEventListener("keydown", (e) => {
   }
 }, true);
 
+/* Shared list behavior: pages never hide the rest of the catalog. */
+const productAlphabet = new Intl.Collator("fa", { sensitivity: "base", numeric: true });
+function productQuery(value) { return String(value || "").normalize("NFKD").replace(/[\u064b-\u065f]/g, "").replace(/ي|ى/g, "ی").replace(/ك/g, "ک").replace(/\u200c/g, " ").replace(/[۰-۹٠-٩]/g,c=>String(c.charCodeAt(0)-(c >= "۰" ? 1776 : 1632))).trim().toLocaleLowerCase("fa"); }
+function productMatchRank(name, query) {
+  const n = productQuery(name), q = productQuery(query);
+  return !q || n === q ? 0 : n.startsWith(q) ? 1 : n.split(/\s+/).some(word => word.startsWith(q)) ? 2 : 3;
+}
+function productPageButtons(host, page, total, size, onPage) {
+  const pages = Math.max(1, Math.ceil(total / size));
+  const numbers = new Set([0, pages - 1]);
+  for (let i = Math.max(0, page - 2); i <= Math.min(pages - 1, page + 2); i++) numbers.add(i);
+  let previous = -1;
+  for (const i of [...numbers].sort((a,b) => a-b)) {
+    if (previous >= 0 && i > previous + 1) host.append(el("span", {text:"…"}));
+    const button = el("button", {class:"btn btn-sm" + (i === page ? " btn-primary" : ""), text:fa(i + 1), "aria-label":`صفحهٔ ${fa(i+1)}`, onclick:()=>onPage(i)});
+    if(i === page) button.setAttribute("aria-current", "page");
+    host.append(button); previous = i;
+  }
+}
+
 /* ---------- products ---------- */
 RENDER.products = async () => {
   const v = $("#view");
@@ -1305,7 +1325,7 @@ RENDER.products = async () => {
     <div id="p-starter-out" class="muted" style="margin-top:8px"></div>
   </div>
   <div id="p-catalog-holder"></div>
-  <div class="card"><h3>فهرست کالاها</h3><table id="p-table"></table></div>`;
+  <div class="card product-catalog"><div class="card-head"><h3>فهرست کالاها</h3><input id="p-list-query" placeholder="جست‌وجوی ابتدای نام یا بارکد" aria-label="جست‌وجوی کالا" /></div><div class="table-wrap"><table id="p-table"></table></div><nav id="p-pages" class="list-pager" aria-label="صفحه‌های کالا"></nav></div>`;
 
   renderCatalogFolderCard($("#p-catalog-holder"), { compact: true });
 
@@ -1467,39 +1487,53 @@ RENDER.products = async () => {
     } catch (e) { toast(e.message, "err"); }
   });
 
-  const { items } = await api("/products?limit=200");
-  const rows = items.map((p) => el("tr", {},
-    el("td", {}, p.image_url
-      ? el("img", { class: "thumb thumb-find", title: "تغییر تصویر (انتخاب از فروشگاه‌ها یا عکس خودم)", src: p.image_url.startsWith("http") ? p.image_url
-          : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "", onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })
-      : el("button", { class: "thumb thumb-empty thumb-find", title: "انتخاب تصویر", text: "🔍",
-          onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })),
-    el("td", {}, el("span", {
-      // §16 — an internal code is visibly distinct from a real GTIN so staff
-      // know it means nothing to external catalogues.
-      class: p.has_own_barcode === false ? "badge badge-gray" : "",
-      text: p.barcode })),
-    el("td", { text: p.name }),
-    el("td", { text: p.min_stock_alert }),
-    el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" })),
-    el("td", {}, el("button", { class: "btn btn-ghost btn-sm",
-      text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
-  const tbl = $("#p-table");
-  tbl.innerHTML = "";
-  // v3.4 — pictures come from the shop's own catalogue folder (Settings → بانک محصولات); just show the count
-  try {
-    const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
-    const st = await api("/products/images/status");
-    let bar = $("#p-images-bar");
-    if (!bar) { bar = el("div", { id: "p-images-bar", class: "muted", style: "display:flex;gap:10px;align-items:center;margin:6px 0" }); tbl.parentElement.insertBefore(bar, tbl); }
-    bar.innerHTML = "";
-    bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (st.missing ? ` · ${fa(st.missing)} بدون تصویر — از «بانک محصولات» (اکسل + پوشهٔ pic) وارد کنید` : " · همه دارای تصویر") }));
-  } catch (e) { /* status is cosmetic */ }
-  tbl.append(el("thead", {}, el("tr", {},
-    el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
-    el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }),
-    el("th", { text: "" }))),
-    el("tbody", {}, ...rows));
+  let productPage = 0, productRequest = 0;
+  const pageSize = 40;
+  const drawProducts = async () => {
+    const input = v.querySelector("#p-list-query"); if (!input) return;
+    const request = ++productRequest;
+    const result = await api(`/products?limit=${pageSize}&offset=${productPage * pageSize}&q=${encodeURIComponent(input.value.trim())}`);
+    if (request !== productRequest || !v.querySelector("#p-table")) return;
+    const {items, total} = result;
+    const rows = items.map((p) => el("tr", {},
+      el("td", {}, p.image_url
+        ? el("img", { class: "thumb thumb-find", title: "تغییر تصویر (انتخاب از فروشگاه‌ها یا عکس خودم)", src: p.image_url.startsWith("http") ? p.image_url
+            : `/media/${p.image_url.replace(/^\/?media\//, "")}`, alt: "", onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })
+        : el("button", { class: "thumb thumb-empty thumb-find", title: "انتخاب تصویر", text: "🔍",
+            onclick: (ev) => { ev.stopPropagation(); pickProductImage(p.id, () => RENDER.products()); } })),
+      el("td", {}, el("span", {
+        // §16 — an internal code is visibly distinct from a real GTIN so staff
+        // know it means nothing to external catalogues.
+        class: p.has_own_barcode === false ? "badge badge-gray" : "",
+        text: p.barcode })),
+      el("td", { text: p.name }),
+      el("td", { text: p.min_stock_alert }),
+      el("td", {}, el("span", { class: "badge " + (p.is_active ? "badge-green" : "badge-gray"), text: p.is_active ? "فعال" : "غیرفعال" })),
+      el("td", {}, el("button", { class: "btn btn-ghost btn-sm",
+        text: "بچ‌ها و قیمت‌ها", onclick: () => showProductDetail(p.id) }))));
+    const tbl = $("#p-table");
+    tbl.innerHTML = "";
+    // v3.4 — pictures come from the shop's own catalogue folder (Settings → بانک محصولات); just show the count
+    try {
+      const fa = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+      const st = await api("/products/images/status");
+      let bar = $("#p-images-bar");
+      if (!bar) { bar = el("div", { id: "p-images-bar", class: "muted", style: "display:flex;gap:10px;align-items:center;margin:6px 0" }); tbl.parentElement.insertBefore(bar, tbl); }
+      bar.innerHTML = "";
+      bar.append(el("span", { text: `تصویر کالاها: ${fa(st.with_image)} از ${fa(st.total)}` + (st.missing ? ` · ${fa(st.missing)} بدون تصویر — از «بانک محصولات» (اکسل + پوشهٔ pic) وارد کنید` : " · همه دارای تصویر") }));
+    } catch (e) { /* status is cosmetic */ }
+    if (!tbl.isConnected || request !== productRequest) return;
+    tbl.append(el("thead", {}, el("tr", {},
+      el("th", { text: "تصویر" }), el("th", { text: "بارکد" }), el("th", { text: "نام" }),
+      el("th", { text: "حداقل موجودی" }), el("th", { text: "وضعیت" }),
+      el("th", { text: "" }))),
+      el("tbody", {}, ...rows));
+    const pager = $("#p-pages"); pager.innerHTML = "";
+    pager.append(el("span", {class:"muted", text:`${fa(total)} کالا · موجودی‌دارها، سپس الفبا`}));
+    productPageButtons(pager, productPage, total, pageSize, index => { productPage = index; drawProducts().catch(e=>toast(e.message,"err")); });
+  };
+  $("#p-list-query").addEventListener("input", debounce(() => { productPage = 0; drawProducts().catch(e=>toast(e.message,"err")); },180));
+  await drawProducts();
 };
 
 /* ---------- §5: product detail — one identity, all its batches ----------
@@ -1754,7 +1788,9 @@ RENDER.inventory = async () => {
   let stockPage = 0;
   const stockPageSize = 40;
   const drawStock = (q) => {
-    const list = q ? stock.filter((s) => (s.name || "").includes(q) || (s.barcode || "").includes(q)) : stock;
+    q = productQuery(q);
+    const list = (q ? stock.filter(s => productQuery(s.name).includes(q) || productQuery(s.barcode).includes(q)) : stock.slice()).sort((a,b) =>
+      Number(b.total_stock > 0) - Number(a.total_stock > 0) || productMatchRank(a.name,q) - productMatchRank(b.name,q) || productAlphabet.compare(a.name,b.name));
     const rows = list.slice(stockPage * stockPageSize, (stockPage + 1) * stockPageSize).map((s) => el("tr", {},
       el("td", { text: s.name }), el("td", { class: "ltr", text: s.barcode }), el("td", { text: qty(s.total_stock) }),
       el("td", {}, el("span", { class: "badge " + (s.total_stock <= s.min_stock_alert ? "badge-amber" : "badge-green"),
@@ -1765,10 +1801,7 @@ RENDER.inventory = async () => {
       el("th", { text: "موجودی کل" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
     const pager = $("#i-pager"); pager.innerHTML = "";
     pager.append(el("span", { class: "muted", text: list.length ? `${fa(stockPage * stockPageSize + 1)} تا ${fa(Math.min(list.length, (stockPage + 1) * stockPageSize))} از ${fa(list.length)} کالا` : "کالایی با این جست‌وجو پیدا نشد" }));
-    for (const [label, delta, disabled] of [["قبلی", -1, stockPage === 0], ["بعدی", 1, (stockPage + 1) * stockPageSize >= list.length]]) {
-      const button = el("button", { class: "btn btn-sm", text: label, onclick: () => { stockPage += delta; drawStock(q); } });
-      button.disabled = disabled; pager.append(button);
-    }
+    productPageButtons(pager, stockPage, list.length, stockPageSize, index => { stockPage = index; drawStock(q); });
   };
   drawStock("");
   $("#i-q").addEventListener("input", (e) => { stockPage = 0; drawStock(e.target.value.trim()); });

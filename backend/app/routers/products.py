@@ -96,9 +96,12 @@ def list_products(
     """
     from ..models import ProductBatch
 
+    from ..services import product_search as search
+    q = search.normalize(q)
     stmt = select(Product).where(Product.deleted_at.is_(None))
     if q:
-        stmt = stmt.where(Product.name.ilike(f"%{q}%") | Product.barcode.ilike(f"%{q}%"))
+        pattern = "%" + search.literal_like(q) + "%"
+        stmt = stmt.where(search.name_column(Product.name).like(pattern, escape="\\") | Product.barcode.ilike(pattern, escape="\\"))
     total = int(db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one())
 
     # Sellable stock per product, computed in the database. "Sellable" mirrors
@@ -114,9 +117,9 @@ def list_products(
     stmt = stmt.outerjoin(stock, Product.id == stock.c.product_id)
     available = func.coalesce(stock.c.qty, 0)
     if in_stock_first:
-        stmt = stmt.order_by((available > 0).desc(), Product.name.asc())
+        stmt = stmt.order_by((available > 0).desc(), search.rank(Product.name, q), Product.name.collate("PERSIAN"), Product.id)
     else:
-        stmt = stmt.order_by(Product.name.asc())
+        stmt = stmt.order_by(search.rank(Product.name, q), Product.name.collate("PERSIAN"), Product.id)
     rows = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
 
     # one extra query for the whole page instead of one per row

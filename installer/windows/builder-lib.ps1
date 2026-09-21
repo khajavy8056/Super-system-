@@ -565,20 +565,12 @@ $Steps = @(
         & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements.txt'), 'pyinstaller') 'core requirements' | Out-Null
         & $Report 'وابستگی‌های اصلی نصب شدند.'
 
-        # Optional native-window deps (pywebview/pythonnet). Best effort: the
-        # launcher opens an Edge app-mode window when they are missing.
+        # A desktop build without its native shell is not a valid deliverable.
         $Script:NativeWindow = $false
-        & $Report 'نصب وابستگی‌های اختیاری پنجرهٔ بومی (pywebview) ...'
-        try {
-            & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements-desktop.txt')) 'desktop (optional)' | Out-Null
-            $Script:NativeWindow = $true
-            & $Report 'پنجرهٔ بومی WebView2 فعال شد.'
-        } catch {
-            Write-Log "Optional desktop deps NOT installed: $($_.Exception.Message)" 'WARN'
-            & $Report ('هشدار: pywebview دانلود نشد (اینترنت/pypi در دسترس نبود). ساخت ادامه می‌یابد؛ ' +
-                       'برنامه در پنجرهٔ Edge (app-mode) باز می‌شود. برای پنجرهٔ بومی، فایل‌های wheel را در ' +
-                       'installer\windows\wheels قرار دهید و دوباره بسازید.')
-        }
+        & $Report 'نصب وابستگی‌های ضروری پنجرهٔ اختصاصی (pywebview/pythonnet) ...'
+        & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements-desktop.txt')) 'required desktop shell' | Out-Null
+        $Script:NativeWindow = $true
+        & $Report 'وابستگی‌های پنجرهٔ اختصاصی WebView2 نصب شدند.'
         & $Report 'مرحلهٔ وابستگی‌ها کامل شد.'
     }}
 

@@ -16,11 +16,16 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "installer" / "windows" / "run_
 def test_launcher_becomes_healthy_without_console(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
-               SUPERMARKET_BROWSER_MODE="system", BROWSER="true")
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
     env.pop("DATABASE_URL", None)
     code = (
-        "import sys, runpy; sys.stdout = None; sys.stderr = None; "
+        # This is a headless logging/readiness test, NOT a real WebView2 test.
+        # The required native shell is stubbed instead of restoring a browser fallback.
+        "import sys, runpy, types, time; "
+        "sys.modules['webview'] = types.SimpleNamespace("
+        "create_window=lambda *a, **k: types.SimpleNamespace(events=types.SimpleNamespace()), "
+        "start=lambda **k: time.sleep(60)); "
+        "sys.stdout = None; sys.stderr = None; "
         f"sys.argv = ['run_supermarket']; runpy.run_path({str(LAUNCHER)!r}, run_name='__main__')"
     )
     proc = subprocess.Popen([sys.executable, "-c", code], env=env,

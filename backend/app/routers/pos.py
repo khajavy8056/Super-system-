@@ -101,7 +101,7 @@ def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
 @router.get("/batch-options/{product_id}")
 def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
-    if not product:
+    if not product or product.deleted_at is not None or not product.is_active:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     options = pos_svc.get_batch_options(db, product)
     return {"product_id": product_id, "product_name": product.name,
@@ -302,7 +302,8 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
     from ..models import Brand, ProductBatch, Unit
     from sqlalchemy import func as _f
 
-    term = (q or "").strip()
+    from ..services import product_search as search
+    term = (q or "").strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
     if not term:
         return {"query": q, "items": []}
 
@@ -313,14 +314,14 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
         )
     ).scalars().all()
 
-    like = f"%{term}%"
+    like = "%" + search.literal_like(search.normalize(term)) + "%"
     # §18 — brand is searchable too: a cashier types «دماوند» (the brand)
     # far more often than the full product name.
     brand_ids = db.execute(
-        select(Brand.id).where(Brand.name.ilike(like))
+        select(Brand.id).where(Brand.name.ilike(like, escape="\\"))
     ).scalars().all()
-    conditions = ((Product.name.ilike(like)) | (Product.barcode.ilike(like))
-                  | (Product.sku.ilike(like)) | (Product.model.ilike(like)))
+    conditions = ((search.name_column(Product.name).like(like, escape="\\")) | (Product.barcode.ilike(like, escape="\\"))
+                  | (Product.sku.ilike(like, escape="\\")) | (Product.model.ilike(like, escape="\\")))
     if brand_ids:
         conditions = conditions | (Product.brand_id.in_(brand_ids))
     # v3.5 — the default catalogue made a typed search return hundreds of rows the
@@ -341,7 +342,7 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             Product.is_active.is_(True),
             conditions,
         ).outerjoin(stock, Product.id == stock.c.product_id)
-        .order_by((available > 0).desc(), Product.name.asc()).limit(limit)
+        .order_by((available > 0).desc(), search.rank(Product.name, term), Product.name.collate("PERSIAN"), Product.id).limit(limit)
     ).scalars().all()
 
     seen: set[int] = set()

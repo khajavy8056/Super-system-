@@ -111,7 +111,7 @@ def _relay_roundtrip(c):
 def test_launcher_stable_port_and_fullscreen():
     src = (ROOT / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
     assert "def stable_port(" in src and "PREFERRED_PORT = 8765" in src and 'os.environ["PORT"] = str(port)' in src
-    assert "fullscreen=kiosk, frameless=kiosk" in src and "--kiosk" in src
+    assert "fullscreen=kiosk, frameless=kiosk" in src and "SUPERMARKET_KIOSK" in src
     disc = (ROOT / "backend" / "app" / "services" / "discovery.py").read_text(encoding="utf-8")
     assert 'os.environ.get("PORT"' in disc
 

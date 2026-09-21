@@ -416,6 +416,7 @@
       nudgeTimer = setTimeout(async () => {
         try {
           const r = await api("/insights/nudges", { method: "POST", body: JSON.stringify({ product_ids: ids }) });
+          if (!host.isConnected || key !== lastKey) return;
           if (!r.length) { host.innerHTML = ""; host.classList.add("hidden"); return; }
           host.classList.remove("hidden");
           host.innerHTML = `<span class="nudge-ic">${ico("sparkle", 16)}</span><span class="nudge-txt">پیشنهاد به مشتری:</span>` +
@@ -424,7 +425,9 @@
       }, 350);
     },
     async add(pid) {
-      try { const p = await api(`/products/${pid}`); await posAddResolved({ product_id: p.id, name: p.name, image_url: p.image_url, unit: p.unit }); }
+      try { const p = await api(`/products/${pid}`); const result = await api(`/pos/batch-options/${pid}`);
+        if (!(result.options || []).length) { toast("این کالا اکنون موجودی قابل فروش ندارد؛ برای شارژ موجودی از ورود کالا استفاده کنید.", "err"); return; }
+        await posAddResolved({ product_id: p.id, name: p.name, image_url: p.image_url, unit: p.unit, batches: result.options }); }
       catch (e) { toast(e.message, "err"); }
     },
   };

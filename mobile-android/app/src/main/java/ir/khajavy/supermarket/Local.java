@@ -174,6 +174,7 @@ public final class Local {
 
     /* ===================== POS / invoices / returns ===================== */
     static Object pos(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
+        if ("batch-options".equals(seg[1])) { JSONObject p=Db.sellableProductById(Long.parseLong(seg[2])); if(p==null) throw new Api.ApiError(404,"PRODUCT_NOT_FOUND","کالا موجود یا فعال نیست"); return obj("product_id",p.optLong("id"),"product_name",p.optString("name"),"options",p.optJSONArray("batches")); }
         if ("search".equals(seg[1])) { JSONArray a = new JSONArray(); for (JSONObject p : Db.searchProducts(q.optString("q"), q.optInt("limit", 8))) a.put(p); return obj("items", a); }
         if ("checkout".equals(seg[1])) { double total = 0; JSONArray items = b.optJSONArray("items"); for (int i = 0; items != null && i < items.length(); i++) total += items.optJSONObject(i).optDouble("quantity", 1) * items.optJSONObject(i).optDouble("price", 0) - items.optJSONObject(i).optDouble("discount", 0); String no = Db.localSale(b, Math.max(0, total - b.optDouble("invoice_discount", 0))); return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no)); }
         if ("kiosk".equals(seg[1])) return obj("shortcut", "", "enabled", false);

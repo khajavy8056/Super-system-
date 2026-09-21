@@ -239,9 +239,11 @@ public final class Insights {
         Map<Long, List<String>> visits = new HashMap<>(); Map<Long, Double> totals = new HashMap<>(), profit = new HashMap<>(); Map<Long, Map<Long, Integer>> items = new HashMap<>();
         for (JSONObject i : f.inv.values()) if (!i.isNull("customer_id")) { visits.computeIfAbsent(i.optLong("customer_id"), k -> new ArrayList<>()).add(i.optString("at")); totals.merge(i.optLong("customer_id"), i.optDouble("total"), Double::sum); }
         for (JSONObject l : f.lines) if (!l.isNull("customer_id")) { profit.merge(l.optLong("customer_id"), f.profit(l), Double::sum); items.computeIfAbsent(l.optLong("customer_id"), k -> new HashMap<>()).merge(l.optLong("product_id"), 1, Integer::sum); }
+        Map<Long, java.util.TreeSet<String>> history = new HashMap<>();
+        for (JSONObject row : Local.rows("SELECT customer_id,substr(at,1,10) AS visit_day FROM invoices WHERE status='PAID' AND customer_id IS NOT NULL AND at>=? AND at<=? GROUP BY customer_id,substr(at,1,10) ORDER BY customer_id,visit_day", daysAgo(730), Db.now())) history.computeIfAbsent(row.optLong("customer_id"), k -> new java.util.TreeSet<>()).add(row.optString("visit_day"));
         String today = Jalali.todayIso().substring(0, 10); java.util.Calendar cal = java.util.Calendar.getInstance(); List<JSONObject> out = new ArrayList<>();
         for (Map.Entry<Long, List<String>> e : visits.entrySet()) {
-            java.util.TreeSet<String> days = new java.util.TreeSet<>(); for (String v : e.getValue()) days.add(v.substring(0, 10)); if (days.size() < 5) continue;
+            java.util.TreeSet<String> days = history.getOrDefault(e.getKey(), new java.util.TreeSet<>()); if (days.size() < 8 || daysBetween(days.first()+"T00:00:00",days.last()+"T00:00:00") < 90) continue;
             List<String> dl = new ArrayList<>(days); List<Integer> gaps = new ArrayList<>(); for (int i = 1; i < dl.size(); i++) { int g = (int) Math.round(daysBetween(dl.get(i - 1) + "T00:00:00", dl.get(i) + "T00:00:00")); if (g > 0) gaps.add(g); } if (gaps.size() < 3) continue;
             List<Integer> gs = new ArrayList<>(gaps); java.util.Collections.sort(gs); int med = gs.get(gs.size() / 2); List<Integer> dev = new ArrayList<>(); for (int g : gaps) dev.add(Math.abs(g - med)); java.util.Collections.sort(dev); double mad = dev.get(dev.size() / 2), regularity = Math.max(0, 1 - mad / Math.max(1, med));
             String last = dl.get(dl.size() - 1); if (last.equals(today)) continue; String next = plusDays(last + "T12:00:00", med).substring(0, 10); int dueIn = (int) Math.round(daysBetween(today + "T00:00:00", next + "T00:00:00")); if (dueIn < -1 || dueIn > horizon) continue;
@@ -423,7 +425,12 @@ public final class Insights {
         JSONArray out = new JSONArray(); if (ids == null || ids.length() == 0 || !"true".equals(Local.setting("insights.pos_nudges", "false"))) return out; ensure();
         Set<Long> cart = new HashSet<>(); for (int i = 0; i < ids.length(); i++) cart.add(ids.optLong(i)); Set<Long> offered = new HashSet<>();
         JSONArray rules = new JSONArray(); JSONObject row = Local.one("SELECT evidence FROM ai_insights WHERE kind='BASKET_NUDGE' AND status IN ('ACCEPTED','MEASURED') ORDER BY id DESC LIMIT 1"); if (row != null) rules = jo(row.optString("evidence")).optJSONArray("rules"); if (rules == null) rules = new JSONArray(); JSONArray manual = new JSONArray(Local.setting("insights.manual_rules", "[]")); for (int i = 0; i < manual.length(); i++) rules.put(manual.optJSONObject(i));
-        for (int i = 0; i < rules.length() && out.length() < 2; i++) { JSONObject r = rules.optJSONObject(i); if (cart.contains(r.optLong("if")) && !cart.contains(r.optLong("then")) && !offered.contains(r.optLong("then"))) { offered.add(r.optLong("then")); out.put(Local.obj("product_id", r.optLong("then"), "name", r.optString("then_name"), "because", r.optString("if_name"), "confidence", r.optDouble("confidence"))); } }
+        for (int i = 0; i < rules.length() && out.length() < 2; i++) { JSONObject r = rules.optJSONObject(i); if (r != null && cart.contains(r.optLong("if")) && !cart.contains(r.optLong("then")) && !offered.contains(r.optLong("then"))) { JSONObject product = Local.one("SELECT id,name FROM products WHERE id=? AND is_active=1", r.optLong("then"));
+            if (product == null) continue;
+            String expiry = "true".equals(Local.setting("expiry.block_sale", "true")) ? " AND (expiry_date IS NULL OR expiry_date='' OR substr(expiry_date,1,10)>=?)" : "";
+            JSONObject available = expiry.isEmpty() ? Local.one("SELECT id FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0 LIMIT 1", r.optLong("then")) : Local.one("SELECT id FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0" + expiry + " LIMIT 1", r.optLong("then"), Jalali.todayIso().substring(0,10));
+            if (available == null) continue;
+            offered.add(r.optLong("then")); out.put(Local.obj("product_id", r.optLong("then"), "name", product.optString("name"), "because", r.optString("if_name"), "confidence", r.optDouble("confidence"), "purpose", "sell_now")); } }
         return out;
     }
 
