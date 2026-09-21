@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The POS server lives on the shop LAN over plain HTTP (§259). Cleartext is
+     allowed for private ranges (and any host the owner pairs with by QR, since
+     shop routers hand out 192.168/10/172.16 addresses); public internet stays HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

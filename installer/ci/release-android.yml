@@ -1,0 +1,66 @@
+# Build the Android APK (§257) on GitHub Actions and attach it to the release.
+# Activate with scripts/activate-ci.sh (moves this file into .github/workflows).
+name: Build Android APK
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the APK to (e.g. v1.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      # v1.6: SDK-less, reproducible pipeline (aapt2 + ecj + d8 + apksigner) —
+      # the exact one verified locally; no Gradle/Android Studio required.
+      - name: Fetch toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLS: ${{ runner.temp }}/atools
+        run: scripts/android/fetch-tools.sh
+
+      - name: Build + sign release APK
+        env:
+          TOOLS: ${{ runner.temp }}/atools
+          SUPERMARKET_KEYSTORE: ${{ runner.temp }}/release.jks
+          SUPERMARKET_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'supermarket' }}
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > "$SUPERMARKET_KEYSTORE"; fi
+          scripts/android/build-apk.sh "$PWD/dist"
+
+      - name: Name and checksum the APK
+        id: apk
+        run: |
+          v=$(sed -nE 's/__version__\s*=\s*"([^"]+)"/\1/p' backend/app/__init__.py)
+          out="SupermarketMobile-$v.apk"
+          cp "dist/$out" "$out"
+          sha256sum "$out" > "$out.sha256"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          [ -z "$tag" ] && tag="${GITHUB_REF_NAME}"
+          gh release upload "$tag" "${{ steps.apk.outputs.path }}" "${{ steps.apk.outputs.path }}.sha256" --clobber

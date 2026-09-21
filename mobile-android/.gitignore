@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.keystore
+*.jks
+.idea/
+*.iml
+
+!keystore/supery-release.jks

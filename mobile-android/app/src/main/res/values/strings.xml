@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">سوپری من</string>
+    <string name="exit_confirm">از برنامه خارج می‌شوید؟ (اطلاعات آفلاین حفظ می‌شود)</string>
+    <string name="exit_yes">خروج</string>
+    <string name="exit_no">انصراف</string>
+    <string name="developer">طراحی و توسعه توسط خواجوی</string>
+</resources>

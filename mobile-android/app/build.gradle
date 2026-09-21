@@ -1,0 +1,58 @@
+plugins { id("com.android.application") }
+
+// Version is read from the single source of truth: backend/app/__init__.py
+def appVersion = "3.6.0"
+def initPy = new File(rootDir, "../backend/app/__init__.py")
+if (initPy.exists()) {
+    def m = (initPy.text =~ /__version__\s*=\s*"([^"]+)"/)
+    if (m.find()) appVersion = m.group(1)
+}
+def parts = appVersion.tokenize(".").collect { it.toInteger() }
+def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+
+// Version.java is generated (scripts/android/prepare.sh does the same for the SDK-less build)
+def genDir = new File(buildDir, "generated/version")
+tasks.register("genVersion") {
+    outputs.dir(genDir)
+    doLast {
+        def f = new File(genDir, "ir/khajavy/supermarket/Version.java"); f.parentFile.mkdirs()
+        f.text = "package ir.khajavy.supermarket;\npublic final class Version { public static final String NAME = \"" + appVersion + "\"; public static final int CODE = " + code + "; private Version() {} }\n"
+    }
+}
+preBuild.dependsOn("genVersion")
+
+android {
+    namespace "ir.khajavy.supermarket"
+    compileSdk 34
+    defaultConfig {
+        applicationId "ir.khajavy.supermarket"
+        minSdk 24
+        targetSdk 34
+        versionCode code
+        versionName appVersion
+    }
+    sourceSets { main { java.srcDirs += genDir; assets.srcDirs += "src/main/assets" } }
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the debug key unless SUPERMARKET_KEYSTORE is provided (CI).
+        }
+    }
+    signingConfigs {
+        if (System.getenv("SUPERMARKET_KEYSTORE")) {
+            release {
+                storeFile file(System.getenv("SUPERMARKET_KEYSTORE"))
+                storePassword System.getenv("SUPERMARKET_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SUPERMARKET_KEY_ALIAS")
+                keyPassword System.getenv("SUPERMARKET_KEY_PASSWORD")
+            }
+        }
+    }
+    if (System.getenv("SUPERMARKET_KEYSTORE")) {
+        buildTypes.release.signingConfig = signingConfigs.release
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+}
+
+// No AndroidX on purpose: the app must compile against the bare android.jar (see mobile-android/README.md).
+dependencies {}

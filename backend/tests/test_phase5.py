@@ -1,6 +1,7 @@
 """Phase-5 acceptance tests: full §49 report set + dashboard SQL aggregates +
 code-quality cleanups (BUG-022)."""
 from __future__ import annotations
+from app.services.timeservice import local_today as _local_today  # store-local "today" (Asia/Tehran by default)
 
 import os
 import tempfile
@@ -66,7 +67,7 @@ def seeded_activity(client, H):
     p1, b1 = _mk(client, H, qty=10, buy=1000, sell=2000)          # sold 2
     p2, b2 = _mk(client, H, qty=8, buy=500, sell=900)             # sold 1 with discount
     p3, b3 = _mk(client, H, qty=5, buy=2000, sell=3000,
-                 expiry=(date.today() + timedelta(days=2)).isoformat())  # expiring
+                 expiry=(_local_today() + timedelta(days=2)).isoformat())  # expiring
     _mk(client, H, qty=4, buy=4000, sell=5000)                    # second buy price for p-name series
     inv1 = client.post("/api/pos/checkout", headers=H, json={
         "items": [{"product_id": p1["id"], "batch_id": b1["id"], "quantity": 2}],
@@ -80,7 +81,7 @@ def seeded_activity(client, H):
             "inv1": inv1, "inv2": inv2, "base": baseline}
 
 
-TODAY = date.today().isoformat()
+TODAY = _local_today().isoformat()
 
 
 def test_dashboard_matches_known_activity(client, H, seeded_activity):

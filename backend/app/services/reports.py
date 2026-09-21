@@ -28,9 +28,28 @@ ZERO = Decimal("0")
 PAID = "PAID"
 
 
+def _local_today():
+    from .timeservice import local_today
+    return local_today()
+
+
+def _local_date_expr(col):
+    """SQL expression: store-local calendar date of a naive-UTC timestamp column
+    (SQLite ``date(col, '+210 minutes')``; other dialects fall back to date())."""
+    from .timeservice import local_now
+    off = local_now().utcoffset()
+    mins = int(off.total_seconds() // 60) if off else 0
+    try:
+        return func.date(col, f"{mins:+d} minutes")
+    except Exception:  # noqa: BLE001
+        return func.date(col)
+
+
+
 def _day_range(d: date) -> tuple[datetime, datetime]:
-    start = datetime(d.year, d.month, d.day)
-    return start, start + timedelta(days=1)
+    # v1.7.1: store-local day → naive-UTC bounds (created_at is naive UTC)
+    from .timeservice import local_day_range
+    return local_day_range(d)
 
 
 def _paid_filter(start: datetime, end: datetime):
@@ -55,10 +74,11 @@ def _profit_agg(db: Session, start: datetime, end: datetime) -> Decimal:
 
 
 def dashboard(db: Session) -> dict:
-    today = date.today()
+    from .timeservice import local_today
+    today = local_today()
     t0, t1 = _day_range(today)
     y0, y1 = _day_range(today - timedelta(days=1))
-    m0 = datetime(today.year, today.month, 1)
+    m0, _ = _day_range(today.replace(day=1))
 
     cnt_t, sum_t = _sales_agg(db, t0, t1)
     cnt_y, sum_y = _sales_agg(db, y0, y1)
@@ -146,6 +166,207 @@ def dashboard(db: Session) -> dict:
         "expiry": expiry_buckets,
         "pricing": {"price_conflicts": price_conflicts[:50],
                     "price_conflict_count": len(price_conflicts)},
+        # §23 — the four blocks the operator actually watches all day were
+        # missing from the dashboard payload: what customers owe, what is still
+        # waiting to be settled, whether SMS is flowing, and whether the system
+        # itself is healthy.
+        "receivables": _receivables(db),
+        "sms": _sms_status(db),
+        "system": _system_status(db),
+        # v1.4 — visual dashboard blocks
+        "trend": _sales_trend(db, days=7),
+        "top_products": _top_products(db, t0 - timedelta(days=29), t1, limit=5),
+        "recent_invoices": _recent_invoices(db, limit=6),
+        "accounting": _accounting_block(db),
+    }
+
+
+def _sales_trend(db: Session, days: int = 7) -> list[dict]:
+    """Per-day sales & profit for the last N days (today included), Jalali label."""
+    from .timeservice import to_jalali
+    out = []
+    today = _local_today()
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        s0, e1 = _day_range(d)
+        cnt, total = _sales_agg(db, s0, e1)
+        prof = _profit_agg(db, s0, e1)
+        jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+        out.append({"date": str(d), "label": f"{jm:02d}/{jd:02d}", "weekday": d.weekday(),
+                    "sales": float(total), "profit": float(prof), "invoices": cnt})
+    return out
+
+
+def _top_products(db: Session, start: datetime, end: datetime, limit: int = 5) -> list[dict]:
+    rows = db.execute(
+        select(Product.id, Product.name, Product.image_url,
+               func.coalesce(func.sum(InvoiceItem.qty), 0),
+               func.coalesce(func.sum(InvoiceItem.subtotal), 0),
+               func.coalesce(func.sum(InvoiceItem.profit), 0))
+        .select_from(InvoiceItem)
+        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+        .join(Product, InvoiceItem.product_id == Product.id)
+        .where(_paid_filter(start, end))
+        .group_by(Product.id, Product.name, Product.image_url)
+        .order_by(func.sum(InvoiceItem.subtotal).desc()).limit(limit)).all()
+    total = sum((Decimal(r[4]) for r in rows), ZERO) or Decimal(1)
+    return [{"product_id": r[0], "name": r[1], "image_url": r[2], "qty": float(r[3]),
+             "revenue": float(Decimal(r[4])), "profit": float(Decimal(r[5])),
+             "share_pct": float((Decimal(r[4]) / total * 100).quantize(Decimal("0.1")))} for r in rows]
+
+
+def _recent_invoices(db: Session, limit: int = 6) -> list[dict]:
+    rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit)).scalars().all()
+    return [{"invoice_id": i.id, "invoice_number": i.invoice_number, "total": float(i.total_amount),
+             "status": i.status, "payment_method": i.payment_method,
+             "created_at": i.created_at.isoformat() if i.created_at else None} for i in rows]
+
+
+def _accounting_block(db: Session) -> dict:
+    try:
+        from . import accounting as acc
+        ov = acc.overview(db)
+        return {"cash": ov["cash"], "bank": ov["bank"], "card": ov["card"], "receivables": ov["receivables"],
+                "payables": ov["payables"], "month_net_profit": ov["month"]["net_profit"],
+                "month_expenses": ov["month"]["expenses"],
+                "cheques_due": ov["cheques"]["received_count"] + ov["cheques"]["issued_count"]}
+    except Exception:  # noqa: BLE001 — dashboard must never fail because of a ledger hiccup
+        return {"cash": 0, "bank": 0, "card": 0, "receivables": 0, "payables": 0,
+                "month_net_profit": 0, "month_expenses": 0, "cheques_due": 0}
+
+
+# --- §23 dashboard blocks ----------------------------------------------------
+
+def _receivables(db: Session) -> dict:
+    """Customer debt + unsettled invoices.
+
+    Two different numbers, deliberately kept apart:
+
+    * ``customer_debt`` — the running balance of every customer ledger. This is
+      the money the shop is owed on account (§30–35).
+    * ``pending_amount`` — invoices that left the counter neither PAID nor VOID.
+      A credit sale that was never posted to an account, or an interrupted
+      payment, lands here; it must be visible or it simply disappears.
+    """
+    from . import ledger as ledger_svc
+
+    debt_rows = ledger_svc.debtors(db, 0)
+    total_debt = sum((Decimal(str(d["balance"])) for d in debt_rows), ZERO)
+
+    pending_rows = db.execute(
+        select(Invoice).where(
+            Invoice.status.not_in(["PAID", "VOID", "REFUNDED", "PARTIALLY_REFUNDED"])
+        ).order_by(Invoice.created_at.desc()).limit(500)
+    ).scalars().all()
+    pending_amount = sum((Decimal(i.total_amount) for i in pending_rows), ZERO)
+
+    return {
+        "customer_debt": float(total_debt),
+        "debtor_count": len(debt_rows),
+        "top_debtors": [
+            {"customer_id": d["customer_id"], "name": d["name"],
+             "phone": d.get("phone"), "balance": float(Decimal(str(d["balance"])))}
+            for d in debt_rows[:5]
+        ],
+        "pending_amount": float(pending_amount),
+        "pending_count": len(pending_rows),
+        "pending_invoices": [
+            {"invoice_id": i.id, "invoice_number": i.invoice_number,
+             "total": float(Decimal(i.total_amount)), "status": i.status,
+             "payment_method": i.payment_method,
+             "created_at": i.created_at.isoformat() if i.created_at else None}
+            for i in pending_rows[:10]
+        ],
+    }
+
+
+def _sms_status(db: Session) -> dict:
+    from ..models import SmsMessage
+    from . import sms as sms_svc
+
+    rows = db.execute(
+        select(SmsMessage.status, func.count(SmsMessage.id))
+        .group_by(SmsMessage.status)
+    ).all()
+    by_status = {s: int(n) for s, n in rows}
+    last = db.execute(
+        select(SmsMessage).order_by(SmsMessage.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    provider = sms_svc.get_setting(db, "sms.provider", "").strip()
+    return {
+        "provider": provider or None,
+        "configured": bool(provider),
+        "by_status": by_status,
+        "pending": by_status.get("PENDING", 0) + by_status.get("RETRYING", 0),
+        "sent": by_status.get("SENT", 0),
+        "failed": by_status.get("FAILED", 0),
+        "total": sum(by_status.values()),
+        "last_at": last.created_at.isoformat() if last and last.created_at else None,
+        "last_status": last.status if last else None,
+        "last_error": (last.error_message or None) if last else None,
+    }
+
+
+def _system_status(db: Session) -> dict:
+    """Health snapshot for the dashboard's status strip.
+
+    Everything here is cheap and local — the dashboard is polled, so it must
+    never be the thing that makes a network call or blocks on hardware.
+    """
+    import shutil
+    from pathlib import Path
+
+    from .. import __version__
+    from ..config import settings
+    from ..models import DiagnosticRun, HardwareDevice, SyncJob
+
+    hw_rows = db.execute(select(HardwareDevice)).scalars().all()
+    hardware = {h.device_type: h.status for h in hw_rows}
+
+    last_diag = db.execute(
+        select(DiagnosticRun).order_by(DiagnosticRun.id.desc()).limit(1)
+    ).scalar_one_or_none()
+
+    queued = int(db.execute(
+        select(func.count(SyncJob.id)).where(SyncJob.status.in_(["PENDING", "RUNNING"]))
+    ).scalar_one())
+    failed_jobs = int(db.execute(
+        select(func.count(SyncJob.id)).where(SyncJob.status == "FAILED")
+    ).scalar_one())
+
+    free_gb = None
+    try:
+        free_gb = round(shutil.disk_usage(str(Path(settings.MEDIA_DIR))).free / 1e9, 1)
+    except OSError:
+        pass
+
+    engine_name = db.get_bind().dialect.name
+    issues = []
+    if hardware.get("PRINTER") == "DISCONNECTED":
+        issues.append("پرینتر متصل نیست")
+    if failed_jobs:
+        issues.append(f"{failed_jobs} کار همگام‌سازی ناموفق")
+    if last_diag and last_diag.failed:
+        issues.append(f"{last_diag.failed} خطا در آخرین تست اتصالات")
+    if free_gb is not None and free_gb < 1:
+        issues.append("فضای دیسک کمتر از ۱ گیگابایت")
+
+    return {
+        "version": __version__,
+        "environment": settings.ENVIRONMENT,
+        "database": engine_name,
+        "hardware": hardware,
+        "sync_queued": queued,
+        "sync_failed": failed_jobs,
+        "disk_free_gb": free_gb,
+        "last_diagnostics": {
+            "run_id": last_diag.id,
+            "started_at": last_diag.started_at.isoformat() if last_diag.started_at else None,
+            "total": last_diag.total, "passed": last_diag.passed,
+            "failed": last_diag.failed, "skipped": last_diag.skipped,
+        } if last_diag else None,
+        "status": "WARNING" if issues else "OK",
+        "issues": issues,
     }
 
 
@@ -172,14 +393,41 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
 
     if group == "daily":
         rows = db.execute(
-            select(func.date(Invoice.created_at), func.count(Invoice.id),
+            select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
                    func.coalesce(func.sum(Invoice.total_amount), 0))
             .where(_paid_filter(s0, e1))
-            .group_by(func.date(Invoice.created_at))
-            .order_by(func.date(Invoice.created_at))
+            .group_by(_local_date_expr(Invoice.created_at))
+            .order_by(_local_date_expr(Invoice.created_at))
         ).all()
         out["groups"] = [{"date": str(r[0]), "invoice_count": int(r[1]),
                           "total": float(Decimal(r[2]))} for r in rows]
+    elif group in ("monthly", "weekly"):
+        # Jalali month / week buckets (§137, §138). SQLite cannot group by the
+        # Persian calendar, so bucket in Python on the (bounded) day rows.
+        from .timeservice import to_jalali
+        rows = db.execute(
+            select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
+                   func.coalesce(func.sum(Invoice.total_amount), 0))
+            .where(_paid_filter(s0, e1))
+            .group_by(_local_date_expr(Invoice.created_at))
+            .order_by(_local_date_expr(Invoice.created_at))
+        ).all()
+        buckets: dict[str, dict] = {}
+        for r in rows:
+            d = date.fromisoformat(str(r[0]))
+            jy, jm, jd = to_jalali(d)
+            if group == "monthly":
+                key = f"{jy:04d}/{jm:02d}"
+            else:
+                # Jalali week: 7-day blocks counted from Farvardin 1 of that year
+                doy = (jm - 1) * 31 - max(0, jm - 7) + jd if jm <= 6 else 186 + (jm - 7) * 30 + jd
+                key = f"{jy:04d}-هفته {((doy - 1) // 7) + 1:02d}"
+            b = buckets.setdefault(key, {"period": key, "invoice_count": 0, "total": 0.0,
+                                         "first_day": str(r[0]), "last_day": str(r[0])})
+            b["invoice_count"] += int(r[1])
+            b["total"] += float(Decimal(r[2]))
+            b["last_day"] = str(r[0])
+        out["groups"] = list(buckets.values())
     elif group == "product":
         rows = db.execute(
             select(Product.name, func.coalesce(func.sum(InvoiceItem.qty), 0),
@@ -278,7 +526,7 @@ def purchase_cost_history(db: Session, product_id: int | None = None, limit: int
 def expiry_report(db: Session) -> dict:
     """Full (untruncated) expiry buckets with values (§33)."""
     thresholds = expiry_svc.get_thresholds(db)
-    today = date.today()
+    today = _local_today()
     buckets: dict[str, list] = {}
     rows = db.execute(
         select(ProductBatch, Product.name)
@@ -356,6 +604,7 @@ def stocktake_report(db: Session) -> list[dict]:
     sts = db.execute(select(Stocktake).order_by(Stocktake.created_at.desc())).scalars().all()
     return [
         {"id": st.id, "name": st.name, "status": st.status,
+         "scheduled_for": str(st.scheduled_for) if st.scheduled_for else None,
          "started_at": st.started_at.isoformat() if st.started_at else None,
          "completed_at": st.completed_at.isoformat() if st.completed_at else None,
          "items": len(st.items)}

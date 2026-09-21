@@ -45,3 +45,16 @@ installer/standalone/build/
 installer/windows/dist/
 installer/output/
 scripts/stublibs/
+
+# Frozen build output (published as a Release asset, not committed)
+installer/standalone/build/
+installer/windows/dist/
+installer/output/
+
+# v3.5.7 — transient output of scripts that regenerate the demo store.
+# The .db.gz itself IS tracked (app.spec bundles it into the Windows build).
+demo/demo_gen.log
+
+# Persistent demo simulation workspaces / generated stress backups (not release assets).
+/stress_store*.db*
+/tools/*.work/

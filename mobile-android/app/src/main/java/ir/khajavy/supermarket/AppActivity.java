@@ -1,0 +1,245 @@
+package ir.khajavy.supermarket;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.function.Consumer;
+
+/**
+ * v2.0 — the NATIVE Android app shell (no WebView anywhere in this activity).
+ *
+ * Layout: sticky header (☰ menu, title, sync dot, ? tour) · content · 5-tab bar.
+ * Navigation is a screen stack ({@link Screens}); the drawer lists every section
+ * of the Windows app. The PC is reached only through JSON ({@link Api});
+ * when it is unreachable every screen falls back to the phone's SQLite.
+ */
+public class AppActivity extends Activity {
+    static final int REQ_SCAN = 31, REQ_PICK = 32;
+    Consumer<android.net.Uri> pickCb;
+    private FrameLayout content; private LinearLayout tabs; private TextView title; private View syncDot; private TextView syncTxt;
+    private FrameLayout drawerLayer; private LinearLayout drawer;
+    private final Deque<Screens.Screen> stack = new ArrayDeque<>();
+    private Consumer<String> scanCb;
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private final Runnable ticker = new Runnable() { @Override public void run() { if (Session.expired()) { Session.end(); startActivity(new Intent(AppActivity.this, LoginActivity.class)); finish(); return; } Sync.kick(); h.postDelayed(this, 20000); } };
+
+    @Override protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        Prefs.init(this); Db.init(this); Ui.init(this); Api.bg(() -> Db.importBankSeed(this));   // v2.7 bundled barcode bank
+        // v3.5.1 — the default catalogue used to be reachable only through the
+        // first-run wizard (AppActivity → SetupActivity → InstallService), and an
+        // in-place update never walks that path, so shops that upgraded saw the new
+        // bank advertised and received none of it. This runs on EVERY launch and is
+        // gated on the catalogue version, not on "is the database empty", so an
+        // upgrade picks up the new lines too. importStarter reconciles against the
+        // products the shop already has (barcode, then normalised name) rather than
+        // duplicating them, so it is safe to run repeatedly.
+        Api.bg(() -> { try { if (Db.catalogPending()) Db.importStarter(this); } catch (Exception ignore) {} });
+        Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
+        Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
+        Ui.currencyLabel = Prefs.get("currency_label", "ریال");
+        LockActivity.top = this;
+        if (Api.base.isEmpty() || !Lic.setupDone() || InstallService.running()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
+        // v2.4: a login is always required; the session ends after 30 minutes without interaction
+        if (Session.expired()) { Session.end(); startActivity(new Intent(this, LoginActivity.class)); finish(); return; }
+        Session.touch();
+        if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
+        Lic.recheckIfDue();
+        Sync.watchNetwork(this);
+        Images.kick();   // v2.5: pending product-picture lookups (standalone) resume whenever the app opens
+        getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if (!Ui.dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        buildShell();
+        Sync.listener = (online, applied, rejected, pending) -> {
+            syncDot.setBackground(Ui.rounded(online ? Ui.GREEN : Ui.RED, 0, 5));
+            syncTxt.setText(online ? (pending > 0 ? "همگام‌سازی " + Ui.fa(String.valueOf(pending)) + " مورد…" : (Relay.active ? "متصل از راه دور · همگام" : "متصل · همگام")) : (Api.standalone() ? "مستقل" : "آفلاین · صف " + Ui.fa(String.valueOf(pending))));
+            if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }
+            if (rejected > 0) { Ui.toast(Ui.fa(String.valueOf(rejected)) + " مورد رد شد — بخش همگام‌سازی"); Notify.syncProblem(this, rejected); }
+            if (applied == 0 && rejected == 0 && online) { Screens.Screen s = stack.peek(); if (s != null && s.autoRefresh()) s.refresh(); }
+        };
+        Screens.loadConfig(this);
+        Notify.channels(this); Notify.schedule(this); Notify.askPermission(this);
+        String r0 = getIntent() == null ? null : getIntent().getStringExtra("route");
+        open(new Screens.Home(this), false);
+        if (r0 != null && !r0.isEmpty() && !"home".equals(r0)) route(r0);
+        else { Tour.maybe(this, "home"); if (!"1".equals(Prefs.get("welcomed_" + Db.now().substring(0, 10), ""))) { Prefs.set("welcomed_" + Db.now().substring(0, 10), "1"); Sfx.play("welcome"); } }
+        Api.bg(() -> Notify.checkLocal(this));
+    }
+    private boolean bioShowing = false;
+    void bioGate() {
+        if (bioShowing || !Biometric.lockDue()) return;
+        bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
+        Biometric.prompt(this, "باز کردن سوپری من", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
+    }
+    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); }
+    @Override protected void onStop() { super.onStop(); Biometric.onBackground(); }
+    @Override protected void onResume() { super.onResume(); Ui.top = this; LockActivity.top = this; if (Session.expired()) { Session.end(); Ui.toast("نشست پس از ۳۰ دقیقه بی‌کاری بسته شد — دوباره وارد شوید"); startActivity(new Intent(this, LoginActivity.class)); finish(); return; } Session.touch(); h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> { Notify.checkPcSupport(this); SmsLocal.relayPcOutbox(); }); }
+    @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }
+    @Override protected void onPause() { super.onPause(); h.removeCallbacks(ticker); }
+
+    /* ---------------- shell ---------------- */
+    private void buildShell() {
+        LinearLayout root = Ui.col(this); root.setBackgroundColor(Ui.BG);
+        // header
+        LinearLayout head = Ui.row(this); head.setBackground(Ui.gradient(Ui.dark ? 0xFF091733 : 0xFFFFFFFF, Ui.dark ? 0xFF040D22 : 0xFFFBF9F4, 0, 0)); head.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); head.setElevation(Ui.dp(3));
+        head.addView(iconBtn("menu", () -> drawer(true)));
+        title = Ui.text(this, "", 17, Ui.TEXT, true); title.setLayoutParams(Ui.weight(1)); title.setPadding(Ui.dp(6), 0, Ui.dp(6), 0); head.addView(title);
+        LinearLayout st = Ui.col(this); st.setGravity(Gravity.END);
+        LinearLayout sr = Ui.row(this); syncDot = new View(this); syncDot.setBackground(Ui.rounded(Ui.MUTED, 0, 5)); syncDot.setLayoutParams(Ui.lp(Ui.dp(9), Ui.dp(9))); sr.addView(syncDot);
+        syncTxt = Ui.muted(this, "اتصال…"); syncTxt.setPadding(Ui.dp(5), 0, 0, 0); sr.addView(syncTxt); st.addView(sr);
+        st.setOnClickListener(v -> open(new Screens.SyncScreen(this), true)); head.addView(st);
+        head.addView(iconBtn("help", () -> Tour.show(this, current() == null ? "home" : current().key())));
+        root.addView(head);
+        // content
+        content = new FrameLayout(this); content.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(content);
+        // tabs
+        tabs = Ui.row(this); tabs.setBackground(Ui.gradient(Ui.dark ? 0xFF091733 : 0xFFFFFFFF, Ui.dark ? 0xFF040D22 : 0xFFFBF9F4, 0, 0)); tabs.setElevation(Ui.dp(12)); tabs.setPadding(Ui.dp(8), Ui.dp(7), Ui.dp(8), Ui.dp(9)); root.addView(tabs);
+        buildTabs(null);
+        FrameLayout outer = new FrameLayout(this); outer.addView(root);
+        // drawer layer
+        drawerLayer = new FrameLayout(this); drawerLayer.setBackgroundColor(0x88000000); drawerLayer.setVisibility(View.GONE); drawerLayer.setOnClickListener(v -> drawer(false));
+        drawer = Ui.col(this); drawer.setBackgroundColor(Ui.BG2); drawer.setElevation(Ui.dp(16)); drawer.setClickable(true);
+        FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(Ui.dp(304), ViewGroup.LayoutParams.MATCH_PARENT); dlp.gravity = Gravity.END; drawer.setLayoutParams(dlp);
+        drawerLayer.addView(drawer); outer.addView(drawerLayer);
+        setContentView(outer);
+    }
+    private View iconBtn(String icon, Runnable r) { android.widget.ImageView t = Icons.view(this, icon, Ui.TEXT, 40); int p = Ui.dp(10); t.setPadding(p, p, p, p); t.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22FFFFFF), Ui.rounded(Ui.CARD2, Ui.BORDER, 13), null)); t.setOnClickListener(v -> r.run()); return t; }
+
+    private static final String[][] TABS = {{"home", "خانه", "home"}, {"pos", "فروش", "cart"}, {"products", "کالاها", "tag"}, {"inventory", "انبار", "box"}, {"more", "بیشتر", "grid"}};
+    private void buildTabs(String active) {
+        tabs.removeAllViews();
+        for (String[] t : TABS) {
+            boolean on = t[0].equals(active) || ("more".equals(t[0]) && active != null && !isTabKey(active));
+            LinearLayout col = Ui.col(this); col.setGravity(Gravity.CENTER); LinearLayout.LayoutParams wp = Ui.weight(1); wp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0); col.setLayoutParams(wp); col.setPadding(0, Ui.dp(6), 0, Ui.dp(4));
+            col.setBackground(on ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 18) : Ui.rounded(Color.TRANSPARENT, 0, 18));
+            android.widget.ImageView ic = Icons.view(this, t[2], on ? Color.WHITE : Ui.MUTED, 23); col.addView(ic);
+            TextView lb = Ui.text(this, t[1], 10.5f, on ? Color.WHITE : Ui.MUTED, on); lb.setGravity(Gravity.CENTER); lb.setPadding(0, Ui.dp(3), 0, 0); col.addView(lb);
+            View bar = new View(this); bar.setBackground(Ui.rounded(Ui.GOLD, 0, 2)); bar.setLayoutParams(Ui.margin(Ui.lp(Ui.dp(16), Ui.dp(3)), 0, 3, 0, 0)); bar.setVisibility(View.GONE); col.addView(bar);
+            col.setOnClickListener(v -> { if ("more".equals(t[0])) drawer(true); else route(t[0]); });
+            tabs.addView(col);
+        }
+    }
+    static String routeIcon(String k) {
+        switch (k) {
+            case "pos": return "cart"; case "held": return "pause"; case "customers": return "users"; case "invoices": return "receipt"; case "reports": return "chart"; case "accounting": return "calc";
+            case "products": return "tag"; case "receive": return "truck"; case "inventory": return "box"; case "stocktake": return "clipboard"; case "stockops": return "undo"; case "warehouses": return "warehouse"; case "movements": return "history";
+            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
+            case "hardware": return "printer"; case "diagnostics": return "pulse"; case "notifications": return "bell"; case "support": return "support"; case "license": return "key"; case "sync": return "sync"; case "backup": return "archive"; case "bank": return "bank";
+            default: return "chev";
+        }
+    }
+    private boolean isTabKey(String k) { for (String[] t : TABS) if (t[0].equals(k)) return true; return false; }
+
+    /* ---------------- drawer: EVERY section ---------------- */
+    static final String[][] GROUPS = {
+        {"cart|فروش و مشتری", "pos:صندوق فروش", "held:فاکتورهای نگه‌داشته", "customers:مشتریان و دفتر حساب"},
+        {"receipt|فاکتورها و گزارش", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
+        {"box|کالا و موجودی", "products:کالاها", "receive:ورود کالا", "inventory:انبار و موجودی", "stocktake:انبارگردانی", "stockops:ضایعات / اصلاح / انتقال", "warehouses:انبارها", "movements:گردش موجودی"},
+        {"gift|جشنواره و پیامک", "marketing:جشنواره و کوپن", "sms:پیامک"},
+        {"settings|مدیریت و سیستم", "home:داشبورد", "users:کاربران و نقش‌ها", "audit:لاگ حسابرسی", "settings:تنظیمات", "backup:پشتیبان‌گیری", "store:مشخصات فروشگاه", "hardware:سخت‌افزار", "diagnostics:تست اتصالات", "notifications:اعلان‌ها", "support:درخواست پشتیبانی", "license:لایسنس", "sync:همگام‌سازی", "cloud:همگام‌سازی ابری", "device:تنظیمات دستگاه", "about:دربارهٔ برنامه"},
+    };
+    private final java.util.Set<String> openGroups = new java.util.HashSet<>();
+    private void drawer(boolean open) {
+        if (!open) { drawerLayer.setVisibility(View.GONE); return; }
+        drawer.removeAllViews(); drawer.setBackgroundColor(Ui.BG);
+        String store = Prefs.get("store_name", Prefs.storeName(this) == null ? "فروشگاه" : Prefs.storeName(this));
+        LinearLayout head = Ui.row(this); head.setPadding(Ui.dp(16), Ui.dp(28), Ui.dp(16), Ui.dp(18)); head.setBackground(Ui.gradient(Ui.dark ? 0xFF152958 : Ui.PRIMARY, Ui.dark ? Ui.BG : Ui.PRIMARY2, 0, 0));
+        head.addView(Ui.avatar(this, store, 52));
+        LinearLayout hc = Ui.col(this); hc.setPadding(Ui.dp(12), 0, 0, 0); hc.addView(Ui.text(this, store, 16, Color.WHITE, true)); hc.addView(Ui.text(this, store + " · " + Screens.userName(), 12, 0xCCFFFFFF, false)); hc.setLayoutParams(Ui.weight(1)); head.addView(hc);
+        drawer.addView(head); drawer.addView(Ui.divider(this));
+        LinearLayout list = Ui.col(this); list.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+        String cur = current() == null ? "" : current().key();
+        if (openGroups.isEmpty()) { for (String[] g : GROUPS) for (int i = 1; i < g.length; i++) if (g[i].startsWith(cur + ":")) openGroups.add(g[0]); if (openGroups.isEmpty()) openGroups.add(GROUPS[0][0]); }
+        for (String[] g : GROUPS) {
+            boolean opened = openGroups.contains(g[0]);
+            LinearLayout gh = Ui.row(this); gh.setPadding(Ui.dp(12), Ui.dp(12), Ui.dp(12), Ui.dp(12)); gh.setBackground(Ui.surface(16)); gh.setLayoutParams(Ui.margin(Ui.match(), 0, 4, 0, 4));
+            String gIcon = g[0].contains("|") ? g[0].substring(0, g[0].indexOf('|')) : "grid", gName = g[0].contains("|") ? g[0].substring(g[0].indexOf('|') + 1) : g[0];
+            gh.addView(Icons.badge(this, gIcon, opened ? Ui.PRIMARY : Ui.GOLD, 34));
+            TextView gt = Ui.text(this, gName, 14, Ui.TEXT, true); gt.setLayoutParams(Ui.weight(1)); gt.setPadding(Ui.dp(10), 0, 0, 0); gh.addView(gt); gh.addView(Icons.view(this, opened ? "up" : "down", Ui.MUTED, 18));
+            gh.setOnClickListener(v -> { if (opened) openGroups.remove(g[0]); else openGroups.add(g[0]); drawer(true); }); list.addView(gh);
+            if (!opened) continue;
+            for (int i = 1; i < g.length; i++) {
+                String key = g[i].substring(0, g[i].indexOf(':')), label = g[i].substring(g[i].indexOf(':') + 1);
+                if (!Screens.allowed(key)) continue;
+                boolean on = key.equals(cur);
+                LinearLayout t = Ui.row(this); t.setPadding(Ui.dp(14), Ui.dp(9), Ui.dp(12), Ui.dp(9)); t.setBackground(Ui.rounded(on ? (Ui.PRIMARY & 0x00FFFFFF) | 0x22000000 : Color.TRANSPARENT, 0, 12)); t.setLayoutParams(Ui.margin(Ui.match(), 8, 1, 0, 1));
+                t.addView(Icons.view(this, routeIcon(key), on ? Ui.PRIMARY : Ui.MUTED, 18));
+                TextView tl = Ui.text(this, label, 13, on ? Ui.PRIMARY : Ui.TEXT, on); tl.setPadding(Ui.dp(10), 0, 0, 0); tl.setLayoutParams(Ui.weight(1)); t.addView(tl);
+                if (on) { View d = new View(this); d.setBackground(Ui.rounded(Ui.GOLD, 0, 3)); d.setLayoutParams(Ui.lp(Ui.dp(6), Ui.dp(6))); t.addView(d); }
+                t.setClickable(true); t.setOnClickListener(v -> { drawer(false); route(key); }); list.addView(t);
+            }
+        }
+        ScrollView sv = new ScrollView(this); sv.setVerticalScrollBarEnabled(false); sv.addView(list); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); drawer.addView(sv);
+        LinearLayout foot = Ui.col(this); foot.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(14)); foot.addView(Ui.divider(this));
+        // theme switch row
+        LinearLayout th = Ui.row(this); th.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8)); th.setBackground(Ui.surface(14));
+        th.addView(Icons.view(this, Ui.dark ? "moon" : "sun", Ui.GOLD, 18)); TextView tl = Ui.text(this, Ui.dark ? "پوستهٔ تیره" : "پوستهٔ روشن", 13, Ui.TEXT, true); tl.setPadding(Ui.dp(10), 0, 0, 0); tl.setLayoutParams(Ui.weight(1)); th.addView(tl);
+        android.widget.Switch sw = new android.widget.Switch(this); sw.setChecked(!Ui.dark); sw.setOnCheckedChangeListener((b, on) -> { Prefs.set("theme_resolved", on ? "light" : "dark"); Prefs.set("theme_mode", on ? "light" : "dark"); recreate(); }); th.addView(sw);
+        foot.addView(th);
+        foot.addView(Ui.ghost(this, "ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        drawer.addView(foot);
+        drawerLayer.setVisibility(View.VISIBLE);
+    }
+
+    /* ---------------- navigation ---------------- */
+    public void route(String key) { Screens.Screen s = Screens.create(this, key); if (s != null) open(s, !isTabKey(key)); }
+    public void open(Screens.Screen s, boolean push) {
+        if (!push) stack.clear();
+        stack.push(s); show(s);
+        Tour.maybe(this, s.key());
+    }
+    private void show(Screens.Screen s) {
+        content.removeAllViews(); title.setText(s.title());
+        View v = s.view(); content.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        buildTabs(s.key()); s.load();
+    }
+    public Screens.Screen current() { return stack.peek(); }
+    public void refreshCurrent() { Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }
+    public boolean back() {
+        if (drawerLayer.getVisibility() == View.VISIBLE) { drawer(false); return true; }
+        if (stack.size() > 1) { stack.pop(); show(stack.peek()); return true; }
+        if (stack.size() == 1 && !"home".equals(stack.peek().key())) { open(new Screens.Home(this), false); return true; }
+        return false;
+    }
+    @Override public void onBackPressed() {
+        if (back()) return;
+        new android.app.AlertDialog.Builder(this).setMessage(R.string.exit_confirm).setPositiveButton(R.string.exit_yes, (d, w) -> finish()).setNegativeButton(R.string.exit_no, null).show();
+    }
+
+    /* ---------------- native scanner ---------------- */
+    public void scan(String title, Consumer<String> cb) {
+        scanCb = cb;
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) { Biometric.markInternal(); requestPermissions(new String[]{Manifest.permission.CAMERA}, 7); return; }
+        Biometric.markInternal(); Intent i = new Intent(this, ScanActivity.class); i.putExtra("title", title); startActivityForResult(i, REQ_SCAN);
+    }
+    public Runnable permCb;   // v2.8: settings screens re-render after a permission answer
+    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
+            boolean sms = false; for (int i = 0; i < p.length; i++) if (android.Manifest.permission.SEND_SMS.equals(p[i])) sms = r[i] == PackageManager.PERMISSION_GRANTED;
+            Ui.toast(sms ? "اجازهٔ پیامک داده شد — حالا می‌توانید از سیم‌کارت بفرستید" : "اجازه داده نشد؛ بدون آن ارسال از سیم‌کارت ممکن نیست");
+            if (permCb != null) permCb.run(); } }
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == Biometric.REQ_KEYGUARD) { bioShowing = false; if (res == RESULT_OK) { Biometric.lastUnlock = System.currentTimeMillis(); recreate(); } else finishAffinity(); return; }
+        if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null && pickCb != null) { Consumer<android.net.Uri> cb = pickCb; pickCb = null; cb.accept(data.getData()); return; }
+        if (req == REQ_SCAN && res == RESULT_OK && data != null && scanCb != null) { String code = data.getStringExtra("code"); Consumer<String> cb = scanCb; scanCb = null; if (code != null) cb.accept(code.trim()); }
+    }
+}

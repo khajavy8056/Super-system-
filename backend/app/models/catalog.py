@@ -38,6 +38,10 @@ class Unit(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
     symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Whether fractional quantities are meaningful for this unit (Kg, L, g...)
+    allow_decimal: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Number of decimals shown/accepted in the UI for this unit.
+    decimals: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     products: Mapped[list["Product"]] = relationship(back_populates="unit")
@@ -56,8 +60,20 @@ class Product(TimestampMixin, SoftDeleteMixin, Base):
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v3.5 — the default product bank ships up to three direct image links per
+    # line. `image_url` stays the primary thumbnail; `gallery` holds the rest as
+    # a JSON list so the product card can offer «تصویر بعدی» without another
+    # round trip. Nullable: a shop's own products simply have no gallery.
+    gallery: Mapped[str | None] = mapped_column(Text, nullable=True)
     min_stock_alert: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # §16 — loose/bulk goods (تخمه، حبوبات، وزنی) carry no manufacturer GTIN.
+    # They still need a scannable code, so the system mints an internal one
+    # (INT-000001). The flag records WHY the barcode looks synthetic, which
+    # matters when deciding whether to consult external catalogues at all:
+    # an internal code means nothing to OpenFoodFacts.
+    has_own_barcode: Mapped[bool] = mapped_column(Boolean, default=True)
 
     brand: Mapped["Brand | None"] = relationship(back_populates="products")
     category: Mapped["Category | None"] = relationship(back_populates="products")

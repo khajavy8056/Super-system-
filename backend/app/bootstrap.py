@@ -12,10 +12,21 @@ from .models import Permission, Role, SystemSetting, User
 from .security import PERMISSIONS, ROLE_PRESETS, hash_password
 
 DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
+    # v3.0 store intelligence
+    "insights.enabled": ("true", "Store intelligence engine on/off", False),
+    "insights.interval_hours": ("6", "How often the local analyzers re-run (hours)", False),
+    "insights.pos_nudges": ("false", "Show whisper-suggestions at the POS (enabled by accepting the BASKET_NUDGE insight)", False),
+    "ai.provider": ("", "Cloud narrator: '' (local templates) | openai_compatible", False),
+    "ai.base_url": ("", "OpenAI-compatible base URL (e.g. https://api.openai.com/v1, https://openrouter.ai/api/v1, http://127.0.0.1:11434/v1)", False),
+    "ai.api_key": ("", "API key for the narrator endpoint", True),
+    "ai.model": ("", "Model name (e.g. gpt-4o-mini, llama3)", False),
+    "ai.timeout_seconds": ("25", "Narrator request timeout", False),
     "pos.tax_rate": ("0", "Tax rate in percent applied at checkout", False),
     "pos.allocation_policy": ("HYBRID", "Allocation policy: FIFO | FEFO | MANUAL | HYBRID", False),
     "pos.batch_selection_mode": ("HYBRID", "Batch selection mode: AUTO | MANUAL | HYBRID", False),
-    "pos.currency": ("IRR", "Display currency code", False),
+    "pos.currency": ("IRT", "Base currency: IRT (تومان) | IRR (ریال). Amounts are STORED in this unit.", False),
+    "pos.coupon_enabled": ("true", "Enable coupon entry at the POS", False),
+    "pos.print_after_checkout": ("true", "Automatically print the receipt after checkout", False),
     "pos.allow_negative_stock": ("false", "Allow negative stock (requires permission + audit)", False),
     "pos.kiosk_shortcut": ("Ctrl+Shift+L", "POS kiosk/lock mode keyboard shortcut", False),
     "expiry.block_sale": ("true", "Block sale of expired batches", False),
@@ -28,18 +39,100 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "sms.username": ("", "SMS provider username", True),
     "sms.password": ("", "SMS provider password", True),
     "sms.api_key": ("", "SMS provider API key (kavenegar)", True),
-    "sms.sender": ("", "Sender line number (melipayamak)", False),
+    "sms.sender": ("", "Sender line number (melipayamak, line mode)", False),
+    "sms.melipayamak_mode": ("line", "melipayamak mode: line (SendSMS from own line) | pattern (BaseServiceNumber / خط خدماتی)", False),
+    "sms.melipayamak_body_id": ("", "melipayamak pattern (bodyId) for pattern mode", False),
+    "sms.melipayamak_url": ("", "Override REST base URL (proxy/testing); empty = official", False),
     "sms.file_path": ("data/sms_out.log", "Output file for the 'file' provider (dev/test)", False),
+    "sms.template.debt_reminder": (
+        "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر.",
+        "Debt reminder SMS template. Placeholders: {customer} {store} {amount} {currency}",
+        False),
+    "sms.template.invoice": (
+        "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم",
+        "Invoice SMS template. Placeholders: {store} {invoice} {amount} {currency} {coupon_line}", False),
+    "sms.template.coupon": (
+        "{store} | کد تخفیف شما: {code} | تا {until} معتبر است",
+        "Coupon SMS template. Placeholders: {store} {code} {until}", False),
+    "sms.template.low_stock": (
+        "{store} | هشدار انبار: {count} کالا زیر حداقل موجودی است: {items}",
+        "Low-stock alert SMS template. Placeholders: {store} {count} {items}", False),
+    "sms.template.daily_report": (
+        "{store} | گزارش {date}: {invoices} فاکتور | فروش {sales} {currency} | سود {profit} {currency} | بدهی مشتریان {debt} {currency}",
+        "Management report SMS template. Placeholders: {store} {date} {invoices} {sales} {profit} {debt} {currency}", False),
+    "sms.admin_phone": ("", "Manager mobile for alerts / daily report (falls back to store.mobile)", False),
+    "sms.low_stock_alert": ("false", "Send a low-stock alert SMS to the manager after the expiry/stock scan", False),
+    "sms.send_invoice": ("true", "Send an invoice SMS to registered customers after checkout (independent of printing)", False),
+    "sms.send_immediately": ("true", "Wake the SMS dispatcher the moment an invoice is confirmed (v2.3)", False),
     "sms.max_retries": ("5", "Max delivery attempts before FAILED", False),
     "sms.worker_interval_seconds": ("10", "Background dispatch interval (seconds)", False),
     "printer.paper_width_mm": ("80", "Thermal printer paper width in mm", False),
+    "printer.cut": ("true", "Send a paper-cut command after each receipt (ESC/POS)", False),
+    "printer.drawer.enabled": ("true", "Pulse the cash drawer on cash sales", False),
+    "printer.drawer.pin": ("2", "Cash drawer kick pin (2 or 5)", False),
+    # --- inventory / products (§217–§218) ---
+    "inventory.default_min_stock": ("5", "Default minimum stock for new products", False),
+    "inventory.low_stock_alert": ("true", "Show low-stock alerts on the dashboard", False),
+    "products.autofill_requires_confirm": ("true", "Auto-fill data must be confirmed by a human before saving", False),
+    # --- v2.5 automatic product pictures ---
+    "images.auto_find": ("true", "Find a product picture automatically (by name/brand/barcode) when a product is saved", False),
+    "images.web_fallback": ("true", "Also use keyless web image search (DuckDuckGo) when OpenFoodFacts/Wikimedia have nothing", False),
+    "images.min_score": ("0.34", "Minimum name-match score (0..1) a found picture must reach to be accepted", False),
+    "images.generic_fallback": ("true", "Allow encyclopaedia photos (Wikimedia/Wikipedia) when no packaged retail photo is found", False),
+    "images.retail.digikala": ("true", "Retail catalogue source: Digikala (packaged product photos, Persian titles)", False),
+    "images.retail.okala": ("false", "Retail catalogue source: Okala (needs StoreIds + bearer token → off unless configured)", False),
+    "images.retail.basalam": ("true", "Retail catalogue source: Basalam", False),
+    "images.retail.torob": ("false", "Retail catalogue source: Torob (its terms discourage automated extraction — off by default)", False),
+    "pricing.default_margin_percent": ("20", "Default margin used to suggest a sell price", False),
+    "pricing.round_to": ("1000", "Round suggested sell prices to this step", False),
+    # --- customers / ledger (§221–§222) ---
+    "customers.default_credit_limit": ("0", "Default credit limit for new customers (0 = unlimited)", False),
+    "ledger.block_over_limit": ("true", "Block a credit sale that would exceed the customer's limit", False),
+    # --- marketing (§223–§224) ---
+    "marketing.coupon_prefix": ("SM", "Prefix for generated coupon codes", False),
+    "marketing.max_discount_percent": ("50", "Ceiling for percent coupons created in the UI", False),
+    # --- network / security (§228–§229) ---
+    "network.lan_port": ("8000", "Port the local server listens on for LAN / mobile clients", False),
+    "security.session_minutes": ("720", "Session lifetime in minutes", False),
+    "security.require_admin_for_void_paid": ("true", "Voiding a PAID invoice requires admin password confirmation", False),
     "backup.keep": ("10", "Number of backup files to retain (rotation)", False),
     "printer.header": ("", "Receipt header text", False),
     "printer.footer": ("", "Receipt footer text", False),
+    "sync.worker_interval_seconds": ("15", "Offline sync queue drain interval (seconds)", False),
+    "stocktake.require_approval": ("true", "Stock adjustments need manager approval", False),
+    # --- store profile (§25) — printed on receipts and shown in the UI ---
+    "store.name": ("فروشگاه من", "Store name (receipt header, UI title)", False),
+    "store.legal_name": ("", "Registered legal name", False),
+    "store.phone": ("", "Store phone number", False),
+    "store.mobile": ("", "Store mobile number", False),
+    "store.address": ("", "Store address (printed on the receipt)", False),
+    "store.city": ("", "City", False),
+    "store.postal_code": ("", "Postal code", False),
+    "store.tax_id": ("", "Tax / economic ID", False),
+    "store.logo_path": ("", "Relative path of the store logo under MEDIA_DIR", False),
+    "store.receipt_note": ("از خرید شما سپاسگزاریم", "Footer note on the receipt", False),
+    # --- time & calendar (§22) ---
+    "time.timezone": ("Asia/Tehran", "IANA timezone for display and reports", False),
+    "time.calendar": ("jalali", "Display calendar: jalali | gregorian", False),
+    "time.ntp_enabled": ("true", "Check trusted network time at startup", False),
+    "time.ntp_servers": ("pool.ntp.org,time.google.com",
+                         "Comma-separated NTP servers (trusted time source)", False),
+    "time.max_drift_seconds": ("120",
+                               "Warn when local clock drifts more than this from NTP", False),
+    # --- updates (§269/§270) ---
+    "update.channel": ("github", "Update channel: github | server", False),
+    "update.server_url": ("", "Update server manifest URL (JSON: version, asset_url, sha256 ...)", False),
+    "update.server_token": ("", "Bearer token for the update server (optional)", True),
+    # --- appearance (§23) ---
+    "ui.theme": ("auto", "Theme: auto | light | dark", False),
+    "ui.theme_light_at": ("07:00", "Local time to switch to the light theme", False),
+    "ui.theme_dark_at": ("19:00", "Local time to switch to the dark theme", False),
 }
 
 
 def bootstrap(db: Session) -> None:
+    from .services.units import ensure_units
+
     # 1. Permissions
     existing = {p.code for p in db.execute(select(Permission)).scalars()}
     for code, desc in PERMISSIONS.items():
@@ -79,4 +172,103 @@ def bootstrap(db: Session) -> None:
         if key not in current_keys:
             db.add(SystemSetting(key=key, value=value, description=desc, is_secret=is_secret))
 
+    # 5. Default measurement units (§25 — piece / kg / gram / liter ...)
+    ensure_units(db)
+
+    # 6. Default product-resolver sources (§9-§11)
+    #
+    # Without at least one registered source the whole multi-source resolver is
+    # dead code on a fresh install: scanning an unknown barcode returned
+    # origin="none" with an empty `sources` list, so "add product by scan"
+    # silently degraded to fully manual entry. Providers existed; nothing was
+    # ever wired to them.
+    #
+    # OpenFoodFacts is the one source we can ship enabled by default and still
+    # respect the licensing rule: the data is community-owned and published
+    # under the Open Database License (ODbL), the API is public and keyless,
+    # and it explicitly permits reuse with attribution. Commercial Iranian
+    # catalogues (Holoo and friends) are deliberately NOT shipped — copying
+    # them is exactly what the brief forbids. A shop that holds its own licence
+    # for such a service can add it at runtime as a `custom_http` source
+    # without any code change.
+    ensure_default_sources(db)
+    ensure_product_bank(db)
+
+    # 7. Chart of accounts + current Jalali fiscal year (v1.4 double-entry)
+    from .services.accounting import ensure_chart
+    ensure_chart(db)
+
+    db.commit()
+
+
+#: Sources registered on first boot.
+#:
+#: v3.5 — EMPTY ON PURPOSE. The app used to register Basalam/Torob (Iranian
+#: listings) and OpenFoodFacts here so an unknown barcode could be identified by
+#: scraping the web, and the picture pipeline went off to OpenFoodFacts /
+#: Wikimedia / DuckDuckGo to find a photo by name. Both are gone:
+#:
+#:   * the default product bank now ships 13 570 real supermarket lines with
+#:     their exact GTIN and up to three direct picture links, so a scan resolves
+#:     locally and instantly — there is nothing left to look up;
+#:   * scraping third-party storefronts is fragile (they change, they rate-limit,
+#:     they block), slow, and needs the shop to be online at the counter.
+#:
+#: A shop that runs its OWN identification service can still register it under
+#: Settings → منابع خارجی (the generic ``custom_http`` provider is unchanged).
+DEFAULT_SOURCES: list[dict] = []
+
+#: v3.5 — codes that earlier releases registered by default. On upgrade they are
+#: switched off (never deleted: resolver results / market prices reference them
+#: through a foreign key), so an existing shop stops calling those sites the
+#: moment it updates.
+LEGACY_ONLINE_SOURCES: tuple[str, ...] = ("retail_ir", "openfoodfacts", "openfoodfacts_img")
+
+
+def ensure_default_sources(db: Session) -> None:
+    """Register the built-in resolver sources (idempotent) and retire the legacy ones.
+
+    Rows an operator created or re-pointed are never touched.
+    """
+    from .models import ExternalSource
+
+    existing = {s.code for s in db.execute(select(ExternalSource)).scalars()}
+    for spec in DEFAULT_SOURCES:
+        if spec["code"] in existing:
+            continue
+        db.add(ExternalSource(**spec))
+    # v3.5: the bundled web-scraping sources are retired on upgrade.
+    legacy = db.execute(
+        select(ExternalSource).where(ExternalSource.code.in_(LEGACY_ONLINE_SOURCES),
+                                     ExternalSource.is_active.is_(True))
+    ).scalars().all()
+    for src in legacy:
+        src.is_active = False
+    db.flush()
+
+
+def ensure_product_bank(db: Session) -> None:
+    """v2.7 — بانک کالا. Seed once from the bundled ``data/product_bank_seed.csv`` (rows are
+    Open Food Facts entries for Iranian GTINs, ODbL — attribution in README/CHANGELOG) and from the
+    shop's own products; afterwards the bank grows by itself (online hits, confirmed products,
+    imported lists, phones)."""
+    from pathlib import Path
+
+    from .services import product_bank
+
+    flag = db.execute(select(SystemSetting).where(SystemSetting.key == "bank.seeded")).scalar_one_or_none()
+    if flag is not None and flag.value == "2":
+        return
+    seed = Path(__file__).resolve().parent / "data" / "product_bank_seed.csv"
+    try:
+        if seed.exists():
+            product_bank.import_csv_text(db, seed.read_text(encoding="utf-8"), source="SEED")
+        product_bank.seed_from_products(db)
+    except Exception:  # noqa: BLE001 — the bank is a convenience; never block startup
+        db.rollback()
+        return
+    if flag is None:
+        db.add(SystemSetting(key="bank.seeded", value="2", description="v2.7 product bank seeded"))
+    else:
+        flag.value = "2"
     db.commit()

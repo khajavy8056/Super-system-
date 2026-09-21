@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.database import init_db  # noqa: E402
 from app.main import app  # noqa: E402
+from conftest import fa_digits  # noqa: E402  — receipts localise numbers to Persian digits
 
 init_db()
 
@@ -148,7 +149,8 @@ def test_print_real_file_sink_and_escpos_driver_missing(client, admin_h, tmp_pat
         "connection": f"file://{sink}"})
     r = client.post(f"/api/invoices/{inv['invoice_id']}/print", headers=admin_h).json()
     assert r["ok"] is True and r["print_status"] == "SUCCESS"
-    assert sink.exists() and "INVOICE" in sink.read_text(encoding="utf-8")
+    txt = sink.read_text(encoding="utf-8")
+    assert sink.exists() and "فاکتور" in txt and fa_digits(inv["invoice_number"]) in txt  # Persian receipt
 
     client.post("/api/hardware", headers=admin_h, json={
         "device_type": "PRINTER", "name": "EscposPrinter", "status": "CONNECTED",
