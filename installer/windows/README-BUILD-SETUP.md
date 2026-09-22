@@ -125,3 +125,13 @@ powershell -ExecutionPolicy Bypass -File .\builder-gui.ps1 -Silent
 نشده‌اند** و نمی‌توانم آن‌ها را «آزمون‌شده» گزارش کنم. آنچه انجام شده،
 اعتبارسنجی ساختاری و بازبینی سطربه‌سطر است. نخستین اجرا روی ویندوز واقعی لازم
 است و هر خطای احتمالی در `build.log` کامل ثبت می‌شود.
+
+
+## v4.0 — مدل هوش مصنوعی داخل Setup.exe
+
+از 4.0.0 مرحلهٔ «آماده‌سازی مدل هوش محلی برای جاسازی در نصب‌کننده» قبل از Inno Setup اجرا می‌شود:
+`scripts/model/prepare_windows_installer.py` مدل رسمی Qwen (≈۱ گیگابایت) را دانلود، هش SHA-256 آن را با
+رجیستری مدل تطبیق می‌دهد و payload را کنار `setup.iss` می‌گذارد تا **داخل خود Setup.exe** نصب شود
+(در `%USERPROFILE%\SupermarketSystem\brain\models` — پوشهٔ دادهٔ کاربر). بدون مدلِ تأییدشده، Setup.exe
+ساخته نمی‌شود (نسخهٔ قابل‌حمل ساخته می‌شود و دلیل گفته می‌شود). برای بیلد آفلاین، فایل GGUF رسمی را دستی
+بیاورید و `python scripts/model/prepare_windows_installer.py --from-file <path>` را اجرا کنید.

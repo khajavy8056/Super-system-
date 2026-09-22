@@ -64,3 +64,10 @@ demo/demo_gen.log
 *.gguf
 *.gguf.part
 **/brain/models/
+
+# v4.0 — Windows installer model payload (prepared at build time by
+# scripts/model/prepare_windows_installer.py, NEVER committed: ~1 GB + the
+# generated Inno fragment that points at it)
+installer/windows/model/
+installer/windows/runtime/
+installer/windows/model_payload.iss

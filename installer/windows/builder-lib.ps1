@@ -623,6 +623,37 @@ $Steps = @(
         & $Report "نسخه قابل‌حمل (بدون نیاز به نصب): $portable"
     }}
 
+    @{ Name = 'آماده‌سازی مدل هوش محلی برای جاسازی در نصب‌کننده'; Action = {
+        param($Report)
+        # v4.0 — the owner asked for the local AI model to be INSIDE the installer
+        # so a shop PC works offline on first launch. The payload is downloaded
+        # from the official source, sha256-verified against the Model Registry,
+        # and written next to setup.iss; setup.iss installs it into the user's
+        # data dir via the generated model_payload.iss include.
+        if (-not $Script:Iscc) {
+            & $Report 'Inno Setup نیست و Setup.exe ساخته نمی‌شود؛ مرحلهٔ مدل لازم نیست.'
+            return
+        }
+        $prep = Join-Path $RepoRoot 'scripts\model\prepare_windows_installer.py'
+        if (-not (Test-Path $prep)) { throw "scripts\model\prepare_windows_installer.py پیدا نشد: $prep" }
+        & $Report 'دریافت و تأیید هش مدل رسمی (Qwen) — حدود ۱ گیگابایت ...'
+        try {
+            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
+                -Arguments @($prep, '--engine') | Out-Null
+            & $Report 'مدل تأیید شد و در نصب‌کننده جاسازی می‌شود.'
+        } catch {
+            # A model that cannot be verified must never enter an installer, and a
+            # Setup.exe silently missing its model must never look like the real
+            # deliverable. Fail the step with the exact way out (the file can also
+            # be brought by hand and adopted with --from-file).
+            throw ("مدل هوش محلی تأیید نشد و بدون آن Setup.exe ساخته نمی‌شود:`n" +
+                   $_.Exception.Message + "`n" +
+                   "راه‌ها: (۱) اینترنت و تلاش دوباره  (۲) دانلود دستی فایل GGUF رسمی و اجرای`n" +
+                   "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>`n" +
+                   "نسخهٔ قابل‌حمل (بدون مدل) همین حالا ساخته شده و کار می‌کند.")
+        }
+    }}
+
     @{ Name = 'ساخت فایل نصب نهایی (Setup.exe)'; Action = {
         param($Report)
         if (-not $Script:Iscc) {

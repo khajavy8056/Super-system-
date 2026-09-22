@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import urllib.error
@@ -47,6 +48,8 @@ DOWNLOAD_CHUNK = 1024 * 1024
 SOCKET_TIMEOUT = 60
 #: install states
 READY_STATES = ("VERIFIED", "INSTALLED", "ACTIVE")
+#: v4.0 — the Windows installer drops a verified model next to this manifest
+SEED_MANIFEST = "seed.json"
 
 
 # --------------------------------------------------------------------------- paths
@@ -136,6 +139,11 @@ class ModelManager:
 
     # ------------------------------------------------------------------ download
     def download(self, model_id: str, *, progress=None, force: bool = False) -> dict:
+        # a model shipped inside the Windows installer must not be re-downloaded
+        try:
+            self.adopt_preinstalled()
+        except Exception:  # noqa: BLE001 — adoption is an optimisation, not a gate
+            log.warning("seed adoption failed before download", exc_info=True)
         spec = model_registry.get(model_id)
         if spec is None:
             return {"ok": False, "code": "UNKNOWN_MODEL", "message": "این مدل در فهرست رسمی نیست"}
@@ -190,6 +198,77 @@ class ModelManager:
         self.db.commit()
         return {"ok": True, "code": "VERIFIED", "message": "فایل مدل دانلود و هش آن تأیید شد",
                 "path": str(target), "sha256": digest}
+
+    # ------------------------------------------------------------------ installer seed
+    def adopt_preinstalled(self) -> list[dict]:
+        """v4.0 — adopt model files placed on disk by the Windows installer.
+
+        The installer (Inno Setup) can ship a verified ``.gguf`` next to a
+        ``seed.json`` manifest inside ``<data>/brain/models/<model_id>/``, so a
+        shop PC gets a working local model on day one with no download. This
+        method never *trusts* the manifest: the file is re-hashed, the digest
+        must match both the manifest and the registry pin, and a mismatch is
+        recorded as UNVERIFIED (never activated, never deleted — it is the
+        owner's disk).
+
+        Idempotent and cheap: a model whose file is unchanged (size + mtime +
+        digest recorded before) is skipped without re-hashing the 1 GB file.
+        """
+        report: list[dict] = []
+        for spec in model_registry.all_models():
+            folder = models_root() / spec.model_id
+            manifest_path = folder / SEED_MANIFEST
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                report.append({"model_id": spec.model_id, "ok": False, "code": "BAD_MANIFEST",
+                               "message": f"seed.json خوانده نشد: {str(exc)[:120]}"})
+                continue
+            file_name = str(manifest.get("file") or spec.file_name)
+            expected = str(manifest.get("sha256") or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                report.append({"model_id": spec.model_id, "ok": False, "code": "BAD_MANIFEST",
+                               "message": "seed.json هش معتبر ندارد"})
+                continue
+            target = folder / file_name
+            if not target.exists():
+                report.append({"model_id": spec.model_id, "ok": False, "code": "FILE_MISSING",
+                               "message": "فایل مدل کنار seed.json نیست"})
+                continue
+            size = target.stat().st_size
+            row = self._row(spec.model_id)
+            if (row is not None and row.status in READY_STATES
+                    and (row.sha256 or "").lower() == expected and row.path == str(target)):
+                continue  # already adopted, nothing to do
+            stamp = f"{expected}:{size}:{int(target.stat().st_mtime)}"
+            if (row is not None and row.status in READY_STATES
+                    and self._get_setting(f"brain.seed.{spec.model_id}") == stamp):
+                continue  # verified before and untouched since
+            actual = sha256_file(target)
+            if actual != expected or (spec.sha256 and expected != spec.sha256.lower()):
+                self._record(spec.model_id, "UNVERIFIED", path=target, size=size, sha256=actual)
+                self._audit(spec.model_id, "SEED_MISMATCH",
+                            {"expected": expected, "got": actual, "source": "installer"})
+                self.db.commit()
+                report.append({"model_id": spec.model_id, "ok": False, "code": "CHECKSUM_MISMATCH",
+                               "message": "هش فایل نصب‌شده با manifest/فهرست رسمی نمی‌خواند؛ مدل فعال نمی‌شود"})
+                continue
+            self._record(spec.model_id, "INSTALLED", path=target, size=size, sha256=actual)
+            self._set_setting(f"brain.seed.{spec.model_id}", stamp)
+            self._audit(spec.model_id, "ADOPTED", {"source": "installer", "path": str(target),
+                                                   "sha256": actual})
+            activated = None
+            if not self.active_id():
+                activated = self.activate(spec.model_id)
+            self.db.commit()
+            entry = {"model_id": spec.model_id, "ok": True, "code": "ADOPTED",
+                     "message": "مدلِ همراه نصب‌کننده تأیید و نصب شد", "path": str(target)}
+            if activated is not None:
+                entry["activated"] = bool(activated.get("ok"))
+            report.append(entry)
+        return report
 
     # ------------------------------------------------------------------ install / load
     def install(self, model_id: str) -> dict:
@@ -309,6 +388,12 @@ class ModelManager:
 
     # ------------------------------------------------------------------ status
     def status(self, *, include_registry: bool = True) -> dict:
+        # the model shipped inside the Windows installer registers itself here
+        try:
+            seeds = self.adopt_preinstalled()
+        except Exception:  # noqa: BLE001 — status must always answer
+            log.warning("seed adoption failed", exc_info=True)
+            seeds = []
         prof = device_profile.profile()
         rows = self._all_rows()
         installs = {row.model_id: row for row in rows}
@@ -325,6 +410,7 @@ class ModelManager:
             "models_root": str(models_root()),
             "history": history,
             "cap_bytes": model_registry.MAX_FILE_BYTES,
+            "installer_seeds": seeds,
         }
         if include_registry:
             payload["registry"] = model_registry.registry_payload()

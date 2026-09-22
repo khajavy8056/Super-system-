@@ -62,11 +62,13 @@ public final class Screens {
             case "insightsPlan": return new InsightScreens.Plan(a);
             case "insightsCustomers": return new InsightScreens.Customers(a);
             case "backup": return new InsightScreens.Backup(a);
+            case "brain": return new BrainScreens.Center(a);
+            case "brainChat": return new BrainScreens.Chat(a);
             case "catalog": return new InsightScreens.CatalogScreen(a);
         }
         return null;
     }
-    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view"}, {"backup", "settings.manage"}};
+    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view"}, {"backup", "settings.manage"}, {"brain", "settings.manage"}, {"brainChat", "settings.manage"}};
     public static boolean allowed(String key) {
         String need = null; for (String[] p : PERMS) if (p[0].equals(key)) need = p[1];
         if (need == null) return true;

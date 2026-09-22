@@ -247,6 +247,11 @@ def main() -> None:
     sys.path.insert(0, str(backend_dir()))
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
+    # v4.0 — one data dir for everything the app persists (DB, logs, brain models,
+    # llama.cpp runtime). Without this the frozen backend would resolve its data
+    # dir inside the PyInstaller temp extraction dir and lose the model the
+    # installer placed in ~/SupermarketSystem/brain/models on every launch.
+    os.environ.setdefault("SUPERMARKET_DATA_DIR", str(base))
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
     os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
     if getattr(sys, "frozen", False):

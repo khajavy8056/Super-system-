@@ -141,7 +141,7 @@ public class AppActivity extends Activity {
         switch (k) {
             case "pos": return "cart"; case "held": return "pause"; case "customers": return "users"; case "invoices": return "receipt"; case "reports": return "chart"; case "accounting": return "calc";
             case "products": return "tag"; case "receive": return "truck"; case "inventory": return "box"; case "stocktake": return "clipboard"; case "stockops": return "undo"; case "warehouses": return "warehouse"; case "movements": return "history";
-            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
+            case "marketing": return "gift"; case "insights": return "star"; case "brain": case "brainChat": return "wand"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
             case "hardware": return "printer"; case "diagnostics": return "pulse"; case "notifications": return "bell"; case "support": return "support"; case "license": return "key"; case "sync": return "sync"; case "backup": return "archive"; case "bank": return "bank";
             default: return "chev";
         }
@@ -151,7 +151,7 @@ public class AppActivity extends Activity {
     /* ---------------- drawer: EVERY section ---------------- */
     static final String[][] GROUPS = {
         {"cart|فروش و مشتری", "pos:صندوق فروش", "held:فاکتورهای نگه‌داشته", "customers:مشتریان و دفتر حساب"},
-        {"receipt|فاکتورها و گزارش", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
+        {"receipt|فاکتورها و گزارش", "brain:مغز فروشگاه", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
         {"box|کالا و موجودی", "products:کالاها", "receive:ورود کالا", "inventory:انبار و موجودی", "stocktake:انبارگردانی", "stockops:ضایعات / اصلاح / انتقال", "warehouses:انبارها", "movements:گردش موجودی"},
         {"gift|جشنواره و پیامک", "marketing:جشنواره و کوپن", "sms:پیامک"},
         {"settings|مدیریت و سیستم", "home:داشبورد", "users:کاربران و نقش‌ها", "audit:لاگ حسابرسی", "settings:تنظیمات", "backup:پشتیبان‌گیری", "store:مشخصات فروشگاه", "hardware:سخت‌افزار", "diagnostics:تست اتصالات", "notifications:اعلان‌ها", "support:درخواست پشتیبانی", "license:لایسنس", "sync:همگام‌سازی", "cloud:همگام‌سازی ابری", "device:تنظیمات دستگاه", "about:دربارهٔ برنامه"},
