@@ -3,6 +3,24 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.0.0] - 2026-09-22
+
+### Business Brain — مغز کسب‌وکار (محلی، بدون ابر اجباری)
+- New service `backend/app/services/business_brain/` (26 modules) turning the v3.8.0 analysis engine into a *decision layer*: DATA → BUSINESS STATE → SITUATION → RETRIEVAL → SPECIALIST TOOLS → REASONING → OPTIONS → DECISION → POLICY → APPROVAL → ACTION → VERIFICATION → MEASUREMENT → MEMORY.
+- 8 specialist agents (Finance, Inventory, Sales, Customer, Supplier, Pricing, Operations, Marketing) emit **evidence only** — the brain decides; cross-agent contradictions are detected (BUY_WITHOUT_CASH, DISCOUNT_BELOW_MARGIN, DATA_QUALITY, MARGIN_AND_CASH, …).
+- Tool Registry with 37 tools + 5 action tools; every tool declares name/description/input/output schema, permissions, side effects, reversibility, risk level and data sources. **No LLM → SQL path exists**: the model can only emit tool calls. 32 read-only tools verified against a seeded shop with 0 failures.
+- Five memories (conversation, business facts, structured policies, store profile, decision memory) + follow-up engine and measurement contracts with real outcomes (Positive/Neutral/Negative/Insufficient/Not-Measurable). No online fine-tuning, no fake learning.
+- Deterministic finance only: cash, cheques, payables/receivables, expected collections, margin, profit forecast and option economics all come from the existing services; an unsourced number is rejected (`grounding.py`).
+- Actions go through the existing Action Engine (`insight_actions.py`) unchanged: AUTO / APPROVAL / HIGH_RISK, payments-transfers-deletions always need approval; nothing executes before approval.
+- Decision Center UI (`frontend/brain.js`, nav-gated on `settings.manage`): short Persian cards with بررسی / اجرا / بعداً / رد, reasoning on expand, plus an admin-only chat that never shows tool calls, JSON or model reasoning.
+- Proactive engine: 8 watchers, dedupe + cooldown, ceiling from the `max_active_alerts` policy (0 is allowed), one card per domain, and silence when the shop is healthy — 0 recommendations is a valid answer.
+- 24 `/api/brain/*` routes, all behind the admin gate (`reports.view` + `settings.manage`); cashiers get 403 everywhere; financial/strategy tools raise `ToolDenied` and are traced.
+- Model runtime: `AIProvider` (load/unload/chat/generate/structured_output/tool_call/health_check/benchmark) with llama.cpp over subprocess/HTTP (no heavy Python deps), ModelManager detect→select→download→verify sha256→install→load→benchmark→activate→rollback, hard 2 GB cap (test-enforced), 4096 context by default. Local-only is the default mode.
+- New `scripts/model/fetch_model.py` (list / fetch / `--verify` / `--record`) — models are fetched, never committed.
+- New tables (migration `d4f6a8b1c2e3`): `brain_messages`, `brain_decisions`, `brain_followups`, `brain_policies`, `brain_model_installs`, `brain_memory_facts`. Additive and idempotent; no existing feature removed and no analyzer rewritten.
+- Docs: AI_BRAIN_ARCHITECTURE, AI_MODEL_RUNTIME, AI_MODEL_INSTALLATION, AI_TOOL_REGISTRY, AI_MEMORY, AI_SECURITY, AI_TESTING, RELEASE_AUDIT_4.0.0.
+- Verified: 55 new v4.0 tests pass (brain 16, model manager 17, security 12, proactive 10). **Deviations recorded honestly:** the official `Qwen/Qwen3-1.7B-GGUF` repo publishes only Q8_0 (banned) and no Q4_K_M/Q3_K_M, so the default is the official `Qwen2.5-1.5B-Instruct` GGUF (Q4_K_M default, Q3_K_M for 4 GB devices) — needs owner sign-off. No fake Setup.exe and no fake APK: Windows/Android artifacts still require the real CI/SDK runners (see RELEASE_AUDIT_4.0.0.md).
+
 ## [3.8.0] - 2026-09-22
 
 - Data Quality Engine wired into Intelligence: Critical findings BLOCK analysis, Medium/Low cut confidence and are audited; DQ status API + tests.

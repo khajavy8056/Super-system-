@@ -24,6 +24,18 @@ from .notifications import notify
 log = logging.getLogger("supermarket.insights.actions")
 
 
+def _ref(owner) -> tuple[str, int]:
+    """(reference_type, reference_id) for every row an action creates (notification,
+    SMS, audit).
+
+    v3.x passes an ``Insight``; v4.0 passes a Business-Brain ``ActionOwner``. The
+    reference type travels with the owner so a Brain-executed action's SMS rows
+    can never be mistaken for an insight's (ids are counted per reference type
+    during VERIFY, and a colliding id would silently validate the wrong rows).
+    """
+    return (str(getattr(owner, "reference_type", "Insight")), int(owner.id))
+
+
 def _now() -> datetime:
     from . import insights as _ins
     return _ins._now()
@@ -59,7 +71,7 @@ def _sms_enabled(db: Session) -> bool:
 def act_shelf_note(db, insight, p, user):
     names = [pr.name for pr in db.execute(select(Product).where(Product.id.in_(p.get("products", [])))).scalars()]
     notify(db, type="INSIGHT_TASK", title="کار انبار: تغییر چیدمان", body="این کالاها را کنار هم بچینید: " + "، ".join(names),
-           severity="INFO", reference_type="Insight", reference_id=insight.id)
+           severity="INFO", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
     return {"note": names}
 
 
@@ -71,7 +83,7 @@ def act_reorder_note(db, insight, p, user):
         if not any(x["product_id"] == pid for x in lst):
             lst.append({"product_id": pid, "name": names.get(pid, str(pid)), "qty": p.get("qty"), "added": _now().isoformat(), "insight_id": insight.id})
     _set_setting(db, "insights.reorder_list", json.dumps(lst, ensure_ascii=False))
-    notify(db, type="INSIGHT_TASK", title="به لیست سفارش اضافه شد", body="، ".join(names.values()), severity="INFO", reference_type="Insight", reference_id=insight.id)
+    notify(db, type="INSIGHT_TASK", title="به لیست سفارش اضافه شد", body="، ".join(names.values()), severity="INFO", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
     return {"reorder_list": len(lst)}
 
 
@@ -182,7 +194,7 @@ def act_vip_coupons(db, insight, p, user):
         issued += 1
         if cust.phone and _sms_enabled(db):
             sms_svc.queue_sms(db, phone=cust.phone, text=f"{cust.name} عزیز، شما مشتری ویژهٔ {_store(db)} هستید. کد {c.code} = {p['percent']}٪ تخفیف تا {p['days']} روز. با سپاس از همراهی‌تان.",
-                              reference_type="Insight", reference_id=insight.id)
+                              reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
     sms_svc.kick_worker()
     return {"campaign_id": camp.id, "coupons": issued, "sms": sent}
@@ -196,7 +208,7 @@ def act_winback_sms(db, insight, p, user):
         issued += 1
         if cust.phone and _sms_enabled(db):
             sms_svc.queue_sms(db, phone=cust.phone, text=f"{cust.name} عزیز، دلمان برایتان تنگ شده! {_store(db)} با کد {c.code} {p['percent']}٪ تخفیف تا {p['days']} روز منتظر شماست.",
-                              reference_type="Insight", reference_id=insight.id)
+                              reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
     sms_svc.kick_worker()
     return {"campaign_id": camp.id, "coupons": issued, "sms": sent}
@@ -214,7 +226,7 @@ def act_visit_sms(db, insight, p, user):
         item = (row.get("item") or "").strip()
         txt = (f"{cust.name} عزیز، {_store(db)}: " + (f"«{item}» تازه رسیده و برایتان کنار گذاشته‌ایم؛ " if item else "")
                + "منتظر دیدارتان هستیم.")
-        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type="Insight", reference_id=insight.id)
+        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
         sent += 1
     sms_svc.kick_worker()
     return {"sms": sent}
@@ -235,7 +247,7 @@ def act_sms_buyers(db, insight, p, user):
     if _sms_enabled(db):
         for cust in db.execute(select(Customer).where(Customer.id.in_(list(ids)), Customer.phone.is_not(None))).scalars():
             sms_svc.queue_sms(db, phone=cust.phone, text=f"{cust.name} عزیز، «{pr.name if pr else 'کالای موردعلاقهٔ شما'}» این هفته در {_store(db)} با {p['percent']}٪ تخفیف. تا اتمام موجودی.",
-                              reference_type="Insight", reference_id=insight.id)
+                              reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
         sms_svc.kick_worker()
     return {"buyers": len(ids), "sms": sent}
@@ -284,7 +296,7 @@ def act_debt_reminders(db, insight, p, user):
                 cust = db.get(Customer, e.customer_id)
                 if cust and cust.phone:
                     text = sms_svc.render_template(db, "debt_reminder", customer=cust.name, amount=_fa(e.balance_after))
-                    sms_svc.queue_sms(db, phone=cust.phone, text=text, reference_type="Insight", reference_id=insight.id)
+                    sms_svc.queue_sms(db, phone=cust.phone, text=text, reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
                     sent += 1
         sms_svc.kick_worker()
     return {"debtors": n_debt, "sms": sent}
@@ -308,7 +320,7 @@ def act_pos_nudge(db, insight, p, user):
 
 
 def act_note(db, insight, p, user):
-    notify(db, type="INSIGHT_TASK", title=insight.title, body=insight.body[:400], severity="WARN", reference_type="Insight", reference_id=insight.id)
+    notify(db, type="INSIGHT_TASK", title=insight.title, body=insight.body[:400], severity="WARN", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
     return {"noted": True}
 
 
@@ -323,7 +335,7 @@ def act_personal_sms(db, insight, p, user):
         txt = (row.get("text") or "").strip()
         if not cust or not cust.phone or not txt:
             continue
-        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type="Insight", reference_id=insight.id)
+        sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
         sent += 1
     sms_svc.kick_worker()
     return {"sms": sent}
@@ -345,7 +357,7 @@ def act_personal_coupons(db, insight, p, user):
         issued += 1
         if cust.phone and _sms_enabled(db):
             txt = row.get("text") or f"{cust.name} عزیز، کد {c.code} = {row.get('percent', pct)}٪ تخفیف شخصی شما در {_store(db)} تا {row.get('days', days)} روز آینده."
-            sms_svc.queue_sms(db, phone=cust.phone, text=txt.replace("WELCOME۱۰", c.code).replace("VIP۵", c.code).replace("BACK۱۰", c.code), reference_type="Insight", reference_id=insight.id)
+            sms_svc.queue_sms(db, phone=cust.phone, text=txt.replace("WELCOME۱۰", c.code).replace("VIP۵", c.code).replace("BACK۱۰", c.code), reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
     sms_svc.kick_worker()
     return {"campaign_id": camp.id, "coupons": issued, "sms": sent}
@@ -526,7 +538,7 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         n = db.execute(select(func.count(Coupon.id))).scalar_one()
         return True, f"coupons issued (store total now {n})"
     if kind == "notification":
-        n = db.execute(select(func.count(Notification.id)).where(Notification.reference_type == "Insight", Notification.reference_id == insight.id)).scalar_one()
+        n = db.execute(select(func.count(Notification.id)).where(Notification.reference_type == _ref(insight)[0], Notification.reference_id == insight.id)).scalar_one()
         return n > 0, f"{n} notification(s) for this insight"
     if kind == "reorder_list":
         lst = json.loads(_setting(db, "insights.reorder_list", "[]"))
@@ -544,7 +556,7 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         ok = any(x["batch_id"] == params["batch_id"] for x in plans)
         return ok, "ladder plan stored" if ok else "ladder plan MISSING"
     if kind == "sms_count":
-        n = db.execute(select(func.count(SmsMessage.id)).where(SmsMessage.reference_type == "Insight", SmsMessage.reference_id == insight.id)).scalar_one()
+        n = db.execute(select(func.count(SmsMessage.id)).where(SmsMessage.reference_type == _ref(insight)[0], SmsMessage.reference_id == insight.id)).scalar_one()
         want = result.get("sms", 0)
         return n >= want, f"{n} queued SMS reference this insight (action reported {want})"
     if kind == "nudges":
@@ -619,8 +631,88 @@ def execute(db: Session, insight: Insight, *, user: User | None, only: list[str]
         ev = {}
     ev["executions"] = (ev.get("executions") or []) + out
     insight.evidence = json.dumps(ev, ensure_ascii=False, default=str)
-    write_audit(db, action="INSIGHT_ACCEPTED", user_id=user.id if user else None, entity_type="Insight", entity_id=insight.id,
+    write_audit(db, action="INSIGHT_ACCEPTED", user_id=user.id if user else None, entity_type=_ref(insight)[0], entity_id=insight.id,
                 after={"kind": insight.kind, "actions": [o["type"] for o in out if o["ok"]],
                        "statuses": {o["type"]: o.get("status") for o in out}})
     db.flush()
     return out
+
+
+# ============================================================================ v4.0 — Business Brain owner
+class ActionOwner:
+    """Adapter that lets the Action Engine execute a **Business-Brain decision**'s
+    actions through the exact same VALIDATE → SAVEPOINT → EXECUTE → VERIFY path
+    an insight uses (§5 of the v4.0 brief: never a second engine).
+
+    It is deliberately a plain object with the four attributes the engine reads
+    (``id``, ``actions``, ``evidence``, ``title``/``body`` for the note action),
+    plus ``reference_type`` so notification/SMS rows point at the decision.
+    """
+
+    __slots__ = ("id", "kind", "title", "body", "actions", "evidence", "reference_type")
+
+    def __init__(self, *, id: int, actions: list[dict] | None = None, title: str = "",
+                 body: str = "", evidence: dict | None = None, kind: str = "brain_decision",
+                 reference_type: str = "BrainDecision") -> None:
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.body = body
+        self.actions = json.dumps(actions or [], ensure_ascii=False)
+        self.evidence = json.dumps(evidence or {}, ensure_ascii=False, default=str)
+        self.reference_type = reference_type
+
+
+def execute_actions(db: Session, actions: list[dict], *, owner: "ActionOwner", user: User | None = None,
+                    only: list[str] | None = None, audit_action: str = "BRAIN_ACTION",
+                    audit_reference: str | None = None) -> list[dict]:
+    """Run an explicit action list for an owner (used by the Business Brain).
+
+    Identical guarantees to :func:`execute`: validation failures write nothing,
+    every action owns a savepoint, VERIFY re-reads the database, and the caller
+    commits. The only difference is where the actions come from — a decision's
+    ``actions`` array instead of an Insight row.
+    """
+    original = owner.actions
+    owner.actions = json.dumps(actions, ensure_ascii=False)
+    try:
+        out: list[dict] = []
+        for a in actions:
+            atype = a.get("type", "")
+            if only is not None and atype not in only:
+                continue
+            params = a.get("params", {}) or {}
+            entry: dict = {"type": atype, "at": _now().isoformat()}
+            try:
+                spec = validate_action(atype, params)
+            except ActionValidationError as exc:
+                entry.update({"ok": False, "status": "VALIDATION_FAILED", "error": str(exc)})
+                out.append(entry)
+                continue
+            entry["external_side_effect"] = bool(spec["external_side_effect"])
+            try:
+                with db.begin_nested():
+                    res = ACTIONS[atype](db, owner, params, user)
+                    ok, detail = _verify(db, owner, atype, params, res)
+                    if not ok:
+                        raise RuntimeError(f"verify failed: {detail}")
+                    entry["verify"] = detail
+                if res.get("skipped"):
+                    entry.update({"ok": True, "status": "SKIPPED", "result": res})
+                elif spec["verify"] is None:
+                    entry.update({"ok": True, "status": "EXECUTED_UNVERIFIED", "result": res})
+                else:
+                    entry.update({"ok": True, "status": "EXECUTED_VERIFIED", "result": res})
+            except Exception as exc:  # noqa: BLE001 — reported per action, never re-raised
+                log.exception("brain action %s failed", atype)
+                entry.update({"ok": False, "status": "FAILED_ROLLED_BACK", "error": str(exc)})
+            out.append(entry)
+        write_audit(db, action=audit_action, user_id=user.id if user else None,
+                    entity_type=owner.reference_type, entity_id=owner.id,
+                    after={"actions": [o["type"] for o in out if o.get("ok")],
+                           "statuses": {o["type"]: o.get("status") for o in out},
+                           "reference": audit_reference})
+        db.flush()
+        return out
+    finally:
+        owner.actions = original

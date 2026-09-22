@@ -67,12 +67,13 @@ def test_upgrade_head_matches_modelsExactly(migrated_url):
 
 def test_head_revision_is_v37_catchup(migrated_url):
     # v3.8 note: the head legitimately moved — a new version ships new
-    # migrations (experiment arms, then hardware health). The test's intent
-    # (ONE head, DB stamped exactly at it) is unchanged; only the pinned
-    # value follows.
+    # migrations (experiment arms, then hardware health). The v4.0 note is the
+    # same again: the Business Brain tables (brain_messages … brain_memory_facts)
+    # are a new head step. The test's intent (ONE head, DB stamped exactly at it)
+    # is unchanged; only the pinned value follows.
     cfg = _cfg(migrated_url)
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    assert heads == ["c5d9e2f7a4b6"]
+    assert heads == ["d4f6a8b1c2e3"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -82,11 +83,12 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     """Downgrade the HEAD revision and re-upgrade: the head step's objects
     come and go, shop data (products, …) is never touched.
 
-    v3.8 note: the head step is now the HARDWARE migration (c5d9e2f7a4b6), so
-    the "-1" assertions follow it (hardware columns drop; earlier revisions'
-    objects such as experiments/product_bank legitimately STAY — they belong
-    to older steps). The test's intent is unchanged: one step down, back to
-    head, shop data intact.
+    v4.0 note: the head step is now the BUSINESS BRAIN migration
+    (d4f6a8b1c2e3), so the "-1" assertions follow it (the six brain tables drop
+    and come back; older revisions' objects such as hardware columns,
+    experiments and product_bank legitimately STAY — they belong to earlier
+    steps). The test's intent is unchanged: one step down, back to head, shop
+    data intact.
 
     Note: downgrade-to-``base`` is NOT the project contract — one historical
     revision (warehouses) deliberately keeps its tables on downgrade to avoid
@@ -111,13 +113,15 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
 
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
+    tables = set(insp.get_table_names())
+    # the -1 step is the brain migration only: its six tables go
+    assert "brain_decisions" not in tables and "brain_messages" not in tables
+    assert "brain_policies" not in tables and "brain_memory_facts" not in tables
+    # …and everything an earlier revision created stays put
+    assert "experiments" in tables
+    assert "product_bank" in tables
     hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}
-    assert "health" not in hw_cols
-    assert "consecutive_failures" not in hw_cols
-    assert "vendor_id" not in hw_cols
-    # older steps' objects stay — the -1 step is the hardware migration only
-    assert "experiments" in insp.get_table_names()
-    assert "product_bank" in insp.get_table_names()
+    assert "health" in hw_cols and "vendor_id" in hw_cols
     assert "next_retry_at" in {c["name"] for c in insp.get_columns("sms_messages")}
     # shop data survives the downgrade
     db = Session()

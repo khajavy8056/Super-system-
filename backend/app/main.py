@@ -22,6 +22,7 @@ from .routers import (
     audit,
     auth,
     batches,
+    brain,
     customers,
     diagnostics,
     hardware,
@@ -153,7 +154,7 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
-    setup.router, mobile.router, support.router, cloud.router, insights.router,
+    setup.router, mobile.router, support.router, cloud.router, insights.router, brain.router,
 ):
     app.include_router(r, prefix=API)
 

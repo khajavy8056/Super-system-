@@ -58,3 +58,9 @@ demo/demo_gen.log
 # Persistent demo simulation workspaces / generated stress backups (not release assets).
 /stress_store*.db*
 /tools/*.work/
+
+# v4.0 — Business Brain models are FETCHED, never committed (see
+# scripts/model/fetch_model.py). A stray .gguf in the tree must never be staged.
+*.gguf
+*.gguf.part
+**/brain/models/
