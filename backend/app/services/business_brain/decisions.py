@@ -391,17 +391,24 @@ def to_dict(row: BrainDecision, *, full: bool = False) -> dict:
 
 def list_decisions(db: Session, *, status: str | None = None, origin: str | None = None, limit: int = 50,
                    offset: int = 0,
-                   since: datetime | None = None) -> list[dict]:
-    q = select(BrainDecision).order_by(BrainDecision.created_at.desc()).limit(limit)
+                   since: datetime | None = None) -> list[BrainDecision]:
+    """The decision rows on the owner's desk, newest first.
+
+    Returns ORM rows — callers serialise with :func:`to_dict` (the same shape the
+    single-decision endpoint uses). It used to return dicts, which made the brain
+    façade convert them twice and blow up with an AttributeError on the first real
+    shop that had a decision to show; rows keep one serialiser in the product.
+    """
+    q = select(BrainDecision).order_by(BrainDecision.created_at.desc())
     if status and status != "ALL":
-        q = select(BrainDecision).where(BrainDecision.status.in_(status.split(","))) \
-            .order_by(BrainDecision.created_at.desc()).limit(limit)
+        q = q.where(BrainDecision.status.in_([s for s in status.split(",") if s]))
     if origin:
-        q = select(BrainDecision).where(BrainDecision.origin == origin).order_by(BrainDecision.created_at.desc()).limit(limit)
+        q = q.where(BrainDecision.origin == origin)
     if since:
-        q = select(BrainDecision).where(BrainDecision.created_at >= since).order_by(BrainDecision.created_at.desc()).limit(limit)
-    from .memory import decision_to_dict
-    return [decision_to_dict(r) for r in db.execute(q).scalars()]
+        q = q.where(BrainDecision.created_at >= since)
+    offset = max(0, int(offset or 0))
+    limit = max(1, int(limit or 50))
+    return list(db.execute(q.offset(offset).limit(limit)).scalars())
 
 
 def open_count(db: Session) -> int:

@@ -88,7 +88,11 @@ INTENT_TOOLS: dict[str, tuple[tuple[str, dict], ...]] = {
     "PRODUCT_ACTION": (("get_cash_position", {}), ("get_active_campaigns", {}), ("get_business_policies", {})),
     "CUSTOMER_ACTION": (("get_customer_segment", {}), ("get_active_campaigns", {})),
     "SUPPLIER": (("get_payables", {}), ("get_cash_position", {}), ("get_upcoming_cheques", {"days": 30})),
-    "CAMPAIGN_FOLLOWUP": (("get_active_campaigns", {}), ("get_sales_trend", {"days": 14})),
+    # «جشنوارهٔ قبلی جواب داد؟» is a question about a FINISHED campaign, so the plan
+    # has to read the outcome (latest campaign, real before/during windows) — the
+    # active-campaign list alone would always answer «کمپینی ثبت نشده».
+    "CAMPAIGN_FOLLOWUP": (("get_campaign_outcome", {}), ("get_active_campaigns", {}),
+                          ("get_sales_trend", {"days": 14})),
     "DECISION_RECALL": (("get_recent_decisions", {"limit": 10}), ("get_open_followups", {})),
     "STORE_STATUS": (("get_cash_position", {}), ("get_sales_trend", {"days": 7}), ("get_inventory_summary", {}),
                      ("get_data_quality", {})),
@@ -104,8 +108,11 @@ INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"چک|برات|سررسید", "CHEQUE_MANAGEMENT"),
     (r"پول(?:م)?\s*(?:کم|نیست|نمی)|نقدینگی|کسری|کمبود پول|پرداخت", "CASH_CRISIS"),
     (r"طلب|وصول|بدهکار|مطالبات|پولم را", "RECEIVABLE"),
-    (r"انقضا|تاریخ‌?مصرف|تاریخ انقضا|منقضی", "EXPIRY"),
-    (r"تمام می‌شود|تمام شد|کمبود موجودی|سفارش بدم|stockout|اتمام", "STOCKOUT"),
+    # the owner says «کدوم کالا داره خراب می‌شه؟» far more often than «انقضا» —
+    # a question the brain must recognise in the words people actually use.
+    (r"انقضا|تاریخ\s?(?:مصرف|انقضا)|منقضی|خراب|فاسد|کپک|بو گرفته|تاریخ گذشته|دیت|expire",
+     "EXPIRY"),
+    (r"تمام می‌شود|تمام شد|تموم می‌?شه|ته می‌?کشه|کمبود موجودی|سفارش بدم|stockout|اتمام", "STOCKOUT"),
     (r"راکد|نمی‌فروشد|کند-?فروش|انبار پر|اشباع", "OVERSTOCK"),
     (r"فروش (?:چرا )?(?:افت|کم)|افت فروش|کم شده فروش|روند فروش", "SALES_DROP"),
     (r"تأمین‌?کننده|تامین ?کننده|فروشنده|تسویه", "SUPPLIER"),

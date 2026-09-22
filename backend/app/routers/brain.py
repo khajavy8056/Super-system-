@@ -72,6 +72,20 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _write(db: Session, fn, *args, **kwargs):
+    """Run a *mutating* brain operation and make it stick.
+
+    ``get_db`` closes the session without committing — every router in this
+    product commits its own writes — so a decision that is only ``flush()``ed
+    would be rolled back when the request ends: the owner would approve an
+    action, watch it execute, and then find the same card back on the desk with
+    no measurement appointment. Every write route below goes through here.
+    """
+    out = _guard(fn, *args, **kwargs)
+    db.commit()
+    return out
+
+
 # --------------------------------------------------------------------------- status
 @router.get("")
 def brain_root(db: Session = Depends(get_db), user: User = Depends(admin_user)):
@@ -109,7 +123,7 @@ def chat(payload: ChatIn, db: Session = Depends(get_db), user: User = Depends(ad
     brain = _brain(db, user)
     if not brain.is_admin_surface():
         raise HTTPException(status_code=403, detail="BUSINESS_BRAIN_ADMIN_ONLY")
-    return _guard(brain.chat, payload.question, session_key=payload.session_key,
+    return _write(db, brain.chat, payload.question, session_key=payload.session_key,
                   prefer_llm=payload.prefer_llm)
 
 
@@ -138,23 +152,23 @@ def decision(decision_id: int, db: Session = Depends(get_db), user: User = Depen
 
 @router.post("/decisions/{decision_id}/approve")
 def approve(decision_id: int, payload: DecideIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).approve, decision_id, option_id=payload.option_id)
+    return _write(db, _brain(db, user).approve, decision_id, option_id=payload.option_id)
 
 
 @router.post("/decisions/{decision_id}/reject")
 def reject(decision_id: int, payload: DecideIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).reject, decision_id, reason=payload.reason)
+    return _write(db, _brain(db, user).reject, decision_id, reason=payload.reason)
 
 
 @router.post("/decisions/{decision_id}/snooze")
 def snooze(decision_id: int, payload: DecideIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).snooze, decision_id, days=max(1, min(payload.days, 30)))
+    return _write(db, _brain(db, user).snooze, decision_id, days=max(1, min(payload.days, 30)))
 
 
 @router.post("/decisions/{decision_id}/measure")
 def measure(decision_id: int, db: Session = Depends(get_db), user: User = Depends(admin_user)):
     """Force a measurement now. Refuses to invent a number when the window is short."""
-    return _guard(_brain(db, user).measure, decision_id)
+    return _write(db, _brain(db, user).measure, decision_id)
 
 
 # --------------------------------------------------------------------------- follow-ups & memory
@@ -167,7 +181,7 @@ def followups(include_closed: bool = Query(False), limit: int = Query(50, le=200
 @router.post("/followups/{followup_id}/resolve")
 def resolve_followup(followup_id: int, payload: FollowupIn, db: Session = Depends(get_db),
                      user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).resolve_followup, followup_id, result=payload.result)
+    return _write(db, _brain(db, user).resolve_followup, followup_id, result=payload.result)
 
 
 @router.get("/memory")
@@ -185,7 +199,7 @@ def alerts(limit: int = Query(20, le=100), db: Session = Depends(get_db), user: 
 @router.post("/proactive/run")
 def run_proactive(force: bool = Query(False), db: Session = Depends(get_db), user: User = Depends(admin_user)):
     """Scan now (or let the scheduler do it). Creating zero cards is a valid result."""
-    return _guard(_brain(db, user).proactive, force=force)
+    return _write(db, _brain(db, user).proactive, force=force)
 
 
 # --------------------------------------------------------------------------- local model
@@ -201,7 +215,7 @@ def model_status(db: Session = Depends(get_db), user: User = Depends(admin_user)
 
 @router.post("/model/select")
 def model_select(payload: DownloadIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).model_select, payload.model_id)
+    return _write(db, _brain(db, user).model_select, payload.model_id)
 
 
 @router.post("/model/download")
@@ -211,9 +225,9 @@ def model_download(payload: DownloadIn, db: Session = Depends(get_db), user: Use
     Runs inline because it is the owner watching a progress number on screen;
     a failing checksum deletes the file and returns the reason.
     """
-    return _guard(_brain(db, user).model_download, payload.model_id)
+    return _write(db, _brain(db, user).model_download, payload.model_id)
 
 
 @router.post("/model/benchmark")
 def model_benchmark(payload: DownloadIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return _guard(_brain(db, user).model_benchmark, payload.model_id)
+    return _write(db, _brain(db, user).model_benchmark, payload.model_id)

@@ -379,3 +379,52 @@ def test_three_turn_continuity_keeps_the_subject(shop):
         (third.get("meta") or {}).get("entities", {}).get("percent"), \
         "«اجراش کن» must still know what is being executed"
     assert third["followups"] != [] or third["decision"] is None
+
+
+def test_a_real_campaign_outcome_is_answered_with_real_numbers(shop):
+    """Acceptance #6 — «جشنوارهٔ قبلی جواب داد؟» must reach the actual comparison.
+
+    The interesting half is the negative case: when no campaign was ever run the
+    brain must say so, because «فروش ۰ تومان در برابر ۰ تومان» looks exactly like a
+    measured zero and is a completely different claim.
+    """
+    from app.models import Campaign
+
+    db = SessionLocal()
+    try:
+        # nothing was ever run → an honest «no campaign», never a zero comparison
+        before = _ask("جشنواره قبلی جواب داد؟")
+        assert before["intent"] == "CAMPAIGN_FOLLOWUP"
+        assert "کمپینی در فروشگاه ثبت نشده" in before["text"], before["text"]
+        assert "در برابر" not in before["text"]
+
+        # a real festival, a week long, ending today
+        today = datetime.utcnow()
+        campaign = Campaign(name=f"{TAG} جشنواره پاییز", discount_type="PERCENT",
+                            discount_value=Decimal(10), status="ENDED",
+                            valid_from=today - timedelta(days=7), valid_until=today)
+        db.add(campaign)
+        db.commit()
+    finally:
+        db.close()
+
+    after = _ask("جشنواره قبلی جواب داد؟")
+    text = after["text"]
+    assert "کمپینی در فروشگاه ثبت نشده" not in text, "a campaign exists; the answer must use it"
+    assert "بازهٔ اجرا" in text and "بازهٔ قبل" in text, "the real before/during comparison is required"
+    # …and the numbers in it come from the invoices, not from a template
+    assert "۱۸٬۰۰۰٬۰۰۰" in text and "۲۱٬۰۰۰٬۰۰۰" in text, text
+    assert "-۱۴.۳" in text or "۱۴.۳" in text, text
+
+
+def test_colloquial_expiry_question_reaches_the_expiry_answer(shop):
+    """«کدوم کالا داره خراب می‌شه؟» is how an owner asks about expiry.
+
+    The intent patterns used to know only the formal words («انقضا», «منقضی»), so the
+    most natural question in the shop got a generic store summary back.
+    """
+    for question in ("کدوم کالا داره خراب می‌شه؟", "چه کالایی داره فاسد می‌شه؟", "تاریخ انقضای کدام کالا نزدیک است؟"):
+        answer = _ask(question)
+        assert answer["intent"] == "EXPIRY", (question, answer["intent"])
+        assert "انقضا" in answer["text"], answer["text"]
+        assert "{" not in answer["text"]

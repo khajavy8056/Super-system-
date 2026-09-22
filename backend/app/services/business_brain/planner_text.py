@@ -288,9 +288,33 @@ def _supplier(plan, question: str) -> str:
                                next_step=_next_step(plan))
 
 
+def _campaign_outcome_numbers(plan) -> dict:
+    """The campaign outcome lives in the marketing agent's evidence, not in the
+    store situation (it is about one past window, not the shop's current state)."""
+    out: dict = {}
+    for evidence in plan.evidence:
+        numbers = evidence.numbers or {}
+        if "campaign_id" in numbers or "revenue_during" in numbers:
+            out.update(numbers)
+    return out
+
+
 def _campaign(plan, question: str) -> str:
-    nums = _situation_numbers(plan)
+    nums = {**_situation_numbers(plan), **_campaign_outcome_numbers(plan)}
     change = nums.get("revenue_change_pct")
+    # «کمپینی ثبت نشده» and «کمپین صفر فروخت» are different claims. Only the
+    # campaign-outcome tool produces these two keys; their *absence* means the
+    # shop has no campaign result to talk about, so we say exactly that.
+    if "revenue_during" not in nums and "revenue_before" not in nums:
+        # Nothing was ever run: saying «فروش ۰ تومان در برابر ۰ تومان» would look
+        # like a measured zero, which is a different claim entirely.
+        situation = "کمپینی در فروشگاه ثبت نشده است، پس نتیجه‌ای برای مقایسه وجود ندارد."
+        reason = ("برای گفتن «جواب داد یا نه» به دو بازهٔ واقعی نیاز دارم: بازهٔ اجرای کمپین و بازهٔ قبلش. "
+                  "تا وقتی کمپینی اجرا نشده باشد، هر عددی در این باره ساختهٔ من است، نه واقعیت فروشگاه.")
+        return fa.structured_answer(situation=situation, reason=reason,
+                                   proposal="اگر بخواهی، می‌توانم برای یک کمپین واقعی معیار موفقیت و بازهٔ "
+                                            "اندازه‌گیری را از قبل ثبت کنم تا بعداً با عدد داوری شود.",
+                                   next_step="بگو کدام کالاها را در کمپین بگذاریم تا پیشنهاد مشخص بدهم.")
     situation = (f"کمپین قبلی: فروش {fa.money(nums.get('revenue_during', 0))} در بازهٔ اجرا در برابر "
                  f"{fa.money(nums.get('revenue_before', 0))} در بازهٔ قبل"
                  + (f" ({fa.fa_num(change, 1)}٪)" if change is not None else "") + ".")
