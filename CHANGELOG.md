@@ -19,7 +19,7 @@
 - New `scripts/model/fetch_model.py` (list / fetch / `--verify` / `--record`) — models are fetched, never committed.
 - New tables (migration `d4f6a8b1c2e3`): `brain_messages`, `brain_decisions`, `brain_followups`, `brain_policies`, `brain_model_installs`, `brain_memory_facts`. Additive and idempotent; no existing feature removed and no analyzer rewritten.
 - Docs: AI_BRAIN_ARCHITECTURE, AI_MODEL_RUNTIME, AI_MODEL_INSTALLATION, AI_TOOL_REGISTRY, AI_MEMORY, AI_SECURITY, AI_TESTING, RELEASE_AUDIT_4.0.0.
-- Verified: 55 new v4.0 tests pass (brain 16, model manager 17, security 12, proactive 10). **Deviations recorded honestly:** the official `Qwen/Qwen3-1.7B-GGUF` repo publishes only Q8_0 (banned) and no Q4_K_M/Q3_K_M, so the default is the official `Qwen2.5-1.5B-Instruct` GGUF (Q4_K_M default, Q3_K_M for 4 GB devices) — needs owner sign-off. No fake Setup.exe and no fake APK: Windows/Android artifacts still require the real CI/SDK runners (see RELEASE_AUDIT_4.0.0.md).
+- Verified: **648 backend tests pass, 1 skipped (331 s)** — 55 of them new in v4.0 (brain 16, model manager 17, security 12, proactive 10). **Deviations recorded honestly:** the official `Qwen/Qwen3-1.7B-GGUF` repo publishes only Q8_0 (banned) and no Q4_K_M/Q3_K_M, so the default is the official `Qwen2.5-1.5B-Instruct` GGUF (Q4_K_M default, Q3_K_M for 4 GB devices) — needs owner sign-off. No fake Setup.exe and no fake APK: Windows/Android artifacts still require the real CI/SDK runners (see RELEASE_AUDIT_4.0.0.md).
 
 ## [3.8.0] - 2026-09-22
 
