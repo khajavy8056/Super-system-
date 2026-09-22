@@ -271,6 +271,11 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    # v3.7 (§34) — the shop panel needs no camera/mic/geolocation; deny the lot.
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )
     # CSP: inline handlers are used by the panel, so allow 'unsafe-inline' for
     # scripts in this phase; tighten when the frontend moves to a bundler.
     response.headers.setdefault(

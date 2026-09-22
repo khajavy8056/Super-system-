@@ -654,3 +654,44 @@ def movements_report(db: Session, limit: int = 200) -> list[dict]:
          "created_at": m.created_at.isoformat()}
         for m in rows
     ]
+
+
+# --- v3.7 cost redaction (§34) -------------------------------------------------
+#: Payload keys that reveal buy costs / profit / at-cost valuation. Users
+#: without ``pricing.view_cost`` (e.g. Cashier) receive these as ``None`` —
+#: the keys stay so every client (web, Android, PWA) keeps working, but the
+#: numbers never leave the server. Applied by the reports / invoices / batches
+#: / inventory / pos routers; internal callers (SMS daily report, …) keep the
+#: full figures because they never cross the permission boundary.
+COST_KEYS = frozenset({
+    "profit",            # earned margin (dashboard, trends, top products, cashiers, …)
+    "value",             # at-cost valuation (dashboard inventory + expiry buckets)
+    "value_at_cost",     # inventory report
+    "stock_value",       # warehouse list: Σ qty × buy_price
+    "buy_price",         # batch cost
+    "unit_buy_price",    # invoice/POS line cost snapshot
+    "supplier_price",    # invoiced cost variant
+    "unit_cost",         # movement cost
+})
+
+
+def redact_costs(node):
+    """Deep-copy ``node`` with every cost figure replaced by ``None``.
+
+    Also nulls the whole ``accounting`` block of the dashboard payload (cash /
+    bank / net profit are ``accounting.view`` territory, strictly narrower
+    than ``pricing.view_cost``).
+    """
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k in COST_KEYS:
+                out[k] = None
+            elif k == "accounting" and isinstance(v, dict):
+                out[k] = None
+            else:
+                out[k] = redact_costs(v)
+        return out
+    if isinstance(node, list):
+        return [redact_costs(v) for v in node]
+    return node

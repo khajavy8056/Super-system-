@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..database import Base
@@ -63,3 +63,48 @@ class Insight(TimestampMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     #: optional LLM-written narrative (cached)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Experiment(TimestampMixin, Base):
+    """v3.7 — durable A/B experiment registry (§30 orchestration layer).
+
+    The mathematics lives in ``services/experiment_stats.py`` (pure, honest:
+    NO_ACTION on insufficient evidence). This table is the durable part the
+    math module explicitly requires: frozen assignment, exposure log and the
+    evaluated outcome — so a treatment/control split survives restarts and a
+    window can only close once.
+
+    Life-cycle: DRAFT → RUNNING → OBSERVING → COMPLETE (or CANCELLED).
+    ``treatment``/``control`` are frozen JSON id lists written once at start;
+    ``outcomes`` accumulates ``{customer_id: {profit, purchased, variable_cost}}``.
+    """
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    #: free-text hypothesis, e.g. «۱۰٪ کوپن شخصی، سود خالص هر مشتری را بالا می‌برد»
+    hypothesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: action that created the arms (personal_coupons | personal_sms | …)
+    action_type: Mapped[str] = mapped_column(String(32), default="")
+    insight_id: Mapped[int | None] = mapped_column(ForeignKey("ai_insights.id"), nullable=True)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
+    #: server-generated seed, persisted BEFORE outcomes exist (see assign())
+    seed: Mapped[str] = mapped_column(String(64), default="")
+    planned_per_arm: Mapped[int] = mapped_column(Integer, default=100)
+    window_days: Mapped[int] = mapped_column(Integer, default=28)
+    minimum_net_profit: Mapped[str] = mapped_column(String(32), default="0")
+
+    #: JSON lists of customer ids, frozen at RUNNING
+    treatment: Mapped[str] = mapped_column(Text, default="[]")
+    control: Mapped[str] = mapped_column(Text, default="[]")
+    #: JSON {customer_id: {profit, purchased, variable_cost}}
+    outcomes: Mapped[str] = mapped_column(Text, default="{}")
+    #: JSON result of experiment_stats.evaluate() at close
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

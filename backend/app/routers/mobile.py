@@ -33,10 +33,11 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..models import Customer, Product, ProductBatch, SystemSetting, User
-from ..security import create_access_token, get_current_user, require_permission
+from ..security import create_access_token, get_current_user, has_permission, require_permission
 from ..services import relay_client as relay_svc
 from ..services import sync as sync_svc
 from ..services.audit import write_audit
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/mobile", tags=["mobile"])
 
@@ -537,5 +538,8 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
     db.commit()
     # v3.5 — advance to the last delivered row (see _pull_cursor), not to "now".
     cursor, has_more = (_pull_cursor(pull, now, body.limit) if body.pull else (now, False))
+    if body.pull and not has_permission(user, "pricing.view_cost"):
+        # v3.7 (§34) — cashier phones sync everything except buy costs.
+        pull["batches"] = redact_costs(pull.get("batches", []))
     return {"applied": applied, "pull": pull, "cursor": cursor, "server_time": now,
             "has_more": has_more}

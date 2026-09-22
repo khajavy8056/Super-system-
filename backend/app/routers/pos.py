@@ -9,11 +9,17 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import CartItem, PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/pos", tags=["pos"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — unit costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class CartLineIn(BaseModel):
@@ -99,18 +105,18 @@ def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
 
 
 @router.get("/batch-options/{product_id}")
-def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def batch_options(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
     if not product or product.deleted_at is not None or not product.is_active:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     options = pos_svc.get_batch_options(db, product)
-    return {"product_id": product_id, "product_name": product.name,
-            "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
-            "options": [o.as_dict() for o in options]}
+    return _maybe_redact(user, {"product_id": product_id, "product_name": product.name,
+                                "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
+                                "options": [o.as_dict() for o in options]})
 
 
 @router.post("/cart/validate")
-def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     try:
         items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
                                                    batch_id=i.batch_id, discount=i.discount)
@@ -144,7 +150,7 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
             except coupon_svc.CouponError as exc:
                 coupon = {"code": body.coupon_code, "ok": False,
                           "error_code": exc.code, "message": exc.message}
-        return {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon}
+        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon})
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -231,7 +237,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
                                  "valid_until": issued.valid_until.isoformat()
                                  if issued.valid_until else None} if issued else None)
         db.commit()
-        return out
+        return _maybe_redact(user, out)
     except PosError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
@@ -293,7 +299,7 @@ def _invoice_out(inv) -> dict:
 
 @router.get("/search")
 def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
-               _: User = Depends(require_permission("pos.sell"))):
+               user: User = Depends(require_permission("pos.sell"))):
     """Cashier search by barcode, product name, SKU or product code.
 
     An exact barcode/SKU hit is always returned first so scanning stays instant,
@@ -368,4 +374,4 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "exact": p in exact,
             "batches": [o.as_dict() for o in options],
         })
-    return {"query": term, "count": len(items), "items": items}
+    return _maybe_redact(user, {"query": term, "count": len(items), "items": items})

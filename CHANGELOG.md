@@ -3,6 +3,15 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.7.0] - 2026-09-22
+
+- Database migrations are Alembic-only: strict `upgrade_schema()` with legacy bridge, `SCHEMA_DRIFT` audit on divergence, restore upgrades before healing; catch-up migration makes `alembic upgrade head` equal the models (new `Experiment` + `SmsMessage.next_retry_at`).
+- Till security (§34): cost figures (profit, buy prices, at-cost valuations, accounting block) are redacted to `null` for users without `pricing.view_cost` across reports, batches, stock, invoices, POS, product detail, warehouses and mobile sync; `/reports/profit` requires the permission outright; web + mobile UIs render redacted values as «—» and hide the finance/profit sections they may not see.
+- POS integrity (§6–§8, §37): cart line prices are always resolved from the batch (caller-supplied prices overwritten); manager-configured manual-discount cap (`pos.max_manual_discount_pct`, `DISCOUNT_OVER_POLICY`); concurrent checkouts keep unique sequential invoice numbers.
+- Setup hardening: production refuses the factory `SECRET_KEY`; the wizard cannot complete without admin credentials (`ADMIN_REQUIRED`); `Permissions-Policy` header shipped.
+- Verified: 542 backend tests passed, 1 skipped. No new APK or Setup.exe in this environment — artifacts require the real CI builds (see RELEASE_AUDIT_3.7.0.md).
+
+
 ## [3.6.6] - 2026-09-21
 
 - Desktop workspace redesign: adaptive grids, forms, tables, compact navigation, accessible focus and light/dark layouts.

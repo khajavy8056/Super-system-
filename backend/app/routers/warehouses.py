@@ -10,12 +10,18 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import ProductBatch, StorageLocation, User, Warehouse
-from ..security import require_permission
+from ..security import has_permission, require_permission
 from ..services import inventory as inv
 from ..services.audit import write_audit
 from ..services.inventory import InventoryError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/warehouses", tags=["warehouses"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — stock value (at cost) leaves the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class WarehouseIn(BaseModel):
@@ -62,11 +68,11 @@ def _w_out(w: Warehouse, db: Session) -> dict:
 
 
 @router.get("")
-def list_warehouses(db: Session = Depends(get_db), _: User = Depends(require_permission("inventory.view"))):
+def list_warehouses(db: Session = Depends(get_db), user: User = Depends(require_permission("inventory.view"))):
     inv.ensure_default_warehouse(db)
     db.commit()
     rows = db.execute(select(Warehouse).order_by(Warehouse.is_default.desc(), Warehouse.name)).scalars()
-    return [_w_out(w, db) for w in rows]
+    return _maybe_redact(user, [_w_out(w, db) for w in rows])
 
 
 @router.post("", status_code=201)

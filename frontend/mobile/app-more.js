@@ -289,7 +289,7 @@
   window.showReportsM = async () => {
     screen("گزارش‌ها", null, `<div id="rp">${empty("در حال بارگذاری…")}</div><div class="menu-list">
       <button class="menu-item" onclick="mReport('sales')">${icon("chart")} فروش ۳۰ روز اخیر</button>
-      <button class="menu-item" onclick="mReport('profit')">${icon("chart")} سود</button>
+      ${can("pricing.view_cost") ? `<button class="menu-item" onclick="mReport('profit')">${icon("chart")} سود</button>` : ""}
       <button class="menu-item" onclick="mReport('low-stock')">${icon("box")} کالاهای رو به اتمام</button>
       <button class="menu-item" onclick="mReport('expiry')">${icon("clipboard")} انقضا</button>
       <button class="menu-item" onclick="mReport('cashiers')">${icon("user")} عملکرد صندوق‌داران</button>
@@ -298,7 +298,7 @@
     try {
       const d = await api("/reports/dashboard");
       const k = (l, val, warn) => `<div class="kpi ${warn ? "warn" : ""}"><span class="k">${l}</span><b>${val}</b></div>`;
-      $("#rp").innerHTML = `<div class="kpi-grid">${k("فروش امروز", money(d.sales.today))}${k("فروش ماه", money(d.sales.month))}${k("سود امروز", money(d.profit.today))}${k("سود ماه", money(d.profit.month))}${k("فاکتور امروز", d.sales.count_today ?? d.sales.invoices_today ?? "—")}${k("میانگین فاکتور", money(d.sales.avg_invoice_today))}${k("ارزش موجودی", money(d.inventory.value))}${k("کالای کم‌موجود", d.inventory.low_stock ?? (d.low_stock || []).length, true)}${k("در آستانهٔ انقضا", (d.expiry && (d.expiry.soon_count ?? d.expiry.count)) ?? "—", true)}${k("بدهی مشتریان", money(d.customers ? d.customers.debt_total : 0))}${k("ضایعات ماه", money(d.waste ? d.waste.month : 0))}${k("مرجوعی ماه", money(d.returns ? d.returns.month : 0))}</div>`;
+      $("#rp").innerHTML = `<div class="kpi-grid">${k("فروش امروز", money(d.sales.today))}${k("فروش ماه", money(d.sales.month))}${d.profit ? k("سود امروز", money(d.profit.today)) + k("سود ماه", money(d.profit.month)) : ""}${k("فاکتور امروز", d.sales.count_today ?? d.sales.invoices_today ?? "—")}${k("میانگین فاکتور", money(d.sales.avg_invoice_today))}${k("ارزش موجودی", money(d.inventory.value))}${k("کالای کم‌موجود", d.inventory.low_stock ?? (d.low_stock || []).length, true)}${k("در آستانهٔ انقضا", (d.expiry && (d.expiry.soon_count ?? d.expiry.count)) ?? "—", true)}${k("بدهی مشتریان", money(d.customers ? d.customers.debt_total : 0))}${k("ضایعات ماه", money(d.waste ? d.waste.month : 0))}${k("مرجوعی ماه", money(d.returns ? d.returns.month : 0))}</div>`;
     } catch (e) { $("#rp").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
   };
   window.mReport = async (kind) => {

@@ -23,7 +23,9 @@ const fmt = (n) => {
 };
 /* Currency label comes from the server: amounts are STORED in the configured
    base unit, the UI only labels them (§39 — no silent rial/toman conversion). */
-const money = (n) => fmt(n) + " " + (state.currency ? state.currency.label : "");
+/* v3.7 (§34): the server redacts cost figures the user may not see as null —
+   render those as "—", never as 0 (a zero cost would be a lie). */
+const money = (n) => (n === null || n === undefined) ? "—" : fmt(n) + " " + (state.currency ? state.currency.label : "");
 /* Quantity formatter — keeps 12.5 kg readable and 3 pcs clean (§25) */
 const qty = (n) => {
   const v = Number(n || 0);
@@ -346,7 +348,7 @@ RENDER.dashboard = async () => {
         <div class="toplist">${(d.top_products || []).map((t, i) => `
           <div class="topitem">
             <div class="ring ring-sm" style="--p:${t.share_pct};--c:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"><span>${fa(Math.round(t.share_pct))}٪</span></div>
-            <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش · سود ${money(t.profit)}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
+            <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش${t.profit === null || t.profit === undefined ? "" : ` · سود ${money(t.profit)}`}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
             ${t.image_url ? `<img class="thumb" src="${esc(t.image_url)}" alt="" />` : `<span class="thumb thumb-empty">${icon("box", 20)}</span>`}
           </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
       </section>
@@ -358,7 +360,7 @@ RENDER.dashboard = async () => {
       </section>
 
       <section class="dcard dcard-trend">
-        <h3>${icon("chart", 18)} روند فروش و سود <span class="muted">۷ روز اخیر</span></h3>
+        <h3>${icon("chart", 18)} ${can("pricing.view_cost") ? "روند فروش و سود" : "روند فروش"} <span class="muted">۷ روز اخیر</span></h3>
         ${trendChart(d.trend || [])}
       </section>
 
@@ -377,6 +379,7 @@ RENDER.dashboard = async () => {
         </div>
       </section>
 
+      ${can("accounting.view") ? `
       <section class="dcard dcard-acc">
         <h3>${icon("ledger", 18)} وضعیت مالی</h3>
         <div class="acc-mini">
@@ -387,7 +390,7 @@ RENDER.dashboard = async () => {
           <div class="span2"><span class="muted">سود خالص این ماه</span><b class="${(acc.month_net_profit || 0) >= 0 ? "ok" : "err"}">${money(acc.month_net_profit)}</b></div>
         </div>
         ${acc.cheques_due ? `<div class="muted" style="margin-top:8px">${fa(acc.cheques_due)} چک در جریان</div>` : ""}
-      </section>
+      </section>` : ""}
 
       <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
       <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
@@ -402,6 +405,9 @@ RENDER.dashboard = async () => {
 /* Smooth SVG area chart: sales + profit for the last N days. */
 function trendChart(rows) {
   if (!rows.length) return `<div class="muted">داده‌ای نیست</div>`;
+  // v3.7 (§34): profit is redacted (null) for users without pricing.view_cost —
+  // draw the sales-only chart instead of a broken NaN path.
+  const showProfit = rows.some((r) => r.profit !== null && r.profit !== undefined);
   const W = 640, H = 200, P = 28, PL = 62;
   const max = Math.max(1, ...rows.map((r) => r.sales));
   const x = (i) => PL + (i * (W - PL - P)) / Math.max(1, rows.length - 1);
@@ -422,8 +428,8 @@ function trendChart(rows) {
   const dots = rows.map((r, i) => `<circle cx="${x(i)}" cy="${y(r.sales)}" r="3.5"><title>${r.label}: ${fmt(r.sales)}</title></circle>`).join("");
   return `<svg class="trend" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
     <defs><linearGradient id="ta" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3dd6c4" stop-opacity=".45"/><stop offset="1" stop-color="#3dd6c4" stop-opacity="0"/></linearGradient></defs>
-    <g class="grid">${grid}</g><path class="area" d="${area}"/><path class="line sales" d="${path("sales")}"/><path class="line profit" d="${path("profit")}"/><g class="dots">${dots}</g><g class="labels">${labels}</g></svg>
-    <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span><span><i style="background:#7c5cff"></i>سود</span></div>`;
+    <g class="grid">${grid}</g><path class="area" d="${area}"/><path class="line sales" d="${path("sales")}"/>${showProfit ? `<path class="line profit" d="${path("profit")}"/>` : ""}<g class="dots">${dots}</g><g class="labels">${labels}</g></svg>
+    <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span>${showProfit ? `<span><i style="background:#7c5cff"></i>سود</span>` : ""}</div>`;
 }
 
 function statCard(label, value, sub) {
@@ -1744,7 +1750,7 @@ RENDER.batches = async () => {
   try { const pr = await api("/products?limit=1000"); pr.items.forEach((p) => { names[p.id] = p; }); } catch (_) {}
   const rows = batches.slice(0, 50).map((b) => el("tr", {},
     el("td", {}, el("b", { text: (names[b.product_id] || {}).name || ("#" + b.product_id) }), el("div", { class: "muted", text: b.batch_number })),
-    el("td", { text: b.buy_price && fmt(b.buy_price) }),
+    el("td", { text: (b.buy_price === null || b.buy_price === undefined) ? "—" : fmt(b.buy_price) }),
     el("td", { text: fmt(b.sell_price) }), el("td", { text: qty(b.current_qty) }),
     el("td", { text: b.expiry_date ? Jalali.fromIso(b.expiry_date) : "—" }),
     el("td", { text: faDateTime(b.received_at, false) }),
@@ -2098,7 +2104,7 @@ const REPORT_TABS = [
   ["weekly", "فروش هفتگی", "reports.view"],
   ["monthly", "فروش ماهانه (شمسی)", "reports.view"],
   ["cashiers", "صندوق‌دارها", "reports.view"],
-  ["profit", "سود به تفکیک Batch", "reports.view"],
+  ["profit", "سود به تفکیک Batch", "pricing.view_cost"],
   ["inventory", "ارزش موجودی", "reports.view"],
   ["purchase", "تاریخچه بهای خرید", "pricing.view_cost"],
   ["expiry", "انقضا", "reports.view"],
@@ -2184,8 +2190,11 @@ async function runReport(tab) {
     } else if (tab === "inventory") {
       const rows = await api("/reports/inventory");
       out.innerHTML = "";
+      // v3.7 (§34): value_at_cost is redacted (null) without pricing.view_cost.
+      const known = rows.filter((r) => r.value_at_cost !== null && r.value_at_cost !== undefined);
+      const invTotal = known.length ? known.reduce((a, r) => a + Number(r.value_at_cost), 0) : null;
       out.append(el("div", { class: "card" },
-        el("h3", { text: `ارزش موجودی به بهای تمام‌شده (مجموع: ${money(rows.reduce((a, r) => a + r.value_at_cost, 0))})` }),
+        el("h3", { text: `ارزش موجودی به بهای تمام‌شده (مجموع: ${money(invTotal)})` }),
         el("table", {}, el("thead", {}, el("tr", {},
           el("th", { text: "کالا" }), el("th", { text: "بارکد" }), el("th", { text: "تعداد" }),
           el("th", { text: "Batchها" }), el("th", { text: "ارزش بهای تمام‌شده" }))),

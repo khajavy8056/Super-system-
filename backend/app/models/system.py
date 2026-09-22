@@ -18,8 +18,12 @@ class SmsMessage(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     phone: Mapped[str] = mapped_column(String(32))
     text: Mapped[str] = mapped_column(Text)
+    # PENDING | SENDING | SENT | RETRYING | FAILED | DEAD_LETTER
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: v3.7 — exponential-backoff gate: a RETRYING row is only picked up again
+    #: after this timestamp (UTC). NULL = eligible immediately.
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
