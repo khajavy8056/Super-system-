@@ -106,7 +106,7 @@ INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
     # a new analysis, so it is matched before everything else.
     (r"اجراش کن|اجرا کن|اجراش کنیم|همینو اجرا|انجامش بده|تأییدش کن|تاییدش کن|قبولش کن", "EXECUTE_DECISION"),
     (r"چک|برات|سررسید", "CHEQUE_MANAGEMENT"),
-    (r"پول(?:م)?\s*(?:کم|نیست|نمی)|نقدینگی|کسری|کمبود پول|پرداخت", "CASH_CRISIS"),
+    (r"پول(?:م)?\s*(?:کم|نیست|نمی)|چقدر پول لازم|پول لازم دار|نقدینگی|کسری|کمبود پول|پرداخت", "CASH_CRISIS"),
     (r"طلب|وصول|بدهکار|مطالبات|پولم را", "RECEIVABLE"),
     # the owner says «کدوم کالا داره خراب می‌شه؟» far more often than «انقضا» —
     # a question the brain must recognise in the words people actually use.

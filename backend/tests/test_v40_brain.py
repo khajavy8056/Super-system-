@@ -238,6 +238,9 @@ def test_situation_reports_the_real_cash_pressure(shop):
 def test_cash_question_produces_a_specific_plan(shop):
     answer = _ask("وضعیت نقدینگی چطوره؟ چه کار کنم؟")
     assert answer["intent"] == "CASH_CRISIS"
+    # the colloquial way of asking the same thing must land on the same intent
+    colloquial = _ask("فردا چقدر پول لازم دارم؟")
+    assert colloquial["intent"] == "CASH_CRISIS", colloquial["intent"]
     text = answer["text"]
     assert "چک" in text and "مطالبات" in text
     assert "V40-1001" in text or "1001" in text, "the plan must name the cheque that is due"
