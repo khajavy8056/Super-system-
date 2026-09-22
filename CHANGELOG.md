@@ -3,6 +3,20 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [3.8.0] - 2026-09-22
+
+- Data Quality Engine wired into Intelligence: Critical findings BLOCK analysis, Medium/Low cut confidence and are audited; DQ status API + tests.
+- Economics honesty: `expected_gain`/money comes only from deterministic calculation (LLM writes narrative only); `economic_impact`/`evidence_strength`/`prediction_uncertainty` tracked separately; invalid numbers rejected before DB.
+- Honest calibration: no positive floors; Positive/Neutral/Negative outcomes with sample counts, MAE/mean-error/direction-accuracy/CI recorded; confidence follows real performance.
+- Action Engine runs VALIDATE → BEGIN/SAVEPOINT → EXECUTE → VERIFY → COMMIT with real rollback, per-action isolation, post-run traceability and pre-declared irreversible ops; partial-failure proof.
+- Measurement Contracts per action (what/baseline/window/success rule) with NOT_MEASURABLE / INSUFFICIENT_DATA / NEGATIVE_OUTCOME states.
+- Real Experiment lifecycle (CREATE → PLAN → ASSIGN → START → EXPOSE → OUTCOME → CLOSE → EVALUATE): immutable assignments, assigned ≠ exposed, missing ≠ zero, linked to Insight, no fabricated results.
+- SMS retry honesty: `next_retry_at` + exponential backoff with jitter, due-only dispatch, claim-based double-send control, stuck-worker recovery.
+- New unified Hardware Integration Layer: 6 adapters (receipt printer, cash drawer, barcode scanner, customer display, label printer, scale) over pluggable transports (TCP/serial/file/mock); USB discovery, pinned-PyPI-only driver manager (no untrusted downloads), UNSUPPORTED_DEVICE honesty, health tracking + reconnect backoff, self-tests with confirmations.
+- CI: new `tests.yml` gate (full suite on every push/PR) alongside the Windows/Android release workflows; activation still needs a maintainer with the `workflow` scope (see `scripts/activate-ci.sh`).
+- Verified: 593 backend tests passed, 1 skipped; real release-signed APK `SupermarketMobile-3.8.0.apk` (versionCode 30800, same signer as prior releases). Setup.exe still needs the real `windows-latest` CI run — no final Release yet (see RELEASE_AUDIT_3.8.0.md).
+
+
 ## [3.7.0] - 2026-09-22
 
 - Database migrations are Alembic-only: strict `upgrade_schema()` with legacy bridge, `SCHEMA_DRIFT` audit on divergence, restore upgrades before healing; catch-up migration makes `alembic upgrade head` equal the models (new `Experiment` + `SmsMessage.next_retry_at`).

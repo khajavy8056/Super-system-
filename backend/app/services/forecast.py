@@ -36,7 +36,10 @@ PAID = "PAID"
 CAL_KEY = "insights.calibration"
 RAMP_DAYS = 7          # actions do not bite on day 1: linear ramp-up
 DECAY = 0.7            # EWMA weight of the previous estimate (0.7 → last ~3 results dominate)
-RATIO_MIN, RATIO_MAX = 0.15, 2.5
+# v3.8 — NO clamps. v3.1 clamped every measured/expected ratio into [0.15, 2.5],
+# which silently rewrote every real loss (negative ratio) as a +15 % win and fed
+# the lie back into predictions. Ratios are recorded raw; robustness comes from
+# reporting dispersion honestly (sd, CI, pos/neg rates), not from hiding data.
 
 
 # ----------------------------------------------------------------------------- calibration
@@ -61,7 +64,13 @@ def learn(db: Session) -> dict:
     """Re-fit the per-kind calibration from every completed measurement.
 
     Deterministic (re-computed from scratch each time, chronological EWMA) so that a restore
-    or a re-run yields the same numbers.  Returns the calibration table."""
+    or a re-run yields the same numbers.  Returns the calibration table.
+
+    v3.8 honesty contract: every completed measurement counts exactly as measured —
+    Positive, Neutral and Negative. No clamps, no floors: a kind whose actions lost
+    money shows a negative ratio and a low/negative confidence story, which is what
+    the manager must see before accepting the next card of that kind.
+    """
     rows = db.execute(select(Insight).where(Insight.status == "MEASURED", Insight.measured_gain.isnot(None))
                       .order_by(Insight.measured_at.asc(), Insight.id.asc())).scalars().all()
     cal: dict[str, dict] = {}
@@ -71,44 +80,98 @@ def learn(db: Session) -> dict:
         raw = _f(ev.get("expected_gain_raw", exp))      # un-calibrated prediction at creation time
         if raw <= 0:
             continue
-        ratio = max(RATIO_MIN, min(RATIO_MAX, _f(r.measured_gain) / raw))
-        c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0})
+        measured = _f(r.measured_gain)
+        ratio = measured / raw                           # raw, unclamped — see module note
+        err = measured - raw                             # signed error in toman
+        c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0,
+                                    "n_positive": 0, "n_zero": 0, "n_negative": 0,
+                                    "sum_err": 0.0, "sum_abs_err": 0.0})
         if c["n"] == 0:
             c["ratio"], c["var"] = ratio, 0.25
         else:
-            err = ratio - c["ratio"]
+            d = ratio - c["ratio"]
             c["ratio"] = DECAY * c["ratio"] + (1 - DECAY) * ratio
-            c["var"] = DECAY * c["var"] + (1 - DECAY) * err * err
+            c["var"] = DECAY * c["var"] + (1 - DECAY) * d * d
         c["n"] += 1
-        c["abs_err"] = DECAY * c["abs_err"] + (1 - DECAY) * abs(_f(r.measured_gain) - raw) if c["n"] > 1 else abs(_f(r.measured_gain) - raw)
-        if (_f(r.measured_gain) > 0) == (raw > 0):
+        c["abs_err"] = DECAY * c["abs_err"] + (1 - DECAY) * abs(err) if c["n"] > 1 else abs(err)
+        c["sum_err"] += err
+        c["sum_abs_err"] += abs(err)
+        if measured > 0:
+            c["n_positive"] += 1
+        elif measured < 0:
+            c["n_negative"] += 1
+        else:
+            c["n_zero"] += 1
+        if (measured > 0) == (raw > 0):
             c["hits"] += 1
     for c in cal.values():
+        n = c["n"]
+        sd = math.sqrt(max(0.0, c["var"]))
         c["ratio"] = round(c["ratio"], 3)
-        c["sd"] = round(math.sqrt(max(0.0, c["var"])), 3)
-        c["direction_accuracy"] = round(c["hits"] / c["n"], 2) if c["n"] else None
+        c["sd"] = round(sd, 3)
+        c["direction_accuracy"] = round(c["hits"] / n, 2) if n else None
+        c["pos_rate"] = round(c["n_positive"] / n, 3) if n else None
+        c["neg_rate"] = round(c["n_negative"] / n, 3) if n else None
+        c["mean_error"] = round(c["sum_err"] / n) if n else None
+        c["mae"] = round(c["sum_abs_err"] / n) if n else None
+        # 95 % CI of the mean ratio (normal approx): the band predictions honestly live in
+        half = round(1.96 * sd / math.sqrt(n), 3) if n else 0.0
+        c["ratio_ci95"] = [round(c["ratio"] - half, 3), round(c["ratio"] + half, 3)]
         del c["var"]
+        del c["sum_err"]
+        del c["sum_abs_err"]
     _save_cal(db, cal)
     db.commit()
     return cal
 
 
 def calibrate(db: Session, kind: str, raw_gain: float, cal: dict | None = None) -> dict:
-    """Apply the learned ratio of *kind* to a raw prediction → {gain, low, high, confidence, n}."""
+    """Apply the learned ratio of *kind* to a raw prediction.
+
+    Returns the flat keys the UI already reads (gain/low/high/confidence/n/ratio)
+    plus the v3.8 split the honesty contract requires — ``economic_impact`` (money),
+    ``evidence_strength`` (how much history backs it) and ``prediction_uncertainty``
+    (how wide the truth could swing). Money, evidence and uncertainty are never
+    mixed into one number again.
+    """
     cal = _load_cal(db) if cal is None else cal
     c = cal.get(kind)
     if raw_gain <= 0:
-        return {"gain": 0.0, "low": 0.0, "high": 0.0, "confidence": "n/a", "n": (c or {}).get("n", 0), "ratio": 1.0}
+        return {"gain": 0.0, "low": 0.0, "high": 0.0, "confidence": "n/a", "n": (c or {}).get("n", 0), "ratio": 1.0,
+                "economic_impact": {"gain": 0.0, "low": 0.0, "high": 0.0, "unit": "toman_month"},
+                "evidence_strength": {"n": (c or {}).get("n", 0), "verdict": "NO_PREDICTION"},
+                "prediction_uncertainty": {"confidence": "n/a"}}
     if not c or not c.get("n"):
         # No history for this kind yet: keep the analyzer estimate but flag it as a first guess
-        return {"gain": raw_gain, "low": round(raw_gain * 0.4), "high": round(raw_gain * 1.4), "confidence": "low", "n": 0, "ratio": 1.0}
+        out = {"gain": raw_gain, "low": round(raw_gain * 0.4), "high": round(raw_gain * 1.4), "confidence": "low", "n": 0, "ratio": 1.0}
+        out["economic_impact"] = {"gain": out["gain"], "low": out["low"], "high": out["high"], "unit": "toman_month"}
+        out["evidence_strength"] = {"n": 0, "verdict": "FIRST_GUESS"}
+        out["prediction_uncertainty"] = {"confidence": "low", "note": "no measured history for this kind"}
+        return out
     n, ratio, sd = int(c["n"]), float(c["ratio"]), float(c.get("sd", 0.5))
-    # 1-sigma band shrinks with more observations (standard error of the mean)
+    # 1-sigma band shrinks with more observations (standard error of the mean).
+    # v3.8: the low edge is NOT floored at zero — a kind that lost money shows a
+    # band reaching into the red, which is the entire point of the band.
     band = sd / math.sqrt(n) if n else sd
-    lo, hi = max(0.0, ratio - band), ratio + band
-    conf = "high" if n >= 5 and band < 0.25 else "medium" if n >= 2 and band < 0.6 else "low"
-    return {"gain": round(raw_gain * ratio), "low": round(raw_gain * lo), "high": round(raw_gain * hi),
-            "confidence": conf, "n": n, "ratio": ratio}
+    lo, hi = ratio - band, ratio + band
+    gain, low, high = round(raw_gain * ratio), round(raw_gain * lo), round(raw_gain * hi)
+    # Confidence comes from real performance only: sample size, stability of the
+    # ratio AND the share of past actions that actually made money.
+    pos_rate = float(c.get("pos_rate", 0.0) or 0.0)
+    if n >= 5 and band < 0.25 and pos_rate >= 0.7:
+        conf = "high"
+    elif n >= 3 and band < 0.6 and pos_rate >= 0.5:
+        conf = "medium"
+    else:
+        conf = "low"
+    return {"gain": gain, "low": low, "high": high, "confidence": conf, "n": n, "ratio": ratio,
+            "economic_impact": {"gain": gain, "low": low, "high": high, "unit": "toman_month"},
+            "evidence_strength": {"n": n, "n_positive": c.get("n_positive", 0), "n_zero": c.get("n_zero", 0),
+                                  "n_negative": c.get("n_negative", 0), "pos_rate": pos_rate,
+                                  "direction_accuracy": c.get("direction_accuracy"),
+                                  "mae": c.get("mae"), "mean_error": c.get("mean_error")},
+            "prediction_uncertainty": {"confidence": conf, "sd": round(sd, 3), "band": round(band, 3),
+                                       "ratio_ci95": c.get("ratio_ci95")}}
 
 
 # ----------------------------------------------------------------------------- time series

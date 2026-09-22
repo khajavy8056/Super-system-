@@ -890,7 +890,61 @@ GROUPS = _pro.GROUPS
 
 
 # ----------------------------------------------------------------------------- run / upsert
+def _safe_gain(value) -> tuple[float, str | None]:
+    """v3.8 — an invalid economic number must never reach the database.
+
+    NaN / ±inf / None / bools / unparseable strings collapse to 0.0 and the
+    draft carries ``gain_sanitized`` in its evidence saying so. Crashing the
+    whole analyzer kind over one bad number (the old behaviour) is worse than
+    a disclosed zero — and persisting a hallucination is worse than both.
+    """
+    import math
+    if value is None or isinstance(value, bool):
+        return 0.0, f"non-numeric gain {value!r} sanitized to 0"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0, f"non-numeric gain {value!r} sanitized to 0"
+    if not math.isfinite(v):
+        return 0.0, f"non-finite gain {value!r} sanitized to 0"
+    return v, None
+
+
+def _dq_downgrade(confidence: str) -> str:
+    """One step down the confidence ladder when data quality fired."""
+    return {"high": "medium", "medium": "low"}.get(confidence, confidence)
+
+
+def _dq_audit_transition(db: Session, verdict: str, summary: dict) -> None:
+    """Audit the DQ verdict only when it CHANGES (per-run audits would spam)."""
+    from ..models import SystemSetting
+    from .audit import write_audit
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == "dq.last_verdict")).scalar_one_or_none()
+    prev = row.value if row else ""
+    if prev != verdict:
+        write_audit(db, action="DQ_VERDICT_CHANGED", entity_type="System", entity_id=0,
+                    before={"verdict": prev or None}, after={"verdict": verdict, "summary": summary})
+        if row:
+            row.value = verdict
+        else:
+            db.add(SystemSetting(key="dq.last_verdict", value=verdict,
+                                 description="last data-quality verdict seen by insights.run"))
+
+
 def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
+    from . import data_quality as dq
+    dq_report = dq.run_all(db)
+    dq_summary = {"verdict": dq_report["verdict"], "summary": dq_report["summary"],
+                  "flag_ids": [c["id"] for c in dq_report["checks"]]}
+    _dq_audit_transition(db, dq_report["verdict"], dq_report["summary"])
+    if dq.blocks_intelligence(dq_report):
+        # v3.8 — CRITICAL corruption (duplicate invoice numbers, negative stock):
+        # the data that decisions AND measurements stand on is wrong, so the
+        # engine stays silent instead of advising on lies. Nothing else runs.
+        db.commit()
+        return {"created": 0, "refreshed": 0, "errors": {}, "invoices_analyzed": 0,
+                "window_days": days, "status": "BLOCKED", "dq": dq_summary}
+    dq_degraded = bool(dq_report["checks"])
     ctx = _load_ctx(db, days)
     created = refreshed = 0
     errors: dict[str, str] = {}
@@ -909,11 +963,28 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
             with db.begin_nested():
                 drafts = fn(ctx)
                 for d in drafts:
+                    if not d.dedupe_key:
+                        # v3.8 — a draft without a key cannot be deduped; drop the
+                        # draft, not the kind.
+                        errors[f"{d.kind}:draft"] = "empty dedupe_key; draft skipped"
+                        continue
                     seen.add((d.kind, d.dedupe_key))
                     # keep the analyzer's raw estimate (for learning) and expose the calibrated one
-                    raw = float(d.expected_gain or 0.0)
+                    raw, gain_issue = _safe_gain(d.expected_gain)
                     c = forecast.calibrate(db, d.kind, raw, cal)
-                    d.evidence = {**d.evidence, "expected_gain_raw": round(raw), "forecast": {"gain_month": c["gain"], "low_month": c["low"], "high_month": c["high"], "confidence": c["confidence"], "history_n": c["n"]}}
+                    if dq_degraded:
+                        # v3.8 — MEDIUM/LOW findings do not silence the engine, but
+                        # every card says its confidence was cut because of them.
+                        c = {**c, "confidence": _dq_downgrade(c["confidence"]), "dq_degraded": True}
+                    d.evidence = {**d.evidence, "expected_gain_raw": round(raw),
+                                  "forecast": {"gain_month": c["gain"], "low_month": c["low"], "high_month": c["high"],
+                                               "confidence": c["confidence"], "history_n": c["n"],
+                                               "dq_degraded": bool(c.get("dq_degraded")),
+                                               "economic_impact": c.get("economic_impact"),
+                                               "evidence_strength": c.get("evidence_strength"),
+                                               "prediction_uncertainty": c.get("prediction_uncertainty")},
+                                  "dq": dq_summary,
+                                  **({"gain_sanitized": gain_issue} if gain_issue else {})}
                     d.expected_gain = c["gain"]
                     # v3.6.1 — dedupe_key is indexed but NOT unique, so more than one live row can carry
                     # the same key (an analyzer renamed its key, or two runs overlapped). This used to be
@@ -958,7 +1029,8 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
         measure_all(db)
     except Exception:  # pragma: no cover - defensive
         log.exception("measure_all failed after a successful run")
-    return {"created": created, "refreshed": refreshed, "errors": errors, "invoices_analyzed": len(ctx.invoices), "window_days": days}
+    return {"created": created, "refreshed": refreshed, "errors": errors, "invoices_analyzed": len(ctx.invoices), "window_days": days,
+            "status": "DEGRADED" if dq_degraded else "OK", "dq": dq_summary}
 
 
 # ----------------------------------------------------------------------------- metrics / A-B
@@ -969,6 +1041,78 @@ def _net_profit(db: Session, where) -> float:
                       .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(where)).one()
     inv_disc = db.execute(select(func.coalesce(func.sum(Invoice.discount), 0)).where(where)).scalar_one()
     return _f(line[0]) - max(0.0, _f(inv_disc) - _f(line[1]))
+
+
+#: v3.8 — Measurement Contract. For every metric the engine can measure, this
+#: registry states WHAT is measured, WHAT the baseline is, WHICH window applies
+#: and HOW success is computed. Anything not listed here is NOT_MEASURABLE —
+#: the engine refuses to fabricate a gain for it (the old code returned silent
+#: zeros for unknown metrics and fed them into calibration as real outcomes).
+#: ``gain_source``: "profit" (money delta counts), "none" (direction-only verdict,
+#: no monetary claim — a rate improvement is not a toman figure).
+MEASUREMENT_SPECS: dict[str, dict] = {
+    "product_units": {"measures": "units sold of one product",
+                      "baseline": "same-length window before acceptance",
+                      "window_days": 28, "success": "adjusted post rate above base rate",
+                      "gain_source": "profit"},
+    "product_profit": {"measures": "gross profit of one product (toman)",
+                       "baseline": "same-length window before acceptance",
+                       "window_days": 28, "success": "adjusted post rate above base rate",
+                       "gain_source": "profit"},
+    "customer_sales": {"measures": "sales + profit of a customer cohort",
+                       "baseline": "same-length window before acceptance",
+                       "window_days": 28, "success": "adjusted post rate above base rate",
+                       "gain_source": "profit"},
+    "attach_rate": {"measures": "share of baskets containing both products A and B",
+                    "baseline": "same-length window before acceptance",
+                    "window_days": 28, "success": "adjusted post rate above base rate",
+                    "gain_source": "profit"},
+    "avg_basket_size": {"measures": "store-wide profit per invoice",
+                        "baseline": "same-length window before acceptance",
+                        "window_days": 28, "success": "post profit/invoice above base",
+                        "gain_source": "profit"},
+    "receivables_collected": {"measures": "customer debt collected (toman)",
+                              "baseline": "same-length window before acceptance",
+                              "window_days": 28, "success": "more collected per day than base",
+                              "gain_source": "profit"},
+    "void_rate": {"measures": "voided-invoice rate of one cashier (lower is better)",
+                  "baseline": "same-length window before acceptance",
+                  "window_days": 28, "success": "post rate below base rate",
+                  "gain_source": "none", "lower_is_better": True},
+    "weekday_sales": {"measures": "sales on one weekday (toman)",
+                      "baseline": "same-length window before acceptance",
+                      "window_days": 28, "success": "adjusted post rate above base rate",
+                      "gain_source": "profit"},
+    "stockout_days": {"measures": "days with zero sellable stock (lower is better)",
+                      "baseline": "same-length window before acceptance",
+                      "window_days": 28, "success": "fewer stockout days per day than base",
+                      "gain_source": "profit", "gain_basis": "estimated"},
+    "availability": {"measures": "share of days the product was on the shelf + its profit",
+                     "baseline": "same-length window before acceptance",
+                     "window_days": 28, "success": "adjusted post rate above base rate",
+                     "gain_source": "profit"},
+}
+
+
+def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None) -> str:
+    """Terminal, honest verdict for one measurement.
+
+    NOT_MEASURABLE — no contract for this metric (never invent a gain).
+    INSUFFICIENT_DATA — window too short to say anything yet.
+    NEGATIVE_OUTCOME / POSITIVE_OUTCOME / NEUTRAL_OUTCOME — decided by the
+    sign of the adjusted gain once the data is sufficient.
+    """
+    if spec is None:
+        return "NOT_MEASURABLE"
+    if not enough:
+        return "INSUFFICIENT_DATA"
+    if gain is None:
+        return "NOT_MEASURABLE"
+    if gain > 0:
+        return "POSITIVE_OUTCOME"
+    if gain < 0:
+        return "NEGATIVE_OUTCOME"
+    return "NEUTRAL_OUTCOME"
 
 
 def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
@@ -1138,6 +1282,22 @@ def measure(db: Session, insight: Insight) -> dict | None:
     base_days = max(1e-9, float(base.get("window_days", wd)))
     unit = post.get("unit", "")
     enough = elapsed >= 1.0
+    mspec = MEASUREMENT_SPECS.get(spec.get("metric") or "")
+    if mspec is None:
+        # v3.8 — no contract, no numbers. Unknown metrics (and the old
+        # purchase_over_best stub) used to report silent zeros that polluted
+        # calibration. Terminal: re-measuring would never change this.
+        insight.result = json.dumps({"window_days": wd, "elapsed_days": round(elapsed, 1),
+                                     "from": start.isoformat(), "to": end.isoformat(),
+                                     "enough_data": enough, "verdict": "NOT_MEASURABLE",
+                                     "reason": f"no measurement contract for metric "
+                                               f"{spec.get('metric')!r}"}, ensure_ascii=False)
+        insight.measured_gain = None
+        insight.measured_at = _now()
+        insight.status = "MEASURED"
+        db.flush()
+        return {"baseline": base, "post": post, "gain": None, "complete": True,
+                "verdict": "NOT_MEASURABLE"}
     # Difference-in-differences: the rest of the store is the control group. If store
     # profit grew 8 % in the same period (season, growth), only the lift *beyond* that 8 %
     # is credited to the action. Reported both raw and adjusted; the adjusted one counts.
@@ -1165,7 +1325,25 @@ def measure(db: Session, insight: Insight) -> dict | None:
         adj_gain = (post_rate - base_rate * ctrl_ratio) * elapsed
         bv, pv = _f(base.get("value")), _f(post.get("value"))
         change_pct = round(((pv / elapsed) - (bv / base_days)) / (bv / base_days) * 100, 1) if bv else None
-    gain = adj_gain if enough else 0.0
+    if mspec.get("gain_source") == "none":
+        # v3.8 — a rate improvement is real but it is not a toman figure: the
+        # verdict follows the direction, and NO monetary gain is ever claimed
+        # (measured_gain stays NULL so calibration never sees a fake zero).
+        bv, pv = _f(base.get("value")), _f(post.get("value"))
+        improvement = (bv - pv) if mspec.get("lower_is_better") else (pv - bv)
+        if not enough:
+            verdict = "INSUFFICIENT_DATA"
+        elif improvement > 0:
+            verdict = "POSITIVE_OUTCOME"
+        elif improvement < 0:
+            verdict = "NEGATIVE_OUTCOME"
+        else:
+            verdict = "NEUTRAL_OUTCOME"
+        money_gain = None
+    else:
+        money_gain = adj_gain if enough else None
+        verdict = measurement_verdict(adj_gain, enough=enough, spec=mspec)
+    gain = money_gain if money_gain is not None else 0.0
     # v3.2 — growth in percent (what managers actually quote): profit rate after vs. before,
     # and the same after removing the store-wide trend (the honest number).
     profit_pct = round((post_rate - base_rate) / abs(base_rate) * 100, 1) if base_rate else None
@@ -1177,9 +1355,10 @@ def measure(db: Session, insight: Insight) -> dict | None:
                                  "base_profit_per_day": round(base_rate), "post_profit_per_day": round(post_rate),
                                  "daily": _daily_series(db, spec, start, end, base),
                                  "raw_gain": round(raw_gain), "adjusted_gain": round(adj_gain),
+                                 "verdict": verdict, "gain_basis": mspec.get("gain_basis", "measured"),
                                  "projected_month": round(adj_gain / elapsed * 30) if enough else None,
                                  "base_rate_per_day": round(base_rate, 2), "post_rate_per_day": round(post_rate, 2), **post}, ensure_ascii=False)
-    insight.measured_gain = Decimal(str(round(gain))) if enough else None
+    insight.measured_gain = Decimal(str(round(money_gain))) if money_gain is not None else None
     insight.measured_at = _now()
     if elapsed >= wd - 0.01 and insight.status != "MEASURED":
         insight.status = "MEASURED"
@@ -1189,7 +1368,8 @@ def measure(db: Session, insight: Insight) -> dict | None:
             forecast.learn(db)
         except Exception:
             log.exception("calibration failed")
-    return {"baseline": base, "post": post, "gain": gain, "complete": insight.status == "MEASURED"}
+    return {"baseline": base, "post": post, "gain": money_gain, "complete": insight.status == "MEASURED",
+            "verdict": verdict}
 
 
 def measure_all(db: Session) -> int:

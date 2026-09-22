@@ -43,6 +43,16 @@ class HardwareDevice(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
     paper_width_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(default=True)
+    # --- v3.8 hardware layer: discovery ids, health tracking, reconnect backoff ---
+    vendor_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    product_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    serial_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # CONNECTED | DEGRADED | DISCONNECTED | UNKNOWN | UNSUPPORTED_DEVICE | DRIVER_MISSING
+    health: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    capabilities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of Capability values
 
 
 class Counter(Base):

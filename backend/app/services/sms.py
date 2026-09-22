@@ -17,12 +17,13 @@ Honesty rules:
 from __future__ import annotations
 
 import json
+import random
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings as app_settings
@@ -271,44 +272,97 @@ def dispatch_one(db: Session, sms_id: int) -> str:
 
 # --- Dispatcher ----------------------------------------------------------------
 
+def retry_delay_seconds(retry_count: int, *, base: int = 60, cap: int = 3600) -> float:
+    """v3.8 — exponential backoff with jitter: min(cap, base·2ⁿ) + U[0, base].
+
+    The jitter decorrelates concurrent workers so a provider outage does not
+    turn into a synchronized retry stampede when it recovers.
+    """
+    return min(cap, base * (2 ** max(0, retry_count - 1))) + random.uniform(0, base)
+
+
+def _backoff_cfg(db: Session) -> tuple[int, int]:
+    try:
+        base = max(1, int(get_setting(db, "sms.backoff_base_seconds", "60") or 60))
+    except ValueError:
+        base = 60
+    try:
+        cap = max(base, int(get_setting(db, "sms.backoff_max_seconds", "3600") or 3600))
+    except ValueError:
+        cap = 3600
+    return base, cap
+
+
 def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
-    """Process PENDING/RETRYING messages once. Returns an honest summary."""
+    """Process due PENDING/RETRYING messages once. Returns an honest summary.
+
+    v3.8 race control: each message is CLAIMED (PENDING/RETRYING → SENDING) in
+    its own committed transaction and only the worker that won the claim sends
+    it — two dispatchers can no longer double-send the same row. A SENDING row
+    whose worker died (no update for 10 minutes) becomes claimable again.
+    """
+    from ..models import SmsMessage as _M
     provider_code = get_setting(db, "sms.provider", "").strip()
     max_retries = int(get_setting(db, "sms.max_retries", "5") or 5)
+    base, cap = _backoff_cfg(db)
+    now = datetime.utcnow()
 
-    stmt = select(SmsMessage).where(
-        SmsMessage.status.in_(["PENDING", "RETRYING"])
-    ).order_by(SmsMessage.id.asc()).limit(limit)
-    messages = list(db.execute(stmt).scalars())
+    stmt = select(SmsMessage.id).where(
+        or_(SmsMessage.status.in_(["PENDING", "RETRYING"]),
+            # stuck-claim recovery: a SENDING row untouched for 10+ minutes
+            # belongs to a dead worker and re-enters the queue.
+            (SmsMessage.status == "SENDING") & (SmsMessage.updated_at < now - timedelta(minutes=10)))
+    ).order_by(SmsMessage.id.asc()).limit(limit * 2)
+    candidate_ids = list(db.execute(stmt).scalars())
 
     summary = {"provider": provider_code or None, "sent": 0, "retrying": 0,
-               "failed": 0, "skipped": 0}
+               "failed": 0, "skipped": 0, "not_due": 0, "lost_race": 0}
 
     if not provider_code:
         # No provider configured — do NOT touch the messages (stay PENDING).
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = "NO_PROVIDER_CONFIGURED"
         return summary
 
     sender = PROVIDERS.get(provider_code)
     if sender is None:
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = f"UNKNOWN_PROVIDER:{provider_code}"
         return summary
 
     if provider_code == "phone":
         # nothing to do on the PC — the phone drains the outbox itself
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = "PHONE_SIM_HANDOFF"
         return summary
 
-    for msg in messages:
+    done = 0
+    for mid in candidate_ids:
+        if done >= limit:
+            break
+        # CLAIM in its own transaction: exactly one dispatcher wins the row.
+        claimed = db.execute(
+            update(_M).where(_M.id == mid, _M.status.in_(["PENDING", "RETRYING", "SENDING"]))
+            .values(status="SENDING")).rowcount
+        db.commit()
+        if not claimed:
+            summary["lost_race"] += 1
+            continue
+        msg = db.get(SmsMessage, mid)
+        # Backoff gate: a RETRYING row sleeps until next_retry_at.
+        if msg.next_retry_at is not None and msg.next_retry_at > datetime.utcnow():
+            msg.status = "RETRYING"
+            db.commit()
+            summary["not_due"] += 1
+            continue
+        done += 1
         try:
             response = sender(db, msg.phone, msg.text)
             msg.status = "SENT"
             msg.sent_at = datetime.utcnow()
             msg.provider_response = response
             msg.error_message = None
+            msg.next_retry_at = None
             summary["sent"] += 1
             _audit(db, "SMS_SENT", msg, provider_code)
         except SmsProviderError as exc:
@@ -316,6 +370,7 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
             msg.error_message = f"{exc.kind}: {exc.detail}"[:500]
             if msg.retry_count >= max_retries:
                 msg.status = "FAILED"
+                msg.next_retry_at = None
                 summary["failed"] += 1
                 # Only the terminal failure is audited: a message that is still
                 # going to be retried has not failed yet, and logging every
@@ -324,8 +379,10 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
                        error=f"{exc.kind}: {exc.detail}")
             else:
                 msg.status = "RETRYING"
+                delay = retry_delay_seconds(msg.retry_count, base=base, cap=cap)
+                msg.next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
                 summary["retrying"] += 1
-    db.commit()
+        db.commit()
     return summary
 
 
@@ -460,6 +517,7 @@ def retry_message(db: Session, sms_id: int) -> "SmsMessage":
     msg.status = "PENDING"
     msg.retry_count = 0
     msg.error_message = None
+    msg.next_retry_at = None  # manual retry sends immediately, no backoff debt
     db.flush()
     return msg
 

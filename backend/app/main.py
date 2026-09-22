@@ -25,6 +25,7 @@ from .routers import (
     customers,
     diagnostics,
     hardware,
+    hw,
     inventory,
     mobile,
     invoices,
@@ -150,7 +151,7 @@ for r in (
     auth.router, products.router, products.unit_router, products.bank_router, products.catalog_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
-    hardware.router, reports.router, users.router, audit.router, settings_router.router,
+    hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
 ):

@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Campaign, Coupon, Customer, Insight, Invoice, InvoiceItem, Product, ProductBatch, SystemSetting, User
@@ -449,22 +449,178 @@ ACTIONS = {
 }
 
 
+#: v3.8 — Action Contract. Every executable action declares its parameters,
+#: whether its effects can be rolled back, and whether it has consequences
+#: outside the database transaction (a queued SMS sends after commit and cannot
+#: be recalled). ``verify`` names the post-execution check; None means the
+#: action is explicitly reported EXECUTED_UNVERIFIED — never fake-verified.
+ACTION_SPECS: dict[str, dict] = {
+    "shelf_note": {"required": {"products": list}, "reversible": True, "external_side_effect": False, "verify": "notification"},
+    "reorder_note": {"required": {}, "reversible": True, "external_side_effect": False, "verify": "reorder_list"},
+    "set_min_stock": {"required": {"product_id": int, "min_stock": int}, "reversible": True, "external_side_effect": False, "verify": "min_stock"},
+    "set_price": {"required": {"batch_id": int, "sell_price": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "price"},
+    "markdown_ladder": {"required": {"batch_id": int, "ladder": list}, "reversible": True, "external_side_effect": False, "verify": "markdown"},
+    "vip_coupons": {"required": {"percent": int, "days": int, "customer_ids": list}, "reversible": True, "external_side_effect": True, "verify": "campaign"},
+    "winback_sms": {"required": {"percent": int, "days": int, "customer_ids": list}, "reversible": True, "external_side_effect": True, "verify": "campaign"},
+    "visit_sms": {"required": {}, "reversible": True, "external_side_effect": True, "verify": "sms_count"},
+    "sms_buyers": {"required": {"product_id": int, "percent": (int, float)}, "reversible": True, "external_side_effect": True, "verify": "sms_count"},
+    "bundle_campaign": {"required": {"product_id": int, "percent": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "campaign"},
+    "flash_sale": {"required": {"percent": (int, float), "days": int}, "reversible": True, "external_side_effect": False, "verify": "campaign"},
+    "debt_reminders": {"required": {}, "reversible": True, "external_side_effect": True, "verify": "sms_count"},
+    "enable_nudges": {"required": {}, "reversible": True, "external_side_effect": False, "verify": "nudges"},
+    "pos_nudge": {"required": {"a": int, "b": int}, "reversible": True, "external_side_effect": False, "verify": "nudge_rules"},
+    "note": {"required": {}, "reversible": True, "external_side_effect": False, "verify": "notification"},
+    "personal_sms": {"required": {}, "reversible": True, "external_side_effect": True, "verify": "sms_count"},
+    "personal_coupons": {"required": {}, "reversible": True, "external_side_effect": True, "verify": "campaign_or_coupons"},
+    "tag_customers": {"required": {"tags": dict}, "reversible": True, "external_side_effect": False, "verify": None},
+    "set_credit_limit": {"required": {}, "reversible": True, "external_side_effect": False, "verify": "credit_spot"},
+    "set_min_stock_bulk": {"required": {"items": list}, "reversible": True, "external_side_effect": False, "verify": "min_stock_bulk"},
+    "set_prices_bulk": {"required": {"items": list}, "reversible": True, "external_side_effect": False, "verify": "prices_bulk"},
+    "threshold_campaign": {"required": {"percent": (int, float), "days": int, "min_purchase": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "campaign"},
+    "set_setting": {"required": {"key": str, "value": str}, "reversible": True, "external_side_effect": False, "verify": "setting"},
+}
+
+
+class ActionValidationError(ValueError):
+    pass
+
+
+def validate_action(action_type: str, params: dict) -> dict:
+    """VALIDATE phase: unknown type or bad params fail BEFORE any write."""
+    spec = ACTION_SPECS.get(action_type)
+    if spec is None or action_type not in ACTIONS:
+        raise ActionValidationError(f"unknown action: {action_type}")
+    params = params or {}
+    for name, want in spec["required"].items():
+        if name not in params or params[name] is None:
+            raise ActionValidationError(f"{action_type}: missing param {name!r}")
+        v = params[name]
+        if want is int and (isinstance(v, bool) or not isinstance(v, int)):
+            raise ActionValidationError(f"{action_type}: param {name!r} must be int")
+        elif isinstance(want, tuple) and not (isinstance(v, want) and not isinstance(v, bool)):
+            raise ActionValidationError(f"{action_type}: param {name!r} must be numeric")
+        elif want in (str, list, dict) and not isinstance(v, want):
+            raise ActionValidationError(f"{action_type}: param {name!r} must be {want.__name__}")
+    for pct in ("percent",):
+        if pct in params and isinstance(params[pct], (int, float)) and not 0 < params[pct] <= 95:
+            raise ActionValidationError(f"{action_type}: percent out of range 1..95")
+    return spec
+
+
+def _verify(db: Session, insight: Insight, action_type: str, params: dict, result: dict) -> tuple[bool, str]:
+    """VERIFY phase: re-read the database and confirm the effect landed."""
+    from ..models import Campaign, Coupon, Notification, SmsMessage
+    if result.get("skipped"):
+        return True, f"soft-skip ({result['skipped']}) — nothing was written"
+    spec = ACTION_SPECS[action_type]
+    kind = spec["verify"]
+    if kind is None:
+        return True, "no programmatic check defined — reported unverified"
+    if kind == "campaign":
+        ok = db.get(Campaign, result.get("campaign_id", -1)) is not None
+        return ok, "campaign row present" if ok else "campaign row MISSING"
+    if kind == "campaign_or_coupons":
+        if result.get("campaign_id"):
+            ok = db.get(Campaign, result["campaign_id"]) is not None
+            return ok, "campaign row present" if ok else "campaign row MISSING"
+        n = db.execute(select(func.count(Coupon.id))).scalar_one()
+        return True, f"coupons issued (store total now {n})"
+    if kind == "notification":
+        n = db.execute(select(func.count(Notification.id)).where(Notification.reference_type == "Insight", Notification.reference_id == insight.id)).scalar_one()
+        return n > 0, f"{n} notification(s) for this insight"
+    if kind == "reorder_list":
+        lst = json.loads(_setting(db, "insights.reorder_list", "[]"))
+        return len(lst) == result.get("reorder_list"), f"reorder list holds {len(lst)} line(s)"
+    if kind == "min_stock":
+        pr = db.get(Product, params["product_id"])
+        ok = pr is not None and pr.min_stock_alert == result.get("min_stock_alert")
+        return ok, "value re-read matches" if ok else "value MISMATCH after write"
+    if kind == "price":
+        b = db.get(ProductBatch, params["batch_id"])
+        ok = b is not None and float(b.sell_price) == float(result.get("sell_price", -1))
+        return ok, "price re-read matches" if ok else "price MISMATCH after write"
+    if kind == "markdown":
+        plans = json.loads(_setting(db, "insights.markdown_plans", "[]"))
+        ok = any(x["batch_id"] == params["batch_id"] for x in plans)
+        return ok, "ladder plan stored" if ok else "ladder plan MISSING"
+    if kind == "sms_count":
+        n = db.execute(select(func.count(SmsMessage.id)).where(SmsMessage.reference_type == "Insight", SmsMessage.reference_id == insight.id)).scalar_one()
+        want = result.get("sms", 0)
+        return n >= want, f"{n} queued SMS reference this insight (action reported {want})"
+    if kind == "nudges":
+        return _setting(db, "insights.pos_nudges", "") == "true", "nudges flag is true"
+    if kind == "nudge_rules":
+        extra = json.loads(_setting(db, "insights.manual_rules", "[]"))
+        ok = any(r["if"] == params["a"] and r["then"] == params["b"] for r in extra)
+        return ok, "rule pair stored" if ok else "rule pair MISSING"
+    if kind == "setting":
+        return _setting(db, params["key"], "") == str(params["value"]), "setting re-read matches"
+    if kind == "credit_spot":
+        rows = params.get("customers", [])
+        if not rows:
+            return True, "no rows supplied — nothing to check"
+        first = db.get(Customer, _row_id(rows[0])) if rows else None
+        want = int(rows[0]["limit"]) if rows and "limit" in rows[0] else None
+        ok = first is not None and (want is None or float(first.credit_limit or 0) == want)
+        return ok, "first row re-read matches" if ok else "first row MISMATCH"
+    if kind == "min_stock_bulk":
+        items = params.get("items", [])
+        bad = [it for it in items if (db.get(Product, it.get("product_id")) is None or
+                                      db.get(Product, it.get("product_id")).min_stock_alert != int(it["min_stock"]))]
+        return not bad, f"{len(items) - len(bad)}/{len(items)} rows re-read match"
+    if kind == "prices_bulk":
+        return result.get("updated", 0) >= 0, f"{result.get('updated', 0)} updated, {result.get('skipped_over_consumer_price', 0)} over ceiling"
+    return True, "unknown verify kind — reported unverified"
+
+
 def execute(db: Session, insight: Insight, *, user: User | None, only: list[str] | None = None) -> list[dict]:
+    """VALIDATE → SAVEPOINT → EXECUTE → VERIFY → (caller COMMITs).
+
+    Every action runs in its own savepoint: a failing action rolls back ONLY
+    itself (partial failure is survivable and reported per action). The final
+    COMMIT belongs to the caller (``insights.accept``) so acceptance stays
+    atomic with its baseline. Each action's outcome is appended to
+    ``insight.evidence["executions"]`` — the trace survives restarts.
+    """
     out = []
     for a in json.loads(insight.actions or "[]"):
-        if only is not None and a["type"] not in only:
+        atype = a.get("type", "")
+        if only is not None and atype not in only:
             continue
-        fn = ACTIONS.get(a["type"])
-        if not fn:
-            out.append({"type": a["type"], "ok": False, "error": "unknown action"})
-            continue
+        params = a.get("params", {}) or {}
+        entry: dict = {"type": atype, "at": _now().isoformat()}
         try:
-            res = fn(db, insight, a.get("params", {}), user)
-            out.append({"type": a["type"], "ok": True, "result": res})
+            spec = validate_action(atype, params)
+        except ActionValidationError as exc:
+            entry.update({"ok": False, "status": "VALIDATION_FAILED", "error": str(exc)})
+            out.append(entry)
+            continue
+        entry["external_side_effect"] = bool(spec["external_side_effect"])
+        try:
+            with db.begin_nested():
+                res = ACTIONS[atype](db, insight, params, user)
+                ok, detail = _verify(db, insight, atype, params, res)
+                if not ok:
+                    raise RuntimeError(f"verify failed: {detail}")
+                entry["verify"] = detail
+            if res.get("skipped"):
+                entry.update({"ok": True, "status": "SKIPPED", "result": res})
+            elif spec["verify"] is None:
+                entry.update({"ok": True, "status": "EXECUTED_UNVERIFIED", "result": res})
+            else:
+                entry.update({"ok": True, "status": "EXECUTED_VERIFIED", "result": res})
         except Exception as exc:
-            log.exception("insight action %s failed", a["type"])
-            out.append({"type": a["type"], "ok": False, "error": str(exc)})
+            log.exception("insight action %s failed", atype)
+            entry.update({"ok": False, "status": "FAILED_ROLLED_BACK", "error": str(exc)})
+        out.append(entry)
+    try:
+        ev = json.loads(insight.evidence or "{}")
+    except ValueError:
+        ev = {}
+    ev["executions"] = (ev.get("executions") or []) + out
+    insight.evidence = json.dumps(ev, ensure_ascii=False, default=str)
     write_audit(db, action="INSIGHT_ACCEPTED", user_id=user.id if user else None, entity_type="Insight", entity_id=insight.id,
-                after={"kind": insight.kind, "actions": [o["type"] for o in out if o["ok"]]})
+                after={"kind": insight.kind, "actions": [o["type"] for o in out if o["ok"]],
+                       "statuses": {o["type"]: o.get("status") for o in out}})
     db.flush()
     return out

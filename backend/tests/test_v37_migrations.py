@@ -66,22 +66,32 @@ def test_upgrade_head_matches_modelsExactly(migrated_url):
 
 
 def test_head_revision_is_v37_catchup(migrated_url):
+    # v3.8 note: the head legitimately moved — a new version ships new
+    # migrations (experiment arms, then hardware health). The test's intent
+    # (ONE head, DB stamped exactly at it) is unchanged; only the pinned
+    # value follows.
     cfg = _cfg(migrated_url)
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    assert heads == ["f7a1c2d3e4b5"]
+    assert heads == ["c5d9e2f7a4b6"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
 
 
 def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
-    """Downgrade the v3.7 revision and re-upgrade: v3.7 objects come and go,
-    shop data (products, …) is never touched.
+    """Downgrade the HEAD revision and re-upgrade: the head step's objects
+    come and go, shop data (products, …) is never touched.
+
+    v3.8 note: the head step is now the HARDWARE migration (c5d9e2f7a4b6), so
+    the "-1" assertions follow it (hardware columns drop; earlier revisions'
+    objects such as experiments/product_bank legitimately STAY — they belong
+    to older steps). The test's intent is unchanged: one step down, back to
+    head, shop data intact.
 
     Note: downgrade-to-``base`` is NOT the project contract — one historical
     revision (warehouses) deliberately keeps its tables on downgrade to avoid
     destroying shop data, so ``base`` is not empty by design. The supported
-    downgrade is the v3.7 step itself (dev/test use; production never
+    downgrade is the head step itself (dev/test use; production never
     downgrades — the app only moves forward).
     """
     from sqlalchemy.orm import sessionmaker
@@ -101,9 +111,14 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
 
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
-    assert "experiments" not in insp.get_table_names()
-    assert "product_bank" not in insp.get_table_names()
-    assert "next_retry_at" not in {c["name"] for c in insp.get_columns("sms_messages")}
+    hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}
+    assert "health" not in hw_cols
+    assert "consecutive_failures" not in hw_cols
+    assert "vendor_id" not in hw_cols
+    # older steps' objects stay — the -1 step is the hardware migration only
+    assert "experiments" in insp.get_table_names()
+    assert "product_bank" in insp.get_table_names()
+    assert "next_retry_at" in {c["name"] for c in insp.get_columns("sms_messages")}
     # shop data survives the downgrade
     db = Session()
     try:

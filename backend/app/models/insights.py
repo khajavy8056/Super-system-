@@ -74,7 +74,7 @@ class Experiment(TimestampMixin, Base):
     evaluated outcome — so a treatment/control split survives restarts and a
     window can only close once.
 
-    Life-cycle: DRAFT → RUNNING → OBSERVING → COMPLETE (or CANCELLED).
+    Life-cycle: DRAFT → PLANNED → ASSIGNED → RUNNING → OBSERVING → COMPLETE (or CANCELLED).
     ``treatment``/``control`` are frozen JSON id lists written once at start;
     ``outcomes`` accumulates ``{customer_id: {profit, purchased, variable_cost}}``.
     """
@@ -97,9 +97,13 @@ class Experiment(TimestampMixin, Base):
     window_days: Mapped[int] = mapped_column(Integer, default=28)
     minimum_net_profit: Mapped[str] = mapped_column(String(32), default="0")
 
-    #: JSON lists of customer ids, frozen at RUNNING
+    #: JSON list of eligible customer ids, frozen at PLAN (assign() may only split these)
+    eligible: Mapped[str] = mapped_column(Text, default="[]")
+    #: JSON lists of customer ids, frozen at ASSIGN (immutable afterwards)
     treatment: Mapped[str] = mapped_column(Text, default="[]")
     control: Mapped[str] = mapped_column(Text, default="[]")
+    #: JSON {customer_id: exposed_at}; assigned ≠ exposed (never shown the treatment)
+    exposed: Mapped[str] = mapped_column(Text, default="{}")
     #: JSON {customer_id: {profit, purchased, variable_cost}}
     outcomes: Mapped[str] = mapped_column(Text, default="{}")
     #: JSON result of experiment_stats.evaluate() at close
