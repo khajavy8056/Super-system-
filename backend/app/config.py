@@ -8,11 +8,17 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from . import __version__
 
 _BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
+
+#: The factory default. A production process must NEVER sign tokens with it:
+#: the Windows launcher persists a random per-install key instead (see
+#: installer/windows/run_supermarket.py :: persistent_secret).
+DEFAULT_SECRET_KEY = "change-me-in-production-9f8e7d6c5b4a"
 
 
 class Settings(BaseSettings):
@@ -29,9 +35,22 @@ class Settings(BaseSettings):
     DATABASE_URL: str = f"sqlite:///{_BASE_DIR / 'data' / 'supermarket.db'}"
 
     # Security / Auth
-    SECRET_KEY: str = "change-me-in-production-9f8e7d6c5b4a"
+    SECRET_KEY: str = DEFAULT_SECRET_KEY
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12  # 12 hours
+
+    @model_validator(mode="after")
+    def _forbid_default_secret_in_production(self):
+        """v3.7 — no usable default credential in production (§33).
+
+        Every install must sign its tokens with its own key. Anyone who signs
+        with the published factory default lets anybody forge an admin token.
+        """
+        if (self.ENVIRONMENT or "").lower() == "production" and self.SECRET_KEY == DEFAULT_SECRET_KEY:
+            raise ValueError(
+                "refusing to start: SECRET_KEY is the factory default in production. "
+                "Set a unique SECRET_KEY (the Windows launcher persists one per install).")
+        return self
 
     # CORS — the web panel origin (and any LAN terminals).
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173"

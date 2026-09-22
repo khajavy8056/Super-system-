@@ -84,6 +84,13 @@ def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permissi
     return {"ok": True, "calibration": forecast.learn(db)}
 
 
+@router.get("/data-quality")
+def data_quality(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v3.8 — the Data Quality report the intelligence engine gates on."""
+    from ..services import data_quality as dq
+    return dq.run_all(db)
+
+
 @router.get("/customers/patterns")
 def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     """v3.2 — per-customer purchase rhythm: who is due in the next `days` days, their usual weekday,

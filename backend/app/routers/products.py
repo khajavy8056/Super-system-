@@ -12,12 +12,18 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Category, Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import catalog, product_images
 from ..services.audit import write_audit
 from ..services.catalog import CatalogError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — buy costs leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class ProductIn(BaseModel):
@@ -345,7 +351,7 @@ def check_duplicate(body: DuplicateCheckIn, db: Session = Depends(get_db),
 
 @router.get("/{product_id}/detail")
 def product_detail(product_id: int, db: Session = Depends(get_db),
-                   _: User = Depends(require_permission("products.view"))):
+                   user: User = Depends(require_permission("products.view"))):
     """§5 — the product header plus every batch that ever belonged to it.
 
     Depleted batches are returned too (``current_qty == 0``): they are the
@@ -382,13 +388,13 @@ def product_detail(product_id: int, db: Session = Depends(get_db),
 
     batches = [_b(b) for b in rows]
     active = [b for b in batches if not b["is_depleted"]]
-    return {
+    return _maybe_redact(user, {
         "product": _out(p),
         "total_stock": sum(b["current_qty"] for b in active),
         "active_batches": active,
         "depleted_batches": [b for b in batches if b["is_depleted"]],
         "batch_count": len(batches),
-    }
+    })
 
 
 @router.post("", status_code=201)
