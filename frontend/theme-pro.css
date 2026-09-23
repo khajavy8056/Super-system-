@@ -4,17 +4,21 @@
  * touch-friendly stocktake wizard, Jalali picker, alarm strip.
  * ===================================================================== */
 :root, [data-theme="dark"] {
-  --bg: #0b1020; --bg2: #111a2e; --card: #16213a; --border: #253253;
-  --text: #eef2fb; --muted: #94a0bd; --primary: #4f8cff; --primary-h: #3b78f0;
-  --accent: #7c5cff; --green: #2fd67b; --red: #ff5c6c; --amber: #ffb547; --orange: #ff8a3d; --yellow: #ffd166;
-  --shadow: 0 12px 34px rgba(3, 8, 24, .45); --ring: 0 0 0 3px rgba(79,140,255,.28);
-  --grad: linear-gradient(135deg, #4f8cff 0%, #7c5cff 100%);
+  /* v4.2.1 — the Windows panel now wears the SAME palette as the Android app
+     (Ui.java): midnight navy, cobalt→violet accents, teal + gold highlights. */
+  --bg: #030b1d; --bg2: #08142e; --card: #091733; --border: #304780;
+  --text: #f5f6ff; --muted: #adb9dc; --primary: #2563eb; --primary-h: #1d4ed8;
+  --accent: #9654ff; --primary2: #9654ff; --teal: #14b8b0; --gold: #ffc65a;
+  --green: #22cba6; --red: #ef647d; --amber: #f1ae49; --orange: #ff8a3d; --yellow: #ffd166;
+  --shadow: 0 12px 34px rgba(3, 8, 24, .45); --ring: 0 0 0 3px rgba(37, 99, 235, .28);
+  --grad: linear-gradient(135deg, #2563eb 0%, #9654ff 100%);
 }
 [data-theme="light"] {
-  --bg: #eef2f9; --bg2: #ffffff; --card: #ffffff; --border: #dde4f1; --text: #131a2c; --muted: #5f6b86;
-  --primary: #2f6fed; --primary-h: #2359c9; --accent: #6d4cf0; --green: #148f4b; --red: #d93447; --amber: #b8730a; --orange: #c8551a; --yellow: #a67c00;
-  --shadow: 0 10px 28px rgba(20, 35, 70, .10); --ring: 0 0 0 3px rgba(47,111,237,.22);
-  --grad: linear-gradient(135deg, #2f6fed 0%, #6d4cf0 100%);
+  --bg: #f2f4ff; --bg2: #ffffff; --card: #ffffff; --border: #c4cded; --text: #101c3c; --muted: #546489;
+  --primary: #2563eb; --primary-h: #1d4ed8; --accent: #7c3aed; --primary2: #7c3aed; --teal: #0d9488; --gold: #b7791f;
+  --green: #0e9f7e; --red: #dc2626; --amber: #b45309; --orange: #c2410c; --yellow: #a16207;
+  --shadow: 0 10px 28px rgba(20, 35, 70, .10); --ring: 0 0 0 3px rgba(37, 99, 235, .22);
+  --grad: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
 }
 body { background: radial-gradient(1200px 600px at 85% -10%, rgba(124,92,255,.14), transparent 60%),
                    radial-gradient(900px 500px at -10% 110%, rgba(79,140,255,.12), transparent 60%), var(--bg); font-size: 14px; letter-spacing: .1px; }

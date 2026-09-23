@@ -3,6 +3,20 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.2.1] - 2026-09-23
+
+### «خطای ساخت فایل نصبی» — و نکات نمایشی مالک
+- **Root cause of the failed build: MY verifier checked the WRONG place for the Inno signature.** The owner's build was PERFECT — Setup.exe 1,153.8 MB with the verified 1,117 MB model inside — but `verify_setup.py` searched the first/last 4 KiB, while the official Inno source (`Shared.Struct.pas`/`Compiler.SetupCompiler.pas`, tag `is-6_7_3`) writes the 64-byte `'Inno Setup Setup Data (6.7.0)'` record at the START of the embedded setup-0 block — several hundred KiB into the file. The verifier failed, the builder DELETED his 8-minute ISCC build. Fixed: scan the first 4 MiB (never the whole file — v4.2.0 also loaded 1.1 GB into RAM), exact-case signature, and **exit codes split**: 1 = model really missing (delete), 2 = structural suspicion only (FAIL but KEEP the file). The builder now records `$Script:LastNativeExitCode` and only deletes on 1. Tests cover the owner's exact file layout.
+- **Builder shows the model download LIVE** (`Invoke-Native -Stream` on the model step + milestone lines every 5%/8s instead of 30s): the console is no longer dead for minutes during the ~1 GB fetch. IDM integration unchanged.
+- **Android: the download shows progress and SURVIVES app close.** New `BrainModelService` (foreground service, `dataSync` type — the same anchor InstallService uses) keeps the process alive with a live status-bar notification («دریافت مدل تخصصی سوپری‌من · ۲۳۴ از ۹۲۴ مگابایت · ۲۵٪ — می‌توانید برنامه را ببندید»); state lands in Prefs as before, so the Model tab progress bar keeps working. If the process dies anyway, the `.part` file resumes from the same byte.
+- **Fixed the invisible progress bar**: `BrainModel.listen()` was a single slot — the second model card's registration silently killed the first card's live updates («هیچ خط پیشرفت نمیاد»). Now named listeners per card (`listen("card:"+id, …)`).
+- **Branding (owner's rule): the model is «مدل تخصصی سوپری‌من»** (q4_k_m) and **«سوپری‌من لایت»** (q3_k_m) everywhere the user looks — backend `display_name` in the registry + `active_name` in status, Windows panel (brain page, settings KPI), Android (model cards, notifications, chat header, auto-setup toast). Technical ids stay in code (they pin file + sha256) but are no longer shown as names.
+- **A proper model icon** (generated, navy/cobalt/gold, matching the app): `res/drawable/ic_model.png` on Android (model cards, chat header, assistant avatar) and `/icons/model-192.png` + `model-512.png` in the web panel.
+- **Chat upgraded on BOTH platforms.** Android: messenger bubbles (user = cobalt→violet gradient on the right, brain = card surface with avatar on the left), timestamps in Persian digits, role labels, animated three-dot «در حال تایپ» indicator. Windows: `.brain-bubble` had NO CSS anywhere (the chat rendered as bare divs) — full messenger styling added (bubbles, avatar, meta, animated typing dots, rounded composer).
+- **The Windows panel now wears the Android palette** (owner: «تک رنگی در ویندوز مشابه تم رنگی اندروید باشد»): midnight navy `#030B1D`/`#091733`, cobalt `#2563EB` → violet `#9654FF` gradient accents, teal `#14B8B0` + gold `#FFC65A` highlights, in BOTH `styles.css` and `theme-pro.css`, dark + light.
+- Tests: `test_v42_model_presence.py` updated to the real Inno layout (16 tests) + new `test_v421_polish.py` (14 tests). Full suite **729 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.2.1.apk` (versionCode 40201, 9,668,191 B, both ABIs, icon packed, preflight PASS, same cert → in-place update). Windows: **rebuild once from this tree** — the already-downloaded model is kept and verified, the 1 GB download does not repeat; the build cannot end on the false marker error again.
+
 ## [4.2.0] - 2026-09-23
 
 ### «مدل کجاست؟» — مدل واقعاً داخل محصول، مغز از لحظهٔ اول زنده، بدون هیچ ابر

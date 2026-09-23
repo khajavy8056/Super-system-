@@ -34,10 +34,15 @@ def _write_iss(tmp_path: Path, model_id: str, gguf_bytes: int) -> Path:
 
 
 def _write_setup(tmp_path: Path, mb: float, with_marker: bool = True) -> Path:
+    """Real Inno layout (v4.2.1): MZ stub PE, then the 64-byte 'Inno Setup Setup
+    Data (x.y.z)' record at the START of the embedded setup-0 block — several
+    hundred KiB into the file, NOT at the end (that v4.2.0 mistake destroyed
+    the owner's real 1,153.8 MB Setup.exe after 8 minutes of ISCC compression)."""
     setup = tmp_path / "Setup.exe"
-    blob = b"MZ" + b"x" * int(mb * 1e6)
-    if with_marker:
-        blob = blob[:-64] + b"Inno Setup Setup Data" + b"\x00" * 43
+    stub = b"MZ" + b"x" * 700_000                      # ~the Inno stub PE size
+    sig = (b"Inno Setup Setup Data (6.7.0)" + b"\x00" * 64)[:64]
+    body = b"z" * max(0, int(mb * 1e6) - len(stub) - 64)
+    blob = (stub + sig + body) if with_marker else (b"MZ" + b"x" * int(mb * 1e6))
     setup.write_bytes(blob)
     return setup
 
@@ -47,7 +52,7 @@ def test_verify_setup_passes_with_embedded_model(tmp_path):
     from scripts.model import verify_setup as vs
     installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
     setup = _write_setup(tmp_path, mb=98)                      # ≈ the GGUF, not 56 MB
-    ok, problems, _ = vs.verify(setup, installer_dir)
+    ok, problems, _info, _code = vs.verify(setup, installer_dir)
     assert ok, problems
 
 
@@ -56,7 +61,7 @@ def test_verify_setup_rejects_modelless_setup(tmp_path, mb):
     from scripts.model import verify_setup as vs
     installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
     setup = _write_setup(tmp_path, mb=mb)
-    ok, problems, _ = vs.verify(setup, installer_dir)
+    ok, problems, _info, _code = vs.verify(setup, installer_dir)
     assert not ok
     assert any("مدل" in p for p in problems)
 
@@ -66,17 +71,17 @@ def test_verify_setup_rejects_missing_payload(tmp_path):
     installer_dir = tmp_path / "installer" / "windows"
     installer_dir.mkdir(parents=True)                           # no model_payload.iss
     setup = _write_setup(tmp_path, mb=56)
-    ok, problems, _ = vs.verify(setup, installer_dir)
+    ok, problems, _info, _code = vs.verify(setup, installer_dir)
     assert not ok and problems
 
 
 def test_verify_setup_rejects_non_inno_file(tmp_path):
     from scripts.model import verify_setup as vs
-    installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=10 * 1_000_000)
-    setup = _write_setup(tmp_path, mb=10, with_marker=False)
-    ok, problems, _ = vs.verify(setup, installer_dir)
+    installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
+    setup = _write_setup(tmp_path, mb=10, with_marker=False)   # tiny AND markerless
+    ok, problems, info, code = vs.verify(setup, installer_dir)
     assert not ok
-    assert any("Inno" in p for p in problems)
+    assert any("مدل" in p or "Inno" in p for p in problems)
 
 
 def test_verify_setup_cli_exit_codes(tmp_path, capsys, monkeypatch):
@@ -84,8 +89,31 @@ def test_verify_setup_cli_exit_codes(tmp_path, capsys, monkeypatch):
     installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
     setup = _write_setup(tmp_path, mb=56)
     monkeypatch.chdir(ROOT)
+    # exit 1 = model really missing → the builder deletes the setup
     assert vs.main([str(setup), "--installer-dir", str(installer_dir)]) == 1
     assert "PASS" not in capsys.readouterr().out
+
+
+def test_verify_setup_marker_suspicion_keeps_file_exit_2(tmp_path):
+    """v4.2.1: payload fine but no Inno signature → exit 2 (builder keeps the
+    file), never exit 1 (which would delete an 8-minute ISCC build)."""
+    from scripts.model import verify_setup as vs
+    installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
+    setup = _write_setup(tmp_path, mb=98, with_marker=False)
+    ok, problems, info, code = vs.verify(setup, installer_dir)
+    assert not ok and code == 2
+    assert any("Inno" in p for p in problems)
+
+
+def test_verify_setup_real_inno_layout_passes(tmp_path):
+    """The owner's exact v4.2.0 failure: a REAL Inno Setup.exe (signature after
+    the stub, ~700 KiB in) WITH the model inside must PASS."""
+    from scripts.model import verify_setup as vs
+    installer_dir = _write_iss(tmp_path, "test-model-q4", gguf_bytes=100 * 1_000_000)
+    setup = _write_setup(tmp_path, mb=103.0)     # app + model, Inno layout
+    ok, problems, _info, code = vs.verify(setup, installer_dir)
+    assert ok, problems
+    assert code == 0
 
 
 # ---------------------------------------------------------------- builder wiring
@@ -137,7 +165,7 @@ def test_brain_status_reports_backend_version():
     src = inspect.getsource(cls.status)
     assert '"4.0.0"' not in src
     assert "__version__" in src
-    assert __version__ == "4.2.0"
+    assert __version__ == "4.2.1"
 
 
 # ---------------------------------------------------------------- Android sources
@@ -163,6 +191,6 @@ def test_android_version_follows_backend():
     gradle = (ROOT / "mobile-android" / "app" / "build.gradle").read_text(encoding="utf-8")
     assert 'versionName appVersion' in gradle and "versionCode code" in gradle
     assert (ROOT / "backend" / "app" / "__init__.py").read_text(
-        encoding="utf-8").count('__version__ = "4.2.0"') == 1
+        encoding="utf-8").count('__version__ = "4.2.1"') == 1
     code = 4 * 10000 + 2 * 100 + 0
     assert code == 40200

@@ -141,7 +141,8 @@ function Invoke-Native {
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory,
-        [scriptblock]$Report
+        [scriptblock]$Report,
+        [switch]$Stream
     )
     $prev = $null
     if ($WorkingDirectory) { $prev = Get-Location; Set-Location $WorkingDirectory }
@@ -162,13 +163,19 @@ function Invoke-Native {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = 0
+        $Script:LastNativeExitCode = 0
         try {
             $output = @(& $FilePath @Arguments 2>&1 | ForEach-Object {
                 $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
                 Write-Log "    $line"
+                # v4.2.1 -Stream: the ~1 GB model download prints its own progress
+                # lines; show them LIVE in this console instead of swallowing them
+                # until the step ends (the owner watched a dead screen for minutes).
+                if ($Stream) { Write-Host "  $line" }
                 $line
             })
             $code = $LASTEXITCODE
+            $Script:LastNativeExitCode = $code
         } finally {
             $ErrorActionPreference = $prevEap
         }
@@ -642,9 +649,10 @@ $Steps = @(
         # Download Manager when it is installed (its window shows the progress).
         $env:PYTHONUTF8 = '1'          # redirected consoles must never mangle output
         $env:PYTHONIOENCODING = 'utf-8'
-        & $Report 'دریافت و تأیید هش مدل رسمی (Qwen) — حدود ۱ گیگابایت؛ با نوار پیشرفت و قابلیت ادامهٔ دانلود. اگر Internet Download Manager نصب باشد از آن استفاده می‌شود ...'
+        & $Report 'دریافت و تأیید هش مدل رسمی — حدود ۱ گیگابایت؛ پیشرفت به‌صورت زنده در همین پنجره نشان داده می‌شود (قابلیت ادامهٔ دانلود). اگر Internet Download Manager نصب باشد از آن استفاده می‌شود ...'
         try {
-            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
+            # v4.2.1 -Stream: the download's progress lines appear LIVE here
+            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report -Stream `
                 -Arguments @($prep, '--engine') | Out-Null
             & $Report 'مدل تأیید شد و در نصب‌کننده جاسازی می‌شود.'
         } catch {
@@ -689,12 +697,22 @@ $Steps = @(
             Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
                 -Arguments @($verify, $setup) | Out-Null
         } catch {
-            if (Test-Path $setup) { Remove-Item $setup -Force }
-            throw ("فایل نصب، مدل هوش محلی را داخل خودش ندارد و حذف شد — Setup.exe بدون مدل جعلی است:`n" +
-                   $_.Exception.Message + "`n" +
-                   "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد`n" +
-                   "(۲) دانلود دستی GGUF رسمی و اجرای`n" +
-                   "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>")
+            # v4.2.1: exit 1 = the model is REALLY missing (fake setup → delete).
+            # exit 2 = structural suspicion while the payload looked fine — the
+            # owner lost an 8-minute ISCC build to a false marker check once;
+            # that must never happen again: keep the file, fail with the reason.
+            if ($Script:LastNativeExitCode -eq 1) {
+                if (Test-Path $setup) { Remove-Item $setup -Force }
+                throw ("فایل نصب، مدل هوش محلی را داخل خودش ندارد و حذف شد — Setup.exe بدون مدل جعلی است:`n" +
+                       $_.Exception.Message + "`n" +
+                       "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد`n" +
+                       "(۲) دانلود دستی GGUF رسمی و اجرای`n" +
+                       "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>")
+            } else {
+                throw ("بررسی فایل نصب ناموفق بود ولی فایل حفظ شد (حذف نشد):`n" +
+                       $_.Exception.Message + "`n" +
+                       "خروجی بالا را بررسی کنید؛ اگر فایل سالم است و این خطا اشتباه است، به ما گزارش دهید.")
+            }
         }
         $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
         & $Report "فایل نصب آماده توزیع است ($mb مگابایت) — مدل هوش محلی داخل آن تأیید شد."

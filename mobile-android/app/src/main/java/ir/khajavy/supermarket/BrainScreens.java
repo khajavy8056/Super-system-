@@ -306,8 +306,8 @@ public final class BrainScreens {
         /* ---------------- the local model (downloads AFTER install, as app data) ---------------- */
         void modelTab() {
             body.addView(engineCard());
-            LinearLayout why = Ui.card(c, "مدل هوش مصنوعی محلی");
-            why.addView(Ui.body(c, "فایل مدل داخل نصب برنامه نیست؛ پس از نصب، از مخزن رسمی Qwen دریافت، هش SHA-256 آن تأیید و در حافظهٔ خود برنامه نگه داشته می‌شود (حذف برنامه، آن را هم پاک می‌کند)."));
+            LinearLayout why = Ui.card(c, "مدل تخصصی سوپری‌من");
+            why.addView(Ui.body(c, "فایل مدل داخل نصب برنامه نیست؛ پس از نصب، از مخزن رسمی سازنده دریافت، هش SHA-256 آن تأیید و در حافظهٔ خود برنامه نگه داشته می‌شود (حذف برنامه، آن را هم پاک می‌کند)."));
             why.addView(Ui.muted(c, "حجم دریافت حدود ۰٫۹ تا ۱٫۱ گیگابایت است — وای‌فای توصیه می‌شود. دریافت با «توقف» قابل قطع و از همان‌جا قابل ادامه است؛ اگر منبع اول (Hugging Face) در دسترس نباشد، همان فایل از منبع رسمی دیگر (ModelScope) گرفته می‌شود."));
             why.addView(Ui.muted(c, "این همان فایل مدلِ رایانهٔ فروشگاه است (شناسه و هش یکسان) — یک مدل، نه دو مدل. وقتی گوشی با رایانه جفت است، پاسخ‌ها از مغزِ رایانه می‌آید؛ در حالت مستقل، همین فایل روی خود گوشی اجرا می‌شود."));
             body.addView(why);
@@ -370,10 +370,15 @@ public final class BrainScreens {
         LinearLayout modelCard(final BrainModel.Spec s) {
             final LinearLayout card = Ui.card(c);
             LinearLayout head = Ui.row(c);
-            head.addView(Icons.view(c, "wand", Ui.GOLD, 18));
+            // v4.2.1 — the owner asked for a proper icon for the model
+            android.widget.ImageView ic = new android.widget.ImageView(c);
+            ic.setImageResource(R.drawable.ic_model);
+            ic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(34), Ui.dp(34)));
+            head.addView(ic);
             LinearLayout t = Ui.col(c); t.setPadding(Ui.dp(8), 0, 0, 0); t.setLayoutParams(Ui.weight(1));
-            t.addView(Ui.text(c, s.id, 13.5f, Ui.TEXT, true));
-            t.addView(Ui.muted(c, s.label() + " · " + Ui.num(Math.round(s.bytes / 1048576.0)) + " مگابایت"));
+            t.addView(Ui.text(c, s.label(), 13.5f, Ui.TEXT, true));   // branded name, not the technical id
+            t.addView(Ui.muted(c, "حجم: " + Ui.num(Math.round(s.bytes / 1048576.0))
+                    + " مگابایت · حداقل رم: " + Ui.num(s.minRamMb) + " مگابایت"));
             head.addView(t);
             final String st = BrainModel.stateOf(s.id);
             if (BrainModel.READY.equals(st)) head.addView(Ui.badge(c, "آماده", Ui.GREEN));
@@ -416,7 +421,7 @@ public final class BrainScreens {
             }
             card.addView(act);
 
-            BrainModel.listen((modelId, state, done, total, n) -> {
+            BrainModel.listen("card:" + s.id, (modelId, state, done, total, n) -> {
                 if (!modelId.equals(s.id)) return;
                 if (state.equals(BrainModel.READY) || state.equals(BrainModel.CORRUPT)) { load(); return; }
                 bar.setProgress((int) Math.min(10000, done * 10000 / Math.max(1, s.bytes)));
@@ -489,6 +494,18 @@ public final class BrainScreens {
 
         @Override public View view() {
             LinearLayout root = Ui.col(a); root.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
+            // v4.2.1 — a proper chat header: the model's own icon + branded subtitle
+            LinearLayout head = Ui.row(c);
+            head.setPadding(0, 0, 0, Ui.dp(10));
+            android.widget.ImageView hic = new android.widget.ImageView(c);
+            hic.setImageResource(R.drawable.ic_model);
+            hic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(40), Ui.dp(40)));
+            head.addView(hic);
+            LinearLayout ht = Ui.col(c); ht.setPadding(Ui.dp(10), 0, 0, 0);
+            ht.addView(Ui.text(c, "گفت‌وگو با مغز فروشگاه", 15.5f, Ui.TEXT, true));
+            ht.addView(Ui.muted(c, "مدل تخصصی سوپری‌من — محلی و آفلاین، مخصوص همین فروشگاه"));
+            head.addView(ht);
+            root.addView(head);
             log = Ui.col(a);
             ScrollView sv = new ScrollView(c); sv.addView(log);
             sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -516,22 +533,85 @@ public final class BrainScreens {
                 for (int i = 0; i < ms.length(); i++) bubble(ms.optJSONObject(i).optString("role"), ms.optJSONObject(i).optString("content"));
             });
         }
+        String nowTime() {
+            try { return Ui.fa(new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                    .format(new java.util.Date())); } catch (Exception e) { return ""; }
+        }
+
+        LinearLayout bubbleBase(boolean user) {
+            LinearLayout b = Ui.col(c);
+            b.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
+            if (user) b.setBackground(Ui.gradient(Ui.PRIMARY, Ui.PRIMARY2, 0, 18));
+            else b.setBackground(Ui.rounded(Ui.CARD2, Ui.BORDER, 18));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.gravity = user ? android.view.Gravity.START : android.view.Gravity.END;   // RTL: شما راست، مغز چپ
+            lp.setMargins(0, 0, 0, Ui.dp(8));
+            b.setLayoutParams(lp);
+            return b;
+        }
+
+        void scrollDown() {
+            View v = (View) log.getParent();
+            if (v instanceof ScrollView) ((ScrollView) v).fullScroll(View.FOCUS_DOWN);
+        }
+
         void bubble(String role, String text) {
             boolean user = "USER".equals(role);
-            LinearLayout b = Ui.card(c, null);
-            b.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
-            b.setBackground(Ui.rounded(user ? (Ui.PRIMARY & 0x00FFFFFF) | 0x22000000 : Ui.CARD2, Ui.BORDER, 16));
-            TextView t = Ui.text(c, text, 13.5f, Ui.TEXT, false);
-            t.setLineSpacing(0, 1.3f);
+            LinearLayout b = bubbleBase(user);
+            if (!user) {
+                LinearLayout h = Ui.row(c);
+                android.widget.ImageView av = new android.widget.ImageView(c);
+                av.setImageResource(R.drawable.ic_model);
+                av.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(20), Ui.dp(20)));
+                h.addView(av);
+                TextView nm = Ui.muted(c, "مغز فروشگاه");
+                nm.setPadding(Ui.dp(6), 0, 0, 0);
+                h.addView(nm);
+                b.addView(h);
+            }
+            TextView t = Ui.text(c, text, 13.5f, user ? 0xFFFFFFFF : Ui.TEXT, false);
+            t.setLineSpacing(0, 1.35f);
             b.addView(t);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, 0, 0, Ui.dp(8));
-            if (user) lp.setMargins(Ui.dp(48), 0, 0, Ui.dp(8));
-            else lp.setMargins(0, 0, Ui.dp(24), Ui.dp(8));
-            b.setLayoutParams(lp);
+            TextView meta = Ui.text(c, (user ? "شما · " : "") + nowTime(), 10,
+                    user ? 0xCCFFFFFF : Ui.MUTED, false);
+            meta.setPadding(0, Ui.dp(4), 0, 0);
+            b.addView(meta);
             log.addView(b);
-            b.post(() -> { View v = (View) log.getParent(); if (v instanceof ScrollView) ((ScrollView) v).fullScroll(View.FOCUS_DOWN); });
+            b.post(this::scrollDown);
+        }
+
+        /** v4.2.1 — animated "typing" bubble (three pulsing dots) while the brain works. */
+        LinearLayout thinkingBubble(String label) {
+            LinearLayout b = bubbleBase(false);
+            LinearLayout h = Ui.row(c);
+            android.widget.ImageView av = new android.widget.ImageView(c);
+            av.setImageResource(R.drawable.ic_model);
+            av.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(20), Ui.dp(20)));
+            h.addView(av);
+            TextView nm = Ui.muted(c, "مغز فروشگاه");
+            nm.setPadding(Ui.dp(6), 0, 0, 0);
+            h.addView(nm);
+            TextView dots = Ui.text(c, "● · ·", 13, Ui.MUTED, true);
+            dots.setPadding(Ui.dp(10), 0, 0, 0);
+            h.addView(dots);
+            b.addView(h);
+            TextView l = Ui.muted(c, label);
+            l.setPadding(0, Ui.dp(4), 0, 0);
+            b.addView(l);
+            final String[] frames = {"● · ·", "· ● ·", "· · ●"};
+            final int[] ix = {0};
+            final android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
+            final Runnable tick = new Runnable() {
+                @Override public void run() {
+                    if (!dots.isAttachedToWindow()) return;   // the bubble was removed: stop
+                    ix[0] = (ix[0] + 1) % frames.length;
+                    dots.setText(frames[ix[0]]);
+                    hh.postDelayed(this, 350);
+                }
+            };
+            hh.postDelayed(tick, 350);
+            return b;
         }
         void send() {
             String q = in.getText().toString().trim();
@@ -540,8 +620,7 @@ public final class BrainScreens {
             bubble("USER", q);
             // standalone (no PC paired) → the local engine answers directly
             if (Api.standalone()) { localAnswer(q); return; }
-            final LinearLayout thinking = Ui.card(c, null);
-            thinking.addView(Ui.muted(c, "در حال بررسی داده‌های فروشگاه…"));
+            final LinearLayout thinking = thinkingBubble("در حال بررسی داده‌های فروشگاه…");
             log.addView(thinking);
             JSONObject b = new JSONObject(); try { b.put("question", q); b.put("prefer_llm", true); } catch (Exception ignore) {}
             Api.post("/brain/chat", b, r -> {
@@ -577,8 +656,7 @@ public final class BrainScreens {
 
         /** v4.1 — standalone mode: the SAME model file runs ON the phone (labelled, honest). */
         void localAnswer(String q) {
-            final LinearLayout thinking = Ui.card(c, null);
-            thinking.addView(Ui.muted(c, "رایانه در دسترس نیست — در حال پاسخ با مدل محلی روی خود گوشی…"));
+            final LinearLayout thinking = thinkingBubble("در حال پاسخ با مدل محلی روی خود گوشی…");
             log.addView(thinking);
             try { local.put(new JSONObject().put("role", "user").put("content", q)); } catch (Exception ignore) {}
             final JSONArray msgs = local;

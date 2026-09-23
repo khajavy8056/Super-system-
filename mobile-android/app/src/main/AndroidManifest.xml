@@ -55,6 +55,9 @@
         <activity android:name=".LockActivity" android:exported="false" android:launchMode="singleTask" />
         <provider android:name=".BackupProvider" android:authorities="ir.khajavy.supermarket.backup" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".InstallService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <!-- v4.2.1 — the ~1 GB model download keeps running (with a progress
+             notification) even when the user closes the app (owner request). -->
+        <service android:name=".BrainModelService" android:exported="false" android:foregroundServiceType="dataSync" />
         <receiver android:name=".Notify$Checker" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

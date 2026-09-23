@@ -481,7 +481,9 @@
       api("/brain/model/status").then((m) => {
         const box = $("#ai-brain"); if (!box) return;
         const active = m.active, ready = m.active_ready;
-        box.innerHTML = `<div class="ins-kpi"><span class="muted">مدل مغز فروشگاه</span><b>${ready ? "فعال و آماده" : active ? "نصب است ولی آماده نیست" : "نصب نشده"}</b><span class="muted">${active ? esc(active) : "از بخش «مغز فروشگاه» ← تب «مدل» دریافت و فعال کنید"}</span></div>`;
+        const name = m.active_name || (active === "qwen2.5-1.5b-instruct-q4_k_m" ? "مدل تخصصی سوپری‌من"
+          : active === "qwen2.5-1.5b-instruct-q3_k_m" ? "سوپری‌من لایت" : active);
+        box.innerHTML = `<div class="ins-kpi"><span class="muted">مدل مغز فروشگاه</span><b>${ready ? "فعال و آماده" : active ? "نصب است ولی آماده نیست" : "نصب نشده"}</b><span class="muted">${active ? esc(name) : "از بخش «مغز فروشگاه» ← تب «مدل» دریافت و فعال کنید"}</span></div>`;
       }).catch(() => {});
       $("#ai-save").onclick = async () => {
         const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value };

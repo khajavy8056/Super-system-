@@ -42,7 +42,8 @@ public final class BrainModel {
             this.id = id; this.file = file; this.url = url; this.altUrl = altUrl; this.sha256 = sha256;
             this.bytes = bytes; this.minRamMb = minRamMb;
         }
-        public String label() { return "Qwen2.5 1.5B · " + (bytes > 1_000_000_000L ? "کیفیت پایه" : "سبک (گوشی‌های ضعیف‌تر)"); }
+        /** v4.2.1 — the owner's product name for this model (NOT the technical id). */
+        public String label() { return bytes > 1_000_000_000L ? "مدل تخصصی سوپری‌من" : "سوپری‌من لایت"; }
     }
 
     public static final Spec[] MODELS = {
@@ -69,12 +70,16 @@ public final class BrainModel {
             READY = "READY", CORRUPT = "CORRUPT";
 
     public interface Listener { void onState(String modelId, String state, long done, long total, String note); }
-    private static volatile Listener listener;
+    private static final java.util.Map<String, Listener> LISTENERS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static volatile Thread worker;
     private static volatile boolean cancel = false;
+    /** v4.2.1 — app context for the download notifications (set when a download starts). */
+    private static volatile Context appCtx;
 
-    public static void listen(Listener l) { listener = l; }
+    /** Register a named listener; re-registering the same owner replaces it. */
+    public static void listen(String owner, Listener l) { if (l == null) LISTENERS.remove(owner); else LISTENERS.put(owner, l); }
+    public static void listen(Listener l) { listen("ui", l); }
 
     public static String stateOf(String id) {
         try { JSONObject all = new JSONObject(Prefs.get("brain_model_state", "{}"));
@@ -97,8 +102,19 @@ public final class BrainModel {
             one.put("at", System.currentTimeMillis());
             Prefs.set("brain_model_state", all.toString());
         } catch (Exception ignore) {}
-        final Listener l = listener;
-        if (l != null) MAIN.post(() -> l.onState(id, state, done, specBytes(id), note));
+        for (Listener l : LISTENERS.values()) {
+            MAIN.post(() -> l.onState(id, state, done, specBytes(id), note));
+        }
+        // v4.2.1 — the owner's rule: a VISIBLE progress line while downloading,
+        // in the status bar as well, not only inside the Model tab.
+        Context ac = appCtx;
+        if (ac != null) {
+            long total = specBytes(id);
+            int pct = total > 0 ? (int) Math.min(100, done * 100 / total) : 0;
+            if (DOWNLOADING.equals(state) || VERIFYING.equals(state)) {
+                BrainModelService.progress(ac, id, pct, done, total, VERIFYING.equals(state));
+            }
+        }
     }
     private static long specBytes(String id) { Spec s = find(id); return s == null ? 0 : s.bytes; }
 
@@ -125,7 +141,7 @@ public final class BrainModel {
             Prefs.set("brain_model_auto", "1");
             Spec s = recommended();
             if (!READY.equals(stateOf(s.id)) && !CORRUPT.equals(stateOf(s.id)) && unmetered(c)) {
-                Ui.toast("دریافت مدل مغز فروشگاه (~" + Ui.num(Math.round(s.bytes / 1048576.0))
+                Ui.toast("دریافت " + s.label() + " (~" + Ui.num(Math.round(s.bytes / 1048576.0))
                         + " مگابایت) آغاز شد — از تب «مدل محلی» پیشرفت را ببینید");
                 download(c, s);
             }
@@ -136,7 +152,11 @@ public final class BrainModel {
     public static synchronized void download(Context c, Spec s) {
         if (worker != null && worker.isAlive()) { Ui.toast("یک دریافت مدل در حال اجراست؛ تا پایان آن صبر کنید"); return; }
         cancel = false;
+        appCtx = c.getApplicationContext();
         putState(s.id, DOWNLOADING, partFor(c, s).length(), "در حال دریافت از مخزن رسمی");
+        // v4.2.1 — foreground-service anchor: the download survives the app being
+        // closed/swiped away, with a live progress notification ( BrainModelService ).
+        BrainModelService.start(appCtx, s.id);
         worker = new Thread(() -> run(c.getApplicationContext(), s), "brain-model-dl");
         worker.start();
     }
@@ -203,6 +223,10 @@ public final class BrainModel {
         } catch (Exception e) {
             putState(s.id, PAUSED, part.exists() ? part.length() : 0,
                      "دریافت قطع شد (" + e.getMessage() + ") — با «ادامه» از همان‌جا برمی‌گردد");
+        } finally {
+            // v4.2.1 — release the foreground-service anchor on every exit path;
+            // a paused/failed download needs no live notification (it resumes).
+            BrainModelService.stop(c);
         }
     }
 

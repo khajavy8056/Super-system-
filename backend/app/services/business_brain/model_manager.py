@@ -405,6 +405,8 @@ class ModelManager:
         active_row = installs.get(active)
         payload = {
             "active": active or None,
+            # v4.2.1 — the owner's branding: what the UI shows as the model NAME
+            "active_name": model_registry.display_name(active),
             "active_ready": bool(active_row and active_row.status in READY_STATES),
             "context": int(self._get_setting("brain.runtime.context", str(device_profile.context_for())) or 4096),
             "device": prof.to_dict(), "device_summary": device_profile.summary_line(prof),

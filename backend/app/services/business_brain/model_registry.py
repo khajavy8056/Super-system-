@@ -56,6 +56,9 @@ class ModelSpec:
     format: str = "gguf"
     license: str = "apache-2.0"
     notes: str = ""
+    #: v4.2.1 — the owner's product branding for this model. The technical id
+    #: stays (it pins the exact file); what the USER sees is this name.
+    display_name: str = ""
     tier: str = "baseline"          # baseline | low-ram | experimental
     license_url: str = "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF"
     source_host: str = "huggingface.co"
@@ -116,6 +119,7 @@ def _models() -> tuple[ModelSpec, ...]:
             ),
             alt_source_hosts=("modelscope.cn",),
             notes="مدل پیش‌فرض v4.0 — سبک، چندزبانه، با پشتیبانی فراخوانی ابزار",
+            display_name="مدل تخصصی سوپری‌من",
         ),
         ModelSpec(
             model_id="qwen2.5-1.5b-instruct-q3_k_m",
@@ -140,6 +144,7 @@ def _models() -> tuple[ModelSpec, ...]:
             ),
             alt_source_hosts=("modelscope.cn",),
             notes="گزینهٔ ۴ گیگابایتی؛ کیفیت کمتر، حافظهٔ کمتر",
+            display_name="سوپری‌من لایت",
         ),
     )
 
@@ -237,6 +242,13 @@ _apply_pins()
 
 def registry_payload() -> list[dict]:
     return [spec.to_dict() for spec in MODELS]
+
+
+def display_name(model_id: str | None) -> str:
+    """v4.2.1 — the branded user-facing name for a model id (fallback: the id)."""
+    spec = get(model_id) if model_id else None
+    brand = getattr(spec, "display_name", "") if spec else ""
+    return brand or (model_id or "")
 
 
 def validate_registry(cap: int = MAX_FILE_BYTES) -> list[str]:

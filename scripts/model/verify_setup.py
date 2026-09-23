@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v4.2 — verify that a built Windows Setup.exe REALLY contains the model.
+"""v4.2.1 — verify that a built Windows Setup.exe REALLY contains the model.
 
 Why this exists: the owner built the installer and got a 56 MB Setup.exe —
 the ~1 GB model was not inside it. apksigner/aapt2-style "the build ran fine"
@@ -12,12 +12,27 @@ the installer was supposed to embed (``installer/windows/model_payload.iss``
   3. the Setup.exe must be at least ``MIN_FACTOR`` × the GGUF size (Inno's LZMA
      compresses quantized weights by only a few percent, so 0.8× is a very safe
      floor — a missing model shows up as ~56 MB against an ~850 MB floor);
-  4. the Setup.exe must look like an Inno Setup executable.
+  4. the Setup.exe must be a PE executable carrying the Inno Setup signature.
+
+Where the Inno signature lives (checked against the official Inno Setup 6.7.3
+source, Projects/Src/Shared.Struct.pas + Compiler.SetupCompiler.pas):
+``SetupID: TSetupID = 'Inno Setup Setup Data (6.7.0)'`` is a 64-byte record
+written at the START of the embedded setup-0 block — i.e. right AFTER the
+Inno stub PE image, several hundred KiB into the file, NOT at the end of the
+file. v4.2.0 searched the last 4 KiB, found nothing, and wrongly destroyed a
+perfect 1,153.8 MB Setup.exe after 8 minutes of ISCC compression. Never again:
+we scan the first 4 MiB (the stub is well under 2 MiB) and exit codes are
+separated:
+
+  exit 0 — the model is inside; ship it.
+  exit 1 — the MODEL is missing (payload manifest absent / GGUF missing /
+           Setup.exe below the size floor). The builder deletes the setup.
+  exit 2 — structural suspicion only (no PE header / no Inno signature) while
+           the payload itself looked fine. The builder FAILS but KEEPS the
+           file for inspection instead of deleting the owner's 8-minute build.
 
 Usage (also wired into builder-lib.ps1 after ISCC):
     python scripts/model/verify_setup.py <Setup.exe> [--installer-dir DIR]
-
-Exit 0 with a Persian summary; exit 1 naming exactly what is wrong.
 """
 from __future__ import annotations
 
@@ -32,7 +47,11 @@ ROOT = Path(__file__).resolve().parents[2]
 MIN_FACTOR = 0.8
 #: below this the file cannot possibly contain app + model
 ABSOLUTE_FLOOR_MB = 60
-INNO_MARKER = b"Inno Setup Setup Data"
+#: the stub PE is < 2 MiB, so the setup-0 signature is inside the first 4 MiB
+HEAD_SCAN = 4 * 1024 * 1024
+#: exact-case prefix of the Pascal constant in Inno's Shared.Struct.pas
+#: (5.3.7+ and 6.x all match; the version inside the parentheses varies)
+INNO_MARKER = b"Inno Setup Setup Data ("
 
 
 def payload_models(installer_dir: Path) -> list[dict]:
@@ -57,30 +76,36 @@ def payload_models(installer_dir: Path) -> list[dict]:
     return models
 
 
-def verify(setup: Path, installer_dir: Path) -> tuple[bool, list[str], dict]:
+def _looks_like_inno_setup(setup: Path) -> bool:
+    """True when the file is a PE carrying the Inno signature record.
+
+    Reads at most HEAD_SCAN bytes — never the whole (potentially > 1 GB) file;
+    v4.2.0 loaded the entire Setup.exe into RAM for the head check.
+    """
+    try:
+        with open(setup, "rb") as fh:
+            head = fh.read(HEAD_SCAN)
+    except OSError:
+        return False
+    if len(head) < 2 or head[:2] != b"MZ":
+        return False
+    return INNO_MARKER in head
+
+
+def verify(setup: Path, installer_dir: Path) -> tuple[bool, list[str], dict, int]:
+    """Returns (ok, problems, info, exit_code) — see the module docstring."""
     problems: list[str] = []
     info: dict = {"setup": str(setup), "size": 0, "models": []}
     if not setup.exists():
-        return False, [f"فایل نصب پیدا نشد: {setup}"], info
+        return False, [f"فایل نصب پیدا نشد: {setup}"], info, 1
     info["size"] = setup.stat().st_size
-
-    head = setup.read_bytes()[: max(len(INNO_MARKER) + 4, 4096)] if setup.stat().st_size else b""
-    # Inno markers live near the end of the file for some versions; scan the tail too
-    tail = b""
-    with open(setup, "rb") as fh:
-        fh.seek(0, 2)
-        end = fh.tell()
-        fh.seek(max(0, end - 4096))
-        tail = fh.read(4096)
-    if INNO_MARKER not in head and INNO_MARKER not in tail:
-        problems.append("فایل Setup.exe نشانگر Inno Setup را ندارد — این فایل نصب معتبر نیست")
 
     models = payload_models(installer_dir)
     if not models:
         problems.append(
             "model_payload.iss وجود ندارد یا مدلی داخل آن نیست — مدل هرگز برای جاسازی آماده نشد "
             "(scripts/model/prepare_windows_installer.py باید قبل از Inno Setup اجرا شود)")
-        return False, problems, info
+        return False, problems, info, 1
 
     total = 0
     for m in models:
@@ -91,25 +116,32 @@ def verify(setup: Path, installer_dir: Path) -> tuple[bool, list[str], dict]:
         info["models"].append({"model_id": m["model_id"], "bytes": m["size"],
                                "sha256": (m["sha256"] or "")[:16] + "…"})
     if total <= 0:
-        return False, problems, info
+        return False, problems, info, 1
 
     floor = int(total * MIN_FACTOR)
-    if info["size"] < floor:
+    if info["size"] < floor or info["size"] < ABSOLUTE_FLOOR_MB * 1e6:
         problems.append(
             f"حجم فایل نصب {info['size'] / 1e6:,.0f} مگابایت است ولی مدلِ داخلش باید حداقل "
             f"{floor / 1e6:,.0f} مگابایت باشد — مدل داخل فایل نصب نیست")
-    if info["size"] < ABSOLUTE_FLOOR_MB * 1e6:
-        problems.append(f"فایل نصب از {ABSOLUTE_FLOOR_MB} مگابایت هم کوچک‌تر است")
-    return (not problems), problems, info
+        return False, problems, info, 1
+
+    # payload looks right — now the structure check (v4.2.1: keep, don't delete)
+    if not _looks_like_inno_setup(setup):
+        problems.append(
+            "فایل Setup.exe نشانگر Inno Setup را در ابتدای فایل ندارد — احتمالاً خروجی ISCC "
+            "کامل نیست؛ فایل برای بررسی حفظ شد و حذف نمی‌شود")
+        return False, problems, info, 2
+
+    return True, problems, info, 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify the model is inside the Windows Setup.exe (v4.2)")
+    parser = argparse.ArgumentParser(description="Verify the model is inside the Windows Setup.exe (v4.2.1)")
     parser.add_argument("setup", help="path to the built Setup.exe")
     parser.add_argument("--installer-dir", default=str(ROOT / "installer" / "windows"),
                         help="installer/windows directory (where model_payload.iss lives)")
     args = parser.parse_args(argv)
-    ok, problems, info = verify(Path(args.setup), Path(args.installer_dir))
+    ok, problems, info, code = verify(Path(args.setup), Path(args.installer_dir))
     print(f"فایل نصب : {info['setup']} ({info['size'] / 1e6:,.1f} مگابایت)")
     for m in info.get("models", []):
         print(f"مدل داخل : {m['model_id']} — {m['bytes'] / 1e6:,.0f} مگابایت (sha256 {m['sha256']})")
@@ -118,10 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     for p in problems:
         print(f"FAIL: {p}", file=sys.stderr)
-    print("\nاین Setup.exe بدون مدل است و ساخته‌شدنش نباید اعلام می‌شد. دوباره بیلد بگیرید و اگر "
-          "دانلود مدل شکست خورده بود، اول اینترنت را بررسی کنید (دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد).",
-          file=sys.stderr)
-    return 1
+    if code == 1:
+        print("\nاین Setup.exe بدون مدل است و ساخته‌شدنش نباید اعلام می‌شد. دوباره بیلد بگیرید و اگر "
+              "دانلود مدل شکست خورده بود، اول اینترنت را بررسی کنید (دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد).",
+              file=sys.stderr)
+    else:
+        print("\nمدل داخل فایل به نظر می‌رسد ولی ساختار فایل نصب مشکوک است — فایل حذف نشد؛ خروجی "
+              "بالا را بررسی کنید.", file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@
   let brainTab = "OPEN";
   let chatHistory = [];
 
+  // v4.2.1 — the owner's branding: the model is called «مدل تخصصی سوپری‌من»
+  // (light variant: «سوپری‌من لایت») in everything the user sees. The technical
+  // id stays in code (it pins the exact file + sha256); it is not a product name.
+  const BRAND = (id) => ({ "qwen2.5-1.5b-instruct-q4_k_m": "مدل تخصصی سوپری‌من",
+                           "qwen2.5-1.5b-instruct-q3_k_m": "سوپری‌من لایت" }[id] || id || "—");
+
   // ---------------------------------------------------------------- status strip
   function statusStrip(st) {
     const mode = MODE_FA[st.local_mode] || st.local_mode || "—";
@@ -64,7 +70,7 @@
       ["تصمیم‌های باز", fa((st.decisions || {}).open || 0), "در مرکز تصمیم"],
       ["پیگیری‌های سررسید", fa(((st.followups || {}).overdue || 0)), "نیازمند ثبت نتیجه"],
       ["مدل محلی", model.active ? (model.ready ? "آماده" : "نصب‌شده، آماده‌نشدن") : "نصب نشده",
-        model.recommended ? `پیشنهاد این دستگاه: ${model.recommended}` : ""],
+        model.recommended ? `پیشنهاد این دستگاه: ${BRAND(model.recommended)}` : ""],
     ];
     const host = el("section", { class: "ins-hero" });
     host.innerHTML = `<div class="ins-hero-grid">${cards.map(([t, v, s]) => `
@@ -165,18 +171,33 @@
   }
 
   // ---------------------------------------------------------------- chat
+  const nowTime = () => new Date().toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
+
   function bubble(role, text, meta) {
-    const b = el("div", { class: "brain-bubble brain-" + (role === "USER" ? "user" : "brain") });
-    b.innerHTML = `<p>${esc(text).replace(/\n/g, "<br>")}</p>` +
-      (meta ? `<span class="muted">${esc(meta)}</span>` : "");
+    const user = role === "USER";
+    const b = el("div", { class: "brain-bubble brain-" + (user ? "user" : "brain") });
+    b.innerHTML =
+      (user ? "" : `<div class="b-head"><img src="/icons/model-192.png" alt="" /><b>مغز فروشگاه</b></div>`) +
+      `<p>${esc(text).replace(/\n/g, "<br>")}</p>` +
+      `<div class="b-meta"><span>${user ? "شما" : ""}</span><span>${nowTime()}</span>` +
+      (meta ? `<span>· ${esc(meta)}</span>` : "") + `</div>`;
+    return b;
+  }
+
+  /** v4.2.1 — animated "typing" indicator (three pulsing dots) while thinking. */
+  function typingBubble(label) {
+    const b = el("div", { class: "brain-bubble brain-brain brain-typing-b" });
+    b.innerHTML = `<div class="b-head"><img src="/icons/model-192.png" alt="" /><b>مغز فروشگاه</b></div>
+      <div class="brain-typing" aria-label="${esc(label || "در حال پاسخ")}"><i></i><i></i><i></i></div>`;
     return b;
   }
 
   function chatBox() {
     const wrap = el("section", { class: "brain-chat" });
     wrap.innerHTML = `<header class="brain-chat-head">
-        <h3>گفت‌وگو با مغز فروشگاه</h3>
-        <span class="muted" id="brain-mode"></span></header>
+        <img src="/icons/model-192.png" alt="مدل سوپری‌من" />
+        <div><h3>گفت‌وگو با مغز فروشگاه</h3>
+        <span class="muted" id="brain-mode">مدل تخصصی سوپری‌من — محلی و آفلاین</span></div></header>
       <div class="brain-log" id="brain-log" aria-live="polite"></div>
       <form class="brain-form" id="brain-form">
         <input id="brain-q" class="input" autocomplete="off"
@@ -194,7 +215,7 @@
       if (!question) return;
       input.value = "";
       log().append(bubble("USER", question));
-      const thinking = el("div", { class: "brain-bubble brain-brain muted", text: "در حال بررسی داده‌های فروشگاه…" });
+      const thinking = typingBubble("در حال بررسی داده‌های فروشگاه…");
       log().append(thinking);
       try {
         const answer = await api("/brain/chat", { method: "POST", body: JSON.stringify({ question }) });
@@ -267,10 +288,10 @@
   function modelBox(model) {
     const c = el("article", { class: "ins-card" });
     const active = model.active || null;
-    c.innerHTML = `<header><span class="ins-ic">${icon("brain", 20)}</span>
-      <div class="ins-head"><span class="ins-kind">مدل هوش مصنوعی</span><h4>${esc(active ? `مدل فعال: ${active.model_id}` : "مدلی نصب نشده")}</h4></div>
+    c.innerHTML = `<header><img class="ins-ic-img" src="/icons/model-192.png" alt="مدل سوپری‌من" />
+      <div class="ins-head"><span class="ins-kind">مدل هوش مصنوعی</span><h4>${esc(active ? `مدل فعال: ${model.active_name || BRAND(active.model_id || active)}` : "مدلی نصب نشده")}</h4></div>
       ${model.binary ? '<span class="badge badge-green">موتور محلی موجود</span>' : '<span class="badge badge-amber">موتور محلی نصب نیست</span>'}</header>
-      <p class="ins-body">پیشنهاد برای این دستگاه: <b>${esc(model.recommended || "—")}</b>
+      <p class="ins-body">پیشنهاد برای این دستگاه: <b>${esc(BRAND(model.recommended))}</b>
         · زمینهٔ متن: ${fa(model.context || 4096)} توکن · سقف حجم فایل: ۲ گیگابایت</p>`;
     const act = el("div", { class: "ins-actions" });
     act.append(el("button", {

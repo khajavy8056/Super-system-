@@ -231,6 +231,7 @@ class _Bar:
         self._last_draw = 0.0
         self._drawn = 0
         self._last_milestone = 0.0
+        self._last_milestone_done = 0
         self._last_line = ""
 
     def update(self, done: int, force: bool = False) -> None:
@@ -249,8 +250,13 @@ class _Bar:
             if force or now - self._last_draw >= 0.25:
                 self._last_draw = now
                 self._draw(done)
-        elif force or now - self._last_milestone >= 30.0:
+        elif (force or now - self._last_milestone >= 8.0
+              or (self.total and done - self._last_milestone_done >= self.total * 0.05)):
+            # v4.2.1: the builder now STREAMS these lines live into its console
+            # (builder-lib.ps1 -Stream), so milestones must be frequent enough
+            # to look like progress: at least every 5% or 8 seconds.
             self._last_milestone = now
+            self._last_milestone_done = done
             print(f"    {self._line(done)}", flush=True)
 
     def _speed(self) -> float | None:
