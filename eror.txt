@@ -1,0 +1,49 @@
+[ERROR] PowerShell cannot parse C:\Users\HP\Downloads\Super-system--arena-01a0ca3c-super-system (1)\Super-system--arena-01a0ca3c-super-system\installer\windows\builder-lib.ps1
+   358: Unexpected token 'Ù†ØµØ¨' in expression or statement.
+   358: Missing closing ')' in expression.
+   356: Missing closing '}' in statement block or type definition.
+   354: Missing closing '}' in statement block or type definition.
+   359: Unexpected token ')' in expression or statement.
+   360: Unexpected token '}' in expression or statement.
+   381: Unexpected token '}' in expression or statement.
+   412: Unexpected token 'Ø¨Ø±Ø±Ø³ÛŒ' in expression or statement.
+   412: Missing closing ')' in expression.
+   413: Unexpected token 'Ù¾Ø§ÛŒØªÙˆÙ†' in expression or statement.
+   415: Unexpected token 'Ø¯Ø±' in expression or statement.
+   416: Unexpected token 'Ø§Ù‹:`n" +
+           "' in expression or statement.
+   418: Unexpected token ')' in expression or statement.
+   419: Unexpected token '}' in expression or statement.
+   484: Unexpected token 'â€ŒÙ‡Ø§' in expression or statement.
+   484: Missing closing ')' in expression.
+   483: Missing closing '}' in statement block or type definition.
+   463: Missing closing '}' in statement block or type definition.
+   486: The hash literal was incomplete.
+   487: Unexpected token '}' in expression or statement.
+   489: Unexpected token '}' in expression or statement.
+   489: Unexpected token '}' in expression or statement.
+   495: Missing closing '}' in statement block or type definition.
+   491: Missing closing '}' in statement block or type definition.
+   564: The hash literal was incomplete.
+   564: Unexpected token ')' in expression or statement.
+   602: Unexpected token '}' in expression or statement.
+   612: Unexpected token 'Ø§Ø¬Ø±Ø§ÛŒÛŒ' in expression or statement.
+   612: Missing closing ')' in expression.
+   611: Missing closing '}' in statement block or type definition.
+   614: Unexpected token ')' in expression or statement.
+   615: Unexpected token '}' in expression or statement.
+   616: Unexpected token 'Ù…Ú¯Ø§Ø¨Ø§ÛŒØª' in expression or statement.
+   616: Missing closing ')' in expression.
+   616: Unexpected token ')' in expression or statement.
+   669: Missing closing ')' in expression.
+   670: Unexpected token ')' in expression or statement.
+   671: Unexpected token '}' in expression or statement.
+   674: Unexpected token '}' in expression or statement.
+   681: Unexpected token 'Ù†ØµØ¨' in expression or statement.
+   691: Unexpected token '}' in expression or statement.
+   692: Unexpected token ')' in expression or statement.
+
+ The build scripts could not be parsed. Re-download the repository ZIP;
+ do not open/save the .ps1 files with an editor that strips the UTF-8 BOM.
+
+Press any key to continue . . .
