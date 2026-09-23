@@ -78,4 +78,14 @@ APK="$OUT/SupermarketMobile-$VER.apk"
 "$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --ks-key-alias "$KS_ALIAS" --out "$APK" "$W/aligned.apk" 2>/dev/null
 "$JAVA" -jar "$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | head -3
 ( cd "$OUT" && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256" )
-echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+
+echo "== install-preflight (v4.1.1)"
+# what PackageManager actually checks (arsc alignment/storage, ABIs, zip CRC) —
+# apksigner/aapt2 alone missed the class of bugs that broke the owner's install
+PY="${PY:-python3}"
+if "$PY" "$ROOT/scripts/android/verify-apk.py" "$APK"; then
+  echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+else
+  echo "the APK fails install-preflight — refusing to call it done" >&2
+  exit 1
+fi

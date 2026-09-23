@@ -28,8 +28,6 @@ from app.services.business_brain import model_registry
 
 REPO = Path(__file__).resolve().parents[2]
 JAVA = REPO / "mobile-android" / "app" / "src" / "main" / "java" / "ir" / "khajavy" / "supermarket"
-ENGINE_SO = (REPO / "mobile-android" / "app" / "src" / "main" / "jniLibs" /
-             "arm64-v8a" / "libllamaserver.so")
 
 SPEC_RE = re.compile(
     r'new Spec\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([0-9a-f]{64})",\s*(\d+)L,\s*(\d+)\)',
@@ -94,21 +92,51 @@ def test_engine_tag_matches_the_windows_installer():
         f"engine versions diverged: phone runs llama.cpp {java_tag}, Windows ships {win_tag}"
 
 
-def test_engine_binary_is_a_static_aarch64_elf():
-    assert ENGINE_SO.exists(), (
-        "libllamaserver.so is missing — run scripts/android/build-engine.sh; the APK "
-        "must ship the on-device engine (owner request 2026-09-23)")
-    data = ENGINE_SO.read_bytes()
-    assert data[:4] == b"\x7fELF" and data[4] == 2, "not a 64-bit ELF"
-    assert struct.unpack("<H", data[18:20])[0] == 183, "not aarch64 — wrong ABI!"
-    phoff = struct.unpack("<Q", data[0x20:0x28])[0]
-    phentsize = struct.unpack("<H", data[0x36:0x38])[0]
-    phnum = struct.unpack("<H", data[0x38:0x3a])[0]
-    types = {struct.unpack("<I", data[phoff + i * phentsize: phoff + i * phentsize + 4])[0]
-             for i in range(phnum)}
-    assert 3 not in types, "PT_INTERP present — the binary is dynamic and will not run on Android"
-    assert 2 not in types, "PT_DYNAMIC present — not a static binary"
-    assert len(data) < 80 * 1024 * 1024, "engine binary is unexpectedly large"
+def test_engine_binaries_are_static_elfs_for_both_abis():
+    """Every shipped ABI must be a static ELF of the right machine — and BOTH
+    Android ABIs must ship, or 32-bit phones refuse the whole APK
+    (INSTALL_FAILED_NO_MATCHING_ABIS — the owner's «برنامه نصب نشد», 2026-09-23)."""
+    expected = {"arm64-v8a": 183, "armeabi-v7a": 40}
+    shipped = {p.parent.name for p in
+               (REPO / "mobile-android" / "app" / "src" / "main" / "jniLibs").glob("*/libllamaserver.so")}
+    assert shipped == set(expected), f"engine ABIs diverged: {shipped} (wanted {set(expected)})"
+    for abi, machine in expected.items():
+        data = (REPO / "mobile-android" / "app" / "src" / "main" / "jniLibs" / abi /
+                "libllamaserver.so").read_bytes()
+        assert data[:4] == b"\x7fELF", f"{abi}: not an ELF"
+        is64 = data[4] == 2
+        assert is64 == (abi == "arm64-v8a"), f"{abi}: wrong ELF class"
+        assert struct.unpack("<H", data[18:20])[0] == machine, f"{abi}: wrong ELF machine"
+        if is64:
+            phoff = struct.unpack("<Q", data[0x20:0x28])[0]
+            phentsize = struct.unpack("<H", data[0x36:0x38])[0]
+            phnum = struct.unpack("<H", data[0x38:0x3a])[0]
+        else:                                       # ELFCLASS32 header layout
+            phoff = struct.unpack("<I", data[0x1c:0x20])[0]
+            phentsize = struct.unpack("<H", data[0x2a:0x2c])[0]
+            phnum = struct.unpack("<H", data[0x2c:0x2e])[0]
+        types = {struct.unpack("<I", data[phoff + i * phentsize: phoff + i * phentsize + 4])[0]
+                 for i in range(phnum)}
+        assert 3 not in types, f"{abi}: PT_INTERP present — will not run on Android"
+        assert 2 not in types, f"{abi}: not a static binary"
+        assert len(data) < 80 * 1024 * 1024, f"{abi}: engine unexpectedly large"
+
+
+def test_released_apk_passes_install_preflight():
+    """If a released APK exists for the current version, run the real
+    install-preflight (what PackageManager enforces, not what apksigner does)."""
+    import re as _re
+    version = _re.search(r'__version__\s*=\s*"([^"]+)"',
+                         (REPO / "backend" / "app" / "__init__.py").read_text()).group(1)
+    apk = REPO / "releases" / "android" / f"SupermarketMobile-{version}.apk"
+    if not apk.exists():
+        return                                          # not built in this checkout
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, str(REPO / "scripts" / "android" / "verify-apk.py"),
+                             str(apk)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "armeabi-v7a" in result.stdout, "the released APK lacks 32-bit ARM support"
 
 
 def test_apk_actually_packages_the_engine():

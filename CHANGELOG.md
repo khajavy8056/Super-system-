@@ -3,6 +3,14 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.1.1] - 2026-09-23
+
+### رفع «برنامه نصب نشد» روی اندروید
+- **Root cause found and fixed: the APK shipped only arm64-v8a.** A 32-bit phone (armeabi-v7a) refuses the whole package with INSTALL_FAILED_NO_MATCHING_ABIS — the exact «برنامه نصب نشد» the owner reported. The engine is now built for **both** ABIs: `arm64-v8a` AND a static `armeabi-v7a` binary (zig cross-compile, cortex-a7 + NEON, hard-float musl — zig's ARM32 backend cannot compile NEON under soft/softfp, and a fully static binary carries its own ABI so hard-float runs on every ARMv7 device). `scripts/android/build-engine.sh` builds both; `build-apk.sh` packs both.
+- New **install-preflight** (`scripts/android/verify-apk.py`, pure stdlib): checks what PackageManager actually enforces — resources.arsc stored AND 4-byte aligned (Android 11+ rejects the APK otherwise), classes.dex present, zip CRC pass, and which ABIs ship (warns when armeabi-v7a is missing). `build-apk.sh` refuses to call an APK "done" without a PASS; the parity test suite re-runs it against the released APK.
+- Device-side causes that no APK can fix (check these if install still fails): an existing build of the same package with a **different signing key** (uninstall it first), Play Protect («جزئیات ← نصب به هر حال»), a corrupted transfer (compare sha256), or Android below 7.0 (below minSdk).
+- Tests: parity suite now requires BOTH engine ABIs as static ELFs of the right machine (EM_AARCH64=183 / EM_ARM=40) and runs the preflight on the released APK.
+
 ## [4.1.0] - 2026-09-23
 
 ### اندروید: مدل فعال روی گوشی + «یک مدل، یک سیستم» (درخواست مالک)
