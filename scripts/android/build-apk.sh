@@ -53,6 +53,17 @@ find "$W/classes" -name '*.class' > "$W/classes.txt"
 echo "== 5/6 package + align"
 cp "$W/base.apk" "$W/unsigned.apk"
 ( cd "$W/dex" && zip -q "$W/unsigned.apk" classes.dex )
+# v4.1 — the on-device inference engine (llama.cpp, static aarch64 build of the
+# same b6283 tag the Windows installer bundles). It ships as lib/<abi>/libllamaserver.so
+# so Android extracts it next to the app and it can be executed from there.
+for ABI_DIR in "$APP"/jniLibs/*/; do
+  [ -d "$ABI_DIR" ] || continue
+  ABI=$(basename "$ABI_DIR")
+  mkdir -p "$W/native/lib/$ABI"
+  cp "$ABI_DIR"*.so "$W/native/lib/$ABI/"
+  ( cd "$W/native" && zip -q "$W/unsigned.apk" "lib/$ABI/"* )
+  echo "   engine: packed lib/$ABI ($(du -ch "$W/native/lib/$ABI"/*.so | tail -1 | cut -f1))"
+done
 if [ -x "$TOOLS/zipalign" ]; then "$TOOLS/zipalign" -f -p 4 "$W/unsigned.apk" "$W/aligned.apk"; else cp "$W/unsigned.apk" "$W/aligned.apk"; fi
 
 echo "== 6/6 sign (apksigner v2+v3)"

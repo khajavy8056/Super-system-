@@ -290,12 +290,67 @@ public final class BrainScreens {
 
         /* ---------------- the local model (downloads AFTER install, as app data) ---------------- */
         void modelTab() {
+            body.addView(engineCard());
             LinearLayout why = Ui.card(c, "مدل هوش مصنوعی محلی");
             why.addView(Ui.body(c, "فایل مدل داخل نصب برنامه نیست؛ پس از نصب، از مخزن رسمی Qwen دریافت، هش SHA-256 آن تأیید و در حافظهٔ خود برنامه نگه داشته می‌شود (حذف برنامه، آن را هم پاک می‌کند)."));
-            why.addView(Ui.muted(c, "حجم دریافت حدود ۰٫۹ تا ۱٫۱ گیگابایت است — وای‌فای توصیه می‌شود. دریافت با «توقف» قابل قطع و از همان‌جا قابل ادامه است."));
-            why.addView(Ui.muted(c, "صادقانه: موتور استنتاج روی خود گوشی در این نسخه فعال نیست. فایل مدل تأییدشده آماده نگه داشته می‌شود و پاسخ‌های مغز از رایانهٔ فروشگاه می‌آید؛ هر جا موتور محلی فعال شود، همین فایل بدون دریافت مجدد کار می‌کند."));
+            why.addView(Ui.muted(c, "حجم دریافت حدود ۰٫۹ تا ۱٫۱ گیگابایت است — وای‌فای توصیه می‌شود. دریافت با «توقف» قابل قطع و از همان‌جا قابل ادامه است؛ اگر منبع اول (Hugging Face) در دسترس نباشد، همان فایل از منبع رسمی دیگر (ModelScope) گرفته می‌شود."));
+            why.addView(Ui.muted(c, "این همان فایل مدلِ رایانهٔ فروشگاه است (شناسه و هش یکسان) — یک مدل، نه دو مدل. وقتی گوشی با رایانه جفت است، پاسخ‌ها از مغزِ رایانه می‌آید؛ در حالت مستقل، همین فایل روی خود گوشی اجرا می‌شود."));
             body.addView(why);
             for (BrainModel.Spec s : BrainModel.MODELS) body.addView(modelCard(s));
+        }
+
+        /** v4.1 — the on-device engine: same llama.cpp (b6283) the PC runs, inside the APK. */
+        LinearLayout engineCard() {
+            final LinearLayout card = Ui.card(c);
+            LinearLayout head = Ui.row(c);
+            head.addView(Icons.view(c, "wand", Ui.GOLD, 18));
+            LinearLayout t = Ui.col(c); t.setPadding(Ui.dp(8), 0, 0, 0); t.setLayoutParams(Ui.weight(1));
+            t.addView(Ui.text(c, "موتور استنتاج روی گوشی", 13.5f, Ui.TEXT, true));
+            t.addView(Ui.muted(c, "llama.cpp " + BrainEngine.ENGINE_TAG + " — همان موتور رایانه، داخل همین برنامه"));
+            head.addView(t);
+            final String st = BrainEngine.state();
+            if (BrainEngine.RUNNING.equals(st)) head.addView(Ui.badge(c, "روشن", Ui.GREEN));
+            else if (BrainEngine.STARTING.equals(st)) head.addView(Ui.badge(c, "در حال روشن‌شدن", Ui.AMBER));
+            else if (BrainEngine.FAILED.equals(st)) head.addView(Ui.badge(c, "خطا", Ui.RED));
+            else head.addView(Ui.badge(c, "خاموش", Ui.AMBER));
+            card.addView(head);
+
+            final TextView note = Ui.muted(c, engineNote());
+            note.setPadding(0, Ui.dp(6), 0, 0);
+            card.addView(note);
+
+            LinearLayout act = Ui.row(c); act.setPadding(0, Ui.dp(8), 0, 0);
+            if (BrainEngine.installed(c)) {
+                if (BrainEngine.RUNNING.equals(st) || BrainEngine.STARTING.equals(st)) {
+                    act.addView(Ui.small(c, "خاموش‌کردن موتور", () -> { BrainEngine.stop(); load(); }));
+                } else {
+                    android.widget.Button start = Ui.primary(c, "روشن‌کردن و آزمایش موتور محلی", () -> {
+                        BrainEngine.start(c, BrainModel.recommended());
+                        Ui.toast("در حال بارگذاری مدل روی گوشی… چند لحظه صبر کنید");
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::load, 1500);
+                    });
+                    start.setLayoutParams(Ui.weight(1)); act.addView(start);
+                }
+            } else {
+                note.setText("موتور محلی در این نصب موجود نیست — پاسخ‌ها از رایانهٔ فروشگاه می‌آید.");
+            }
+            card.addView(act);
+            BrainEngine.listen((state, n) -> {
+                android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
+                hh.post(this::load);
+            });
+            return card;
+        }
+
+        String engineNote() {
+            String st = BrainEngine.state();
+            String n = BrainEngine.note();
+            long ram = BrainEngine.totalRamMb(c);
+            BrainModel.Spec rec = BrainModel.recommended();
+            String fit = BrainEngine.fitsRam(c, rec)
+                    ? "حافظهٔ گوشی برای مدل پیشنهادی کافی است (" + Ui.num(ram) + " مگابایت رم)"
+                    : "حافظهٔ گوشی برای مدل پیشنهادی کافی به نظر نمی‌رسد (" + Ui.num(ram) + " مگابایت رم؛ حداقل " + Ui.num(rec.minRamMb) + ")";
+            return (n.isEmpty() ? "موتور محلی برای پاسخ‌گویی در حالت مستقل (بدون رایانه) است." : n) + " — " + fit;
         }
         LinearLayout modelCard(final BrainModel.Spec s) {
             final LinearLayout card = Ui.card(c);
@@ -411,6 +466,8 @@ public final class BrainScreens {
     public static final class Chat extends Screens.Screen {
         LinearLayout log;
         EditText in;
+        /** v4.1 — the standalone-mode conversation (system prompt + this session's turns). */
+        JSONArray local;
         Chat(AppActivity a) { super(a); }
         public String key() { return "brainChat"; }
         public String title() { return "گفت‌وگو با مغز فروشگاه"; }
@@ -427,7 +484,11 @@ public final class BrainScreens {
             in.setLayoutParams(Ui.weight(1)); row.addView(in);
             row.addView(Ui.primary(c, "بپرس", this::send));
             root.addView(row);
-            root.addView(Ui.muted(c, "پاسخ‌ها از دادهٔ همین فروشگاه ساخته می‌شود؛ عددی که از ابزار نیامده باشد نمایش داده نمی‌شود."));
+            root.addView(Ui.muted(c, "وصل به رایانه: پاسخ‌ها از دادهٔ همین فروشگاه ساخته می‌شود و عددی که از ابزار نیامده نمایش داده نمی‌شود. بدون رایانه: اگر مدل محلی گرفته و موتور روشن باشد، همان مدل روی خود گوشی پاسخ می‌دهد (با برچسب «محلی») و بدون دادهٔ زندهٔ فروشگاه."));
+            try {
+                local = new JSONArray();
+                local.put(new JSONObject().put("role", "system").put("content", BrainEngine.SYSTEM_PROMPT));
+            } catch (Exception ignore) { local = new JSONArray(); }
             return root;
         }
         public void load() {
@@ -462,6 +523,8 @@ public final class BrainScreens {
             if (q.isEmpty()) return;
             in.setText("");
             bubble("USER", q);
+            // standalone (no PC paired) → the local engine answers directly
+            if (Api.standalone()) { localAnswer(q); return; }
             final LinearLayout thinking = Ui.card(c, null);
             thinking.addView(Ui.muted(c, "در حال بررسی داده‌های فروشگاه…"));
             log.addView(thinking);
@@ -486,10 +549,42 @@ public final class BrainScreens {
                 }
             }, e -> {
                 log.removeView(thinking);
+                if (e.offline() && localUsable()) { localAnswer(q); return; }
                 bubble("ASSISTANT", Api.standalone() || e.offline()
-                        ? "رایانهٔ فروشگاه در دسترس نیست — مغز روی دادهٔ همین لحظهٔ فروشگاه پاسخ می‌دهد و بدون آن عددی نمی‌سازم."
+                        ? "رایانهٔ فروشگاه در دسترس نیست و مدل محلی آماده نیست. مغز بدون دادهٔ همین لحظهٔ فروشگاه عددی نمی‌سازد؛ مدل را از تب «مدل محلی» بگیرید و دوباره بپرسید."
                         : "نتوانستم پاسخ بگیرم: " + e.getMessage());
             });
+        }
+
+        boolean localUsable() {
+            return BrainEngine.usableWith(c, BrainModel.recommended());
+        }
+
+        /** v4.1 — standalone mode: the SAME model file runs ON the phone (labelled, honest). */
+        void localAnswer(String q) {
+            final LinearLayout thinking = Ui.card(c, null);
+            thinking.addView(Ui.muted(c, "رایانه در دسترس نیست — در حال پاسخ با مدل محلی روی خود گوشی…"));
+            log.addView(thinking);
+            try { local.put(new JSONObject().put("role", "user").put("content", q)); } catch (Exception ignore) {}
+            final JSONArray msgs = local;
+            new Thread(() -> {
+                BrainModel.Spec s = BrainModel.recommended();
+                if (!BrainEngine.running()) BrainEngine.start(c, s);
+                String ans = BrainEngine.running() ? BrainEngine.chat(msgs, 512) : null;
+                final String answer = ans == null ? "" : ans;
+                a.runOnUiThread(() -> {
+                    log.removeView(thinking);
+                    if (answer.isEmpty()) {
+                        bubble("ASSISTANT", "مدل محلی پاسخ نداد. وضعیت موتور: " + BrainEngine.note());
+                        return;
+                    }
+                    try { local.put(new JSONObject().put("role", "assistant").put("content", answer)); } catch (Exception ignore) {}
+                    bubble("ASSISTANT", answer);
+                    LinearLayout tag = Ui.card(c, null);
+                    tag.addView(Ui.muted(c, "پاسخ از مدل محلی روی خود گوشی (همان مدل رایانه، llama.cpp) — بدون دادهٔ زندهٔ فروشگاه؛ برای پاسخ با دادهٔ واقعی، وقتی رایانه وصل است دوباره بپرسید."));
+                    log.addView(tag);
+                });
+            }, "brain-local-chat").start();
         }
     }
 }

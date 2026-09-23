@@ -33,11 +33,14 @@ import java.security.MessageDigest;
 public final class BrainModel {
     private BrainModel() {}
 
-    /** The registry pins — mirror of backend model_registry.py (official Qwen repo). */
+    /** The registry pins — mirror of backend model_registry.py (official Qwen sources).
+     *  url = Hugging Face (primary); altUrl = ModelScope, where the Qwen org publishes
+     *  the SAME files (same sha256) — used when the first source is unreachable. */
     public static final class Spec {
-        public final String id, file, url, sha256; public final long bytes;
-        Spec(String id, String file, String url, String sha256, long bytes) {
-            this.id = id; this.file = file; this.url = url; this.sha256 = sha256; this.bytes = bytes;
+        public final String id, file, url, altUrl, sha256; public final long bytes; public final int minRamMb;
+        Spec(String id, String file, String url, String altUrl, String sha256, long bytes, int minRamMb) {
+            this.id = id; this.file = file; this.url = url; this.altUrl = altUrl; this.sha256 = sha256;
+            this.bytes = bytes; this.minRamMb = minRamMb;
         }
         public String label() { return "Qwen2.5 1.5B · " + (bytes > 1_000_000_000L ? "کیفیت پایه" : "سبک (گوشی‌های ضعیف‌تر)"); }
     }
@@ -45,10 +48,12 @@ public final class BrainModel {
     public static final Spec[] MODELS = {
         new Spec("qwen2.5-1.5b-instruct-q4_k_m", "qwen2.5-1.5b-instruct-q4_k_m.gguf",
                  "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                 "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", 1117320736L),
+                 "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                 "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", 1117320736L, 4096),
         new Spec("qwen2.5-1.5b-instruct-q3_k_m", "qwen2.5-1.5b-instruct-q3_k_m.gguf",
                  "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q3_k_m.gguf",
-                 "58cb5c05ecef48e82961f1a2be6544145ea26136f69dddda4bbbd092f0e4b993", 924455968L),
+                 "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q3_k_m.gguf",
+                 "58cb5c05ecef48e82961f1a2be6544145ea26136f69dddda4bbbd092f0e4b993", 924455968L, 3584),
     };
 
     public static Spec find(String id) { for (Spec s : MODELS) if (s.id.equals(id)) return s; return null; }
@@ -123,54 +128,40 @@ public final class BrainModel {
         File target = fileFor(c, s);
         try {
             part.getParentFile().mkdirs();
-            long have = part.exists() ? part.length() : 0;
-            HttpURLConnection con = (HttpURLConnection) new URL(s.url).openConnection();
-            con.setConnectTimeout(30000); con.setReadTimeout(60000);
-            con.setRequestProperty("User-Agent", "SupermarketMobile/4.0");
-            if (have > 0) con.setRequestProperty("Range", "bytes=" + have + "-");
-            int code = con.getResponseCode();
-            if (code == 416) { // the .part is already the whole file
-                part.delete(); have = 0;
-                con = (HttpURLConnection) new URL(s.url).openConnection();
-                con.setConnectTimeout(30000); con.setReadTimeout(60000);
-                con.setRequestProperty("User-Agent", "SupermarketMobile/4.0");
-                code = con.getResponseCode();
-            }
-            if (code != 200 && code != 206) throw new IllegalStateException("HTTP " + code);
-            long total = s.bytes;
-            if (code == 200 && have > 0) { part.delete(); have = 0; }   // no resume support → restart clean
-            InputStream in = con.getInputStream();
-            OutputStream out = new FileOutputStream(part, have > 0 && code == 206);
-            byte[] buf = new byte[256 * 1024];
-            long done = have; long lastUi = 0;
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                if (cancel) break;
-                out.write(buf, 0, n);
-                done += n;
-                if (System.currentTimeMillis() - lastUi > 400) {
-                    lastUi = System.currentTimeMillis();
-                    putState(s.id, DOWNLOADING, done, total > 0 ? percent(done, total) : "");
+            boolean got = false;
+            for (String src : new String[]{s.url, s.altUrl}) {
+                if (src == null || src.isEmpty()) continue;
+                try {
+                    fetchFrom(c, s, src, part);
+                    got = true;
+                    break;
+                } catch (Cancelled ce) {
+                    putState(s.id, PAUSED, part.length(), "متوقف شد — با «ادامه» از همان‌جا برمی‌گردد");
+                    return;
+                } catch (Exception e) {
+                    // this official source failed — the partial is kept, try the next one
+                    putState(s.id, DOWNLOADING, part.length(),
+                             "این منبع رسمی پاسخ نداد؛ تلاش از منبع رسمی دیگر…");
                 }
             }
-            out.flush(); out.close(); in.close();
-            if (cancel) { putState(s.id, PAUSED, done, "متوقف شد — با «ادامه» از همان‌جا برمی‌گردد"); return; }
+            if (!got) throw new IllegalStateException("هیچ‌کدام از منابع رسمی پاسخ ندادند");
 
             // §38: nothing is READY without a full sha256 pass over the file
-            putState(s.id, VERIFYING, done, "در حال تأیید هش فایل…");
+            putState(s.id, VERIFYING, part.length(), "در حال تأیید هش فایل…");
             MessageDigest md = MessageDigest.getInstance("SHA-256");
+            int n; long lastUi = 0;
             try (InputStream fin = new FileInputStream(part)) {
-                long hashed = 0; lastUi = 0;
-                while ((n = fin.read(buf)) > 0) {
+                long hashed = 0;
+                while ((n = fin.read(BUF)) > 0) {
                     if (cancel) break;
-                    md.update(buf, 0, n); hashed += n;
+                    md.update(BUF, 0, n); hashed += n;
                     if (System.currentTimeMillis() - lastUi > 400) {
                         lastUi = System.currentTimeMillis();
-                        putState(s.id, VERIFYING, hashed, "تأیید " + percent(hashed, done));
+                        putState(s.id, VERIFYING, hashed, "تأیید " + percent(hashed, part.length()));
                     }
                 }
             }
-            if (cancel) { putState(s.id, PAUSED, done, "متوقف شد"); return; }
+            if (cancel) { putState(s.id, PAUSED, part.length(), "متوقف شد"); return; }
             StringBuilder hex = new StringBuilder();
             for (byte b : md.digest()) hex.append(String.format("%02x", b));
             if (!hex.toString().equals(s.sha256)) {
@@ -188,6 +179,45 @@ public final class BrainModel {
                      "دریافت قطع شد (" + e.getMessage() + ") — با «ادامه» از همان‌جا برمی‌گردد");
         }
     }
+
+    private static final class Cancelled extends RuntimeException {}
+
+    /** Stream one official source into ``part`` (resuming if a partial exists). */
+    private static void fetchFrom(Context c, Spec s, String src, File part) throws Exception {
+        long have = part.exists() ? part.length() : 0;
+        HttpURLConnection con = (HttpURLConnection) new URL(src).openConnection();
+        con.setConnectTimeout(30000); con.setReadTimeout(60000);
+        con.setRequestProperty("User-Agent", "SupermarketMobile/4.1");
+        if (have > 0) con.setRequestProperty("Range", "bytes=" + have + "-");
+        int code = con.getResponseCode();
+        if (code == 416) { // the .part is already the whole file
+            part.delete(); have = 0;
+            con.disconnect();
+            con = (HttpURLConnection) new URL(src).openConnection();
+            con.setConnectTimeout(30000); con.setReadTimeout(60000);
+            con.setRequestProperty("User-Agent", "SupermarketMobile/4.1");
+            code = con.getResponseCode();
+        }
+        if (code != 200 && code != 206) { con.disconnect(); throw new IllegalStateException("HTTP " + code); }
+        long total = s.bytes;
+        if (code == 200 && have > 0) { part.delete(); have = 0; }   // no resume support → restart clean
+        InputStream in = con.getInputStream();
+        OutputStream out = new FileOutputStream(part, have > 0 && code == 206);
+        long done = have; long lastUi = 0;
+        int n;
+        while ((n = in.read(BUF)) > 0) {
+            if (cancel) { out.flush(); out.close(); in.close(); con.disconnect(); throw new Cancelled(); }
+            out.write(BUF, 0, n);
+            done += n;
+            if (System.currentTimeMillis() - lastUi > 400) {
+                lastUi = System.currentTimeMillis();
+                putState(s.id, DOWNLOADING, done, total > 0 ? percent(done, total) : "");
+            }
+        }
+        out.flush(); out.close(); in.close(); con.disconnect();
+    }
+
+    private static final byte[] BUF = new byte[256 * 1024];
 
     private static String percent(long done, long total) {
         if (total <= 0) return "";

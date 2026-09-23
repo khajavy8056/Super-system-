@@ -3,6 +3,20 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.1.0] - 2026-09-23
+
+### اندروید: مدل فعال روی گوشی + «یک مدل، یک سیستم» (درخواست مالک)
+- **The model is now ACTIVE on the phone.** New `BrainEngine.java`: the app ships the SAME engine the PC runs — llama.cpp `llama-server` (same pinned tag `b6283` as the Windows installer) — built from the official source for arm64 as a fully static binary (`lib/arm64-v8a/libllamaserver.so`, ~7 MB; APK stays 5.3 MB) and executed from `nativeLibraryDir` as a subprocess over HTTP on `127.0.0.1:8081`, a faithful port of the PC's `LlamaCppProvider` (same launch flags, same `/health`, same `/v1/chat/completions` body, same "fast" sampling preset, same `<think>`-stripping).
+- **One system, not two brains** (the owner's rule): paired with the PC → the PC's brain answers over the full deterministic pipeline; standalone → the SAME model file answers on the phone, labelled «پاسخ از مدل محلی روی خود گوشی — بدون دادهٔ زندهٔ فروشگاه», with the product's system-prompt rules (no invented numbers; وضعیت/دلیل/پیشنهاد/اقدام بعدی) plus the honest no-live-data admission. The model file is byte-identical on both platforms.
+- **No NDK needed**: the engine is cross-compiled with official zig (PyPI `ziglang`) to static aarch64-linux-musl — reproducible via the new `scripts/android/build-engine.sh` (source tarball sha256-pinned; no dl.google.com access required). Verified live in-sandbox with an x86_64 twin build of the same source/flags: it loaded a valid generated Qwen2 GGUF and actually generated tokens over the exact HTTP contract `BrainEngine.java` uses; the arm64 ELF is verified static (no PT_INTERP/PT_DYNAMIC).
+- **ModelScope fallback on Android too**: if Hugging Face is unreachable, the phone downloads the same file (same sha256) from the official Qwen channel on ModelScope — mirroring the v4.0.1 Windows download manager.
+- Model tab gains an engine card (status badge, start/stop, RAM-fit line); the old honest "engine not active in this version" note is replaced by the truth of this version. `AppActivity.onDestroy()` stops the engine (battery honesty).
+- **Parity enforced by tests** (`test_v41_android_parity.py`, 7 tests): Java pins == Model Registry (id/file/urls/sha256/bytes/min-RAM), engine tag == Windows installer tag, the .so must be a static aarch64 ELF, the APK must pack it + request `extractNativeLibs`, the local prompt must keep the product's rules and honesty.
+- Real signed APK: `releases/android/SupermarketMobile-4.1.0.apk` (versionCode 40100, 5.3 MB, sha256 876bec4a459b930e2557d5e5399450132d4dd409923a64fb9dc2d63e3ac18b95) — same signing certificate as 3.8.0/4.0.0 (installs as an update). Honest remaining: on-device run on a physical phone (no ARM device/emulator here).
+
+### ویندوز: رفع رگرسیون BOM (خطای «PowerShell cannot parse»)
+- The v4.0.1 edit accidentally stripped the UTF-8 BOM from `builder-lib.ps1`; Windows PowerShell 5.1 then read it as ANSI and the whole build died with mojibake "Unexpected token" errors before anything ran (owner report 2026-09-23). BOM restored + new `test_installer_scripts.py` (9 tests) pins it forever: every installer `.ps1` must carry the BOM, decode as UTF-8 and keep consistent CRLF; `.bat` files must not carry one.
+
 ## [4.0.1] - 2026-09-23
 
 ### مدیر دانلود مدل (درخواست مالک: دانلود با دانلود منیجر و نوار پیشرفت)
