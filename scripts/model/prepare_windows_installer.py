@@ -12,7 +12,12 @@ This script builds that payload honestly:
 
 What it does
 ------------
-1. downloads the model from its **official** source (or adopts ``--from-file``);
+1. downloads the model from its **official** sources (Hugging Face first, then
+   the official ModelScope fallback — or adopts ``--from-file``), through the
+   v4.0.1 download manager: progress bar, parallel connections, resume after
+   an interruption, and Internet Download Manager on Windows when installed
+   (``--downloader auto`` is the default; ``builtin`` forces the built-in
+   engine, ``idm`` forces IDM);
 2. verifies sha256 against the Model Registry — a mismatch deletes the file and
    fails the build (an unverified model must never enter an installer);
 3. writes it to ``installer/windows/model/<model_id>/<file>.gguf`` together with
@@ -23,9 +28,9 @@ What it does
 5. with ``--engine``, fetches the official llama.cpp Windows build into
    ``installer/windows/runtime/`` so the brain can run fully offline.
 
-Nothing here is required to *build* the installer without a model — but the
-release pipeline calls this script and FAILS if the model cannot be verified, so
-a shipped Setup.exe always contains a real, checksum-verified model.
+An interrupted download keeps its partial file (``*.part.dl`` + control state):
+run the script again and it resumes from where it stopped instead of
+re-fetching ~1 GB.
 """
 from __future__ import annotations
 
@@ -34,8 +39,6 @@ import hashlib
 import json
 import shutil
 import sys
-import tempfile
-import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +46,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.services.business_brain import model_registry  # noqa: E402
+from app.services.business_brain import download_manager, model_registry  # noqa: E402
+from app.services.business_brain.download_manager import force_utf8_stdio  # noqa: E402
 
 INSTALLER = ROOT / "installer" / "windows"
 #: llama.cpp official Windows CPU build (release tag → asset name pattern)
@@ -63,25 +67,8 @@ def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def _download(url: str, dest: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "SupermarketBrain/4.0"})
-    with urllib.request.urlopen(request, timeout=120) as response, open(dest, "wb") as fh:
-        total = response.headers.get("Content-Length")
-        total = int(total) if total and total.isdigit() else 0
-        done = 0
-        while True:
-            block = response.read(1024 * 1024)
-            if not block:
-                break
-            fh.write(block)
-            done += len(block)
-            if total:
-                print(f"\r  {done / (1024 * 1024):,.0f} / {total / (1024 * 1024):,.0f} MB",
-                      end="", flush=True)
-    print()
-
-
-def prepare_model(model_id: str | None, from_file: str | None, out: Path) -> int:
+def prepare_model(model_id: str | None, from_file: str | None, out: Path,
+                  downloader: str = "auto", connections: int = 4) -> int:
     spec = model_registry.get(model_id) if model_id else model_registry.default_model()
     if spec is None:
         print(f"unknown model: {model_id}", file=sys.stderr)
@@ -107,21 +94,37 @@ def prepare_model(model_id: str | None, from_file: str | None, out: Path) -> int
     elif target.exists() and sha256_file(target) == spec.sha256:
         print(f"already prepared: {target}")
     else:
-        print(f"downloading {spec.model_id} from the official repository…")
+        sources = model_registry.source_urls(spec)
+        print(f"downloading {spec.model_id} — {spec.file_size_bytes / (1024 * 1024):,.0f} MB "
+              f"from the official repositories ({len(sources)} source(s))")
         target.unlink(missing_ok=True)
-        with tempfile.NamedTemporaryFile(dir=target_dir, delete=False, suffix=".part") as tmp:
-            partial = Path(tmp.name)
+        partial = target_dir / (spec.file_name + ".part")
         try:
-            _download(spec.source_url, partial)
-            digest = sha256_file(partial)
-            if digest != spec.sha256:
-                print(f"CHECKSUM MISMATCH: expected {spec.sha256}, got {digest} — "
-                      "the file is deleted and the build fails", file=sys.stderr)
-                partial.unlink(missing_ok=True)
-                return 1
-            partial.replace(target)
-        finally:
+            download_manager.fetch(sources, partial,
+                                   expected_size=spec.file_size_bytes,
+                                   expected_sha256=spec.sha256,
+                                   downloader=downloader, connections=connections)
+        except download_manager.DownloadError as exc:
+            resumable = Path(str(partial) + ".dl").exists()
+            print(f"DOWNLOAD FAILED: {exc}", file=sys.stderr)
+            if resumable:
+                print("the partial download was kept — run this script again and it "
+                      "resumes from where it stopped", file=sys.stderr)
+            else:
+                print("check the internet connection and try again, or download the "
+                      "GGUF manually and pass --from-file", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("\ninterrupted — the partial download is kept; run again to resume",
+                  file=sys.stderr)
+            return 130
+        digest = sha256_file(partial)
+        if digest != spec.sha256:
+            print(f"CHECKSUM MISMATCH: expected {spec.sha256}, got {digest} — "
+                  "the file is deleted and the build fails", file=sys.stderr)
             partial.unlink(missing_ok=True)
+            return 1
+        partial.replace(target)
         print(f"verified sha256 {spec.sha256}")
 
     digest = sha256_file(target)
@@ -146,7 +149,7 @@ def prepare_model(model_id: str | None, from_file: str | None, out: Path) -> int
     return 0
 
 
-def prepare_engine(out: Path) -> int:
+def prepare_engine(out: Path, downloader: str = "auto", connections: int = 4) -> int:
     """Bundle the official llama.cpp Windows build next to the model.
 
     Optional but recommended: without an engine the adopted model stays
@@ -158,15 +161,16 @@ def prepare_engine(out: Path) -> int:
     if marker.exists():
         print(f"engine already prepared: {marker}")
         return 0
-    with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / LLAMA_ASSET
-        print(f"downloading llama.cpp {LLAMA_TAG} (official GitHub release)…")
-        try:
-            _download(LLAMA_URL, archive)
-        except Exception as exc:  # noqa: BLE001 — an offline build can still ship the model
-            print(f"WARNING: engine fetch failed ({exc}); the installer will ship WITHOUT "
-                  "the engine — the brain will say so honestly on first launch")
-            return 0
+    archive = runtime_dir / LLAMA_ASSET
+    print(f"downloading llama.cpp {LLAMA_TAG} (official GitHub release)…")
+    try:
+        download_manager.fetch((LLAMA_URL,), archive,
+                               downloader=downloader, connections=connections)
+    except Exception as exc:  # noqa: BLE001 — an offline build can still ship the model
+        print(f"WARNING: engine fetch failed ({exc}); the installer will ship WITHOUT "
+              "the engine — the brain will say so honestly on first launch")
+        return 0
+    try:
         digest = sha256_file(archive)
         wanted = ("llama-server.exe",)
         found: list[Path] = []
@@ -189,6 +193,12 @@ def prepare_engine(out: Path) -> int:
                                       "prepared_at": datetime.now(timezone.utc).isoformat()},
                                      ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"engine ready → {runtime_dir}")
+    except Exception as exc:  # noqa: BLE001 — a bad engine payload must not kill the build
+        print(f"WARNING: engine payload failed ({exc}); the installer will ship WITHOUT "
+              "the engine — the brain will say so honestly on first launch", file=sys.stderr)
+        return 0
+    finally:
+        archive.unlink(missing_ok=True)          # the marker is the record, not the zip
     return 0
 
 
@@ -205,6 +215,7 @@ def write_iss_include(out: Path) -> int:
         "; directory so the Business Brain works on first launch, fully offline.",
         "; The app re-verifies sha256 at runtime and refuses anything it cannot trust.",
     ]
+    out.mkdir(parents=True, exist_ok=True)
     model_root = out / "model"
     shipped = 0
     if model_root.exists():
@@ -238,6 +249,7 @@ def write_iss_include(out: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_stdio()          # redirected Windows consoles must never crash on output
     parser = argparse.ArgumentParser(description="Windows installer model payload (v4.0)")
     parser.add_argument("--model", help="registry model id (default: the registry default)")
     parser.add_argument("--from-file", metavar="PATH",
@@ -247,15 +259,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(INSTALLER), help="installer/windows directory")
     parser.add_argument("--skip-model", action="store_true",
                         help="only regenerate model_payload.iss (no payload checks)")
+    parser.add_argument("--downloader", choices=("auto", "builtin", "idm"), default="auto",
+                        help="download engine: auto = Internet Download Manager when "
+                             "installed, else the built-in manager (progress bar, "
+                             "parallel connections, resume); builtin = always built-in; "
+                             "idm = require IDM")
+    parser.add_argument("--connections", type=int, default=4,
+                        help="parallel connections for the built-in downloader (1-16)")
     args = parser.parse_args(argv)
     out = Path(args.out)
+    connections = max(1, min(16, args.connections))
 
     if not args.skip_model:
-        code = prepare_model(args.model, args.from_file, out)
+        code = prepare_model(args.model, args.from_file, out,
+                             downloader=args.downloader, connections=connections)
         if code:
             return code
     if args.engine:
-        code = prepare_engine(out)
+        code = prepare_engine(out, downloader=args.downloader, connections=connections)
         if code:
             return code
     shipped = write_iss_include(out)

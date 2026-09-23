@@ -1,4 +1,4 @@
-﻿<#
+<#
 ================================================================================
  builder-lib.ps1 - ONE shared build engine for the Supermarket System installer.
 ================================================================================
@@ -636,7 +636,13 @@ $Steps = @(
         }
         $prep = Join-Path $RepoRoot 'scripts\model\prepare_windows_installer.py'
         if (-not (Test-Path $prep)) { throw "scripts\model\prepare_windows_installer.py پیدا نشد: $prep" }
-        & $Report 'دریافت و تأیید هش مدل رسمی (Qwen) — حدود ۱ گیگابایت ...'
+        # v4.0.1 — the model moves through the download manager: progress bar,
+        # parallel connections, resume after an interruption, official fallback
+        # source (ModelScope) when Hugging Face is unreachable, and Internet
+        # Download Manager when it is installed (its window shows the progress).
+        $env:PYTHONUTF8 = '1'          # redirected consoles must never mangle output
+        $env:PYTHONIOENCODING = 'utf-8'
+        & $Report 'دریافت و تأیید هش مدل رسمی (Qwen) — حدود ۱ گیگابایت؛ با نوار پیشرفت و قابلیت ادامهٔ دانلود. اگر Internet Download Manager نصب باشد از آن استفاده می‌شود ...'
         try {
             Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
                 -Arguments @($prep, '--engine') | Out-Null
@@ -648,7 +654,7 @@ $Steps = @(
             # be brought by hand and adopted with --from-file).
             throw ("مدل هوش محلی تأیید نشد و بدون آن Setup.exe ساخته نمی‌شود:`n" +
                    $_.Exception.Message + "`n" +
-                   "راه‌ها: (۱) اینترنت و تلاش دوباره  (۲) دانلود دستی فایل GGUF رسمی و اجرای`n" +
+                   "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره نگه داشته شده و از همان‌جا ادامه می‌یابد  (۲) دانلود دستی فایل GGUF رسمی و اجرای`n" +
                    "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>`n" +
                    "نسخهٔ قابل‌حمل (بدون مدل) همین حالا ساخته شده و کار می‌کند.")
         }

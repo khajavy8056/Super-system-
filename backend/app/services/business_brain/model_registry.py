@@ -59,6 +59,14 @@ class ModelSpec:
     tier: str = "baseline"          # baseline | low-ram | experimental
     license_url: str = "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF"
     source_host: str = "huggingface.co"
+    #: Official fallback sources, tried in order when the primary is blocked or
+    #: slow (a shop PC must not depend on one CDN). Qwen publishes the *same*
+    #: objects on ModelScope — Alibaba's own hub, first-party for Qwen — and
+    #: ModelScope reports the identical sha256 for both quants (checked
+    #: 2026-09-23). This is not a mirror: it is the publisher's other channel,
+    #: and the pinned sha256 gate applies to every source equally.
+    alt_source_urls: tuple[str, ...] = ()
+    alt_source_hosts: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------ policy
     @property
@@ -102,6 +110,11 @@ def _models() -> tuple[ModelSpec, ...]:
             min_ram_mb=4096, recommended_ram_mb=8192, tier="baseline",
             capabilities=("chat", "tool_calling", "json", "persian"),
             license_url="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            alt_source_urls=(
+                "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/"
+                "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            ),
+            alt_source_hosts=("modelscope.cn",),
             notes="مدل پیش‌فرض v4.0 — سبک، چندزبانه، با پشتیبانی فراخوانی ابزار",
         ),
         ModelSpec(
@@ -121,6 +134,11 @@ def _models() -> tuple[ModelSpec, ...]:
             min_ram_mb=3584, recommended_ram_mb=6144, tier="low-ram",
             capabilities=("chat", "tool_calling", "json", "persian"),
             license_url="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            alt_source_urls=(
+                "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/"
+                "qwen2.5-1.5b-instruct-q3_k_m.gguf",
+            ),
+            alt_source_hosts=("modelscope.cn",),
             notes="گزینهٔ ۴ گیگابایتی؛ کیفیت کمتر، حافظهٔ کمتر",
         ),
     )
@@ -235,6 +253,14 @@ def validate_registry(cap: int = MAX_FILE_BYTES) -> list[str]:
             problems.append(f"{spec.model_id}: source is not HTTPS")
         if spec.source_host not in spec.source_url:
             problems.append(f"{spec.model_id}: source is not on {spec.source_host}")
+        for alt in spec.alt_source_urls:
+            alt_host = alt.split("//", 1)[-1].split("/", 1)[0].lower()
+            if not alt.startswith("https://"):
+                problems.append(f"{spec.model_id}: fallback source is not HTTPS")
+            elif alt_host not in spec.alt_source_hosts:
+                problems.append(f"{spec.model_id}: fallback source {alt_host} is not an official host")
+        if bool(spec.alt_source_urls) != bool(spec.alt_source_hosts):
+            problems.append(f"{spec.model_id}: fallback urls and hosts are inconsistent")
         if spec.quantization.upper().startswith("Q8"):
             problems.append(f"{spec.model_id}: Q8 is forbidden")
         if "4B" in spec.parameters.upper():
@@ -250,9 +276,25 @@ def validate_registry(cap: int = MAX_FILE_BYTES) -> list[str]:
     return problems
 
 
+def source_hosts(spec: ModelSpec | None = None) -> tuple[str, ...]:
+    """Every official host for ``spec`` (primary first). No mirrors ever land here."""
+    if spec is None:
+        return ("huggingface.co",)
+    return tuple(dict.fromkeys((spec.source_host, *spec.alt_source_hosts)))
+
+
+def source_urls(spec: ModelSpec) -> tuple[str, ...]:
+    """Download sources in priority order: the primary, then official fallbacks."""
+    return (spec.source_url, *spec.alt_source_urls)
+
+
 def allowed_source(url: str, spec: ModelSpec | None = None) -> bool:
-    host = spec.source_host if spec else "huggingface.co"
-    return url.startswith("https://") and url.split("//", 1)[-1].split("/", 1)[0].lower().endswith(host)
+    if not url.startswith("https://"):
+        return False
+    host = url.split("//", 1)[-1].split("/", 1)[0].lower()
+    # exact host or a subdomain of it — "evil-huggingface.co" must not pass
+    return any(host == allowed or host.endswith("." + allowed)
+               for allowed in source_hosts(spec))
 
 
 def fits(spec: ModelSpec, *, ram_mb: int, disk_free_mb: int | None = None) -> bool:

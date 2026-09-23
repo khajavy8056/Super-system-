@@ -42,6 +42,8 @@ def seeded_shop(tmp_path, monkeypatch):
         sha256 = digest
         source_url = "https://example.org/official/test-model.gguf"
         source_host = "example.org"
+        alt_source_urls = ()                     # v4.0.1: official fallback sources
+        alt_source_hosts = ()
         file_size_bytes = len(payload)
         min_ram_mb = 0
         gb = 0.1

@@ -87,7 +87,9 @@ jobs:
           # The owner's requirement: the produced Setup.exe carries the verified
           # local model inside it, so the shop PC works offline on first launch.
           # A checksum failure here fails the release - never bundle unverified.
-          python scripts/model/prepare_windows_installer.py --engine
+          # --downloader builtin: no IDM on a CI runner; the built-in download
+          # manager does progress/resume/fallback sources on its own.
+          python scripts/model/prepare_windows_installer.py --engine --downloader builtin
 
       - name: Build the installer (Inno Setup)
         shell: pwsh

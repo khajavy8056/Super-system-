@@ -30,15 +30,13 @@ import os
 import re
 import shutil
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...models import BrainModelInstall, SystemSetting
-from . import device_profile, model_registry
+from . import device_profile, download_manager, model_registry
 from .audit import log as brain_audit
 
 log = logging.getLogger("supermarket.brain.model")
@@ -173,8 +171,13 @@ class ModelManager:
         try:
             server_digest = self._fetch(spec.source_url, partial, progress)
         except Exception as exc:  # noqa: BLE001 — network failure is a normal outcome
-            partial.unlink(missing_ok=True)
-            return self._fail(model_id, "DOWNLOAD_FAILED", f"دریافت ناموفق بود: {str(exc)[:160]}")
+            # the resumable partial is KEPT: an interrupted 900 MB transfer must
+            # not restart from zero on the next attempt (the final sha256 gate
+            # still decides adoption — an unverified partial is never installed)
+            kept = "؛ بخش دریافت‌شده نگه داشته شد و دفعهٔ بعد از همان‌جا ادامه می‌یابد" \
+                if Path(str(partial) + ".dl").exists() else ""
+            return self._fail(model_id, "DOWNLOAD_FAILED",
+                              f"دریافت ناموفق بود: {str(exc)[:160]}{kept}")
 
         digest = sha256_file(partial)
         trusted = spec.sha256 or server_digest
@@ -423,25 +426,28 @@ class ModelManager:
 
     # ------------------------------------------------------------------ internals
     def _fetch(self, url: str, dest: Path, progress) -> str | None:
-        """Download to ``dest``; return the digest the host reports (if any)."""
+        """Download to ``dest``; return the digest the host reports (if any).
+
+        v4.0.1: the bytes now move through the Business Brain download manager
+        (progress bar, parallel connections, resume after an interruption,
+        official fallback sources, optional IDM on Windows). The injected
+        ``self.downloader`` hook stays first so tests can fake the network.
+        """
         if self.downloader is not None:
             result = self.downloader(url, dest, progress)
             return str(result) if result else None
-        request = urllib.request.Request(url, headers={"User-Agent": "SupermarketBrain/4.0"})
-        with urllib.request.urlopen(request, timeout=SOCKET_TIMEOUT) as response, open(dest, "wb") as fh:
-            total_header = response.headers.get("Content-Length")
-            total = int(total_header) if total_header and total_header.isdigit() else 0
-            server_digest = _etag_digest(response.headers)
-            done = 0
-            while True:
-                block = response.read(DOWNLOAD_CHUNK)
-                if not block:
-                    break
-                fh.write(block)
-                done += len(block)
-                if progress:
-                    progress(done, total)
-        return server_digest
+        spec = next((s for s in model_registry.all_models() if s.source_url == url), None)
+        sources = model_registry.source_urls(spec) if spec else (url,)
+        result = download_manager.fetch(
+            sources, dest,
+            expected_size=spec.file_size_bytes if spec else None,
+            expected_sha256=spec.sha256 if spec else None,
+            progress=progress,
+            downloader=os.environ.get("SUPERMARKET_BRAIN_DOWNLOADER", "auto"),
+            connections=max(1, min(16, int(os.environ.get("SUPERMARKET_BRAIN_CONNECTIONS", "4")
+                                            or 4))),
+            quiet=True, resume=True)
+        return result.get("server_sha256")
 
     def _all_rows(self) -> list[BrainModelInstall]:
         return list(self.db.execute(select(BrainModelInstall).order_by(BrainModelInstall.id)).scalars())
@@ -514,18 +520,6 @@ class ModelManager:
                 "path": row.path, "error": row.error,
                 "activated_at": row.activated_at.isoformat() if row.activated_at else None,
                 "benchmark": benchmark}
-
-
-def _etag_digest(headers) -> str | None:
-    """Hugging Face reports the LFS sha256 in ``X-Linked-Etag`` as ``"<hex>"``."""
-    for name in ("X-Linked-Etag", "ETag"):
-        raw = headers.get(name)
-        if not raw:
-            continue
-        token = raw.strip().strip('"').split("-")[0]
-        if len(token) == 64 and all(c in "0123456789abcdefABCDEF" for c in token):
-            return token.lower()
-    return None
 
 
 def active_install(db: Session) -> BrainModelInstall | None:
