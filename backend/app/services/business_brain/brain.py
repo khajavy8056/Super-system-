@@ -26,6 +26,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...__init__ import __version__
 from ...models import BrainDecision, BrainFollowup, BrainMemoryFact, BrainMessage, User
 from ...security import has_permission
 from ..timeservice import local_now
@@ -116,7 +117,7 @@ class BusinessBrain:
         runtime = runtime_svc.provider_status(self.db)
         model = model_svc.ModelManager(self.db).status(include_registry=deep)
         return {
-            "version": "4.0.0",
+            "version": __version__,
             "time": {"utc": local_now().isoformat(), "today_fa": fa.fa_date(local_now())},
             "access": {"admin_surface": self.is_admin_surface(), "system": self.system},
             "runtime": runtime,

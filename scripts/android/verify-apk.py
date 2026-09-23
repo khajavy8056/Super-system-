@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v4.1.1 — APK install-preflight (pure stdlib).
+"""v4.2 — APK install-preflight (pure stdlib).
 
 The owner hit «برنامه نصب نشد» with an APK that passed `apksigner verify` and
 `aapt2 dump badging` — those tools do not check everything PackageManager

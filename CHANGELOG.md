@@ -3,6 +3,18 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.2.0] - 2026-09-23
+
+### «مدل کجاست؟» — مدل واقعاً داخل محصول، مغز از لحظهٔ اول زنده، بدون هیچ ابر
+- **Root cause of the 56 MB Setup.exe: the owner was building/running a 3.8-era tree.** The v4.0+ builder (builder-lib.ps1) already downloads + embeds the model; a 3.8 build never did. On top of that, two real defects made the failure silent and the brain lazy — both fixed below. Nothing about «هیچ فرقی با ۳.۸ نکرد» was by design: the 3.8 binary on the shop PC simply predates the model system.
+- **A modelless Setup.exe can no longer be declared "done"** (`scripts/model/verify_setup.py`, wired into builder-lib.ps1 after ISCC): reads the payload the installer was supposed to carry (model_payload.iss + seed.json), then checks the produced Setup.exe — at least one GGUF [Files] entry, the GGUF exists on disk, Setup.exe ≥ 0.8 × model size (quantized weights barely compress; the owner's 56 MB failure fails at a ~850 MB floor), and the Inno marker present. A failing setup is **deleted**, the build fails loudly, and the Persian error names the recovery paths (resume-capable re-download, or manual `--from-file`). The old check (`$mb -lt 10`) could not see a missing model.
+- **The brain now wakes up by itself at app startup** (`main.py` `_start_brain_autostart`): a daemon thread adopts the installer's preinstalled model (idempotent, re-hashed, never deletes) and warm-starts llama-server, so «مغز فروشگاه» is green on first launch instead of «در دسترس نیست». Fully guarded: no model/engine → no-op; any failure → logged, never blocks startup. Kill-switch `SUPERMARKET_BRAIN_AUTOSTART=0`.
+- **Cloud/GPT settings removed from the UI — the owner's rule.** The روایت ابری panel (provider/base URL/API key/model/presets/تست) is gone from تنظیمات ← هوش فروشگاه, replaced by a **local-model status KPI** (`/brain/model/status`: مدل، کیفیت، حجم، پشتیبان). The insights «مشاور هوش مصنوعی» button now routes to مغز فروشگاه itself. No OpenRouter/Groq/Gemini/Ollama mention remains anywhere in the frontend (test-enforced).
+- **Android: the model speaks and sets itself up.** Chat now sends `prefer_llm:true` (grounding still rejects any number a tool did not produce, server-side). On first open of مغز فروشگاه, if the phone is on **Wi-Fi/unmetered** and no model was ever fetched, the recommended model (~1 GB q3_k_m) **starts downloading by itself** (once per install; mobile data never burns gigabytes unasked). When the PC is unreachable the Brain Center no longer shows a dead screen — it renders a standalone mode with «گفت‌وگو با مغز محلی» + the model tab.
+- Brain status reports the real product version (dynamic `__version__`), not a hardcoded 4.0.0.
+- Tests: new `test_v42_model_presence.py` (14 tests) — verify_setup pass/reject matrix incl. the exact 56 MB case, builder wiring, autostart source + kill-switch, cloud-UI absence, version honesty, Android prefer_llm/self-setup/standalone. Full suite **713 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.2.0.apk` (versionCode 40200, 9,606,680 B, both ABIs, install-preflight PASS, same signing certificate as 4.1.x → in-place update). Windows: rebuild with builder-lib.ps1 — it now cannot ship a modelless setup.
+
 ## [4.1.1] - 2026-09-23
 
 ### رفع «برنامه نصب نشد» روی اندروید

@@ -680,11 +680,24 @@ $Steps = @(
         if (-not (Test-Path $setup)) {
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }
-        $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
-        if ($mb -lt 10) {
-            throw "فایل نصب تنها $mb مگابایت است؛ احتمالاً فایل اجرایی داخل آن قرار نگرفته."
+        # v4.2 — the OWNER'S guarantee: a Setup.exe is only done when the ~1 GB model
+        # is REALLY inside it. The owner once received a 56 MB Setup.exe with no model;
+        # "Inno ran fine" is not proof. This reads the payload the installer should
+        # carry and checks the produced file against it (size floor + Inno marker).
+        $verify = Join-Path $RepoRoot 'scripts\model\verify_setup.py'
+        try {
+            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
+                -Arguments @($verify, $setup) | Out-Null
+        } catch {
+            if (Test-Path $setup) { Remove-Item $setup -Force }
+            throw ("فایل نصب، مدل هوش محلی را داخل خودش ندارد و حذف شد — Setup.exe بدون مدل جعلی است:`n" +
+                   $_.Exception.Message + "`n" +
+                   "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد`n" +
+                   "(۲) دانلود دستی GGUF رسمی و اجرای`n" +
+                   "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>")
         }
-        & $Report "فایل نصب آماده توزیع است ($mb مگابایت)."
+        $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+        & $Report "فایل نصب آماده توزیع است ($mb مگابایت) — مدل هوش محلی داخل آن تأیید شد."
         & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
         & $Report "مسیر: $setup"
         $Script:FinalSetup = $setup

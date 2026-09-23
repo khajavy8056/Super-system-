@@ -106,6 +106,32 @@ public final class BrainModel {
         return READY.equals(stateOf(s.id)) && fileFor(c, s).exists() && fileFor(c, s).length() == s.bytes;
     }
 
+    /** v4.2 — true when the current network is Wi-Fi/unmetered (safe for a ~1 GB model). */
+    public static boolean unmetered(Context c) {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                    c.getSystemService(Context.CONNECTIVITY_SERVICE);
+            return cm != null && !cm.isActiveNetworkMetered()
+                    && cm.getActiveNetworkInfo() != null
+                    && cm.getActiveNetworkInfo().isConnected();
+        } catch (Exception e) { return false; }
+    }
+
+    /** v4.2 — the owner's rule: on first open, if the phone is on Wi-Fi and no model
+     *  was ever fetched, start the recommended download by itself (once per install).
+     *  On mobile data we never burn the user's gigabytes without asking. */
+    public static void autoSetup(Context c) {
+        if (!"1".equals(Prefs.get("brain_model_auto", ""))) {
+            Prefs.set("brain_model_auto", "1");
+            Spec s = recommended();
+            if (!READY.equals(stateOf(s.id)) && !CORRUPT.equals(stateOf(s.id)) && unmetered(c)) {
+                Ui.toast("دریافت مدل مغز فروشگاه (~" + Ui.num(Math.round(s.bytes / 1048576.0))
+                        + " مگابایت) آغاز شد — از تب «مدل محلی» پیشرفت را ببینید");
+                download(c, s);
+            }
+        }
+    }
+
     /* ---------------- download (single worker, resumable, cancellable) ---------------- */
     public static synchronized void download(Context c, Spec s) {
         if (worker != null && worker.isAlive()) { Ui.toast("یک دریافت مدل در حال اجراست؛ تا پایان آن صبر کنید"); return; }

@@ -72,7 +72,22 @@ public final class BrainScreens {
         public void load() {
             loading();
             replayQueue();   // offline approvals first — the desk must be current
-            get("/brain/status", r -> { status = (JSONObject) r; afterStatus(); });
+            BrainModel.autoSetup(c);   // v4.2: fetch the model by itself on first open + Wi-Fi
+            Api.get("/brain/status", r -> { status = (JSONObject) r; afterStatus(); },
+                    e -> { status = new JSONObject(); renderStandalone(); });
+        }
+        void renderStandalone() {
+            clear();
+            LinearLayout hero = Ui.hero(c);
+            hero.addView(Ui.text(c, "مغز فروشگاه", 20, 0xFFFFFFFF, true));
+            hero.addView(Ui.text(c, "رایانهٔ فروشگاه در دسترس نیست — حالت مستقل گوشی.", 12, 0xDDFFFFFF, false));
+            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0);
+            android.widget.Button chat = Ui.small(c, "گفت‌وگو با مغز محلی", () -> a.open(new Chat(a), true));
+            chat.setLayoutParams(Ui.weight(1)); br.addView(chat);
+            hero.addView(br);
+            body.addView(hero);
+            body.addView(Ui.body(c, "وقتی رایانه وصل باشد، کارت‌های تصمیم و گفت‌وگو با دادهٔ زندهٔ فروشگاه همین‌جا می‌آید. همین حالا هم همان مدل روی خود گوشی جواب می‌دهد — اگر مدل را نگرفته‌اید، پایین همین صفحه («مدل محلی») بگیرید."));
+            modelTab();
         }
         void afterStatus() {
             get("/brain/decisions?limit=100", r -> render(((JSONObject) r).optJSONArray("decisions")));
@@ -528,7 +543,7 @@ public final class BrainScreens {
             final LinearLayout thinking = Ui.card(c, null);
             thinking.addView(Ui.muted(c, "در حال بررسی داده‌های فروشگاه…"));
             log.addView(thinking);
-            JSONObject b = new JSONObject(); try { b.put("question", q); b.put("prefer_llm", false); } catch (Exception ignore) {}
+            JSONObject b = new JSONObject(); try { b.put("question", q); b.put("prefer_llm", true); } catch (Exception ignore) {}
             Api.post("/brain/chat", b, r -> {
                 log.removeView(thinking);
                 JSONObject x = (JSONObject) r;
