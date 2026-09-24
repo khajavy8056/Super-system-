@@ -344,6 +344,21 @@ public final class BrainScreens {
                     det.setPadding(0, Ui.dp(4), 0, 0);
                     card.addView(det);
                 }
+                // v4.3.2 — one tap copies the full report (state + note + engine
+                // output) so the owner can paste it to support verbatim.
+                android.widget.Button cp = Ui.small(c, "کپی گزارش موتور برای پشتیبانی", () -> {
+                    try {
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                                c.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("engine-report",
+                                "state=" + BrainEngine.state() + "\nnote=" + BrainEngine.note()
+                                        + "\nram=" + BrainEngine.totalRamMb(c) + "MB\n--- engine output ---\n"
+                                        + BrainEngine.tail()));
+                        Ui.toast("گزارش موتور کپی شد — برای پشتیبانی بفرستید");
+                    } catch (Exception e) { Ui.toast("کپی نشد: " + e.getMessage()); }
+                });
+                cp.setLayoutParams(Ui.margin(Ui.match(), 0, 6, 0, 0));
+                card.addView(cp);
             }
 
             LinearLayout act = Ui.row(c); act.setPadding(0, Ui.dp(8), 0, 0);
@@ -380,9 +395,16 @@ public final class BrainScreens {
             long ram = BrainEngine.totalRamMb(c);
             BrainModel.Spec run = BrainModel.readySpec(c);          // v4.3.1 — what will actually run
             if (run == null) run = BrainModel.recommended();
-            String fit = BrainEngine.fitsRam(c, run)
-                    ? "مدلِ قابل اجرا: " + run.label() + " — حافظه کافی است (" + Ui.num(ram) + " مگابایت رم)"
-                    : "حافظهٔ گوشی برای " + run.label() + " کافی به نظر نمی‌رسد (" + Ui.num(ram) + " مگابایت رم؛ حداقل " + Ui.num(run.minRamMb) + ")";
+            String fit;
+            if (BrainEngine.canRun(c, run)) {
+                fit = "مدلِ قابل اجرا: " + run.label() + " — رم گوشی: " + Ui.num(ram)
+                        + " مگابایت (لازم: حدود " + Ui.num(BrainEngine.neededRamMb(run)) + " مگابایت)"
+                        + (BrainEngine.tightRam(c, run) ? " — با زمینهٔ متن کوچک‌تر برای صرفه‌جویی در رم" : "");
+            } else {
+                fit = "این گوشی برای اجرای محلی " + run.label() + " ظرفیت ندارد (رم: " + Ui.num(ram)
+                        + " مگابایت؛ لازم: حدود " + Ui.num(BrainEngine.neededRamMb(run))
+                        + " مگابایت) — مغز روی رایانهٔ وصل‌شده کامل در دسترس است";
+            }
             return (n.isEmpty() ? "موتور محلی برای پاسخ‌گویی در حالت مستقل (بدون رایانه) است." : n) + " — " + fit;
         }
         LinearLayout modelCard(final BrainModel.Spec s) {

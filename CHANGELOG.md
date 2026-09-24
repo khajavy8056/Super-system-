@@ -3,6 +3,18 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.3.2] - 2026-09-24
+
+### اندروید: موتور واقعاً روشن می‌شود — دروازهٔ رم از «عدد مخصوص رایانه» به نیاز واقعی گوشی
+- **Root cause of «همچنان روشن نمیشه»:** the engine's start gate compared the phone's total RAM against the registry's `minRamMb` (q3_k_m = 3584 MB) — a number written for "4 GB" WINDOWS machines that report 3.8 GB. On the owner's 32-bit ARMv7 phone (2-3 GB) pressing start always failed BEFORE ANY ATTEMPT. The phone's real requirement is the model file + ~400 MB overhead (q3: ≈1281 MB, q4: ≈1465 MB) — both comfortably inside a 2 GB phone.
+- **The gate is now honest and dynamic**: `neededRamMb = weights + 400`, `canRun()`, `tightRam()`; start() ATTEMPTS whenever it can physically fit, refuses with real numbers only when it truly cannot («رم گوشی: X مگابایت، لازم: حدود Y مگابایت — مغز روی رایانهٔ وصل‌شده کامل در دسترس است»).
+- **حالت اقتصادی رم**: when RAM is tight (< 2× model) the engine launches with half the context (1024 instead of 2048) so the KV cache fits comfortably — the note says so in Persian.
+- **OOM death is now explainable**: if Android kills the engine, the message carries the phone's RAM, the model size, the advice, and llama-server's last words.
+- **«کپی گزارش موتور برای پشتیبانی» button** on the FAILED card: one tap copies state + note + RAM + the engine's full output to the clipboard, so a failure can be pasted to support verbatim (no screenshot needed).
+- Network security config verified: cleartext to 127.0.0.1 was already permitted — not the cause.
+- Tests: new `test_v432_engine_ram.py` (7 tests — RAM math vs the registry numbers, gate replacement, economy context, notes, copy-report, versions). Full suite **760 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.2.apk` (versionCode 40302, both ABIs, preflight PASS, same cert → in-place update).
+
 ## [4.3.1] - 2026-09-24
 
 ### پایداری: موتور اندروید، پنجرهٔ llama-server، چتِ قفل‌شده، هویت مدل

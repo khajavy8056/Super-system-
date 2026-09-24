@@ -171,7 +171,7 @@ def test_android_engine_timeout_raised_with_progress():
 
 # ---------------------------------------------------------------- versions
 def test_versions_consistent():
+    """backend __init__.py and setup.iss must carry the SAME version (live value)."""
     from app import __version__
-    assert __version__ == "4.3.1"
     iss = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
-    assert '#define MyAppVersion "4.3.1"' in iss
+    assert f'#define MyAppVersion "{__version__}"' in iss

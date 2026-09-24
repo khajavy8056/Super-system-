@@ -121,6 +121,17 @@ public final class BrainEngine {
 
     public static boolean fitsRam(Context c, BrainModel.Spec s) { return totalRamMb(c) >= s.minRamMb; }
 
+    /** v4.3.2 — the registry's minRamMb is a PC-era conservative number (it exists
+     *  so a "4 GB" Windows machine that reports 3.8 GB still installs). Applied to
+     *  PHONES it wrongly refused to even TRY on 2-3 GB devices — the owner's
+     *  «مدل روشن نمیشه» case. What the engine actually needs on a phone:
+     *  the model weights (mmap'd) + ~400 MB overhead. Attempt when it fits. */
+    public static long neededRamMb(BrainModel.Spec s) { return s.bytes / (1024 * 1024) + 400; }
+    /** true = worth starting (the honest attempt); false = physically impossible. */
+    public static boolean canRun(Context c, BrainModel.Spec s) { return totalRamMb(c) >= neededRamMb(s); }
+    /** tight RAM → launch with half the context so the KV cache fits comfortably. */
+    public static boolean tightRam(Context c, BrainModel.Spec s) { return totalRamMb(c) < s.bytes / (1024 * 1024) * 2 + 400; }
+
     /** Start llama-server with a READY model. Returns false (with an honest note) if it cannot. */
     public static synchronized void start(final Context c, final BrainModel.Spec s) {
         if (running()) { putState(RUNNING, "موتور محلی از قبل روشن است"); return; }
@@ -135,13 +146,20 @@ public final class BrainEngine {
             putState(FAILED, "فایل مدل تأییدشده روی گوشی نیست — اول آن را از تب «مدل محلی» دریافت کنید");
             return;
         }
-        if (!fitsRam(c, s)) {
-            putState(FAILED, "حافظهٔ گوشی برای اجرای این مدل کافی نیست (حداقل " + Ui.num(s.minRamMb) + " مگابایت رم لازم است)");
+        long ram = totalRamMb(c), need = neededRamMb(s);
+        if (ram < need) {
+            // v4.3.2 — a REFUSAL with real numbers and the honest alternative
+            putState(FAILED, "حافظهٔ گوشی برای اجرای «" + s.label() + "» کافی نیست — رم گوشی: "
+                    + Ui.num(ram) + " مگابایت، لازم: حدود " + Ui.num(need)
+                    + " مگابایت. مغز فروشگاه روی رایانهٔ وصل‌شده کامل در دسترس است.");
             return;
         }
+        final boolean tight = tightRam(c, s);
+        final int ctx = tight ? 1024 : CONTEXT;   // v4.3.2 — half context in economy mode
         if (starter != null && starter.isAlive()) return;   // already starting
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        putState(STARTING, "در حال بارگذاری مدل روی گوشی… (اولین بار چند لحظه طول می‌کشد)");
+        putState(STARTING, "در حال بارگذاری " + s.label() + " روی گوشی… (اولین بار چند لحظه طول می‌کشد"
+                + (tight ? " — حالت اقتصادی رم با زمینهٔ متن کوچک‌تر" : "") + ")");
         starter = new Thread(() -> {
             try {
                 File model = BrainModel.fileFor(c, s);
@@ -149,7 +167,7 @@ public final class BrainEngine {
                         bin(c).getAbsolutePath(),
                         "-m", model.getAbsolutePath(),
                         "--host", "127.0.0.1", "--port", String.valueOf(PORT),
-                        "-c", String.valueOf(CONTEXT),
+                        "-c", String.valueOf(ctx),
                         "-t", String.valueOf(threads),
                         "--no-webui");
                 pb.redirectErrorStream(true);
@@ -174,8 +192,10 @@ public final class BrainEngine {
                     }
                     if (proc != null && !proc.isAlive()) {
                         String why = lastTail();
-                        putState(FAILED, "فرایند موتور بسته شد (احتمال کمبود حافظهٔ گوشی)"
-                                + (why.isEmpty() ? "" : " — " + why));
+                        putState(FAILED, "موتور بسته شد — رم گوشی: " + Ui.num(ram)
+                                + " مگابایت، مدل: " + Ui.num(s.bytes / (1024 * 1024))
+                                + " مگابایت؛ اگر اندروید آن را بست (کمبود رم)، از مغز روی رایانه استفاده کنید"
+                                + (why.isEmpty() ? "" : " — آخرین پیام موتور: " + why));
                         proc = null;
                         return;
                     }
