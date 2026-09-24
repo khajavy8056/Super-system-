@@ -22,7 +22,19 @@ import sys
 from pathlib import Path
 
 #: DLLs the Windows OS itself provides (loader resolves them before our check
-#: could ever matter). Anything NOT on this list must be BUNDLED.
+#: could ever matter). Anything NOT on this list must be BUNDLED — except the
+#: Microsoft VC++ runtime family, which is treated as "system" too (see below).
+#:
+#: v4.5.0 — the owner's real build log tripped over three of these:
+#:   • wldap32.dll  — WinLDAP, a System32 component since forever; imported
+#:     by the bundled libcurl-x64.dll (LDAP:// support inside curl).
+#:   • psapi.dll    — Process Status API, System32 since XP; imported by the
+#:     engine's memory-report paths.
+#:   • msvcp140_codecvt_ids.dll — same VC++ 2015+ redistributable family as
+#:     msvcp140/vcruntime140 (already allowed): msvcp140.dll delay-loads it
+#:     for C++ codecvt locale facets, which llama-server never touches.
+#: All three are Microsoft components, never llama.cpp build outputs —
+#: demanding them "bundled" would mean repacking Windows itself.
 SYSTEM_DLLS = {
     "kernel32", "user32", "gdi32", "shell32", "advapi32", "ws2_32", "wsock32",
     "ntdll", "msvcrt", "ucrtbase", "vcruntime140", "vcruntime140_1",
@@ -32,6 +44,12 @@ SYSTEM_DLLS = {
     "version", "dwmapi", "uxtheme", "powrprof", "wininet", "winhttp",
     "normaliz", "rpcrt4", "sechost", "imm32", "combase", "win32u",
     "profapi", "cryptbase", "sspicli", "nsi", "cfgmgr32", "dbgcore",
+    # v4.5.0: OS DLLs the official engine build imports (owner's log)
+    "psapi", "wldap32", "ncrypt", "dnsapi", "wintrust",
+    # v4.5.0: the rest of the VC++ 2015+ redistributable family
+    # (msvcp140/vcruntime140 were already here; codecvt_ids was the gap)
+    "msvcp140_2", "msvcp140_atomic_wait", "msvcp140_codecvt_ids",
+    "concrt140", "vcomp140",
 }
 SYSTEM_PREFIXES = ("api-ms-win-", "ext-ms-")
 

@@ -328,6 +328,7 @@
     if (request !== insRequest || !v.querySelector("#ins-hero")) return;
     // Reading a page must not recursively POST /run when there is no data.
     hero(s, $("#ins-hero"));
+    brainBriefing(v);   // v4.5.0 — the local model narrates the store at the top of the intelligence section
     const tabs = [["NEW", "پیشنهادهای باز", s.open], ["ACCEPTED,MEASURED", "اجراشده و اثر", s.accepted], ["SNOOZED", "به تعویق"], ["DISMISSED,EXPIRED", "بایگانی"]];
     const t = $("#ins-tabs"); t.innerHTML = "";
     tabs.forEach(([k, l, n]) => t.append(el("button", { class: "set-tab" + (k === insTab ? " active" : ""), text: l + (n != null ? ` (${fa(n)})` : ""), onclick: () => { insTab = k; RENDER.insights(); } })));
@@ -341,6 +342,42 @@
     if (!list.length) grid.innerHTML = `<div class="card muted">موردی نیست. ${insTab === "NEW" ? "هنوز پیشنهادی برای این فیلتر موجود نیست. نبود پیشنهاد به معنی بی‌نقص بودن فروشگاه نیست؛ می‌توانید «تحلیل دوباره» را اجرا کنید." : ""}</div>`;
     pagedAppend(grid, list, 12, (item) => card(item, false));   // v3.5 staged — long lists no longer freeze the page
   };
+
+  // ------------------------------------------------- v4.5.0: the brain's briefing
+  // The model works HERE too (owner's rule), not only in the chat: a short,
+  // grounded narrative over the audited proactive facts, refreshed by the
+  // brain worker every 15 minutes. Hidden silently when the brain is not
+  // available to this user (operators see the section exactly as before).
+  async function brainBriefing(host) {
+    let card = host.parentElement.querySelector("#brain-briefing");
+    if (!card) {
+      card = el("div", { class: "card", id: "brain-briefing", style: "margin:0 0 14px" });
+      host.parentElement.insertBefore(card, host);
+    }
+    try {
+      const b = await api("/brain/briefing");
+      if (!b || !b.text) { card.remove(); return; }
+      const by = b.by === "model" ? "نوشتهٔ مدل محلی" : "تحلیل قطعی";
+      card.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <img src="icons/model-192.png" alt="" width="28" height="28"/>
+          <b style="font-size:15.5px">تحلیل مغز فروشگاه</b>
+          <span class="badge" style="background:rgba(34,203,166,.16);color:#22cba6">زنده</span>
+          <span class="muted" style="margin-inline-start:auto;font-size:12px">${by} · ${fa((b.at || "").replace("T", " ").slice(0, 16))}</span>
+        </div>
+        <p style="margin:0;line-height:1.9">${esc(b.text)}</p>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn btn-sm btn-primary" id="bb-chat">گفت‌وگو با مغز دربارهٔ این تحلیل</button>
+          <button class="btn btn-sm" id="bb-refresh">به‌روزرسانی</button>
+        </div>`;
+      card.querySelector("#bb-chat").onclick = () => go("brain");
+      card.querySelector("#bb-refresh").onclick = async (event) => {
+        const btn = event.currentTarget; btn.disabled = true;
+        try { await api("/brain/briefing?refresh=1"); await brainBriefing(host); toast("تحلیل مغز به‌روزرسانی شد"); }
+        catch (e) { toast(e.message, "err"); } finally { btn.disabled = false; }
+      };
+    } catch (e) { card.remove(); }
+  }
 
   function hero(s, host) {
     const share = s.share_of_month_profit ? ` (${fa(Math.round(s.share_of_month_profit * 100))}٪ سود ۳۰ روز اخیر)` : "";

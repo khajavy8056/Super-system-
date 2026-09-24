@@ -79,6 +79,21 @@ class AIProvider:
     def load(self) -> bool:                                   # noqa: D401 - returns success
         return False
 
+    def _windows_runtime_hints(self) -> list[str]:
+        """v4.5.0 — if the Windows box lacks the VC++ runtime, say so in
+        Persian with the official Microsoft link, instead of a cryptic DLL
+        dialog. Empty on non-Windows or when the runtime is present."""
+        if os.name != "nt":
+            return []
+        import ctypes
+        try:
+            if ctypes.windll.kernel32.LoadLibraryW("msvcp140.dll"):   # type: ignore[attr-defined]
+                return []
+        except Exception:
+            pass
+        return ["Visual C++ Redistributable روی ویندوز نصب نیست — از سایت رسمی مایکروسافت "
+                "(aka.ms/vs/17/release/vc_redist.x64.exe) نصب کنید و برنامه را دوباره باز کنید."]
+
     def unload(self) -> bool:
         return False
 
@@ -256,6 +271,7 @@ class LlamaCppProvider(AIProvider):
             self._process = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603
         except OSError as exc:
             self._notes = [f"اجرای llama.cpp ناموفق: {exc}"]
+            self._notes += self._windows_runtime_hints()
             return False
         deadline = time.time() + 240
         while time.time() < deadline:
@@ -263,6 +279,7 @@ class LlamaCppProvider(AIProvider):
                 return True
             if self._process.poll() is not None:
                 self._notes = ["فرایند llama.cpp بلافاصله بسته شد (احتمال کمبود حافظه)"]
+                self._notes += self._windows_runtime_hints()
                 return False
             time.sleep(1.0)
         self._notes = ["مدل در بازهٔ مجاز بارگذاری نشد"]

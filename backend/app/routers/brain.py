@@ -175,6 +175,16 @@ def measure(decision_id: int, db: Session = Depends(get_db), user: User = Depend
     return _write(db, _brain(db, user).measure, decision_id)
 
 
+# --------------------------------------------------------------------------- briefing (v4.5.0)
+@router.get("/briefing")
+def briefing(refresh: bool = Query(False), db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    """The brain's manager-facing briefing for the intelligence sections —
+    written by the local model over the audited proactive facts (grounded),
+    with a deterministic fallback. Cached ~15 min."""
+    from ..services.business_brain import briefing as briefing_svc
+    return _guard(briefing_svc.build, db, refresh=refresh)
+
+
 # --------------------------------------------------------------------------- follow-ups & memory
 @router.get("/followups")
 def followups(include_closed: bool = Query(False), limit: int = Query(50, le=200),

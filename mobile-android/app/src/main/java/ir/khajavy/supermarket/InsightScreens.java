@@ -53,8 +53,42 @@ public final class InsightScreens {
             loading();
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
+
+        /** v4.5.0 — «تحلیل مغز فروشگاه»: the local MODEL narrates the store's
+         *  state at the top of the intelligence section (not only in chat) —
+         *  grounded over the audited proactive facts, with a deterministic
+         *  fallback. Hidden when the brain is not available to this user. */
+        void brainCard() {
+            Api.get("/brain/briefing", r -> {
+                JSONObject b = (JSONObject) r;
+                String text = b.optString("text", "");
+                if (text.isEmpty()) return;
+                LinearLayout card = Ui.card(c, null);
+                LinearLayout tr = Ui.row(c); tr.setPadding(0, 0, 0, Ui.dp(8));
+                android.widget.ImageView ic = new android.widget.ImageView(c);
+                ic.setImageResource(R.drawable.ic_model);
+                ic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(30), Ui.dp(30)));
+                tr.addView(ic);
+                TextView ttl = Ui.text(c, "تحلیل مغز فروشگاه", 15.5f, Ui.TEXT, true);
+                ttl.setPadding(Ui.dp(8), 0, 0, 0);
+                ttl.setLayoutParams(Ui.weight(1));
+                tr.addView(ttl);
+                tr.addView(Ui.badge(c, "زنده", Ui.GREEN));
+                card.addView(tr);
+                TextView tv = Ui.body(c, text);
+                tv.setLineSpacing(0, 1.4f);
+                card.addView(tv);
+                String by = "model".equals(b.optString("by")) ? "نوشتهٔ مدل محلی" : "تحلیل قطعی";
+                card.addView(Ui.muted(c, by + " · " + Ui.jdate(b.optString("at", ""))));
+                android.widget.Button go = Ui.small(c, "گفت‌وگو با مغز دربارهٔ این تحلیل", () -> a.route("brainChat"));
+                go.setLayoutParams(Ui.margin(Ui.match(), 8, 0, 0, 0));
+                card.addView(go);
+                body.addView(card, 0);
+            }, e -> { /* operators / offline: the intelligence section stays as it was */ });
+        }
         void render(JSONArray all) {
             JSONArray items = all; clear();
+            brainCard();   // v4.5.0 — the model speaks in the intelligence section too
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);

@@ -81,10 +81,9 @@ public final class BrainScreens {
             LinearLayout hero = Ui.hero(c);
             hero.addView(Ui.text(c, "مغز فروشگاه", 20, 0xFFFFFFFF, true));
             hero.addView(Ui.text(c, "رایانهٔ فروشگاه در دسترس نیست — حالت مستقل گوشی.", 12, 0xDDFFFFFF, false));
-            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0);
-            android.widget.Button chat = Ui.small(c, "گفت‌وگو با مغز محلی", () -> a.open(new Chat(a), true));
-            chat.setLayoutParams(Ui.weight(1)); br.addView(chat);
-            hero.addView(br);
+            android.widget.Button chat = Ui.primary(c, "💬  گفت‌وگو با مغز فروشگاه (محلی)", () -> a.open(new Chat(a), true));
+            chat.setLayoutParams(Ui.margin(Ui.match(), 0, 10, 0, 0));
+            hero.addView(chat);
             body.addView(hero);
             body.addView(Ui.body(c, "وقتی رایانه وصل باشد، کارت‌های تصمیم و گفت‌وگو با دادهٔ زندهٔ فروشگاه همین‌جا می‌آید. همین حالا هم همان مدل روی خود گوشی جواب می‌دهد — اگر مدل را نگرفته‌اید، پایین همین صفحه («مدل محلی») بگیرید."));
             modelTab();
@@ -109,14 +108,19 @@ public final class BrainScreens {
                     : "پاسخ‌ها از مدل محلی رایانه ساخته می‌شود.", 12, 0xDDFFFFFF, false));
             hero.addView(Ui.text(c, "حالت هوش مصنوعی: " + modeFa + " · مدل فعال: "
                     + (model == null ? "—" : (model.optString("active") == null || model.optString("active").isEmpty() ? "—" : model.optString("active"))), 12, 0xDDFFFFFF, false));
-            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0);
-            android.widget.Button chat = Ui.small(c, "گفت‌وگو با مغز", () -> a.open(new Chat(a), true));
-            chat.setLayoutParams(Ui.weight(1)); br.addView(chat);
+            // v4.5.0 — the chat entry is now a BIG, unmistakable button (the
+            // owner could not find the chat environment in round 13).
+            android.widget.Button chat = Ui.primary(c, "💬  گفت‌وگو با مغز فروشگاه", () -> a.open(new Chat(a), true));
+            chat.setLayoutParams(Ui.margin(Ui.match(), 0, 10, 0, 0));
+            hero.addView(chat);
+            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(8), 0, 0);
             android.widget.Button scan = Ui.small(c, "بررسی الان", () -> {
                 Ui.toast("در حال بررسی وضعیت…");
                 post("/brain/proactive/run?force=true", new JSONObject(), r -> { Ui.toast("بررسی انجام شد"); load(); });
             });
             scan.setLayoutParams(Ui.weight(1)); br.addView(scan);
+            android.widget.Button brief = Ui.small(c, "خلاصهٔ مغز (هوشمندی)", () -> a.route("insights"));
+            brief.setLayoutParams(Ui.weight(1)); br.addView(brief);
             hero.addView(br);
             body.addView(hero);
 
@@ -553,6 +557,8 @@ public final class BrainScreens {
     public static final class Chat extends Screens.Screen {
         LinearLayout log;
         EditText in;
+        /** v4.5.0 — the live "who answers" line under the title. */
+        TextView statusLine;
         /** v4.3 — the mic button (speech → question) and the voice-mode toggle. */
         android.widget.Button micBtn, vmBtn;
         /** v4.1 — the standalone-mode conversation (system prompt + this session's turns). */
@@ -562,80 +568,157 @@ public final class BrainScreens {
         public String title() { return "گفت‌وگو با مغز فروشگاه"; }
 
         @Override public View view() {
-            LinearLayout root = Ui.col(a); root.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
-            // v4.2.1 — a proper chat header: the model's own icon + branded subtitle
+            // v4.5.0 — a REAL chat environment (owner's round-13 complaint:
+            // «اصلا جای برای نوشتن متن و ارسال آن نیست»). One screen, three
+            // zones: a compact header with the live status chip, the scrolling
+            // conversation (weight 1), and a composer bar that is ALWAYS
+            // visible — rounded input + colored mic + a big send button.
+            LinearLayout root = Ui.col(a); root.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
+
+            // ---- header: icon + title + status chip + voice-mode toggle
             LinearLayout head = Ui.row(c);
-            head.setPadding(0, 0, 0, Ui.dp(10));
+            head.setPadding(0, 0, 0, Ui.dp(8));
             android.widget.ImageView hic = new android.widget.ImageView(c);
             hic.setImageResource(R.drawable.ic_model);
-            hic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(40), Ui.dp(40)));
+            hic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(36), Ui.dp(36)));
             head.addView(hic);
             LinearLayout ht = Ui.col(c); ht.setPadding(Ui.dp(10), 0, 0, 0);
-            ht.addView(Ui.text(c, "گفت‌وگو با مغز فروشگاه", 15.5f, Ui.TEXT, true));
-            ht.addView(Ui.muted(c, "مدل تخصصی سوپری‌من — محلی و آفلاین، مخصوص همین فروشگاه"));
+            ht.setLayoutParams(Ui.weight(1));
+            ht.addView(Ui.text(c, "مغز فروشگاه", 15.5f, Ui.TEXT, true));
+            statusLine = Ui.muted(c, chatStatusText());
+            statusLine.setTextSize(11);
+            ht.addView(statusLine);
             head.addView(ht);
-            root.addView(head);
-            // v4.3 — حالت صوتی: گفتار شما فرستاده می‌شود و پاسخ بلند خوانده می‌شود.
-            // The MODEL is unchanged (owner's rule) — voice is only ears + mouth.
-            LinearLayout vr = Ui.row(c); vr.setPadding(0, 0, 0, Ui.dp(8));
-            vmBtn = Ui.small(c, "", () -> {});
-            vmBtn.setLayoutParams(Ui.weight(1));
-            vmBtn.setOnClickListener(v -> {
+            // v4.3 voice mode (the MODEL never changes — voice is ears + mouth):
+            // a compact toggle; when ON, answers are read aloud automatically.
+            vmBtn = Ui.small(c, "", () -> {
                 boolean on = !BrainVoice.voiceMode();
                 BrainVoice.setVoiceMode(on);
                 if (on) BrainVoice.initTts(c);
                 paintVoiceMode();
-                Ui.toast(on ? "حالت صوتی روشن شد — دکمهٔ «گفتار» را بزنید و صحبت کنید؛ پاسخ بلند خوانده می‌شود"
+                Ui.toast(on ? "حالت صوتی روشن شد — دکمهٔ «🎤» را بزنید و صحبت کنید؛ پاسخ بلند خوانده می‌شود"
                         : "حالت صوتی خاموش شد");
             });
-            vr.addView(vmBtn);
+            head.addView(vmBtn);
             paintVoiceMode();
-            root.addView(vr);
+            root.addView(head);
+
+            // ---- the conversation (takes all the space between header & composer)
             log = Ui.col(a);
             ScrollView sv = new ScrollView(c); sv.addView(log);
             sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
             sv.setFillViewport(true);
             root.addView(sv);
-            LinearLayout row = Ui.row(c); row.setPadding(0, Ui.dp(8), 0, 0);
-            // v4.3 — the mic: press, speak Persian, the text lands in the input
-            // (and is sent immediately in voice mode). Uses the system recognizer.
-            micBtn = Ui.small(c, "گفتار", this::tapMic);
-            row.addView(micBtn);
-            in = Ui.input(c, "مثلاً: این هفته چقدر پول لازم دارم؟");
-            in.setLayoutParams(Ui.weight(1)); row.addView(in);
-            row.addView(Ui.primary(c, "بپرس", this::send));
-            root.addView(row);
-            root.addView(Ui.muted(c, "وصل به رایانه: پاسخ‌ها از دادهٔ همین فروشگاه ساخته می‌شود و عددی که از ابزار نیامده نمایش داده نمی‌شود. بدون رایانه: اگر مدل محلی گرفته و موتور روشن باشد، همان مدل روی خود گوشی پاسخ می‌دهد (با برچسب «محلی») و بدون دادهٔ زندهٔ فروشگاه."));
+
+            // ---- composer: mic + input + send — the heart of the fix
+            LinearLayout comp = Ui.row(c);
+            comp.setPadding(Ui.dp(2), Ui.dp(8), Ui.dp(2), Ui.dp(2));
+            // v4.5.0 — the mic button is now VISIBLY a button: gold while
+            // listening, plain otherwise; permission-denial retries itself.
+            micBtn = Ui.small(c, "🎤", this::tapMic);
+            micBtn.setTextSize(16);
+            micBtn.setPadding(Ui.dp(12), 0, Ui.dp(12), 0);
+            comp.addView(micBtn);
+            in = Ui.input(c, "سؤالت را همین‌جا بنویس…");
+            in.setLayoutParams(Ui.weight(1));
+            in.setOnEditorActionListener((v, actionId, ev) -> {
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) { send(); return true; }
+                return false;
+            });
+            comp.addView(in);
+            android.widget.Button snd = Ui.primary(c, "بفرست", this::send);
+            snd.setMinWidth(Ui.dp(86));
+            comp.addView(snd);
+            root.addView(comp);
             try {
                 local = new JSONArray();
                 local.put(new JSONObject().put("role", "system").put("content", BrainEngine.SYSTEM_PROMPT));
             } catch (Exception ignore) { local = new JSONArray(); }
             return root;
         }
+
+        /** v4.5.0 — one honest line about WHO answers right now. */
+        String chatStatusText() {
+            boolean model = BrainModel.readySpec(c) != null;
+            if (Api.standalone()) return model
+                    ? "مدل محلی روی خود گوشی · آماده ✓"
+                    : "حالت مستقل — مدل هنوز گرفته نشده (تب «مدل محلی»)";
+            return "وصل به رایانهٔ فروشگاه · پاسخ‌ها با دادهٔ همین فروشگاه";
+        }
+
+        void paintStatus() {
+            if (statusLine != null) statusLine.setText(chatStatusText());
+        }
+
         void paintVoiceMode() {
             if (vmBtn == null) return;
-            vmBtn.setText(BrainVoice.voiceMode()
-                    ? "حالت صوتی: روشن — پاسخ‌ها بلند خوانده می‌شوند"
-                    : "حالت صوتی: خاموش");
+            vmBtn.setText(BrainVoice.voiceMode() ? "🔊 روشن" : "🔇 خاموش");
+        }
+
+        /** v4.5.0 — the empty state: a greeting from the brain + one-tap
+         *  suggestions, so it is obvious WHAT to type and WHERE. */
+        void welcome() {
+            LinearLayout hi = bubbleBase(false);
+            hi.addView(Ui.text(c, "سلام! من مغز فروشگاه سوپری‌من هستم — مدل محلی و اختصاصی همین فروشگاه.", 13.5f, Ui.TEXT, true));
+            hi.addView(Ui.muted(c, "هر چیزی بپرس جواب می‌گیرم؛ کارها را با تأیید خودت انجام می‌دهم و یادآوری‌ات می‌کنم. پایین بنویس یا 🎤 را بزن و صحبت کن."));
+            log.addView(hi);
+            String[] sugg = {
+                    "وضعیت فروشگاه امروز چطوره؟",
+                    "چه کالایی نزدیک انقضاست؟",
+                    "فردا صبح یادم بنداز سفارش شیر بدم",
+                    "متن پیامک یادآوری مشتری‌ها را با هم ببینیم",
+            };
+            for (final String s : sugg) {
+                android.widget.Button chip = Ui.small(c, s, () -> { in.setText(s); send(); });
+                chip.setLayoutParams(Ui.weight(1));
+                LinearLayout r = Ui.row(c);
+                r.setPadding(0, 0, 0, Ui.dp(6));
+                r.addView(chip);
+                log.addView(r);
+            }
         }
 
         /** v4.3 — press, speak; the recognized Persian text goes into the input
-         *  (and is sent immediately in voice mode → the conversation is spoken). */
+         *  (and is sent immediately in voice mode → the conversation is spoken).
+         *  v4.5.0 — after the mic PERMISSION is granted the listening starts BY
+         *  ITSELF (before, the user had to press again and it looked broken). */
         void tapMic() {
+            if (a.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                a.permCb = () -> {
+                    a.permCb = null;
+                    if (a.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                            == android.content.pm.PackageManager.PERMISSION_GRANTED) tapMic();
+                    else Ui.toast("اجازهٔ میکروفون داده نشد — بدون آن گفتار کار نمی‌کند");
+                };
+            }
             BrainVoice.toggleListen(a, text -> {
                 in.setText(text);
                 if (BrainVoice.voiceMode()) send();
-            }, on -> micBtn.setText(on ? "در حال شنیدن…" : "گفتار"));
+            }, on -> {
+                micBtn.setText(on ? "●" : "🎤");
+                micBtn.setTextColor(on ? Ui.BG : Ui.TEXT);
+                micBtn.setBackground(Ui.rounded(on ? Ui.GOLD : Ui.CARD2, on ? Ui.GOLD : Ui.BORDER, 14));
+            });
         }
 
         public void load() {
+            paintStatus();
             log.removeAllViews();
+            // v4.5.0 — the standalone phone never had server history; and a
+            // failed fetch must NEVER leave «در حال خواندن گفت‌وگو…» forever
+            // (the round-13 bug: errors rendered into an orphaned container).
+            if (Api.standalone()) { welcome(); return; }
             log.addView(Ui.muted(c, "در حال خواندن گفت‌وگو…"));
-            get("/brain/chat/history?limit=40", r -> {
+            Api.get("/brain/chat/history?limit=40", r -> {
                 JSONArray ms = ((JSONObject) r).optJSONArray("messages");
                 log.removeAllViews();
-                if (ms == null || ms.length() == 0) { log.addView(Ui.empty(c, "سؤالت را بپرس — از وضعیت واقعی فروشگاه جواب می‌گیرم.")); return; }
+                if (ms == null || ms.length() == 0) { welcome(); return; }
                 for (int i = 0; i < ms.length(); i++) bubble(ms.optJSONObject(i).optString("role"), ms.optJSONObject(i).optString("content"));
+                if (BrainVoice.voiceMode()) BrainVoice.initTts(c);   // ready to read the next answer
+            }, e -> {
+                log.removeAllViews();
+                welcome();   // offline/403 → still a fully usable chat (local model or retry)
             });
         }
         String nowTime() {

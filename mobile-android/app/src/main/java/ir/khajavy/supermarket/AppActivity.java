@@ -234,7 +234,10 @@ public class AppActivity extends Activity {
         Biometric.markInternal(); Intent i = new Intent(this, ScanActivity.class); i.putExtra("title", title); startActivityForResult(i, REQ_SCAN);
     }
     public Runnable permCb;   // v2.8: settings screens re-render after a permission answer
-    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
+                              // v4.5.0: also used by the chat mic (code 78) to start listening
+                              // right after the grant instead of looking dead.
+    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 78 && permCb != null) permCb.run();   // v4.5.0 — the chat mic: retry right after the answer
+            if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
             boolean sms = false; for (int i = 0; i < p.length; i++) if (android.Manifest.permission.SEND_SMS.equals(p[i])) sms = r[i] == PackageManager.PERMISSION_GRANTED;
             Ui.toast(sms ? "اجازهٔ پیامک داده شد — حالا می‌توانید از سیم‌کارت بفرستید" : "اجازه داده نشد؛ بدون آن ارسال از سیم‌کارت ممکن نیست");
             if (permCb != null) permCb.run(); } }

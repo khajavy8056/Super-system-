@@ -70,7 +70,7 @@ def test_chat_is_voice_wired():
     assert "BrainVoice.speak(c, answer, null)" in s                # auto-read standalone answers
     assert "بخوان" in s                                            # per-bubble replay button
     assert "BrainVoice.stopSpeak()" in s                           # new question cuts the speech
-    assert '"گفتار"' in s                                          # the mic button label
+    assert '"🎤"' in s                                            # the mic button label (v4.5: icon + gold listening state)
 
 
 def test_activity_stops_voice_in_background():

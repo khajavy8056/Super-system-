@@ -152,6 +152,7 @@ def _start_brain_worker() -> None:
 
     def tick() -> None:
         from .database import SessionLocal
+        from .services.business_brain import briefing as briefing_svc
         from .services.business_brain import proactive as proactive_svc
 
         db = SessionLocal()
@@ -162,6 +163,12 @@ def _start_brain_worker() -> None:
                      out.get("followups_notified", 0))
         except Exception:                            # noqa: BLE001 — never propagate
             log.warning("brain pass failed (will retry next tick)", exc_info=True)
+        try:
+            # v4.5.0 — the model also works in the intelligence section:
+            # refresh the manager's briefing every pass (grounded, cached).
+            briefing_svc.build(db, refresh=True)
+        except Exception:                            # noqa: BLE001
+            log.warning("briefing refresh failed (will retry next tick)", exc_info=True)
         finally:
             db.close()
 
