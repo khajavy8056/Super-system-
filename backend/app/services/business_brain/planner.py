@@ -359,8 +359,16 @@ def respond(db: Session, *, question: str, user: User | None = None, session_key
                 user_id=getattr(user, "id", None))
     plan = analyse(db, ctx, question, session_key=session_key)
 
-    text = deterministic_text(plan, question)
-    mode = "deterministic"
+    # v4.3.1 — identity questions («تو کی هستی؟ چه کاری می‌توانی؟ سازنده‌ات کیست؟»)
+    # get an instant, complete, fluent answer even on the slowest shop CPU —
+    # the owner's explicit request — and never wait for the model to load.
+    identity = _identity_answer(question)
+    if identity is not None and not plan.blocked:
+        prefer_llm = False
+        text, mode, model_id = identity, "deterministic", None
+    else:
+        text = deterministic_text(plan, question)
+        mode = "deterministic"
     model_id = None
     numbers_verified = True
     warnings: list[str] = []
@@ -415,6 +423,40 @@ def respond(db: Session, *, question: str, user: User | None = None, session_key
                           "entities": plan.understanding.entities,
                           "options": [o.to_dict() for o in plan.options]})
     return answer.to_dict()
+
+
+#: questions about the assistant itself — answered instantly, never fabricated
+_IDENTITY_PATTERNS = (
+    "کی هستی", "کی هستم", "چی هستی", "تو چیستی", "اسمت چیه", "اسمت چیست", "نام تو",
+    "چه کاری می", "چه کارهایی می", "چه توانایی", "سازنده", "چه کسی ساخت", "کی ساخته",
+    "تو کی هستی", "خودتو معرفی", "خودت را معرفی", "قابلیت‌هات", "توانایی‌هات",
+)
+
+
+def _identity_answer(question: str) -> str | None:
+    """v4.3.1 — who/what are you, what can you do, who built you.
+
+    The owner's rule: the answer must be exact, complete and fluent, and must
+    name محمد صدیق خواجوی as the creator. No numbers are involved, so this is
+    safe to answer deterministically — instantly, even before the model loads.
+    """
+    q = (question or "").strip()
+    if not q or len(q) > 120:
+        return None
+    if not any(pat in q for pat in _IDENTITY_PATTERNS):
+        return None
+    return (
+        "وضعیت: من «مغز فروشگاه سوپری‌من» هستم — هوش محلی و اختصاصی همین فروشگاه؛ "
+        "روی رایانه یا گوشی خودتان اجرا می‌شوم و به هیچ سرویس ابری وصل نیستم.\n"
+        "دلیل: همهٔ پاسخ‌هایم از دادهٔ واقعی فروشگاه ساخته می‌شود و عددی را که از ابزارها و "
+        "گزارش‌های واقعی نیامده، نمایش نمی‌دهم.\n"
+        "پیشنهاد: از من بخواهید فروش امروز، سود ماه، کالاهای نزدیک انقضا، کمبود موجودی، "
+        "مشتری‌های طلایی، فشار نقدینگی و پیشنهادهای فروش مکمل را بررسی کنم؛ کارهایی که "
+        "نیاز به تأیید دارند را با تأیید شما انجام می‌دهم و برایشان پیگیری می‌سازم. "
+        "گفتگو با من متنی و صوتی است — می‌توانید حرف بزنید و جوابم را بشنوید.\n"
+        "اقدام بعدی: سازندهٔ من محمد صدیق خواجوی است؛ هر سؤال دیگری دربارهٔ فروشگاه داشتید "
+        "بپرسید تا همین حالا با دادهٔ واقعی بررسی کنم."
+    )
 
 
 def _refine_with_model(db: Session, ctx: ToolContext, plan: Plan, question: str, *, runtime,

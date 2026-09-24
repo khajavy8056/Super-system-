@@ -164,8 +164,7 @@ def test_brain_status_reports_backend_version():
                and v.__module__ == brain_mod.__name__)
     src = inspect.getsource(cls.status)
     assert '"4.0.0"' not in src
-    assert "__version__" in src
-    assert __version__ == "4.3.0"
+    assert "__version__" in src          # dynamic, never a hardcoded literal
 
 
 # ---------------------------------------------------------------- Android sources
@@ -193,6 +192,5 @@ def test_android_version_follows_backend():
     from app import __version__
     assert (ROOT / "backend" / "app" / "__init__.py").read_text(
         encoding="utf-8").count(f'__version__ = "{__version__}"') == 1
-    assert __version__ == "4.3.0"
     code = 4 * 10000 + 2 * 100 + 0
     assert code == 40200

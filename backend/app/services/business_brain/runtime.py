@@ -193,6 +193,27 @@ class LlamaCppProvider(AIProvider):
         except Exception:  # noqa: BLE001 — "not up yet" is a normal answer
             return False
 
+    def _health_status(self, timeout: float = 2.0) -> str:
+        """v4.3.1 — 'ok' | 'loading' | 'down'. llama-server answers /health with
+        503 + {"status":"loading model"} while mmap-ing the weights, which is
+        PROGRESS, not failure. The old code could not tell the two apart and
+        spawned a SECOND llama-server on the same port (bind error → honest but
+        wrong failure) while the first one was still loading."""
+        try:
+            with urllib.request.urlopen(f"{self.base_url()}/health", timeout=timeout) as r:
+                return "ok" if r.status == 200 else "down"
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                try:
+                    body = json.loads(exc.read().decode() or "{}")
+                    if "loading" in str(body.get("status", "")).lower():
+                        return "loading"
+                except Exception:  # noqa: BLE001
+                    pass
+            return "down"
+        except Exception:  # noqa: BLE001
+            return "down"
+
     def available(self) -> bool:
         if not self.model_path or not os.path.exists(self.model_path):
             return False
@@ -209,14 +230,34 @@ class LlamaCppProvider(AIProvider):
         if not self.start_server:
             self._notes = ["سرور llama.cpp در حال اجرا نیست"]
             return False
+        # v4.3.1 — another llama-server (e.g. the startup autostart) is already
+        # LOADING this same port: wait for it, never spawn a duplicate.
+        if self._health_status() == "loading":
+            self._notes = ["مدل در حال بارگذاری است…"]
+            deadline = time.time() + 240
+            while time.time() < deadline:
+                st = self._health_status()
+                if st == "ok":
+                    self._notes = []
+                    return True
+                if st == "down":
+                    break
+                time.sleep(1.0)
         cmd = [self.binary, "-m", self.model_path, "--host", self.host, "--port", str(self.port),
                "-c", str(self.context), "-t", str(self.threads), "--no-webui", *self.extra_args]
         try:
-            self._process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
+            # v4.3.1 — on Windows a console subprocess of a windowed app opens a
+            # VISIBLE BLACK CONSOLE (the «لوما سرور» window the owner saw and
+            # did not recognise). CREATE_NO_WINDOW keeps the engine invisible:
+            # it is an internal part of the product, not a window the user runs.
+            popen_kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            self._process = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603
         except OSError as exc:
             self._notes = [f"اجرای llama.cpp ناموفق: {exc}"]
             return False
-        deadline = time.time() + 120
+        deadline = time.time() + 240
         while time.time() < deadline:
             if self._healthy():
                 return True
@@ -251,7 +292,11 @@ class LlamaCppProvider(AIProvider):
                            **params, "chat_template_kwargs": {"enable_thinking": False}}).encode()
         req = urllib.request.Request(f"{self.base_url()}/v1/chat/completions", data=body, method="POST",
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
+        # v4.3.1 — 180 s made the chat look dead on slow shop CPUs; 75 s bounds
+        # the wait, after which the planner shows the deterministic answer with
+        # an honest MODEL_FAILED note (the model stays an enhancement, never a
+        # dependency).
+        with urllib.request.urlopen(req, timeout=75) as r:
             payload = json.loads(r.read().decode())
         content = payload["choices"][0]["message"]["content"]
         return strip_reasoning(content)

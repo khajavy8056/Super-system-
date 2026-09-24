@@ -98,8 +98,9 @@ def test_voice_css_exists():
 
 
 # ---------------------------------------------------------------- versions
-def test_versions_bumped_to_430():
+def test_versions_consistent():
+    from app import __version__
     assert (ROOT / "backend" / "app" / "__init__.py").read_text(
-        encoding="utf-8").count('__version__ = "4.3.0"') == 1
+        encoding="utf-8").count(f'__version__ = "{__version__}"') == 1
     iss = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
-    assert '#define MyAppVersion "4.3.0"' in iss
+    assert f'#define MyAppVersion "{__version__}"' in iss

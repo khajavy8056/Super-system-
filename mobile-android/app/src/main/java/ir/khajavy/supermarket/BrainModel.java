@@ -59,6 +59,21 @@ public final class BrainModel {
 
     public static Spec find(String id) { for (Spec s : MODELS) if (s.id.equals(id)) return s; return null; }
     public static Spec recommended() { return MODELS[1]; }   // the light one first on phones
+    /** v4.3.1 — the spec the ENGINE should run: whichever model is actually
+     *  READY (the owner downloaded one of them), recommended as tie-breaker.
+     *  Before, start() always took recommended() — if the user had fetched the
+     *  OTHER model, the engine refused even though a model was ready. */
+    public static Spec readySpec(Context c) {
+        Spec rec = recommended();
+        if (READY.equals(stateOf(rec.id)) && ready(c, rec)) return rec;
+        for (Spec s : MODELS) if (READY.equals(stateOf(s.id)) && ready(c, s)) return s;
+        return null;
+    }
+    /** true when ANY model has a download state (used to never auto-download again). */
+    public static boolean anyState() {
+        for (Spec s : MODELS) if (!stateOf(s.id).isEmpty()) return true;
+        return false;
+    }
 
     /* ---------------- storage ---------------- */
     public static File dir(Context c) { return new File(c.getFilesDir(), "brain/models"); }
@@ -137,13 +152,31 @@ public final class BrainModel {
      *  was ever fetched, start the recommended download by itself (once per install).
      *  On mobile data we never burn the user's gigabytes without asking. */
     public static void autoSetup(Context c) {
+        // v4.3.1 — the owner's rule: a model the user (or a corruption) already
+        // touched is NEVER auto-downloaded again — auto only on a truly fresh
+        // install. A paused download, though, quietly CONTINUES on Wi-Fi.
+        boolean fresh = false;
         if (!"1".equals(Prefs.get("brain_model_auto", ""))) {
             Prefs.set("brain_model_auto", "1");
+            fresh = true;
+        }
+        if (fresh && !anyState() && unmetered(c)) {
             Spec s = recommended();
-            if (!READY.equals(stateOf(s.id)) && !CORRUPT.equals(stateOf(s.id)) && unmetered(c)) {
+            if (!READY.equals(stateOf(s.id)) && !CORRUPT.equals(stateOf(s.id))) {
                 Ui.toast("دریافت " + s.label() + " (~" + Ui.num(Math.round(s.bytes / 1048576.0))
                         + " مگابایت) آغاز شد — از تب «مدل محلی» پیشرفت را ببینید");
                 download(c, s);
+                return;
+            }
+        }
+        // v4.3.1 — auto-resume what was paused, on Wi-Fi only, never on mobile data
+        if (unmetered(c)) {
+            for (Spec s : MODELS) {
+                if (PAUSED.equals(stateOf(s.id))) {
+                    Ui.toast("ادامهٔ دریافت " + s.label() + " از همان‌جا آغاز شد");
+                    download(c, s);
+                    return;
+                }
             }
         }
     }

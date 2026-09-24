@@ -50,7 +50,13 @@ public final class BrainEngine {
     public static final int PORT = 8081;
     /** Context window on the phone: the product's own rule — smaller devices get less context. */
     public static final int CONTEXT = 2048;
-    private static final long LOAD_TIMEOUT_MS = 120_000;
+    /** v4.3.1 — 924 MB into a phone's RAM can take a while on cheap storage;
+     *  240 s with live progress notes instead of 120 s of silence. */
+    private static final long LOAD_TIMEOUT_MS = 240_000;
+    /** v4.3.1 — the last lines llama-server printed (the REAL reason on
+     *  failure — previously the output was discarded, so «کار نمی‌کنه» had no
+     *  explanation). */
+    private static final java.util.ArrayDeque<String> TAIL = new java.util.ArrayDeque<>();
 
     /* ---------------- the binary ---------------- */
     public static File bin(Context c) {
@@ -69,6 +75,20 @@ public final class BrainEngine {
 
     public static String state() { return Prefs.get("brain_engine_state", STOPPED); }
     public static String note() { return Prefs.get("brain_engine_note", ""); }
+    /** v4.3.1 — the engine's own last words (English is fine: it is for diagnosis). */
+    public static String tail() {
+        synchronized (TAIL) { return String.join("\n", TAIL); }
+    }
+    private static void pushTail(String line) {
+        if (line == null) return;
+        synchronized (TAIL) {
+            TAIL.addLast(line.trim());
+            while (TAIL.size() > 25) TAIL.removeFirst();
+        }
+    }
+    private static String lastTail() {
+        synchronized (TAIL) { return TAIL.isEmpty() ? "" : TAIL.getLast(); }
+    }
 
     private static void putState(String state, String note) {
         Prefs.set("brain_engine_state", state);
@@ -104,6 +124,9 @@ public final class BrainEngine {
     /** Start llama-server with a READY model. Returns false (with an honest note) if it cannot. */
     public static synchronized void start(final Context c, final BrainModel.Spec s) {
         if (running()) { putState(RUNNING, "موتور محلی از قبل روشن است"); return; }
+        // v4.3.1 — a llama-server that survived the app being closed (previous
+        // run) still owns port 8081: ADOPT it instead of failing to bind.
+        if (healthy(1200)) { putState(RUNNING, "موتور محلی (نمونهٔ قبلی) از قبل روشن است و پذیرفته شد"); return; }
         if (!installed(c)) {
             putState(FAILED, "موتور استنتاج در این نصب موجود نیست (libllamaserver.so)");
             return;
@@ -131,29 +154,42 @@ public final class BrainEngine {
                         "--no-webui");
                 pb.redirectErrorStream(true);
                 proc = pb.start();
-                // drain the child's output so a full pipe can never block it
+                // v4.3.1 — keep the last lines instead of discarding them: on
+                // failure the manager sees the REAL reason, not a guess.
                 Thread drain = new Thread(() -> {
                     try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                        while (r.readLine() != null) { /* discarded */ }
+                        String ln;
+                        while ((ln = r.readLine()) != null) pushTail(ln);
                     } catch (Exception ignore) {}
                 }, "brain-engine-drain");
                 drain.setDaemon(true);
                 drain.start();
 
                 long deadline = System.currentTimeMillis() + LOAD_TIMEOUT_MS;
+                long lastNote = 0;
                 while (System.currentTimeMillis() < deadline) {
                     if (healthy(1500)) {
-                        putState(RUNNING, "موتور محلی روشن است — " + s.id + " (llama.cpp " + ENGINE_TAG + ")");
+                        putState(RUNNING, "موتور محلی روشن است — " + s.label() + " (llama.cpp " + ENGINE_TAG + ")");
                         return;
                     }
                     if (proc != null && !proc.isAlive()) {
-                        putState(FAILED, "فرایند موتور بلافاصله بسته شد (احتمال کمبود حافظهٔ گوشی)");
+                        String why = lastTail();
+                        putState(FAILED, "فرایند موتور بسته شد (احتمال کمبود حافظهٔ گوشی)"
+                                + (why.isEmpty() ? "" : " — " + why));
                         proc = null;
                         return;
                     }
+                    // v4.3.1 — live progress so a slow load never looks dead
+                    if (System.currentTimeMillis() - lastNote > 10_000) {
+                        lastNote = System.currentTimeMillis();
+                        long secs = (LOAD_TIMEOUT_MS - (deadline - System.currentTimeMillis())) / 1000;
+                        putState(STARTING, "در حال بارگذاری مدل روی گوشی… " + Ui.num(secs) + " ثانیه"
+                                + (lastTail().isEmpty() ? "" : " — آخرین پیام موتور: " + lastTail()));
+                    }
                     try { Thread.sleep(1000); } catch (InterruptedException ie) { return; }
                 }
-                putState(FAILED, "مدل در بازهٔ مجاز بارگذاری نشد");
+                putState(FAILED, "مدل در بازهٔ مجاز بارگذاری نشد"
+                        + (lastTail().isEmpty() ? "" : " — آخرین پیام موتور: " + lastTail()));
                 stop();
             } catch (Exception e) {
                 putState(FAILED, "روشن‌کردن موتور ناموفق بود: " + e.getMessage());
@@ -242,7 +278,9 @@ public final class BrainEngine {
 
     /* ---------------- the local-mode persona (a faithful port of prompts.py) ---------------- */
     public static final String SYSTEM_PROMPT =
-            "تو «مغز کسب‌وکار» یک سوپرمارکت محلی در ایران هستی و با صاحب فروشگاه حرف می‌زنی.\n\n"
+            "تو «مغز فروشگاه سوپری‌من» هستی — هوش محلی و اختصاصی فروشگاه که روی همین دستگاه اجرا می‌شود و به هیچ سرویس ابری وصل نیست. "
+          + "سازندهٔ تو «محمد صدیق خواجوی» است؛ اگر پرسیدند تو کی هستی، چی هستی یا چه کارهایی می‌توانی انجام دهی، صادقانه و روان معرفی کن.\n\n"
+          + "تو «مغز کسب‌وکار» یک سوپرمارکت محلی در ایران هستی و با صاحب فروشگاه حرف می‌زنی.\n\n"
           + "قواعد قطعی:\n"
           + "۱) هیچ عددی از خودت نساز. فقط اعدادی را بنویس که در همین گفت‌وگو به تو داده شده است.\n"
           + "۲) لحن: ساده، محترمانه، حرفه‌ای و کوتاه. نه خودمانی، نه اداری و خشک. شوخی و تعریف بی‌مورد ممنوع.\n"

@@ -3,6 +3,19 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.3.1] - 2026-09-24
+
+### پایداری: موتور اندروید، پنجرهٔ llama-server، چتِ قفل‌شده، هویت مدل
+- **Android engine would not start after the model verified** — three real defects fixed: (۱) start() always took the *recommended* model, so if the user had fetched the other one the engine refused although a model was ready → now `readySpec()` runs whichever model is READY (engine button + standalone chat); (۲) a llama-server that outlived the app still owned port 8081, and every new start spawned a duplicate that failed to bind → the running server is now ADOPTED; (۳) the output drain discarded everything, so a failure had no reason and a slow load looked dead → the last 25 lines are kept, shown on the FAILED card («آخرین پیام‌های موتور»), the load window is 240 s with live «…ثانیه — آخرین پیام موتور» progress notes.
+- **Download honesty (owner's rule):** a touched/corrupt model is NEVER auto-downloaded again (auto only on a truly fresh install — `anyState()` gate); the CORRUPT card says so and offers an explicit manual «دریافت مجدد (فقط با خواست شما)»; a PAUSED download quietly CONTINUES on Wi-Fi when the app opens; stop/resume unchanged and byte-exact.
+- **Windows: the «لوما سرور» black console window the owner saw** — that was llama-server's console (the engine executing the model), spawned without `CREATE_NO_WINDOW`. It is an internal component and is now INVISIBLE; nothing changed functionally.
+- **Windows chat no longer hangs on «در حال بررسی داده‌های فروشگاه…»**: the LLM call timeout drops 180 s → 75 s (a slow shop CPU generating 512 tokens looked like a hang); after the bound, the planner shows the deterministic answer with the honest MODEL_FAILED note (the model is an enhancement, never a dependency). A llama-server that is mid-load (health 503 «loading model») is waited for, not double-spawned.
+- **`Cannot set properties of null (setting 'innerHTML')` never kills a page again**: a display-error shield catches window errors and unhandled rejections, logs them, and reports once per minute in Persian — the app stays usable instead of a dead half-rendered page.
+- **The boot loading now PREPARES the environment (owner's rule)**: while it shows, the six real view endpoints (dashboard, products, stock, expiry, insights, brain status) are fetched in parallel and served one-shot from the warm cache — after entering the app, those pages render instantly instead of starting from «در حال بارگذاری…».
+- **The model introduces itself (owner's explicit answer)**: «تو کی هستی / چه کارهایی می‌توانی / سازنده‌ات کیست» → an instant, complete, fluent Persian answer naming **محمد صدیق خواجوی** as the creator and «مغز فروشگاه سوپری‌من» as its name — deterministic (no model wait on slow CPUs), and the same identity is baked into both system prompts (PC + phone) so the model phrases it the same way.
+- Tests: new `test_v431_reliability.py` (14 tests); stale version pins made version-agnostic. Full suite **750 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.1.apk` (versionCode 40301, both ABIs, preflight PASS, same cert → in-place update). Windows: rebuild from this tree.
+
 ## [4.3.0] - 2026-09-24
 
 ### گفتگوی صوتی با مغز فروشگاه — همان مدل، بدون سنگین‌تر شدن

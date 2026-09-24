@@ -333,6 +333,18 @@ public final class BrainScreens {
             final TextView note = Ui.muted(c, engineNote());
             note.setPadding(0, Ui.dp(6), 0, 0);
             card.addView(note);
+            // v4.3.1 — when the engine fails, its own last output lines are the
+            // REAL reason; show them so nothing stays a mystery.
+            if (BrainEngine.FAILED.equals(st)) {
+                String tl = BrainEngine.tail();
+                if (tl != null && !tl.isEmpty()) {
+                    TextView det = Ui.muted(c, "آخرین پیام‌های موتور:\n" + tl);
+                    det.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
+                    det.setTextSize(10);
+                    det.setPadding(0, Ui.dp(4), 0, 0);
+                    card.addView(det);
+                }
+            }
 
             LinearLayout act = Ui.row(c); act.setPadding(0, Ui.dp(8), 0, 0);
             if (BrainEngine.installed(c)) {
@@ -340,8 +352,13 @@ public final class BrainScreens {
                     act.addView(Ui.small(c, "خاموش‌کردن موتور", () -> { BrainEngine.stop(); load(); }));
                 } else {
                     android.widget.Button start = Ui.primary(c, "روشن‌کردن و آزمایش موتور محلی", () -> {
-                        BrainEngine.start(c, BrainModel.recommended());
-                        Ui.toast("در حال بارگذاری مدل روی گوشی… چند لحظه صبر کنید");
+                        BrainModel.Spec rs = BrainModel.readySpec(c);   // v4.3.1 — the READY model, not blindly recommended
+                        if (rs == null) {
+                            Ui.toast("هنوز مدل تأییدشده‌ای روی گوشی نیست — از کارت‌های پایین یکی دریافت کنید");
+                            return;
+                        }
+                        BrainEngine.start(c, rs);
+                        Ui.toast("در حال بارگذاری " + rs.label() + " روی گوشی… چند لحظه صبر کنید");
                         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::load, 1500);
                     });
                     start.setLayoutParams(Ui.weight(1)); act.addView(start);
@@ -361,10 +378,11 @@ public final class BrainScreens {
             String st = BrainEngine.state();
             String n = BrainEngine.note();
             long ram = BrainEngine.totalRamMb(c);
-            BrainModel.Spec rec = BrainModel.recommended();
-            String fit = BrainEngine.fitsRam(c, rec)
-                    ? "حافظهٔ گوشی برای مدل پیشنهادی کافی است (" + Ui.num(ram) + " مگابایت رم)"
-                    : "حافظهٔ گوشی برای مدل پیشنهادی کافی به نظر نمی‌رسد (" + Ui.num(ram) + " مگابایت رم؛ حداقل " + Ui.num(rec.minRamMb) + ")";
+            BrainModel.Spec run = BrainModel.readySpec(c);          // v4.3.1 — what will actually run
+            if (run == null) run = BrainModel.recommended();
+            String fit = BrainEngine.fitsRam(c, run)
+                    ? "مدلِ قابل اجرا: " + run.label() + " — حافظه کافی است (" + Ui.num(ram) + " مگابایت رم)"
+                    : "حافظهٔ گوشی برای " + run.label() + " کافی به نظر نمی‌رسد (" + Ui.num(ram) + " مگابایت رم؛ حداقل " + Ui.num(run.minRamMb) + ")";
             return (n.isEmpty() ? "موتور محلی برای پاسخ‌گویی در حالت مستقل (بدون رایانه) است." : n) + " — " + fit;
         }
         LinearLayout modelCard(final BrainModel.Spec s) {
@@ -412,12 +430,15 @@ public final class BrainScreens {
             } else if (BrainModel.DOWNLOADING.equals(BrainModel.stateOf(s.id)) || BrainModel.VERIFYING.equals(BrainModel.stateOf(s.id))) {
                 act.addView(Ui.small(c, "توقف", () -> { BrainModel.pause(); }));
             } else {
-                String label = BrainModel.PAUSED.equals(BrainModel.stateOf(s.id)) ? "ادامهٔ دریافت" : "دریافت مدل";
+                boolean bad = BrainModel.CORRUPT.equals(BrainModel.stateOf(s.id));
+                String label = BrainModel.PAUSED.equals(BrainModel.stateOf(s.id)) ? "ادامهٔ دریافت"
+                        : bad ? "دریافت مجدد (فقط با خواست شما)" : "دریافت مدل";
                 android.widget.Button dl = Ui.primary(c, label, () -> {
                     Ui.toast("دریافت از مخزن رسمی آغاز شد — حدود " + Ui.num(Math.round(s.bytes / 1048576.0)) + " مگابایت");
                     BrainModel.download(c, s);
                 });
                 dl.setLayoutParams(Ui.weight(1)); act.addView(dl);
+                if (bad) act.addView(Ui.muted(c, "فایل قبلی با مخزن رسمی نمی‌خواند و حذف شد؛ دریافت مجدد فقط با لمس این دکمه انجام می‌شود — خودکار تکرار نمی‌شود."));
             }
             card.addView(act);
 
@@ -699,7 +720,8 @@ public final class BrainScreens {
         }
 
         boolean localUsable() {
-            return BrainEngine.usableWith(c, BrainModel.recommended());
+            BrainModel.Spec rs = BrainModel.readySpec(c);          // v4.3.1
+            return rs != null && BrainEngine.usableWith(c, rs);
         }
 
         /** v4.1 — standalone mode: the SAME model file runs ON the phone (labelled, honest). */
@@ -709,7 +731,8 @@ public final class BrainScreens {
             try { local.put(new JSONObject().put("role", "user").put("content", q)); } catch (Exception ignore) {}
             final JSONArray msgs = local;
             new Thread(() -> {
-                BrainModel.Spec s = BrainModel.recommended();
+                BrainModel.Spec s = BrainModel.readySpec(c);        // v4.3.1 — the READY model
+                if (s == null) s = BrainModel.recommended();
                 if (!BrainEngine.running()) BrainEngine.start(c, s);
                 String ans = BrainEngine.running() ? BrainEngine.chat(msgs, 512) : null;
                 final String answer = ans == null ? "" : ans;

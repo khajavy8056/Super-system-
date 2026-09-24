@@ -45,10 +45,36 @@ function toast(msg, kind = "ok") {
   el._t = setTimeout(() => el.classList.add("hidden"), 3200);
 }
 
+/* ---------- v4.3.1 warm cache ----------
+ * The boot loading screen exists to PREPARE the environment (owner's rule):
+ * while it shows, the heavy read-only endpoints are fetched in parallel and
+ * served from memory the first time their view opens — so after entering the
+ * app NO page starts from an empty "در حال بارگذاری…". One-shot per key:
+ * the second visit is a fresh request as before. */
+const WARM_KEYS = [
+  "/reports/dashboard",
+  "/products?limit=1000",        // what the products view actually fetches
+  "/inventory/stock",            // inventory view's first call
+  "/reports/expiry",             // expiry report
+  "/insights/summary",
+  "/brain/status",
+];
+const warm = {};
+async function warmup() {
+  if (!state.token) return;
+  await Promise.allSettled(WARM_KEYS.map(async (k) => {
+    try { warm[k] = await api(k); } catch (_) { /* offline keys warm lazily */ }
+  }));
+}
+
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (!(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
+  const method = (opts.method || "GET").toUpperCase();
+  if (method === "GET" && Object.prototype.hasOwnProperty.call(warm, path)) {
+    const v = warm[path]; delete warm[path]; return v;
+  }
   const res = await fetch(API + path, { ...opts, headers });
   if (res.status === 204) return null;
   let body = null;
@@ -101,6 +127,28 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/* ---------- v4.3.1 display-error shield ----------
+ * "Cannot set properties of null (setting 'innerHTML')" used to abort a view
+ * mid-render and leave a half-open page (owner report). Now: any render error
+ * is caught here, logged with its stack for the developer, and shown to the
+ * user ONCE per minute in Persian — the app stays usable. */
+(() => {
+  let lastToast = 0;
+  const report = (msg) => {
+    console.error("[display shield]", msg);
+    const now = Date.now();
+    if (now - lastToast > 60_000) {
+      lastToast = now;
+      try { if (typeof toast === "function") toast("یک خطای نمایشی رخ داد و مدیریت شد — اگر صفحه ناقص ماند از منو دوباره وارد شوید", "err"); } catch (_) {}
+    }
+  };
+  window.addEventListener("error", (e) => report(e.message || "خطای نمایشی"));
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    report(r && r.message ? r.message : "خطای ناهمگام");
+  });
+})();
+
 /* ---------- auth ---------- */
 function showLogin() {
   $("#app-view").classList.add("hidden");
@@ -126,6 +174,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     state.user = me;
     if (window.Onboarding) await Onboarding.afterLogin();   // v1.5: licence recheck + loading
     await loadRuntimeConfig();
+    await warmup();   // v4.3.1 — the loading screen prepares the data too
     showApp();
     buildNav();
     await applyTheme();
