@@ -46,6 +46,8 @@
   }
   if (typeof ICONS !== "undefined") {
     ICONS.brain = ICONS.brain || '<path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0 0 6v1a3 3 0 0 0 3 3h1V4z"/><path d="M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 0 6v1a3 3 0 0 1-3 3h-1V4z"/>';
+    ICONS.mic = ICONS.mic || '<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/>';
+    ICONS.volume = ICONS.volume || '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>';
   }
 
   let brainTab = "OPEN";
@@ -180,8 +182,35 @@
       (user ? "" : `<div class="b-head"><img src="/icons/model-192.png" alt="" /><b>مغز فروشگاه</b></div>`) +
       `<p>${esc(text).replace(/\n/g, "<br>")}</p>` +
       `<div class="b-meta"><span>${user ? "شما" : ""}</span><span>${nowTime()}</span>` +
-      (meta ? `<span>· ${esc(meta)}</span>` : "") + `</div>`;
+      (meta ? `<span>· ${esc(meta)}</span>` : "") + `</div>` +
+      (user ? "" : `<button type="button" class="btn btn-sm brain-read" title="خواندن صوتی این پاسخ">${icon("volume", 14)} بخوان</button>`);
+    const rb = b.querySelector(".brain-read");
+    if (rb) rb.addEventListener("click", () => speakFa(text));
     return b;
+  }
+
+  /* ---------------- v4.3 — voice: same model, ears + mouth ----------------
+   * The owner's rule: the AI model stays EXACTLY as it is (no heavier model).
+   * Voice is I/O around it: the browser/OS listens (fa-IR) and reads THE SAME
+   * answer text aloud («همون متن به صورت صوتی می‌خونه»). */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  let recognition = null;
+  let voiceMode = localStorage.getItem("brainVoiceMode") !== "0";
+
+  function speakFa(text) {
+    if (!("speechSynthesis" in window)) {
+      toast("خواندن صوتی در این مرورگر پشتیبانی نمی‌شود", "err");
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(String(text || ""));
+      u.lang = "fa-IR";
+      u.rate = 1;
+      const v = (window.speechSynthesis.getVoices() || []).find((x) => (x.lang || "").toLowerCase().startsWith("fa"));
+      if (v) u.voice = v;
+      window.speechSynthesis.speak(u);
+    } catch (e) { toast(e.message, "err"); }
   }
 
   /** v4.2.1 — animated "typing" indicator (three pulsing dots) while thinking. */
@@ -197,15 +226,60 @@
     wrap.innerHTML = `<header class="brain-chat-head">
         <img src="/icons/model-192.png" alt="مدل سوپری‌من" />
         <div><h3>گفت‌وگو با مغز فروشگاه</h3>
-        <span class="muted" id="brain-mode">مدل تخصصی سوپری‌من — محلی و آفلاین</span></div></header>
+        <span class="muted" id="brain-mode">مدل تخصصی سوپری‌من — محلی و آفلاین</span></div>
+        <button type="button" class="btn btn-sm brain-vm" id="brain-vm"></button></header>
       <div class="brain-log" id="brain-log" aria-live="polite"></div>
       <form class="brain-form" id="brain-form">
+        <button type="button" class="btn brain-mic" id="brain-mic" title="صحبت کنید به جای تایپ">${icon("mic", 18)}</button>
         <input id="brain-q" class="input" autocomplete="off"
                placeholder="مثلاً: این هفته چقدر پول لازم دارم؟" />
         <button class="btn btn-primary" type="submit">بپرس</button>
       </form>
       <p class="muted">پاسخ‌ها از دادهٔ همین فروشگاه ساخته می‌شود؛ عددی که از ابزار نیامده باشد نمایش داده نمی‌شود.</p>`;
     const log = () => wrap.querySelector("#brain-log");
+    const vmBtn = () => wrap.querySelector("#brain-vm");
+    const micBtn = () => wrap.querySelector("#brain-mic");
+    const paintVm = () => {
+      const b = vmBtn(); if (!b) return;
+      b.innerHTML = `${icon("volume", 15)} ${voiceMode ? "صوتی: روشن" : "صوتی: خاموش"}`;
+      b.classList.toggle("brain-vm-on", voiceMode);
+    };
+    if (vmBtn()) vmBtn().addEventListener("click", () => {
+      voiceMode = !voiceMode;
+      localStorage.setItem("brainVoiceMode", voiceMode ? "1" : "0");
+      if (!voiceMode && "speechSynthesis" in window) window.speechSynthesis.cancel();
+      paintVm();
+      toast(voiceMode ? "حالت صوتی روشن شد — گفتار شما فرستاده می‌شود و پاسخ بلند خوانده می‌شود"
+          : "حالت صوتی خاموش شد");
+    });
+    paintVm();
+    if (micBtn()) micBtn().addEventListener("click", () => {
+      if (!SR) {
+        toast("شنیدن گفتار در این محیط پشتیبانی نمی‌شود — در مرورگر کروم/اج یا در اپ اندروید کار می‌کند", "err");
+        return;
+      }
+      if (recognition) { try { recognition.stop(); } catch (e) {} recognition = null; micBtn().classList.remove("listening"); return; }
+      try {
+        recognition = new SR();
+        recognition.lang = "fa-IR";
+        recognition.interimResults = false;
+        recognition.onresult = (event) => {
+          const said = event.results[0][0].transcript;
+          const input = wrap.querySelector("#brain-q");
+          if (input) input.value = said;
+          if (voiceMode) wrap.querySelector("#brain-form").requestSubmit();
+        };
+        recognition.onend = () => { recognition = null; micBtn().classList.remove("listening"); };
+        recognition.onerror = (event) => {
+          micBtn().classList.remove("listening");
+          toast(event.error === "not-allowed" ? "اجازهٔ میکروفون داده نشده"
+              : event.error === "no-speech" ? "صدایی تشخیص داده نشد — دوباره تلاش کنید"
+              : `شنیدن صوتی ناموفق بود (${event.error})`, "err");
+        };
+        recognition.start();
+        micBtn().classList.add("listening");
+      } catch (e) { recognition = null; toast(e.message, "err"); }
+    });
     chatHistory.forEach((m) => log().append(bubble(m.role, m.content,
       m.role === "ASSISTANT" && m.meta ? `${m.meta.intent || ""} · ${m.meta.mode || ""}` : "")));
     wrap.querySelector("#brain-form").addEventListener("submit", async (event) => {
@@ -214,6 +288,7 @@
       const question = (input.value || "").trim();
       if (!question) return;
       input.value = "";
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();   // v4.3
       log().append(bubble("USER", question));
       const thinking = typingBubble("در حال بررسی داده‌های فروشگاه…");
       log().append(thinking);
@@ -223,6 +298,7 @@
         const meta = [answer.intent, answer.mode === "llm" ? "پاسخ با مدل محلی" : "پاسخ قطعی",
           answer.ms ? `${fa(answer.ms)} میلی‌ثانیه` : ""].filter(Boolean).join(" · ");
         log().append(bubble("ASSISTANT", answer.text, meta));
+        if (voiceMode) speakFa(answer.text);   // v4.3 — the same text, read aloud
         if (answer.warnings && answer.warnings.length) {
           log().append(el("div", { class: "view-feedback", role: "alert",
             text: `نکته: ${answer.warnings.map((w) => ({ MODEL_FAILED: "مدل محلی پاسخ نداد؛ پاسخ قطعی نمایش داده شد", NUMBER_REJECTED: "عددی که منبع نداشت حذف شد", DATA_QUALITY: "کیفیت داده پایین است" }[w] || w)).join("، ")}` }));

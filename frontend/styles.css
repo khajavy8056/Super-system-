@@ -377,3 +377,12 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 1
 .brain-form .input { flex: 1; border-radius: 12px; padding: 10px 14px; }
 .brain-form .btn-primary { border-radius: 12px; }
 .ins-ic-img { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border); flex: none; }
+
+/* v4.3 — voice controls in the brain chat (same model; ears + mouth only). */
+.brain-chat-head { justify-content: space-between; }
+.brain-vm { white-space: nowrap; }
+.brain-vm-on { border-color: var(--primary); color: var(--primary); }
+.brain-mic { display: inline-flex; align-items: center; padding: 9px 12px; border-radius: 12px; }
+.brain-mic.listening { border-color: var(--red); color: var(--red); animation: brainMic 1.1s infinite; }
+@keyframes brainMic { 0%, 100% { box-shadow: 0 0 0 0 rgba(239, 100, 125, .35); } 50% { box-shadow: 0 0 0 6px rgba(239, 100, 125, 0); } }
+.brain-read { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; }

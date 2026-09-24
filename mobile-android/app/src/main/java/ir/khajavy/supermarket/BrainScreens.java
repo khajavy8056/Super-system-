@@ -486,6 +486,8 @@ public final class BrainScreens {
     public static final class Chat extends Screens.Screen {
         LinearLayout log;
         EditText in;
+        /** v4.3 — the mic button (speech → question) and the voice-mode toggle. */
+        android.widget.Button micBtn, vmBtn;
         /** v4.1 — the standalone-mode conversation (system prompt + this session's turns). */
         JSONArray local;
         Chat(AppActivity a) { super(a); }
@@ -506,12 +508,32 @@ public final class BrainScreens {
             ht.addView(Ui.muted(c, "مدل تخصصی سوپری‌من — محلی و آفلاین، مخصوص همین فروشگاه"));
             head.addView(ht);
             root.addView(head);
+            // v4.3 — حالت صوتی: گفتار شما فرستاده می‌شود و پاسخ بلند خوانده می‌شود.
+            // The MODEL is unchanged (owner's rule) — voice is only ears + mouth.
+            LinearLayout vr = Ui.row(c); vr.setPadding(0, 0, 0, Ui.dp(8));
+            vmBtn = Ui.small(c, "", () -> {});
+            vmBtn.setLayoutParams(Ui.weight(1));
+            vmBtn.setOnClickListener(v -> {
+                boolean on = !BrainVoice.voiceMode();
+                BrainVoice.setVoiceMode(on);
+                if (on) BrainVoice.initTts(c);
+                paintVoiceMode();
+                Ui.toast(on ? "حالت صوتی روشن شد — دکمهٔ «گفتار» را بزنید و صحبت کنید؛ پاسخ بلند خوانده می‌شود"
+                        : "حالت صوتی خاموش شد");
+            });
+            vr.addView(vmBtn);
+            paintVoiceMode();
+            root.addView(vr);
             log = Ui.col(a);
             ScrollView sv = new ScrollView(c); sv.addView(log);
             sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
             sv.setFillViewport(true);
             root.addView(sv);
             LinearLayout row = Ui.row(c); row.setPadding(0, Ui.dp(8), 0, 0);
+            // v4.3 — the mic: press, speak Persian, the text lands in the input
+            // (and is sent immediately in voice mode). Uses the system recognizer.
+            micBtn = Ui.small(c, "گفتار", this::tapMic);
+            row.addView(micBtn);
             in = Ui.input(c, "مثلاً: این هفته چقدر پول لازم دارم؟");
             in.setLayoutParams(Ui.weight(1)); row.addView(in);
             row.addView(Ui.primary(c, "بپرس", this::send));
@@ -523,6 +545,22 @@ public final class BrainScreens {
             } catch (Exception ignore) { local = new JSONArray(); }
             return root;
         }
+        void paintVoiceMode() {
+            if (vmBtn == null) return;
+            vmBtn.setText(BrainVoice.voiceMode()
+                    ? "حالت صوتی: روشن — پاسخ‌ها بلند خوانده می‌شوند"
+                    : "حالت صوتی: خاموش");
+        }
+
+        /** v4.3 — press, speak; the recognized Persian text goes into the input
+         *  (and is sent immediately in voice mode → the conversation is spoken). */
+        void tapMic() {
+            BrainVoice.toggleListen(a, text -> {
+                in.setText(text);
+                if (BrainVoice.voiceMode()) send();
+            }, on -> micBtn.setText(on ? "در حال شنیدن…" : "گفتار"));
+        }
+
         public void load() {
             log.removeAllViews();
             log.addView(Ui.muted(c, "در حال خواندن گفت‌وگو…"));
@@ -577,6 +615,14 @@ public final class BrainScreens {
                     user ? 0xCCFFFFFF : Ui.MUTED, false);
             meta.setPadding(0, Ui.dp(4), 0, 0);
             b.addView(meta);
+            if (!user) {   // v4.3 — re-read this answer aloud at any time
+                android.widget.Button rd = Ui.small(c, "بخوان", () -> BrainVoice.speak(c, text, null));
+                LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rp.topMargin = Ui.dp(6);
+                rd.setLayoutParams(rp);
+                b.addView(rd);
+            }
             log.addView(b);
             b.post(this::scrollDown);
         }
@@ -617,6 +663,7 @@ public final class BrainScreens {
             String q = in.getText().toString().trim();
             if (q.isEmpty()) return;
             in.setText("");
+            BrainVoice.stopSpeak();   // v4.3 — a new question cuts the previous reading
             bubble("USER", q);
             // standalone (no PC paired) → the local engine answers directly
             if (Api.standalone()) { localAnswer(q); return; }
@@ -627,6 +674,7 @@ public final class BrainScreens {
                 log.removeView(thinking);
                 JSONObject x = (JSONObject) r;
                 bubble("ASSISTANT", x.optString("text"));
+                if (BrainVoice.voiceMode()) BrainVoice.speak(c, x.optString("text"), null);   // v4.3
                 JSONArray w = x.optJSONArray("warnings");
                 if (w != null && w.length() > 0) {
                     StringBuilder sb = new StringBuilder();
@@ -673,6 +721,7 @@ public final class BrainScreens {
                     }
                     try { local.put(new JSONObject().put("role", "assistant").put("content", answer)); } catch (Exception ignore) {}
                     bubble("ASSISTANT", answer);
+                    if (BrainVoice.voiceMode()) BrainVoice.speak(c, answer, null);   // v4.3
                     LinearLayout tag = Ui.card(c, null);
                     tag.addView(Ui.muted(c, "پاسخ از مدل محلی روی خود گوشی (همان مدل رایانه، llama.cpp) — بدون دادهٔ زندهٔ فروشگاه؛ برای پاسخ با دادهٔ واقعی، وقتی رایانه وصل است دوباره بپرسید."));
                     log.addView(tag);

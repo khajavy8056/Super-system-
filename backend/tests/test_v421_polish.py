@@ -146,8 +146,11 @@ def test_download_manager_milestones_are_dense_enough():
 
 
 # ---------------------------------------------------------------- 6. versions
-def test_versions_bumped_to_421():
+def test_versions_consistent_with_backend():
+    """Backend __init__.py and setup.iss must always carry the SAME version
+    (checked against the live value, not a hardcoded one)."""
+    from app import __version__
     assert (ROOT / "backend" / "app" / "__init__.py").read_text(
-        encoding="utf-8").count('__version__ = "4.2.1"') == 1
+        encoding="utf-8").count(f'__version__ = "{__version__}"') == 1
     iss = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
-    assert '#define MyAppVersion "4.2.1"' in iss
+    assert f'#define MyAppVersion "{__version__}"' in iss

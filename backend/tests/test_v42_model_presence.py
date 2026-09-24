@@ -165,7 +165,7 @@ def test_brain_status_reports_backend_version():
     src = inspect.getsource(cls.status)
     assert '"4.0.0"' not in src
     assert "__version__" in src
-    assert __version__ == "4.2.1"
+    assert __version__ == "4.3.0"
 
 
 # ---------------------------------------------------------------- Android sources
@@ -190,7 +190,9 @@ def test_android_version_follows_backend():
     so bumping the backend to 4.2.0 automatically gives versionCode 40200."""
     gradle = (ROOT / "mobile-android" / "app" / "build.gradle").read_text(encoding="utf-8")
     assert 'versionName appVersion' in gradle and "versionCode code" in gradle
+    from app import __version__
     assert (ROOT / "backend" / "app" / "__init__.py").read_text(
-        encoding="utf-8").count('__version__ = "4.2.1"') == 1
+        encoding="utf-8").count(f'__version__ = "{__version__}"') == 1
+    assert __version__ == "4.3.0"
     code = 4 * 10000 + 2 * 100 + 0
     assert code == 40200

@@ -3,6 +3,17 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.3.0] - 2026-09-24
+
+### گفتگوی صوتی با مغز فروشگاه — همان مدل، بدون سنگین‌تر شدن
+- **The owner's constraint is a test now**: the AI model is EXACTLY what it was (q4_k_m «مدل تخصصی سوپری‌من» 1,117 MB / q3_k_m «سوپری‌من لایت» 924 MB, same sha256 pins, same single llama.cpp engine in the APK) — `test_v43_voice.py` fails if anyone adds or grows a model. Voice is pure I/O around the model, built from what the device already has: **nothing new is downloaded**.
+- **گوش (speech-to-text):** the system speech recognizer, Persian `fa-IR`, preferring offline when the device can. In the chat: tap «گفتار», speak — the recognized text lands in the input, and in voice mode the question is sent immediately. Uses `RECORD_AUDIO` (runtime permission, asked once). On Windows/web: the Web Speech API with feature detection — where the environment cannot listen (the packaged WebView), it says so honestly instead of failing silently.
+- **دهان (text-to-speech):** the system TTS reads **THE SAME answer text** aloud («همون متن به صورت صوتی می‌خونه») — not a different generated voice. Voice mode (ON by default) auto-reads every answer; each assistant bubble also gets a «بخوان» button to replay it; a new question cuts the previous reading; going to the background stops the voice (`BrainVoice.onBackground()` — never talk behind the user's back).
+- **Honest degradation (the product's rule):** if the device has no Persian TTS voice, the app says so in Persian and names the exact setting to fix it («زبان و ورودی ← خروجی تبدیل متن به گفتار»); if speech recognition is unavailable, it says that too. No silent failures.
+- **Windows panel gets the same voice UX**: mic button in the composer (fa-IR), «صوتی: روشن/خاموش» toggle in the chat header (persisted), per-answer «بخوان» button, auto-read in voice mode, Persian voice selection from the OS list, pulsing-red listening state.
+- Tests: new `test_v43_voice.py` (10 tests) — model-unchanged lock (registry + jniLibs), BrainVoice wiring (system STT/TTS, fa-IR, offline preference, permission flow, honest notes), chat wiring (mic, voice mode, auto-read PC + standalone answers, «بخوان», stop-on-new-question), manifest permission, background stop, web voice controls, CSS, versions.
+- `releases/android/SupermarketMobile-4.3.0.apk` (versionCode 40300, both ABIs, preflight PASS, same cert → in-place update).
+
 ## [4.2.1] - 2026-09-23
 
 ### «خطای ساخت فایل نصبی» — و نکات نمایشی مالک
