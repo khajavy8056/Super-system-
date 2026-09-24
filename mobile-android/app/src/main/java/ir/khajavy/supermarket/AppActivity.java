@@ -90,12 +90,11 @@ public class AppActivity extends Activity {
         Biometric.prompt(this, "باز کردن سوپری من", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
     }
     @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); }
-    @Override protected void onStop() { super.onStop(); Biometric.onBackground(); BrainVoice.onBackground(); }   // v4.3
+    @Override protected void onStop() { super.onStop(); Biometric.onBackground(); }   // v4.3
     @Override protected void onResume() { super.onResume(); Ui.top = this; LockActivity.top = this; if (Session.expired()) { Session.end(); Ui.toast("نشست پس از ۳۰ دقیقه بی‌کاری بسته شد — دوباره وارد شوید"); startActivity(new Intent(this, LoginActivity.class)); finish(); return; } Session.touch(); h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> { Notify.checkPcSupport(this); SmsLocal.relayPcOutbox(); }); }
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }
     @Override protected void onPause() { super.onPause(); h.removeCallbacks(ticker); }
     /** v4.1 — the local llama.cpp engine must not outlive the app (battery honesty). */
-    @Override protected void onDestroy() { super.onDestroy(); try { BrainEngine.stop(); } catch (Throwable ignore) {} }
 
     /* ---------------- shell ---------------- */
     private void buildShell() {
@@ -143,7 +142,7 @@ public class AppActivity extends Activity {
         switch (k) {
             case "pos": return "cart"; case "held": return "pause"; case "customers": return "users"; case "invoices": return "receipt"; case "reports": return "chart"; case "accounting": return "calc";
             case "products": return "tag"; case "receive": return "truck"; case "inventory": return "box"; case "stocktake": return "clipboard"; case "stockops": return "undo"; case "warehouses": return "warehouse"; case "movements": return "history";
-            case "marketing": return "gift"; case "insights": return "star"; case "brain": case "brainChat": return "wand"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
+            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
             case "hardware": return "printer"; case "diagnostics": return "pulse"; case "notifications": return "bell"; case "support": return "support"; case "license": return "key"; case "sync": return "sync"; case "backup": return "archive"; case "bank": return "bank";
             default: return "chev";
         }
@@ -153,7 +152,7 @@ public class AppActivity extends Activity {
     /* ---------------- drawer: EVERY section ---------------- */
     static final String[][] GROUPS = {
         {"cart|فروش و مشتری", "pos:صندوق فروش", "held:فاکتورهای نگه‌داشته", "customers:مشتریان و دفتر حساب"},
-        {"receipt|فاکتورها و گزارش", "brain:مغز فروشگاه", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
+        {"receipt|فاکتورها و گزارش", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
         {"box|کالا و موجودی", "products:کالاها", "receive:ورود کالا", "inventory:انبار و موجودی", "stocktake:انبارگردانی", "stockops:ضایعات / اصلاح / انتقال", "warehouses:انبارها", "movements:گردش موجودی"},
         {"gift|جشنواره و پیامک", "marketing:جشنواره و کوپن", "sms:پیامک"},
         {"settings|مدیریت و سیستم", "home:داشبورد", "users:کاربران و نقش‌ها", "audit:لاگ حسابرسی", "settings:تنظیمات", "backup:پشتیبان‌گیری", "store:مشخصات فروشگاه", "hardware:سخت‌افزار", "diagnostics:تست اتصالات", "notifications:اعلان‌ها", "support:درخواست پشتیبانی", "license:لایسنس", "sync:همگام‌سازی", "cloud:همگام‌سازی ابری", "device:تنظیمات دستگاه", "about:دربارهٔ برنامه"},
@@ -234,10 +233,7 @@ public class AppActivity extends Activity {
         Biometric.markInternal(); Intent i = new Intent(this, ScanActivity.class); i.putExtra("title", title); startActivityForResult(i, REQ_SCAN);
     }
     public Runnable permCb;   // v2.8: settings screens re-render after a permission answer
-                              // v4.5.0: also used by the chat mic (code 78) to start listening
-                              // right after the grant instead of looking dead.
-    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 78 && permCb != null) permCb.run();   // v4.5.0 — the chat mic: retry right after the answer
-            if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
+    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { super.onRequestPermissionsResult(code, p, r); if (code == 7 && r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED && scanCb != null) scan("اسکن بارکد", scanCb); if (code == 9) { // v3.6.2 — say what happened. Without this, a denial looks identical to the button being broken.
             boolean sms = false; for (int i = 0; i < p.length; i++) if (android.Manifest.permission.SEND_SMS.equals(p[i])) sms = r[i] == PackageManager.PERMISSION_GRANTED;
             Ui.toast(sms ? "اجازهٔ پیامک داده شد — حالا می‌توانید از سیم‌کارت بفرستید" : "اجازه داده نشد؛ بدون آن ارسال از سیم‌کارت ممکن نیست");
             if (permCb != null) permCb.run(); } }

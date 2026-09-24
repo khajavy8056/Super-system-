@@ -54,9 +54,11 @@ def test_build_bat_files_are_not_utf16_or_bommed():
             f"{bat.name} must not start with a BOM"
 
 
-def test_builder_lib_mentions_the_download_manager():
-    """The owner asked for the model download with a progress bar + download
-    manager; the build step must keep calling the script that does that."""
+def test_builder_lib_has_no_model_step():
+    """v4.6.0 — the owner removed the local AI model: the builder must NOT
+    download or verify any model any more, and the honest UTF-8 rule for
+    Python output must survive."""
     text = (REPO / "installer" / "windows" / "builder-lib.ps1").read_text(encoding="utf-8-sig")
-    assert "prepare_windows_installer.py" in text
+    assert "prepare_windows_installer" not in text and "verify_setup" not in text
+    assert "آماده‌سازی مدل هوش محلی" not in text, "the model step is removed"
     assert "PYTHONUTF8" in text, "Python output must be forced to UTF-8 on Windows"

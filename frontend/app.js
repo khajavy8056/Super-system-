@@ -57,7 +57,6 @@ const WARM_KEYS = [
   "/inventory/stock",            // inventory view's first call
   "/reports/expiry",             // expiry report
   "/insights/summary",
-  "/brain/status",
 ];
 const warm = {};
 async function warmup() {

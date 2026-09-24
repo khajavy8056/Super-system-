@@ -122,7 +122,6 @@ public final class Notify {
                     if (!"1".equals(Prefs.get("setup_done", ""))) return;
                     Api.base = Prefs.serverUrl(c) == null ? "" : Prefs.serverUrl(c); Api.token = Prefs.deviceToken(c) == null ? "" : Prefs.deviceToken(c);
                     checkLocal(c); SmsLocal.flush(); SmsLocal.relayPcOutbox();
-                    ReminderRx.poll(c);   // v4.4.0 — due reminders as popup notifications
                     if (Api.standalone() || !Lic.allowed()) { int n = SupportRelay.poll(); if (n > 0) supportReply(c, n); }
                     else { Api.online = Api.health(); checkPcSupport(c); }
                 } catch (Throwable ignore) {} finally { pr.finish(); }

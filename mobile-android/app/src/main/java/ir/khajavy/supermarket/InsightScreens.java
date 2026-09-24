@@ -54,41 +54,8 @@ public final class InsightScreens {
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
 
-        /** v4.5.0 — «تحلیل مغز فروشگاه»: the local MODEL narrates the store's
-         *  state at the top of the intelligence section (not only in chat) —
-         *  grounded over the audited proactive facts, with a deterministic
-         *  fallback. Hidden when the brain is not available to this user. */
-        void brainCard() {
-            Api.get("/brain/briefing", r -> {
-                JSONObject b = (JSONObject) r;
-                String text = b.optString("text", "");
-                if (text.isEmpty()) return;
-                LinearLayout card = Ui.card(c, null);
-                LinearLayout tr = Ui.row(c); tr.setPadding(0, 0, 0, Ui.dp(8));
-                android.widget.ImageView ic = new android.widget.ImageView(c);
-                ic.setImageResource(R.drawable.ic_model);
-                ic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(30), Ui.dp(30)));
-                tr.addView(ic);
-                TextView ttl = Ui.text(c, "تحلیل مغز فروشگاه", 15.5f, Ui.TEXT, true);
-                ttl.setPadding(Ui.dp(8), 0, 0, 0);
-                ttl.setLayoutParams(Ui.weight(1));
-                tr.addView(ttl);
-                tr.addView(Ui.badge(c, "زنده", Ui.GREEN));
-                card.addView(tr);
-                TextView tv = Ui.body(c, text);
-                tv.setLineSpacing(0, 1.4f);
-                card.addView(tv);
-                String by = "model".equals(b.optString("by")) ? "نوشتهٔ مدل محلی" : "تحلیل قطعی";
-                card.addView(Ui.muted(c, by + " · " + Ui.jdate(b.optString("at", ""))));
-                android.widget.Button go = Ui.small(c, "گفت‌وگو با مغز دربارهٔ این تحلیل", () -> a.route("brainChat"));
-                go.setLayoutParams(Ui.margin(Ui.match(), 8, 0, 0, 0));
-                card.addView(go);
-                body.addView(card, 0);
-            }, e -> { /* operators / offline: the intelligence section stays as it was */ });
-        }
         void render(JSONArray all) {
             JSONArray items = all; clear();
-            brainCard();   // v4.5.0 — the model speaks in the intelligence section too
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);
@@ -218,6 +185,50 @@ public final class InsightScreens {
         return row;
     }
 
+    /** v4.6.0 — the owner's rule: tapping a suggestion's details must explain
+     *  it so ANYONE understands it — «کاربر چه می‌داند مشتری VIP چیست، چه فرقی
+     *  با سایر مشتریان دارد». The backend attaches a plain-language guide per
+     *  kind (definition, why it matters here, exact steps, cost of ignoring,
+     *  a concrete example); this renders it as a card of labelled sections. */
+    static void guideCard(android.content.Context c, JSONObject x) {
+        JSONObject g = x.optJSONObject("guide");
+        if (g == null || g.optString("what", "").isEmpty()) return;
+        LinearLayout card = Ui.card(c, "این پیشنهاد یعنی چه؟ (راهنمای کامل)");
+        addGuideSection(c, card, "تعریف", g.optString("what"));
+        addGuideSection(c, card, "چرا برای فروشگاه شما مهم است؟", g.optString("why"));
+        JSONArray how = g.optJSONArray("how");
+        if (how != null && how.length() > 0) {
+            card.addView(guideLabel(c, "چه کاری انجام دهید؟ (گام‌به‌گام)"));
+            for (int i = 0; i < how.length(); i++) {
+                LinearLayout r = Ui.row(c);
+                r.setPadding(0, Ui.dp(2), 0, Ui.dp(2));
+                r.addView(Ui.badge(c, Ui.num(i + 1), Ui.TEAL));
+                TextView s = Ui.body(c, how.optString(i));
+                s.setPadding(Ui.dp(8), 0, 0, 0);
+                s.setLayoutParams(Ui.weight(1));
+                s.setLineSpacing(0, 1.35f);
+                r.addView(s);
+                card.addView(r);
+            }
+        }
+        addGuideSection(c, card, "اگر انجام نشود چه می‌شود؟", g.optString("if_ignored"));
+        addGuideSection(c, card, "مثال ملموس", g.optString("example"));
+    }
+
+    static TextView guideLabel(android.content.Context c, String s) {
+        TextView t = Ui.text(c, s, 12.5f, Ui.TEAL, true);
+        t.setPadding(0, Ui.dp(8), 0, Ui.dp(2));
+        return t;
+    }
+
+    static void addGuideSection(android.content.Context c, LinearLayout card, String label, String text) {
+        if (text == null || text.isEmpty()) return;
+        card.addView(guideLabel(c, label));
+        TextView tv = Ui.body(c, text);
+        tv.setLineSpacing(0, 1.45f);
+        card.addView(tv);
+    }
+
     /* ---------------- v3.2 detail screen (readable body, effect, what-if, charts, actions) ---------------- */
     public static final class Detail extends Screens.Screen {
         final long id;
@@ -231,6 +242,7 @@ public final class InsightScreens {
             else if (x.optDouble("expected_gain") > 0) hero.addView(Ui.text(c, "برآورد سود ماهانه: " + Ui.money(x.optDouble("expected_gain")), 13.5f, 0xFFEFE3B8, true));
             body.addView(hero);
             LinearLayout card = Ui.card(c, "چه اتفاقی افتاده؟"); String narr = x.optString("narrative"); TextView tv = Ui.body(c, narr.isEmpty() || "null".equals(narr) ? x.optString("body") : narr); tv.setLineSpacing(0, 1.4f); card.addView(tv); body.addView(card);
+            guideCard(c, x);   // v4.6.0 — «این پیشنهاد یعنی چه؟» complete plain-language guide
             if (x.optJSONObject("result") != null && x.optJSONObject("baseline") != null) { LinearLayout mc = Ui.card(c, "اثر اجرا — قبل و بعد"); mc.addView(measuredBlock(c, x, true)); body.addView(mc); }
             JSONObject p = x.optJSONObject("prediction"); if (p != null && p.optDouble("gain_month") > 0) { LinearLayout pcard = Ui.card(c, "پیش‌بینی اگر اجرا شود"); pcard.addView(predictBlock(c, p)); body.addView(pcard); }
             LinearLayout evc = Ui.card(c, "شواهد از داده‌های خود فروشگاه"); evidenceViews(c, x, evc); body.addView(evc);

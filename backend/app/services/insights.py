@@ -1435,8 +1435,10 @@ def group_of(kind: str) -> str:
 
 
 def to_dict(r: Insight) -> dict:
+    from .insight_guides import guide_for   # v4.6.0 — plain-language guide per kind
     return {
         "id": r.id, "kind": r.kind, "label": KIND_LABELS.get(r.kind, r.kind), "group": group_of(r.kind), "title": r.title, "body": r.body, "priority": r.priority,
+        "guide": guide_for(r.kind),
         "evidence": json.loads(r.evidence or "{}"), "actions": json.loads(r.actions or "[]"), "expected_gain": _f(r.expected_gain),
         "metric": json.loads(r.metric or "{}"), "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,

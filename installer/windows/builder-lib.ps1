@@ -521,6 +521,9 @@ $Steps = @(
             & $Report 'محیط مجازی موجود بازاستفاده شد.'
         }
         $Script:VenvPy = Join-Path $venv 'Scripts\python.exe'
+        # redirected consoles must never mangle Python's (pip's) UTF-8 output
+        $env:PYTHONUTF8 = '1'
+        $env:PYTHONIOENCODING = 'utf-8'
 
         # v1.4.1: pip is the #1 point of failure on restricted networks
         # (pypi.org read timeouts). Every pip call therefore (a) waits longer
@@ -630,44 +633,6 @@ $Steps = @(
         & $Report "نسخه قابل‌حمل (بدون نیاز به نصب): $portable"
     }}
 
-    @{ Name = 'آماده‌سازی مدل هوش محلی برای جاسازی در نصب‌کننده'; Action = {
-        param($Report)
-        # v4.0 — the owner asked for the local AI model to be INSIDE the installer
-        # so a shop PC works offline on first launch. The payload is downloaded
-        # from the official source, sha256-verified against the Model Registry,
-        # and written next to setup.iss; setup.iss installs it into the user's
-        # data dir via the generated model_payload.iss include.
-        if (-not $Script:Iscc) {
-            & $Report 'Inno Setup نیست و Setup.exe ساخته نمی‌شود؛ مرحلهٔ مدل لازم نیست.'
-            return
-        }
-        $prep = Join-Path $RepoRoot 'scripts\model\prepare_windows_installer.py'
-        if (-not (Test-Path $prep)) { throw "scripts\model\prepare_windows_installer.py پیدا نشد: $prep" }
-        # v4.0.1 — the model moves through the download manager: progress bar,
-        # parallel connections, resume after an interruption, official fallback
-        # source (ModelScope) when Hugging Face is unreachable, and Internet
-        # Download Manager when it is installed (its window shows the progress).
-        $env:PYTHONUTF8 = '1'          # redirected consoles must never mangle output
-        $env:PYTHONIOENCODING = 'utf-8'
-        & $Report 'دریافت و تأیید هش مدل رسمی — حدود ۱ گیگابایت؛ پیشرفت به‌صورت زنده در همین پنجره نشان داده می‌شود (قابلیت ادامهٔ دانلود). اگر Internet Download Manager نصب باشد از آن استفاده می‌شود ...'
-        try {
-            # v4.2.1 -Stream: the download's progress lines appear LIVE here
-            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report -Stream `
-                -Arguments @($prep, '--engine') | Out-Null
-            & $Report 'مدل تأیید شد و در نصب‌کننده جاسازی می‌شود.'
-        } catch {
-            # A model that cannot be verified must never enter an installer, and a
-            # Setup.exe silently missing its model must never look like the real
-            # deliverable. Fail the step with the exact way out (the file can also
-            # be brought by hand and adopted with --from-file).
-            throw ("مدل هوش محلی تأیید نشد و بدون آن Setup.exe ساخته نمی‌شود:`n" +
-                   $_.Exception.Message + "`n" +
-                   "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره نگه داشته شده و از همان‌جا ادامه می‌یابد  (۲) دانلود دستی فایل GGUF رسمی و اجرای`n" +
-                   "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>`n" +
-                   "نسخهٔ قابل‌حمل (بدون مدل) همین حالا ساخته شده و کار می‌کند.")
-        }
-    }}
-
     @{ Name = 'ساخت فایل نصب نهایی (Setup.exe)'; Action = {
         param($Report)
         if (-not $Script:Iscc) {
@@ -688,34 +653,8 @@ $Steps = @(
         if (-not (Test-Path $setup)) {
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }
-        # v4.2 — the OWNER'S guarantee: a Setup.exe is only done when the ~1 GB model
-        # is REALLY inside it. The owner once received a 56 MB Setup.exe with no model;
-        # "Inno ran fine" is not proof. This reads the payload the installer should
-        # carry and checks the produced file against it (size floor + Inno marker).
-        $verify = Join-Path $RepoRoot 'scripts\model\verify_setup.py'
-        try {
-            Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $RepoRoot -Report $Report `
-                -Arguments @($verify, $setup) | Out-Null
-        } catch {
-            # v4.2.1: exit 1 = the model is REALLY missing (fake setup → delete).
-            # exit 2 = structural suspicion while the payload looked fine — the
-            # owner lost an 8-minute ISCC build to a false marker check once;
-            # that must never happen again: keep the file, fail with the reason.
-            if ($Script:LastNativeExitCode -eq 1) {
-                if (Test-Path $setup) { Remove-Item $setup -Force }
-                throw ("فایل نصب، مدل هوش محلی را داخل خودش ندارد و حذف شد — Setup.exe بدون مدل جعلی است:`n" +
-                       $_.Exception.Message + "`n" +
-                       "راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره از همان‌جا ادامه می‌یابد`n" +
-                       "(۲) دانلود دستی GGUF رسمی و اجرای`n" +
-                       "scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>")
-            } else {
-                throw ("بررسی فایل نصب ناموفق بود ولی فایل حفظ شد (حذف نشد):`n" +
-                       $_.Exception.Message + "`n" +
-                       "خروجی بالا را بررسی کنید؛ اگر فایل سالم است و این خطا اشتباه است، به ما گزارش دهید.")
-            }
-        }
         $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
-        & $Report "فایل نصب آماده توزیع است ($mb مگابایت) — مدل هوش محلی داخل آن تأیید شد."
+        & $Report "فایل نصب آماده توزیع است ($mb مگابایت)."
         & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
         & $Report "مسیر: $setup"
         $Script:FinalSetup = $setup

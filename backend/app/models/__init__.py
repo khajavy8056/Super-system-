@@ -1,10 +1,8 @@
 """Aggregate all models so ``Base.metadata`` is fully populated."""
-from . import accounting, brain, catalog, external, insights, inventory, marketing, sales, sync, system, user  # noqa: F401
+from . import accounting, catalog, external, insights, inventory, marketing, sales, sync, system, user  # noqa: F401
 from .accounting import (Account, CashSession, Cheque, Expense, ExpenseCategory,
                          FiscalPeriod, JournalEntry, JournalLine, Supplier)
 from .base import SoftDeleteMixin, TimestampMixin
-from .brain import (BrainDecision, BrainFollowup, BrainMemoryFact, BrainMessage,
-                    BrainModelInstall, BrainPolicy)
 from .catalog import Brand, Category, Product, Unit
 from .enums import *  # noqa: F401,F403
 from .external import BankItem, ExternalSource, ImageAsset, MarketPrice, ProductResolverResult
@@ -64,10 +62,4 @@ __all__ = [
     "CouponRedemption",
     "SyncJob",
     "DiagnosticRun",
-    "BrainMessage",
-    "BrainDecision",
-    "BrainFollowup",
-    "BrainPolicy",
-    "BrainModelInstall",
-    "BrainMemoryFact",
 ]

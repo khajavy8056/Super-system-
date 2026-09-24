@@ -73,9 +73,9 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # is unchanged; only the pinned value follows.
     cfg = _cfg(migrated_url)
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    # v4.4.0 note: the head moved again (reminder escalation, next_sms_at);
-    # the intent stays: ONE head, DB stamped exactly at it.
-    assert heads == ["b7e9f1a3c5d8"]
+    # v4.6.0 note: the head moved again (Business Brain REMOVED — its six
+    # tables dropped); the intent stays: ONE head, DB stamped exactly at it.
+    assert heads == ["c9e1f2a4b6d8"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -85,12 +85,11 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     """Downgrade the HEAD revision and re-upgrade: the head step's objects
     come and go, shop data (products, …) is never touched.
 
-    v4.4.0 note: the head step is now the REMINDER ESCALATION migration
-    (b7e9f1a3c5d8 — one nullable column next_sms_at on brain_followups), so
-    the "-1" assertions follow it (the column drops and comes back; the brain
-    tables and everything older legitimately STAY — they belong to earlier
-    steps). The test's intent is unchanged: one step down, back to head, shop
-    data intact.
+    v4.6.0 note: the head step is now the REMOVE-BUSINESS-BRAIN migration
+    (c9e1f2a4b6d8 — drops the six brain_* tables), so the "-1" assertions
+    follow it: one step down the brain tables come back (empty), one step up
+    they are gone again; everything older and all shop data stay put. The
+    test's intent is unchanged: one step down, back to head, shop data intact.
 
     Note: downgrade-to-``base`` is NOT the project contract — one historical
     revision (warehouses) deliberately keeps its tables on downgrade to avoid
@@ -116,11 +115,9 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # the -1 step is the reminder-escalation column only: next_sms_at goes…
-    fu_cols = {c["name"] for c in insp.get_columns("brain_followups")}
-    assert "next_sms_at" not in fu_cols
+    # the -1 step is the brain removal: one step down, its tables are back…
+    assert "brain_decisions" in tables and "brain_followups" in tables
     # …and everything an earlier revision created stays put
-    assert "brain_decisions" in tables and "brain_messages" in tables
     assert "experiments" in tables
     assert "product_bank" in tables
     hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}
@@ -135,7 +132,10 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
 
     command.upgrade(cfg, "head")
     insp2 = inspect(create_engine(url))
-    assert set(t for t in insp2.get_table_names() if t != "alembic_version") == set(_model_tables())
+    final_tables = {t for t in insp2.get_table_names() if t != "alembic_version"}
+    assert "brain_decisions" not in final_tables and "brain_followups" not in final_tables, \
+        "the brain tables must be gone at head"
+    assert final_tables == set(_model_tables())
     db = Session()
     try:
         assert db.query(m.Product).filter_by(barcode="6269990000077").count() == 1

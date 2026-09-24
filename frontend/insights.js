@@ -260,6 +260,7 @@
     openModal(`<div class="ins-detail">
       <header><span class="ins-ic">${ico(iconOf(i), 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
       ${i.narrative ? `<div class="ins-narr">${esc(i.narrative).replace(/\n/g, "<br/>")}</div>` : `<p>${esc(i.body)}</p>`}
+      ${guideBlock(i)}
       ${abBlock(i)}
       ${predictBlock(i)}
       <h4>اقدام‌ها</h4><ul class="ins-list">${(i.actions || []).map((a) => `<li>${esc(a.label)}</li>`).join("") || "<li class='muted'>—</li>"}</ul>
@@ -269,6 +270,25 @@
         <button class="btn" onclick="closeModal()">بستن</button></div>
     </div>`);
     const b = $("#ins-acc"); if (b) b.onclick = () => { closeModal(); acceptDialog(i); };
+  }
+
+  // v4.6.0 — the complete plain-language guide (owner's rule: «توضیحات کامل
+  // باشد که هر کسی درک کند — کاربر چه می‌داند مشتری VIP چیست؟»).
+  function guideBlock(i) {
+    const g = i.guide;
+    if (!g || !g.what) return "";
+    const section = (label, text) => text ? `<div class="ins-guide-sec"><b>${esc(label)}</b><p style="margin:4px 0 0;line-height:1.9">${esc(text)}</p></div>` : "";
+    const how = (g.how || []).length
+      ? `<div class="ins-guide-sec"><b>چه کاری انجام دهید؟ (گام‌به‌گام)</b><ol style="margin:6px 0 0;padding-inline-start:20px;line-height:1.9">${g.how.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></div>`
+      : "";
+    return `<div class="card" style="margin:12px 0;background:rgba(20,184,176,.06);border:1px solid rgba(20,184,176,.25)">
+      <h3 style="font-size:14.5px;margin:0 0 4px">این پیشنهاد یعنی چه؟ (راهنمای کامل)</h3>
+      ${section("تعریف", g.what)}
+      ${section("چرا برای فروشگاه شما مهم است؟", g.why)}
+      ${how}
+      ${section("اگر انجام نشود چه می‌شود؟", g.if_ignored)}
+      ${section("مثال ملموس", g.example)}
+    </div>`;
   }
 
   function acceptDialog(i) {
@@ -313,7 +333,6 @@
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
-    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "مشاور هوش مصنوعی", onclick: () => go("brain") }));  // v4.2: the local brain is the advisor now
     let s, list, gr;
     try {
       [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
@@ -328,7 +347,6 @@
     if (request !== insRequest || !v.querySelector("#ins-hero")) return;
     // Reading a page must not recursively POST /run when there is no data.
     hero(s, $("#ins-hero"));
-    brainBriefing(v);   // v4.5.0 — the local model narrates the store at the top of the intelligence section
     const tabs = [["NEW", "پیشنهادهای باز", s.open], ["ACCEPTED,MEASURED", "اجراشده و اثر", s.accepted], ["SNOOZED", "به تعویق"], ["DISMISSED,EXPIRED", "بایگانی"]];
     const t = $("#ins-tabs"); t.innerHTML = "";
     tabs.forEach(([k, l, n]) => t.append(el("button", { class: "set-tab" + (k === insTab ? " active" : ""), text: l + (n != null ? ` (${fa(n)})` : ""), onclick: () => { insTab = k; RENDER.insights(); } })));
@@ -342,42 +360,6 @@
     if (!list.length) grid.innerHTML = `<div class="card muted">موردی نیست. ${insTab === "NEW" ? "هنوز پیشنهادی برای این فیلتر موجود نیست. نبود پیشنهاد به معنی بی‌نقص بودن فروشگاه نیست؛ می‌توانید «تحلیل دوباره» را اجرا کنید." : ""}</div>`;
     pagedAppend(grid, list, 12, (item) => card(item, false));   // v3.5 staged — long lists no longer freeze the page
   };
-
-  // ------------------------------------------------- v4.5.0: the brain's briefing
-  // The model works HERE too (owner's rule), not only in the chat: a short,
-  // grounded narrative over the audited proactive facts, refreshed by the
-  // brain worker every 15 minutes. Hidden silently when the brain is not
-  // available to this user (operators see the section exactly as before).
-  async function brainBriefing(host) {
-    let card = host.parentElement.querySelector("#brain-briefing");
-    if (!card) {
-      card = el("div", { class: "card", id: "brain-briefing", style: "margin:0 0 14px" });
-      host.parentElement.insertBefore(card, host);
-    }
-    try {
-      const b = await api("/brain/briefing");
-      if (!b || !b.text) { card.remove(); return; }
-      const by = b.by === "model" ? "نوشتهٔ مدل محلی" : "تحلیل قطعی";
-      card.innerHTML = `
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <img src="icons/model-192.png" alt="" width="28" height="28"/>
-          <b style="font-size:15.5px">تحلیل مغز فروشگاه</b>
-          <span class="badge" style="background:rgba(34,203,166,.16);color:#22cba6">زنده</span>
-          <span class="muted" style="margin-inline-start:auto;font-size:12px">${by} · ${fa((b.at || "").replace("T", " ").slice(0, 16))}</span>
-        </div>
-        <p style="margin:0;line-height:1.9">${esc(b.text)}</p>
-        <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn btn-sm btn-primary" id="bb-chat">گفت‌وگو با مغز دربارهٔ این تحلیل</button>
-          <button class="btn btn-sm" id="bb-refresh">به‌روزرسانی</button>
-        </div>`;
-      card.querySelector("#bb-chat").onclick = () => go("brain");
-      card.querySelector("#bb-refresh").onclick = async (event) => {
-        const btn = event.currentTarget; btn.disabled = true;
-        try { await api("/brain/briefing?refresh=1"); await brainBriefing(host); toast("تحلیل مغز به‌روزرسانی شد"); }
-        catch (e) { toast(e.message, "err"); } finally { btn.disabled = false; }
-      };
-    } catch (e) { card.remove(); }
-  }
 
   function hero(s, host) {
     const share = s.share_of_month_profit ? ` (${fa(Math.round(s.share_of_month_profit * 100))}٪ سود ۳۰ روز اخیر)` : "";
@@ -395,9 +377,9 @@
   async function aiAdvisor() {
     const s = await api("/insights/summary");
     if (!s.ai || !s.ai.online) {
-      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">مشاور این محصول «مغز فروشگاه» است — مدل اختصاصی و محلی خودِ فروشگاه. از منوی کنار، «مغز فروشگاه» را باز کنید.</p>
-        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به تنظیمات</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
-      $("#aa-go").onclick = () => { closeModal(); go("settings"); setTimeout(() => { const b = document.querySelector('[data-cat="ai"]'); if (b) b.click(); }, 200); };
+      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">مشاور این محصول همان «هوش فروشگاه» است — تحلیل محلی روی دادهٔ خودتان. هر پیشنهاد را از بخش هوش فروشگاه باز کنید؛ توضیح کامل آن، دلیل و طرز اجرا آنجاست.</p>
+        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به هوش فروشگاه</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
+      $("#aa-go").onclick = () => { closeModal(); go("insights"); };
       return;
     }
     openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی <span class="muted" style="font-size:12px">(${esc(s.ai.model)})</span></h3>
@@ -505,23 +487,14 @@
       const g = (k) => { const r = allRows.find((x) => x.key === k); return r ? (r.value || "") : ""; };
       const card = el("div", { class: "card" });
       card.innerHTML = `<h3>${ico("sparkle", 18)} هوش فروشگاه</h3>
-        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود — با مدل اختصاصی خودِ فروشگاه (مغز فروشگاه). هیچ سرویس خارجی متصل نمی‌شود و هیچ داده‌ای از دستگاه خارج نمی‌شود.</p>
+        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود — با موتور تحلیل خود برنامه، بدون هیچ سرویس خارجی؛ هیچ داده‌ای از دستگاه خارج نمی‌شود.</p>
         <div class="form-grid">
           <label>موتور تحلیل<select id="ai-en"><option value="true" ${g("insights.enabled") !== "false" ? "selected" : ""}>فعال</option><option value="false" ${g("insights.enabled") === "false" ? "selected" : ""}>غیرفعال</option></select></label>
           <label>فاصلهٔ تحلیل (ساعت)<input id="ai-int" type="number" min="1" max="48" value="${esc(g("insights.interval_hours") || "6")}"/></label>
           <label>پیشنهاد لحظه‌ای در صندوق<select id="ai-nd"><option value="true" ${g("insights.pos_nudges") === "true" ? "selected" : ""}>نمایش</option><option value="false" ${g("insights.pos_nudges") !== "true" ? "selected" : ""}>خاموش</option></select></label>
         </div>
-        <div id="ai-brain" style="margin-top:10px"></div>
         <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button></div>`;
       body.append(card);
-      // live status of the LOCAL model — the only brain this product uses (v4.2)
-      api("/brain/model/status").then((m) => {
-        const box = $("#ai-brain"); if (!box) return;
-        const active = m.active, ready = m.active_ready;
-        const name = m.active_name || (active === "qwen2.5-1.5b-instruct-q4_k_m" ? "مدل تخصصی سوپری‌من"
-          : active === "qwen2.5-1.5b-instruct-q3_k_m" ? "سوپری‌من لایت" : active);
-        box.innerHTML = `<div class="ins-kpi"><span class="muted">مدل مغز فروشگاه</span><b>${ready ? "فعال و آماده" : active ? "نصب است ولی آماده نیست" : "نصب نشده"}</b><span class="muted">${active ? esc(name) : "از بخش «مغز فروشگاه» ← تب «مدل» دریافت و فعال کنید"}</span></div>`;
-      }).catch(() => {});
       $("#ai-save").onclick = async () => {
         const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value };
         try { for (const [k, v] of Object.entries(upd)) await api("/settings", { method: "PUT", body: JSON.stringify({ key: k, value: v }) }); toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }

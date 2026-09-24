@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "4.5.0"
+  #define MyAppVersion "4.6.0"
 #endif
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
@@ -80,16 +80,6 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-; v4.0 — the verified local AI model + llama.cpp engine. The payload is prepared
-; by scripts/model/prepare_windows_installer.py (run by BUILD-SETUP.bat and by
-; CI before ISCC); it lands in the USER data dir, not {app}, so updates and
-; uninstalls never wipe a 1 GB verified model. The fragment only exists when a
-; VERIFIED payload was prepared - building Setup.exe without it is refused by
-; the builder scripts, so a shipped installer always carries a real model.
-#if FileExists("model_payload.iss")
-  #include "model_payload.iss"
-#endif
-
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"

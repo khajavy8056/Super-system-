@@ -22,7 +22,6 @@ from .routers import (
     audit,
     auth,
     batches,
-    brain,
     customers,
     diagnostics,
     hardware,
@@ -87,100 +86,6 @@ def _stop_sync_worker() -> None:
     _sync_stop.set()
 
 
-def _start_brain_autostart() -> None:
-    """v4.2 — the local Business Brain wakes up on its own.
-
-    The owner's rule: on the shop PC the brain must be ALIVE out of the box —
-    the installer already put the verified model + llama.cpp engine in the
-    user's data dir, so at startup we (1) adopt that preinstalled model
-    (idempotent, re-hashed, never deletes) and (2) warm-start llama-server so
-    the first question does not wait for a cold model load. Everything is
-    guarded: without a model/engine this is a no-op, and no failure here may
-    ever keep the app from starting. Kill-switch: SUPERMARKET_BRAIN_AUTOSTART=0.
-    """
-    import logging
-
-    if os.environ.get("SUPERMARKET_BRAIN_AUTOSTART", "1") in ("0", "false", "off"):
-        return
-
-    log = logging.getLogger("supermarket.brain.autostart")
-
-    def run() -> None:
-        try:
-            from .database import SessionLocal
-            from .services.business_brain import model_manager as mm
-            from .services.business_brain import runtime as runtime_svc
-
-            db = SessionLocal()
-            try:
-                manager = mm.ModelManager(db)
-                manager.adopt_preinstalled()          # installer seed → INSTALLED (+activate)
-                install = mm.active_install(db)
-                binary = mm.find_binary()
-                if install is not None and binary:
-                    runtime_svc.get_runtime(db).load()   # warm-start llama-server
-                    log.info("brain autostart: model %s ready (engine %s)",
-                             install.model_id, binary)
-                else:
-                    log.info("brain autostart: no model/engine to start (deterministic mode)")
-            finally:
-                db.close()
-        except Exception:                              # noqa: BLE001 — never block startup
-            log.warning("brain autostart failed (the brain still works on demand)",
-                        exc_info=True)
-
-    threading.Thread(target=run, name="brain-autostart", daemon=True).start()
-
-
-def _start_brain_worker() -> None:
-    """v4.4.0 — the brain is ALWAYS analysing the store (owner's rule).
-
-    A quiet daemon thread runs one proactive pass every 15 minutes: expiring
-    stock, dying products, cash pressure, follow-up measurement windows… and
-    the reminder loop (due reminders → in-app notification; unanswered → SMS
-    to the manager, re-sent until acknowledged). Every tick is guarded — a
-    failure here must never touch the rest of the app.
-    Kill-switch: SUPERMARKET_BRAIN_WORKER=0.
-    """
-    import logging
-
-    if os.environ.get("SUPERMARKET_BRAIN_WORKER", "1") in ("0", "false", "off"):
-        return
-
-    log = logging.getLogger("supermarket.brain.worker")
-    stop = threading.Event()
-
-    def tick() -> None:
-        from .database import SessionLocal
-        from .services.business_brain import briefing as briefing_svc
-        from .services.business_brain import proactive as proactive_svc
-
-        db = SessionLocal()
-        try:
-            out = proactive_svc.evaluate(db, force=False)
-            log.info("brain pass: %s alert(s), %s skipped, %s notified",
-                     len(out.get("alerts", [])), len(out.get("skipped", [])),
-                     out.get("followups_notified", 0))
-        except Exception:                            # noqa: BLE001 — never propagate
-            log.warning("brain pass failed (will retry next tick)", exc_info=True)
-        try:
-            # v4.5.0 — the model also works in the intelligence section:
-            # refresh the manager's briefing every pass (grounded, cached).
-            briefing_svc.build(db, refresh=True)
-        except Exception:                            # noqa: BLE001
-            log.warning("briefing refresh failed (will retry next tick)", exc_info=True)
-        finally:
-            db.close()
-
-    def loop() -> None:
-        stop.wait(60)                                # let the app finish booting first
-        while not stop.is_set():
-            tick()
-            stop.wait(15 * 60)                       # every 15 minutes, all day
-
-    threading.Thread(target=loop, name="brain-worker", daemon=True).start()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .database import SessionLocal
@@ -212,8 +117,6 @@ async def lifespan(app: FastAPI):
     from .services import insights as insights_svc
     if os.environ.get("SUPERMARKET_INSIGHTS_WORKER", "1") not in ("0", "false", "off"):
         insights_svc.start_worker(SessionLocal)  # v3.0: store intelligence (local analytics + A/B measurement)
-    _start_brain_autostart()                     # v4.2: the local brain wakes up on first launch
-    _start_brain_worker()                       # v4.4.0: the brain never sleeps (analyze + reminders)
     yield
     insights_svc.stop_worker()
     relay_svc.stop_worker()
@@ -250,7 +153,7 @@ for r in (
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
     hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
-    setup.router, mobile.router, support.router, cloud.router, insights.router, brain.router,
+    setup.router, mobile.router, support.router, cloud.router, insights.router,
 ):
     app.include_router(r, prefix=API)
 
