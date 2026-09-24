@@ -40,9 +40,10 @@ from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from ..models import (Brand, Category, Cheque, Customer, CustomerLedgerEntry, Expense, ExpenseCategory, Invoice, InvoiceItem,
-                      Payment, Product, ProductBatch, Return, StockMovement, Supplier, Unit, User)
+                      Payment, Product, ProductBatch, Return, StockMovement, Stocktake, StocktakeItem, Supplier, Unit, User)
 from . import accounting as acc_svc
 from . import catalog
+from . import inventory as inv_svc
 from . import pos as pos_svc
 from .audit import write_audit
 
@@ -164,6 +165,14 @@ def _settle_demo_customer(db: Session, *, customer: Customer, amount: D, day: da
         _stamp_journal(db, "CustomerLedgerEntry", entry.id, when)
     _fix_created(db, "customer_ledger_entries", [entry.id], when)
     return entry
+
+
+def _stocktake_days(total_days: int) -> set[int]:
+    """Roughly quarterly stocktakes; ≥3 even in a short run (tests, quick builds)."""
+    if total_days <= 2:
+        return set()
+    marks = {total_days // 4, total_days // 2, (3 * total_days) // 4, total_days - 2}
+    return {d for d in marks if 0 <= d < total_days}
 
 
 def _supplier_weights(n: int) -> list[float]:
@@ -419,7 +428,8 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         for cu in customers:   # nobody's "usual basket" contains the dead SKUs
             cu["fav"] = [x for x in cu["fav"] if not x.get("planted_dead")] or rnd.sample([x for x in products if not x.get("planted_dead")], 6)
 
-        stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0}
+        stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0,
+                 "cash_sessions": 0, "stocktakes": 0}
         # effects of manager-accepted suggestions (filled by _manager_reviews); the simulation honours them
         fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "visit_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
         # Do not retain every historical invoice id in Python; the database is the ledger.
@@ -720,6 +730,79 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 except Exception as exc:
                     sp.rollback(); log.warning("cheque settle skipped: %s", exc)
             db.commit()  # bounded daily transactions; avoid month-sized WAL growth
+
+            # ---- v4.7.0: cashier SHIFTS — one cash session per cashier per week
+            # (opening float → the week's real sales → counted cash with a small
+            # human difference → Z-report journal), so «شیفت‌بندی کارمندها» and the
+            # shift reports have a full year of history. Runs AFTER the day's
+            # commit, in its own transaction — the same isolation pattern
+            # _manager_reviews uses — so a failure can never eat the day's work
+            # (pysqlite SAVEPOINTs are unreliable; we don't gamble with them).
+            if day.weekday() == 3:   # Thursday close: the week is summed up
+                week_start = datetime.combine(day - timedelta(days=6), datetime.min.time()) + timedelta(hours=8)
+                week_end = datetime.combine(day, datetime.min.time()) + timedelta(hours=21)
+                for cashier in cashiers:
+                    try:
+                        s = acc_svc.open_cash_session(db, user=cashier, opening_float=D(3_000_000))
+                        s.opened_at = week_start
+                        db.flush()
+                        summ = acc_svc.session_summary(db, s)
+                        expected = D(str(round(summ["expected_cash"] / 1000.0) * 1000))   # counted to the nearest 1,000
+                        acc_svc.close_cash_session(db, session_id=s.id, counted_cash=expected,
+                                                   note=f"جمع‌بندی شیفت هفتگی — {day.isoformat()}", user=admin)
+                        s.opened_at, s.closed_at = week_start, week_end
+                        _fix_created(db, "acc_cash_sessions", [s.id], week_start)
+                        if s.journal_entry_id:
+                            _stamp_journal(db, "CashSession", s.id, week_end)
+                        db.commit()
+                        stats["cash_sessions"] = stats.get("cash_sessions", 0) + 1
+                    except Exception as exc:
+                        db.rollback()
+                        log.warning("demo: cash session skipped: %r", exc)
+
+            # ---- v4.7.0: quarterly STOCKTAKES — count a sample, small human
+            # variances, completed AND approved through the real service path
+            # (adjustments + STOCKTAKE movements + audit), several times a year.
+            # Same own-transaction isolation as above.
+            if di in _stocktake_days(total_days):
+                when = datetime.combine(day, datetime.min.time()) + timedelta(hours=7)
+                try:
+                    batches = db.execute(
+                        select(ProductBatch).where(ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)
+                        .order_by(ProductBatch.id).limit(400)).scalars().all()
+                    rnd.shuffle(batches)
+                    st = Stocktake(name=f"انبارگردانی دوره‌ای — {day.isoformat()}", status="DRAFT",
+                                   started_at=when, created_by=admin.id, note="شمارش نمونه‌ای دوره‌ای در شبیه‌سازی یک‌ساله")
+                    db.add(st)
+                    db.flush()
+                    for b in batches[:60]:
+                        counted = b.current_qty
+                        if rnd.random() < 0.18:   # a human miss here and there
+                            step = max(D(1), (counted * D("0.03")).quantize(D("1")))
+                            counted = max(D(0), counted + (step if rnd.random() < 0.5 else -step))
+                        db.add(StocktakeItem(stocktake_id=st.id, product_id=b.product_id, batch_id=b.id,
+                                             system_qty=b.current_qty, physical_qty=counted,
+                                             difference=counted - b.current_qty,
+                                             reason="شمارش فیزیکی", status="COUNTED",
+                                             counted_at=when, counted_by=admin.id))
+                    db.flush()
+                    inv_svc.complete_stocktake(db, stocktake_id=st.id, user=admin)
+                    inv_svc.approve_stocktake(db, stocktake_id=st.id, user=admin,
+                                              reason="تأیید مدیر — شبیه‌سازی یک‌ساله")
+                    st.started_at, st.completed_at = when, when + timedelta(hours=3)
+                    _fix_created(db, "stocktakes", [st.id], when)
+                    # (stocktake_items has no created_at — counted_at is already set per item)
+                    mv_ids = [m.id for m in db.execute(
+                        select(StockMovement).where(StockMovement.movement_type == "STOCKTAKE", StockMovement.created_at >= when)
+                        .order_by(StockMovement.id.desc()).limit(120)).scalars().all()]
+                    if mv_ids:
+                        _fix_created(db, "stock_movements", mv_ids, when)
+                    db.commit()
+                    stats["stocktakes"] = stats.get("stocktakes", 0) + 1
+                except Exception as exc:
+                    db.rollback()
+                    log.warning("demo: stocktake skipped: %r", exc)
+
             day += timedelta(days=1)
 
             if resumable:
@@ -778,7 +861,9 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 progress(0.96)
             accepted = 0
             for r in db.execute(select(Insight).where(Insight.status == "NEW")
-                                .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(0 if full_catalog else 14)).scalars().all():
+                                # v4.7.0: the owner wants suggestions EXECUTED with measured
+                                # results even in the full-catalog Colab run — accept the top 12.
+                                .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(12 if full_catalog else 14)).scalars().all():
                 try:
                     ins_svc.accept(db, r, user=admin)
                     accepted += 1

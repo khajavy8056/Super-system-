@@ -32,6 +32,9 @@ public final class SalesScreens {
         final List<JSONObject> cart = new ArrayList<>();  // {product_id, name, barcode, batch_id, batch_number, quantity, price, discount, unit_decimal}
         JSONObject customer; String coupon; double invoiceDiscount = 0; String heldId;
         LinearLayout lines; TextView tot, cnt, custTxt; EditText search; LinearLayout sugg; final Handler h = new Handler(Looper.getMainLooper()); Runnable pending;
+        /** v4.7.0 — real-time POS suggestions (پیشنهاد پای صندوق) on the phone too:
+         *  honest stock only, near-expiry first — same rules as the Windows POS. */
+        LinearLayout nudgeBar; String nudgeKey = ""; Runnable nudgePend;
         Pos(AppActivity a) { super(a); }
         public String key() { return "pos"; } public String title() { return "صندوق فروش"; }
         public View view() {
@@ -49,6 +52,7 @@ public final class SalesScreens {
             cs.addView(Ui.pill(c, "user", "مشتری", customer != null, this::pickCustomer)); cs.addView(Ui.pill(c, "gift", "کوپن", coupon != null, this::askCoupon)); cs.addView(Ui.pill(c, "percent", "تخفیف", invoiceDiscount > 0, this::askDiscount));
             root.addView(Ui.chips(c, cs));
             custTxt = Ui.text(c, "مشتری آزاد", 12, Ui.MUTED, false); custTxt.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); custTxt.setOnClickListener(v -> pickCustomer()); root.addView(custTxt);
+            nudgeBar = Ui.col(c); nudgeBar.setVisibility(View.GONE); root.addView(nudgeBar);   // v4.7.0
             // cart list (scrolls)
             lines = Ui.col(c); android.widget.ScrollView sv = new android.widget.ScrollView(c); sv.addView(lines); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(sv);
             // footer
@@ -99,9 +103,66 @@ public final class SalesScreens {
             Ui.paged(l, bs, 50, b -> Ui.item(c, Ui.money(b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))) + (b.optBoolean("is_recommended") ? "  ★ پیشنهادی" : ""), "بچ " + Ui.fa(b.optString("batch_number")) + " · موجودی " + Ui.num(b.optDouble("current_qty")) + (b.isNull("expiry_date") ? "" : " · انقضا " + Ui.jdate(b.optString("expiry_date"))), null, 0, () -> { d[0].dismiss(); add(p, b); }));
             d[0] = Ui.sheet(c, p.optString("name"), l);
         }
+        /* ---- v4.7.0: POS suggestions (both platforms, owner's rule) ---- */
+        void refreshNudges() {
+            if (nudgeBar == null) return;
+            StringBuilder sb = new StringBuilder();
+            for (JSONObject l : cart) { long id = l.optLong("product_id"); if (sb.indexOf(":" + id + ":") < 0) sb.append(':').append(id).append(':'); }
+            String key = sb.toString();
+            if (key.equals(nudgeKey)) return;
+            nudgeKey = key;
+            if (nudgePend != null) h.removeCallbacks(nudgePend);
+            if (key.isEmpty()) { nudgeBar.setVisibility(View.GONE); nudgeBar.removeAllViews(); return; }
+            nudgePend = () -> {
+                JSONObject body = new JSONObject();
+                try { JSONArray ids = new JSONArray(); for (JSONObject l : cart) ids.put(l.optLong("product_id")); body.put("product_ids", ids); } catch (Exception ignore) {}
+                Api.post("/insights/nudges", body, r -> {
+                    if (nudgeBar == null) return;
+                    JSONArray ns = (JSONArray) r;
+                    nudgeBar.removeAllViews();
+                    if (ns == null || ns.length() == 0) { nudgeBar.setVisibility(View.GONE); return; }
+                    LinearLayout row = Ui.row(c); row.setPadding(Ui.dp(2), Ui.dp(6), Ui.dp(2), Ui.dp(2));
+                    row.setBackground(Ui.rounded((Ui.TEAL & 0x00FFFFFF) | 0x1A000000, Ui.TEAL, 14));
+                    TextView lbl = Ui.text(c, "پیشنهاد به مشتری:", 12, Ui.TEAL, true);
+                    lbl.setPadding(Ui.dp(10), 0, Ui.dp(6), 0);
+                    row.addView(lbl);
+                    LinearLayout chips = Ui.col(c); chips.setLayoutParams(Ui.weight(1));
+                    for (int i = 0; i < ns.length(); i++) {
+                        JSONObject n = ns.optJSONObject(i);
+                        if (n == null) continue;
+                        boolean near = n.optBoolean("near_expiry");
+                        String label = n.optString("name") + (near ? "  ⏰ " + Ui.num(n.optInt("days_left")) + " روز تا انقضا" : "");
+                        android.widget.Button chip = Ui.small(c, label, () -> addFromNudge(n.optLong("product_id")));
+                        chip.setTextColor(near ? Ui.AMBER : Ui.TEAL);
+                        chip.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 4));
+                        chips.addView(chip);
+                        if (near && !n.optString("reason", "").isEmpty()) chips.addView(Ui.muted(c, n.optString("reason")));
+                    }
+                    row.addView(chips);
+                    nudgeBar.addView(row);
+                    nudgeBar.setVisibility(View.VISIBLE);
+                }, e -> { nudgeBar.setVisibility(View.GONE); });
+            };
+            h.postDelayed(nudgePend, 350);
+        }
+
+        /** fetch the suggested product + its honest batch options, then add to the cart. */
+        void addFromNudge(long pid) {
+            Api.get("/products/" + pid, r -> {
+                JSONObject p = (JSONObject) r;
+                Api.get("/pos/batch-options/" + pid, rr -> {
+                    JSONArray opts = ((JSONObject) rr).optJSONArray("options");
+                    if (opts == null || opts.length() == 0) { Ui.toast("این کالا اکنون موجودی قابل فروش ندارد"); return; }
+                    try { p.put("batches", opts); } catch (Exception ignore) {}
+                    add(p, null);
+                }, e -> Ui.toast("موجودی پیشنهاد در دسترس نیست"));
+            }, e -> Ui.toast("پیشنهاد در دسترس نیست"));
+        }
+
         /* ---- cart ---- */
         void renderCart() {
             lines.removeAllViews(); double total = 0, n = 0;
+            refreshNudges();   // v4.7.0 — suggestions follow the cart, on the phone like on Windows
             if (cart.isEmpty()) lines.addView(Ui.empty(c, "سبد خالی است — کالا را جست‌وجو یا اسکن کنید"));
             for (JSONObject l : cart) {
                 double q = l.optDouble("quantity"), pr = l.optDouble("price"), disc = l.optDouble("discount"); double sub = q * pr - disc; total += sub; n += q;

@@ -1447,29 +1447,73 @@ def to_dict(r: Insight) -> dict:
     }
 
 
+def sellable_now(db: Session, product_id: int) -> dict | None:
+    """v4.7.0 — the honesty check every POS suggestion must pass.
+
+    A product is suggestable ONLY if it is alive (active, not deleted) and has at
+    least one ACTIVE batch with stock that is NOT past its expiry date — regardless
+    of the ``expiry.block_sale`` policy (a nudge must never advertise a dead item,
+    even when the store would still allow selling it manually). Returns the
+    product's name + freshness info, or ``None`` when it must not be suggested.
+    """
+    from datetime import date as _date
+
+    from . import pos as pos_service
+
+    today = _date.today()
+    product = db.get(Product, product_id)
+    if not product or product.deleted_at is not None or not product.is_active:
+        return None
+    fresh = [b for b in pos_service.sellable_batches(db, product)
+             if b.expiry_date is None or b.expiry_date >= today]
+    if not fresh:
+        return None
+    days_left = min(((b.expiry_date - today).days for b in fresh if b.expiry_date), default=None)
+    return {"product_id": product.id, "name": product.name,
+            "days_left": days_left, "near_expiry": days_left is not None and 0 <= days_left <= 30}
+
+
 def nudges(db: Session, product_ids: list[int]) -> list[dict]:
-    """Real-time POS hints: for the scanned products, the strongest «then» items not in the cart."""
+    """Real-time POS hints: for the scanned products, the strongest «then» items not in the cart.
+
+    v4.7.0 — the owner's rules, enforced HERE regardless of store policy:
+      1. a nudge must NEVER advertise an out-of-stock item (a cashier whispering
+         «پنیر هم بگذارم؟» for an empty shelf only burns the customer's trust);
+      2. a nudge must NEVER advertise an item whose remaining batches are past
+         expiry — only APPROACHING expiry counts («نزدیک شده، نه عبور کرده»);
+      3. among the honest candidates, an item whose batch is NEAR expiry is
+         pushed FIRST (purpose sell_before_expiry): selling it today is pure
+         saved loss, exactly the extra criterion the owner asked for.
+    """
     row = db.execute(select(Insight).where(Insight.kind == "BASKET_NUDGE", Insight.status.in_(["ACCEPTED", "MEASURED"]))
                      .order_by(Insight.accepted_at.desc())).scalars().first()
     if not row:
         return []
     rules = json.loads(row.evidence or "{}").get("rules", [])
     cart = set(product_ids)
-    out, seen = [], set()
+    candidates, seen = [], set()
     for r in rules:
-        if r["if"] in cart and r["then"] not in cart and r["then"] not in seen:
-            from . import pos as pos_service
-            product = db.get(Product, r["then"])
-            if not product or product.deleted_at is not None or not product.is_active:
-                continue
-            options = pos_service.get_batch_options(db, product)
-            if not options:
-                continue
-            seen.add(product.id)
-            out.append({"product_id": product.id, "name": product.name, "because": r["if_name"],
-                        "confidence": r["confidence"], "purpose": "sell_now"})
-        if len(out) >= 2:
+        if len(candidates) >= 6:
             break
+        if r["if"] in cart and r["then"] not in cart and r["then"] not in seen:
+            alive = sellable_now(db, r["then"])
+            if alive is None:   # honest stock: never out-of-stock, never past expiry
+                continue
+            product = db.get(Product, r["then"])
+            days_left, near_expiry = alive["days_left"], alive["near_expiry"]
+            seen.add(product.id)
+            candidates.append({"product_id": product.id, "name": product.name, "because": r["if_name"],
+                               "confidence": r["confidence"], "days_left": days_left,
+                               "near_expiry": near_expiry,
+                               "purpose": "sell_before_expiry" if near_expiry else "sell_now",
+                               "_rank": (0 if near_expiry else 1, -(r["confidence"] * r.get("lift", 1.0)))})
+    # near-expiry first, then the strongest rule
+    candidates.sort(key=lambda c: c.pop("_rank"))
+    out = []
+    for c in candidates[:2]:
+        if c["near_expiry"]:
+            c["reason"] = f"موجودی «{c['name']}» تا {c['days_left']} روز آینده تاریخ می‌خورد؛ اگر امروز نفروشد ضرر می‌شود"
+        out.append(c)
     return out
 
 

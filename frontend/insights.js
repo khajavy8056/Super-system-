@@ -439,7 +439,7 @@
           if (!r.length) { host.innerHTML = ""; host.classList.add("hidden"); return; }
           host.classList.remove("hidden");
           host.innerHTML = `<span class="nudge-ic">${ico("sparkle", 16)}</span><span class="nudge-txt">پیشنهاد به مشتری:</span>` +
-            r.map((n) => `<button class="nudge-chip" title="چون ${esc(n.because)} در سبد است" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}</button>`).join("");
+            r.map((n) => `<button class="nudge-chip" title="${n.near_expiry ? esc(n.reason || "نزدیک انقضا") : "چون " + esc(n.because) + " در سبد است"}" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}${n.near_expiry ? ` <span style="opacity:.8">⏰ ${fa(n.days_left)} روز</span>` : ""}</button>`).join("");
         } catch (_) { host.classList.add("hidden"); }
       }, 350);
     },

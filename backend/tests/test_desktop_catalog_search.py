@@ -77,7 +77,10 @@ def test_nudges_recheck_live_product_and_sellable_batch(client,milk,two_batches,
         result=insights.nudges(db,[-100])
         if state=='valid':
             assert result[0]['name']==product.name
-            assert result[0]['purpose']=='sell_now'
+            # v4.7.0: the two_batches fixture carries a +30d expiry — inside the
+            # near-expiry window — so an honest nudge flags it sell_before_expiry
+            # (the owner's «نزدیک شدیم نه عبور کرده» priority), not plain sell_now.
+            assert result[0]['purpose']=='sell_before_expiry'
             assert insights.nudges(db,[-100,product.id])==[]
         else: assert result==[]
         db.rollback()
