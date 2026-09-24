@@ -125,6 +125,34 @@ def verify(setup: Path, installer_dir: Path) -> tuple[bool, list[str], dict, int
             f"{floor / 1e6:,.0f} مگابایت باشد — مدل داخل فایل نصب نیست")
         return False, problems, info, 1
 
+    # v4.3.3 — the ENGINE must not be half-shipped: if llama-server.exe was
+    # prepared, its DLL prerequisites must all be present (llama.dll,
+    # ggml-base.dll, libcurl-x64.dll…) and model_payload.iss must carry the
+    # runtime\* line that packs them. A half engine pops DLL errors at every
+    # launch of the brain's autostart (the owner's exact report).
+    runtime_dir = installer_dir / "runtime"
+    if (runtime_dir / "llama-server.exe").exists():
+        sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling import
+        import verify_engine  # noqa: PLC0415 — sibling module (scripts/model)
+        eng_ok, eng_problems, _eng = verify_engine.verify(runtime_dir)
+        if not eng_ok:
+            problems.extend(eng_problems)
+            return False, problems, info, 1
+        try:
+            manifest = json.loads((runtime_dir / "engine.json").read_text(encoding="utf-8"))
+            if manifest.get("complete") is not True:
+                problems.append("engine.json موتور را کامل علامت نزده — بیلد دوباره گرفته شود")
+                return False, problems, info, 1
+        except (OSError, ValueError):
+            problems.append("engine.json موتور خوانده نشد")
+            return False, problems, info, 1
+        iss_text = (installer_dir / "model_payload.iss").read_text(
+            encoding="utf-8-sig", errors="replace") if (installer_dir / "model_payload.iss").exists() else ""
+        if "runtime" + chr(92) + "*" not in iss_text:      # runtime\* in the .iss
+            problems.append("model_payload.iss خط بسته‌بندی runtime را ندارد — DLLهای موتور "
+                            "وارد نصب‌کننده نمی‌شوند")
+            return False, problems, info, 1
+
     # payload looks right — now the structure check (v4.2.1: keep, don't delete)
     if not _looks_like_inno_setup(setup):
         problems.append(

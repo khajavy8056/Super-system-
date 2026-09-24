@@ -84,6 +84,5 @@ def test_copy_engine_report_button():
 # ---------------------------------------------------------------- versions
 def test_versions_consistent():
     from app import __version__
-    assert __version__ == "4.3.2"
     iss = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
-    assert '#define MyAppVersion "4.3.2"' in iss
+    assert f'#define MyAppVersion "{__version__}"' in iss

@@ -3,6 +3,18 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [4.3.3] - 2026-09-24
+
+### ویندوز: «llama.dll was not found» — DLLهای موتور واقعاً داخل نصب‌کننده
+- **Root cause:** the official llama.cpp Windows build is a DYNAMIC build — llama-server.exe imports `llama.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `libcurl-x64.dll`… — and `prepare_engine` extracted EXACTLY ONE file from the official archive: the exe. The DLLs were thrown away, so the shop PC failed at launch with the owner's exact error list.
+- **The engine now ships complete:** the extractor takes llama-server.exe AND every DLL from the official archive, then verifies the ACTUAL PE import graph — a pure-stdlib parser (`scripts/model/verify_engine.py`) reads every file's import table (imports + delay-loads), recurses into the bundled DLLs, and requires each dependency to be either bundled next to the exe or a Windows system DLL. A half engine FAILS the build (exit 1, Persian list) — it must never ship, because the brain's autostart would pop DLL dialogs on every launch.
+- **verify_setup cross-checks the final Setup.exe** too: if an engine is present, its import graph must pass, `engine.json` must say `complete: true`, and `model_payload.iss` must carry the `runtime\*` line that packs the DLLs.
+- **Old markers bust themselves:** a v4.2-era `engine.json` (exe only — what the owner's machine has right now) is detected as incomplete and the engine is RE-FETCHED on the next build instead of short-circuiting.
+- **Clean degradation:** if the engine download fails, the partial archive is deleted so Inno never packs a half zip; the build continues without an engine (the model still ships, the brain says so honestly).
+- **Android needs nothing of this** — its engines are STATIC ELFs (no PT_INTERP, no PT_DYNAMIC ⇒ no shared-library imports at all), test-pinned since 4.1.0 and re-asserted by name this round for both ABIs. No DLL-style prerequisite can exist on Android by construction.
+- Tests: new `test_v433_engine_dlls.py` (12 tests — synthetic PE import tables, recursive verification, extraction completeness, old-marker re-fetch, half-engine build failure, verify_setup engine branch, Android static proof). Full suite **771 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.3.apk` (versionCode 40303, both ABIs, preflight PASS, same cert → in-place update; Android code unchanged this round — version-consistent build). Windows: **rebuild once from this tree** — the engine step re-downloads the archive (~a few tens of MB, resume-capable) and packs the full DLL set.
+
 ## [4.3.2] - 2026-09-24
 
 ### اندروید: موتور واقعاً روشن می‌شود — دروازهٔ رم از «عدد مخصوص رایانه» به نیاز واقعی گوشی

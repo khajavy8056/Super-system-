@@ -149,8 +149,42 @@ def prepare_model(model_id: str | None, from_file: str | None, out: Path,
     return 0
 
 
+def _engine_files(runtime_dir: Path) -> list[Path]:
+    return sorted(p for p in runtime_dir.iterdir() if p.suffix.lower() in (".exe", ".dll"))
+
+
+def _engine_is_complete(runtime_dir: Path, marker: Path) -> bool:
+    """v4.3.3 — an engine is complete only when the marker says so AND every
+    import of every PE file resolves (bundled or a Windows system DLL).
+
+    The v4.2-era marker shipped llama-server.exe WITHOUT its DLLs (llama.dll,
+    ggml-base.dll, libcurl-x64.dll…) — the shop PC then failed with
+    «llama.dll was not found». Old markers without "complete" force a re-fetch.
+    """
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+        if manifest.get("complete") is not True:
+            return False
+        for entry in manifest.get("files", []):
+            f = runtime_dir / entry["name"]
+            if not f.exists() or f.stat().st_size != entry.get("bytes", -1):
+                return False
+    except (OSError, ValueError):
+        return False
+    sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling import
+    import verify_engine  # noqa: PLC0415 — sibling module (scripts/model)
+    ok, _problems, _report = verify_engine.verify(runtime_dir)
+    return ok
+
+
 def prepare_engine(out: Path, downloader: str = "auto", connections: int = 4) -> int:
     """Bundle the official llama.cpp Windows build next to the model.
+
+    v4.3.3: the official build is DYNAMIC — llama-server.exe imports
+    llama.dll, ggml-base.dll, ggml-cpu.dll, libcurl-x64.dll… — so we extract
+    the exe AND every DLL from the official archive, then VERIFY the whole
+    import graph (pure-stdlib PE parser). A half engine must never ship: the
+    brain's autostart would pop DLL error dialogs on every launch.
 
     Optional but recommended: without an engine the adopted model stays
     INSTALLED and the brain answers deterministically (and says so).
@@ -158,41 +192,64 @@ def prepare_engine(out: Path, downloader: str = "auto", connections: int = 4) ->
     runtime_dir = out / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     marker = runtime_dir / "engine.json"
-    if marker.exists():
-        print(f"engine already prepared: {marker}")
+    if marker.exists() and _engine_is_complete(runtime_dir, marker):
+        print(f"engine already prepared and verified: {marker}")
         return 0
+    if marker.exists():
+        print("ENGINE INCOMPLETE (older build shipped llama-server.exe without its "
+              "DLLs) — re-fetching the official archive…", file=sys.stderr)
+    for stale in runtime_dir.iterdir():        # never build on a half payload
+        if stale.is_file():
+            stale.unlink(missing_ok=True)
+
     archive = runtime_dir / LLAMA_ASSET
     print(f"downloading llama.cpp {LLAMA_TAG} (official GitHub release)…")
     try:
         download_manager.fetch((LLAMA_URL,), archive,
                                downloader=downloader, connections=connections)
     except Exception as exc:  # noqa: BLE001 — an offline build can still ship the model
+        archive.unlink(missing_ok=True)        # never leave a partial zip to be packed
         print(f"WARNING: engine fetch failed ({exc}); the installer will ship WITHOUT "
               "the engine — the brain will say so honestly on first launch")
         return 0
     try:
         digest = sha256_file(archive)
-        wanted = ("llama-server.exe",)
-        found: list[Path] = []
+        extracted: list[Path] = []
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 base = Path(name).name
-                if base in wanted:
+                # v4.3.3 — the exe AND every DLL it (or they) import
+                if base == "llama-server.exe" or base.lower().endswith(".dll"):
                     destination = runtime_dir / base
                     with zf.open(name) as src, open(destination, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-                    found.append(destination)
-        if not found:
+                    extracted.append(destination)
+        if not any(f.name == "llama-server.exe" for f in extracted):
             print(f"WARNING: {LLAMA_ASSET} contained no llama-server.exe; engine skipped",
                   file=sys.stderr)
             return 0
+        # the actual import graph is the ONLY truth about prerequisites
+        sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling import
+        import verify_engine  # noqa: PLC0415 — sibling module (scripts/model)
+        ok, problems, report = verify_engine.verify(runtime_dir)
+        if not ok:
+            for problem in problems:
+                print(f"FAIL: {problem}", file=sys.stderr)
+            print("موتور رسمی بعد از استخراج ناقص است — نصب‌کنندهٔ بدون موتورِ خراب ساخته "
+                  "نمی‌شود؛ دوباره بیلد بگیرید (دانلود از همان‌جا ادامه می‌یابد).", file=sys.stderr)
+            return 1
+        files = [{"name": f.name, "bytes": f.stat().st_size, "sha256": sha256_file(f)}
+                 for f in sorted(extracted)]
         marker.write_text(json.dumps({"tag": LLAMA_TAG, "asset": LLAMA_ASSET,
                                       "sha256": digest,
-                                      "files": [f.name for f in found],
+                                      "complete": True,
+                                      "files": files,
                                       "source_url": LLAMA_URL,
                                       "prepared_at": datetime.now(timezone.utc).isoformat()},
                                      ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"engine ready → {runtime_dir}")
+        checked = sum(len(info["imports"]) for info in report["files"].values())
+        print(f"engine ready → {runtime_dir} ({len(files)} فایل، "
+              f"{checked} وابستگی DLL بررسی و تأیید شد)")
     except Exception as exc:  # noqa: BLE001 — a bad engine payload must not kill the build
         print(f"WARNING: engine payload failed ({exc}); the installer will ship WITHOUT "
               "the engine — the brain will say so honestly on first launch", file=sys.stderr)
