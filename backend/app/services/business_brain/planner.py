@@ -37,6 +37,7 @@ from . import prompts
 from . import store_profile
 from .context import ToolContext
 from .decision_helpers import build_options, contradictions, score_options
+from ...models.brain import BrainDecision
 from .decisions import build_measurement, create as create_decision
 from .grounding import verify as verify_numbers
 from .memory import conversation_digest, decision_to_dict, last_user_intent, log_message, pattern_for
@@ -362,7 +363,9 @@ def respond(db: Session, *, question: str, user: User | None = None, session_key
     # v4.3.1 — identity questions («تو کی هستی؟ چه کاری می‌توانی؟ سازنده‌ات کیست؟»)
     # get an instant, complete, fluent answer even on the slowest shop CPU —
     # the owner's explicit request — and never wait for the model to load.
-    identity = _identity_answer(question)
+    # v4.4.0 — greetings/small-talk too: «سلام» must get «سلام!» back, NOT an
+    # inventory report (the owner's exact complaint).
+    identity = _identity_answer(question) or _smalltalk_answer(question)
     if identity is not None and not plan.blocked:
         prefer_llm = False
         text, mode, model_id = identity, "deterministic", None
@@ -402,6 +405,17 @@ def respond(db: Session, *, question: str, user: User | None = None, session_key
              if c.get("severity") == "CRITICAL"][:3]) or text
 
     decision_row = _persist(db, plan, ctx, user=user, question=question, origin=origin)
+    # v4.4.0 — a tool may itself have raised a decision needing the manager's
+    # approval (e.g. sms_draft). If the plan produced none, surface the tool's
+    # one so the chat can show تأیید / ویرایش / رد buttons under this answer.
+    if decision_row is None:
+        for call in ctx.trace:
+            did = ((call.data or {}).get("details") or {}).get("decision_id")
+            if did:
+                row = db.get(BrainDecision, int(did))
+                if row is not None and row.status in ("NEEDS_DECISION", "WAITING_APPROVAL"):
+                    decision_row = row
+                    break
     followups = _auto_followups(db, plan, decision_row, user=user)
 
     log_message(db, session_key=session_key, role="ASSISTANT", content=text,
@@ -423,6 +437,42 @@ def respond(db: Session, *, question: str, user: User | None = None, session_key
                           "entities": plan.understanding.entities,
                           "options": [o.to_dict() for o in plan.options]})
     return answer.to_dict()
+
+
+#: pure conversation — a natural reply, never a report (v4.4.0)
+_SMALLTALK = {
+    "سلام": "سلام! خوشحالم که هستید. امروز چه کاری از دستم برمی‌آید؟",
+    "درود": "درود بر شما! بفرمایید، چه خبر از فروشگاه؟",
+    "صبح بخیر": "صبح شما هم بخیر! آماده‌ام؛ اگر خواستید وضعیت امروز را بررسی کنم بگویید.",
+    "شب بخیر": "شب شما بخیر! هر وقت لازم شد همین‌جا هستم.",
+    "خوبی": "خوبم، ممنون! شما چطورید؟ از فروشگاه چه خبر؟",
+    "چه خبر": "خوبم و آمادهٔ کار! بگویید امروز چه چیزی را بررسی کنیم؟",
+    "مرسی": "خواهش می‌کنم! کاری بود در خدمتم.",
+    "ممنون": "خواهش می‌کنم! کاری بود در خدمتم.",
+    "متشکرم": "خواهش می‌کنم! کاری بود در خدمتم.",
+    "خداحافظ": "خداحافظ! موفق باشید؛ من همین‌جا منتظر شما هستم.",
+    "خداحافظت": "خداحافظ! موفق باشید؛ من همین‌جا منتظر شما هستم.",
+    "بای": "خداحافظ! هر وقت برگشتید در خدمتم.",
+}
+
+
+def _smalltalk_answer(question: str) -> str | None:
+    """v4.4.0 — a greeting deserves a greeting, thanks deserve thanks.
+
+    The deterministic pipeline used to run EVERY input through the business
+    analyser, so «سلام» produced an inventory summary. Now pure conversation
+    is answered conversationally — instantly, and (like identity) without
+    waiting for the model. Anything with a business word in it still goes
+    through the full pipeline.
+    """
+    q = (question or "").strip()
+    if not q or len(q) > 60:
+        return None
+    compact = " ".join(q.split())
+    for needle, reply in _SMALLTALK.items():
+        if compact == needle or compact.endswith(needle) and len(compact) <= len(needle) + 8:
+            return reply
+    return None
 
 
 #: questions about the assistant itself — answered instantly, never fabricated

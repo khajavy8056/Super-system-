@@ -108,6 +108,90 @@ def set_policy(ctx: ToolContext, params: dict) -> dict:
             "details": {"policy": out, "before": before}}
 
 
+#: v4.4.0 — the keys the brain may READ and (with the manager's approval in
+#: the chat) WRITE. Deliberately a whitelist: the brain manages the shop's
+#: communication settings and its own manager-phone, never arbitrary keys.
+SETTING_WHITELIST = (
+    "sms.reminder_template",          # متن پیامک یادآوری به مشتری
+    "sms.debt_template",
+    "sms.winback_template",
+    "sms.visit_template",
+    "brain.manager_phone",            # شماره مدیر برای پیامک‌های یادآوری
+    "brain.reminder_escalate_hours",  # هر چند ساعت دوباره پیامک برود
+    "store.name",
+)
+
+
+def get_setting_tool(ctx: ToolContext, params: dict) -> dict:
+    """v4.4.0 — read a whitelisted setting (for consulting on e.g. the SMS text)."""
+    key = str(params.get("key", ""))
+    if key not in SETTING_WHITELIST:
+        return {"summary": f"کلید «{key}» در فهرست مجاز نیست", "numbers": {},
+                "details": {"allowed_keys": list(SETTING_WHITELIST)}, "flags": ["DENIED_KEY"]}
+    return {"summary": f"«{key}» = {_setting(ctx, key) or '(خالی)'}", "numbers": {},
+            "details": {"key": key, "value": _setting(ctx, key)}}
+
+
+def set_setting_tool(ctx: ToolContext, params: dict) -> dict:
+    """v4.4.0 — WRITE (manager-approved via the chat's تأیید button): set a
+    whitelisted setting, e.g. the SMS reminder text the manager agreed to."""
+    key = str(params.get("key", ""))
+    value = str(params.get("value", ""))
+    if key not in SETTING_WHITELIST:
+        return {"summary": f"کلید «{key}» در فهرست مجاز نیست", "numbers": {},
+                "details": {"allowed_keys": list(SETTING_WHITELIST)}, "flags": ["DENIED_KEY"]}
+    before = _setting(ctx, key)
+    row = ctx.db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    if row is None:
+        ctx.db.add(SystemSetting(key=key, value=value))
+    else:
+        row.value = value
+    ctx.db.flush()
+    return {"summary": f"تنظیم «{key}» ذخیره شد", "numbers": {},
+            "details": {"key": key, "before": before, "after": value}}
+
+
+def sms_draft(ctx: ToolContext, params: dict) -> dict:
+    """v4.4.0 — draft an SMS to ONE customer for the manager to approve.
+
+    Creates a WAITING_APPROVAL decision whose approval executes the REAL send
+    through the audited Action Engine (personal_sms). The text is never sent
+    without the manager pressing تأیید.
+    """
+    text = str(params.get("text", "")).strip()
+    customer_id = params.get("customer_id")
+    cust = None
+    if customer_id is not None:
+        cust = ctx.db.get(Customer, int(customer_id))
+    if cust is None:
+        name = str(params.get("customer", "")).strip()
+        if name:
+            cust = ctx.db.execute(
+                select(Customer).where(Customer.full_name.ilike(f"%{name}%")).limit(1)
+            ).scalar_one_or_none()
+    if cust is None:
+        return {"summary": "مشتری پیدا نشد", "numbers": {},
+                "details": {}, "flags": ["CUSTOMER_NOT_FOUND"]}
+    if not text:
+        return {"summary": "متن پیامک خالی است", "numbers": {}, "details": {}, "flags": ["EMPTY_TEXT"]}
+    row = BrainDecision(
+        type="sms_draft", title=f"ارسال پیامک به {cust.name}",
+        problem="پیش‌نویس پیامک از طرف مغز فروشگاه",
+        options=json.dumps([{
+            "id": "send", "label": "ارسال پیامک", "description": text[:200],
+            "actions": [{"type": "personal_sms",
+                         "params": {"customers": [{"customer_id": cust.id, "text": text}]}}],
+            "risk": "low", "reversible": False}], ensure_ascii=False),
+        reason="متن با مدیر مشورت شد؛ با تأیید شما ارسال می‌شود.",
+        recommended_option="send", status="WAITING_APPROVAL", confidence="high",
+        created_by=getattr(ctx.user, "id", None))
+    ctx.db.add(row)
+    ctx.db.flush()
+    return {"summary": f"پیش‌نویس پیامک به {cust.name} آماده شد — با تأیید شما ارسال می‌شود",
+            "numbers": {},
+            "details": {"decision_id": row.id, "customer": cust.name, "text": text}}
+
+
 def get_data_quality(ctx: ToolContext, params: dict) -> dict:
     report = ctx.cached("dq", lambda: dq_svc.run_all(ctx.db))
     critical = [c for c in report["checks"] if c["severity"] == "CRITICAL"]

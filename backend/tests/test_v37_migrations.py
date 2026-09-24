@@ -73,7 +73,9 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # is unchanged; only the pinned value follows.
     cfg = _cfg(migrated_url)
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    assert heads == ["d4f6a8b1c2e3"]
+    # v4.4.0 note: the head moved again (reminder escalation, next_sms_at);
+    # the intent stays: ONE head, DB stamped exactly at it.
+    assert heads == ["b7e9f1a3c5d8"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -83,10 +85,10 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     """Downgrade the HEAD revision and re-upgrade: the head step's objects
     come and go, shop data (products, …) is never touched.
 
-    v4.0 note: the head step is now the BUSINESS BRAIN migration
-    (d4f6a8b1c2e3), so the "-1" assertions follow it (the six brain tables drop
-    and come back; older revisions' objects such as hardware columns,
-    experiments and product_bank legitimately STAY — they belong to earlier
+    v4.4.0 note: the head step is now the REMINDER ESCALATION migration
+    (b7e9f1a3c5d8 — one nullable column next_sms_at on brain_followups), so
+    the "-1" assertions follow it (the column drops and comes back; the brain
+    tables and everything older legitimately STAY — they belong to earlier
     steps). The test's intent is unchanged: one step down, back to head, shop
     data intact.
 
@@ -114,10 +116,11 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # the -1 step is the brain migration only: its six tables go
-    assert "brain_decisions" not in tables and "brain_messages" not in tables
-    assert "brain_policies" not in tables and "brain_memory_facts" not in tables
+    # the -1 step is the reminder-escalation column only: next_sms_at goes…
+    fu_cols = {c["name"] for c in insp.get_columns("brain_followups")}
+    assert "next_sms_at" not in fu_cols
     # …and everything an earlier revision created stays put
+    assert "brain_decisions" in tables and "brain_messages" in tables
     assert "experiments" in tables
     assert "product_bank" in tables
     hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}

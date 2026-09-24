@@ -183,7 +183,8 @@ def test_registry_declares_every_required_capability():
                 "get_open_followups", "search_web", "create_task", "measure_action"}
     missing = required - names
     assert not missing, f"missing tools: {sorted(missing)}"
-    assert len(names) == 37
+    # v4.4.0: three owner-power tools joined (get_setting, set_setting, sms_draft)
+    assert len(names) == 40
 
 
 def test_every_tool_declares_its_contract():
@@ -200,7 +201,7 @@ def test_every_tool_declares_its_contract():
 def test_write_tools_are_action_tools_or_brain_owned_and_nothing_else():
     writable = {spec["name"] for spec in REGISTRY.write_tools()}
     assert writable == {"set_policy", "create_task", "create_followup", "record_memory_fact",
-                        "measure_action"}
+                        "measure_action", "set_setting", "sms_draft"}
     # price/SMS/campaign execution is proposed to the Action Engine, not called here
     llm_surface = {spec["name"] for spec in REGISTRY.for_llm(ToolContext(db=None, system=True))}
     assert "create_campaign" not in llm_surface

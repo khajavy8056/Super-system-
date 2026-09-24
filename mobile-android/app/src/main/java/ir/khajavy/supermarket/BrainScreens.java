@@ -306,6 +306,30 @@ public final class BrainScreens {
         /* ---------------- the local model (downloads AFTER install, as app data) ---------------- */
         void modelTab() {
             body.addView(engineCard());
+            // v4.4.0 — the owner's rule: once a verified model is on the phone,
+            // the download cards are GONE. One clean "installed" card instead.
+            BrainModel.Spec rs = BrainModel.readySpec(c);
+            if (rs != null) {
+                LinearLayout ok = Ui.card(c);
+                LinearLayout head = Ui.row(c);
+                android.widget.ImageView ic = new android.widget.ImageView(c);
+                ic.setImageResource(R.drawable.ic_model);
+                ic.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(40), Ui.dp(40)));
+                head.addView(ic);
+                LinearLayout tt = Ui.col(c); tt.setPadding(Ui.dp(10), 0, 0, 0); tt.setLayoutParams(Ui.weight(1));
+                tt.addView(Ui.text(c, rs.label() + " نصب و تأیید شده", 14, Ui.TEXT, true));
+                tt.addView(Ui.muted(c, Ui.num(Math.round(rs.bytes / 1048576.0)) + " مگابایت · هش SHA-256 با مخزن رسمی مطابقت دارد"));
+                head.addView(tt);
+                head.addView(Ui.badge(c, "آماده", Ui.GREEN));
+                ok.addView(head);
+                ok.addView(Ui.muted(c, "همین مدل روی رایانهٔ فروشگاه هم اجرا می‌شود (یک مدل، نه دو مدل). برای آزادکردن حافظه می‌توانید فایل را حذف و هر وقت خواستید دوباره دریافت کنید."));
+                android.widget.Button del = Ui.small(c, "حذف فایل مدل", () ->
+                        Ui.confirm(c, "فایل مدل از گوشی حذف شود؟", () -> { BrainModel.delete(c, rs); load(); }));
+                del.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0));
+                ok.addView(del);
+                body.addView(ok);
+                return;
+            }
             LinearLayout why = Ui.card(c, "مدل تخصصی سوپری‌من");
             why.addView(Ui.body(c, "فایل مدل داخل نصب برنامه نیست؛ پس از نصب، از مخزن رسمی سازنده دریافت، هش SHA-256 آن تأیید و در حافظهٔ خود برنامه نگه داشته می‌شود (حذف برنامه، آن را هم پاک می‌کند)."));
             why.addView(Ui.muted(c, "حجم دریافت حدود ۰٫۹ تا ۱٫۱ گیگابایت است — وای‌فای توصیه می‌شود. دریافت با «توقف» قابل قطع و از همان‌جا قابل ادامه است؛ اگر منبع اول (Hugging Face) در دسترس نباشد، همان فایل از منبع رسمی دیگر (ModelScope) گرفته می‌شود."));
@@ -702,6 +726,69 @@ public final class BrainScreens {
             hh.postDelayed(tick, 350);
             return b;
         }
+        /** v4.4.0 — glassy inline actions under an answer that needs the
+         *  manager's approval: تأیید (execute) / ویرایش (refine by chat) / رد. */
+        android.widget.Button glass(String label, int color, Runnable onClick) {
+            android.widget.Button btn = Ui.small(c, label, onClick);
+            btn.setBackground(Ui.rounded((color & 0x00FFFFFF) | 0x2E000000, color, 14));
+            btn.setTextColor(color);
+            btn.setLayoutParams(Ui.weight(1));
+            return btn;
+        }
+
+        void approvalButtons(JSONObject x) {
+            JSONObject d = x.optJSONObject("decision");
+            if (d == null) return;
+            String st = d.optString("status", "");
+            if (!"NEEDS_DECISION".equals(st) && !"WAITING_APPROVAL".equals(st)) return;
+            int id = d.optInt("id", 0);
+            if (id <= 0) return;
+            LinearLayout row = Ui.row(c);
+            row.setPadding(0, Ui.dp(2), 0, Ui.dp(8));
+            row.addView(glass("تأیید", Ui.GREEN, () -> {
+                Ui.toast("در حال اجرای تصمیم تأییدشده…");
+                Api.post("/brain/decisions/" + id + "/approve", new JSONObject(), r -> {
+                    Ui.toast("اجرا شد"); load();
+                }, e -> Ui.toast("اجرا نشد: " + e.getMessage()));
+            }));
+            row.addView(glass("ویرایش", Ui.PRIMARY, () -> {
+                android.widget.EditText edit = new android.widget.EditText(c);
+                edit.setHint("چه چیزی را تغییر بدهم؟");
+                edit.setTextDirection(android.view.View.TEXT_DIRECTION_RTL);
+                new android.app.AlertDialog.Builder(c)
+                        .setTitle("ویرایش پیش از اجرا")
+                        .setView(edit)
+                        .setPositiveButton("بفرست", (dd, w) -> {
+                            String change = edit.getText().toString().trim();
+                            if (!change.isEmpty()) { in.setText("همان کار را با این تغییر انجام بده: " + change); send(); }
+                        })
+                        .setNegativeButton("بی‌خیال", null).show();
+            }));
+            row.addView(glass("رد", Ui.RED, () -> {
+                JSONObject body = new JSONObject();
+                try { body.put("reason", "از داخل گفت‌وگو رد شد"); } catch (Exception ignore) {}
+                Api.post("/brain/decisions/" + id + "/reject", body, r -> Ui.toast("رد شد"), e -> Ui.toast("رد نشد: " + e.getMessage()));
+            }));
+            log.addView(row);
+            scrollDown();
+        }
+
+        /** v4.4.0 — when the answer created a reminder, show it as a chip. */
+        void reminderChip(JSONObject x) {
+            JSONArray fs = x.optJSONArray("followups");
+            if (fs == null || fs.length() == 0) return;
+            for (int i = 0; i < fs.length(); i++) {
+                JSONObject f = fs.optJSONObject(i);
+                if (f == null || !"REMIND".equals(f.optString("kind", "REMIND"))) continue;
+                LinearLayout chip = Ui.card(c, null);
+                chip.setBackground(Ui.rounded((Ui.GOLD & 0x00FFFFFF) | 0x24000000, Ui.GOLD, 14));
+                chip.addView(Ui.muted(c, "⏰ یادآوری ثبت شد: " + f.optString("title")
+                        + (f.optString("due_at", "").length() >= 16 ? " — " + Ui.jdate(f.optString("due_at")) : "")));
+                log.addView(chip);
+            }
+            scrollDown();
+        }
+
         void send() {
             String q = in.getText().toString().trim();
             if (q.isEmpty()) return;
@@ -718,6 +805,8 @@ public final class BrainScreens {
                 JSONObject x = (JSONObject) r;
                 bubble("ASSISTANT", x.optString("text"));
                 if (BrainVoice.voiceMode()) BrainVoice.speak(c, x.optString("text"), null);   // v4.3
+                approvalButtons(x);      // v4.4.0 — تأیید / ویرایش / رد زیر همان پیام
+                reminderChip(x);         // v4.4.0 — یادآوری ثبت‌شده در همین پاسخ
                 JSONArray w = x.optJSONArray("warnings");
                 if (w != null && w.length() > 0) {
                     StringBuilder sb = new StringBuilder();

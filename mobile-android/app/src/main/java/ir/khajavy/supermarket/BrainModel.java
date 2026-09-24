@@ -97,8 +97,14 @@ public final class BrainModel {
     public static void listen(Listener l) { listen("ui", l); }
 
     public static String stateOf(String id) {
+        // v4.4.0 — ROOT FIX of «آماده است ولی می‌گوید مدل تأییدشده نیست»: the state
+        // map stores a JSONObject per id, and org.json's optString() on an
+        // OBJECT value returns the fallback (""), never the state. Every
+        // official check (ready/readySpec/autoSetup) therefore always saw ""
+        // even though the badge/note (fed by the live listener) said READY.
         try { JSONObject all = new JSONObject(Prefs.get("brain_model_state", "{}"));
-            return all.optString(id, ""); } catch (Exception e) { return ""; }
+            JSONObject one = all.optJSONObject(id);
+            return one == null ? "" : one.optString("state", ""); } catch (Exception e) { return ""; }
     }
     public static String noteOf(String id) {
         try { JSONObject all = new JSONObject(Prefs.get("brain_model_state", "{}"));

@@ -165,6 +165,8 @@ class BrainFollowup(TimestampMixin, Base):
     due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String(16), default="OPEN", index=True)  # OPEN | DONE | CANCELLED
     notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: v4.4.0 — earliest next SMS-to-manager for an unanswered reminder
+    next_sms_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     result: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

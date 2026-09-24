@@ -66,6 +66,8 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+        <!-- v4.4.0 — the manager's reminders: انجام شد / دوباره یادآوری buttons. -->
+        <receiver android:name=".ReminderRx" android:exported="false" />
         <activity android:name=".SupportActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".ScanActivity"

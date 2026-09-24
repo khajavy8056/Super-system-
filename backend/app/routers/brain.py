@@ -16,6 +16,8 @@ Contract, in one screen:
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -25,6 +27,7 @@ from ..models import User
 from ..security import require_permission
 from ..services.business_brain import BusinessBrain, BrainDenied
 from ..services.business_brain import decisions as decision_svc
+from ..services.business_brain import followups as followup_svc
 
 router = APIRouter(prefix="/brain", tags=["brain"])
 
@@ -50,6 +53,7 @@ class DecideIn(BaseModel):
 
 class FollowupIn(BaseModel):
     result: str = ""
+    hours: float = 2.0      # v4.4.0 — reminder snooze («دوباره یادآوری کن»)
 
 
 class NoteIn(BaseModel):
@@ -176,6 +180,32 @@ def measure(decision_id: int, db: Session = Depends(get_db), user: User = Depend
 def followups(include_closed: bool = Query(False), limit: int = Query(50, le=200),
               db: Session = Depends(get_db), user: User = Depends(admin_user)):
     return {"followups": _brain(db, user).followups(include_closed=include_closed, limit=limit)}
+
+
+# --------------------------------------------------------------------------- reminders (v4.4.0)
+#: The phone's popup loop: poll what is due, then ack («انجام شد») or snooze
+#: («دوباره یادآوری»). Unanswered reminders escalate to an SMS to the manager
+#: inside followups.notify_due — the worker/proactive pass calls it.
+@router.get("/reminders/due")
+def reminders_due(db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    items = followup_svc.due_items(db)
+    return {"reminders": [followup_svc.to_dict(r) for r in items[:10]],
+            "now": datetime.utcnow().isoformat()}
+
+
+@router.post("/reminders/{followup_id}/ack")
+def reminder_ack(followup_id: int, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    """«انجام شد» from the phone's notification — the reminder loop ends here."""
+    return _write(db, lambda fid: followup_svc.acknowledge(db, fid, user_id=user.id if user else None),
+                  followup_id)
+
+
+@router.post("/reminders/{followup_id}/snooze")
+def reminder_snooze(followup_id: int, payload: FollowupIn, db: Session = Depends(get_db),
+                    user: User = Depends(admin_user)):
+    """«دوباره یادآوری کن» — the popup comes back after the given hours."""
+    hours = max(0.5, min(float(payload.hours or 2.0), 48.0))
+    return _write(db, lambda fid: followup_svc.snooze(db, fid, hours=hours), followup_id)
 
 
 @router.post("/followups/{followup_id}/resolve")

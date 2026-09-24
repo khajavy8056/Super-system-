@@ -87,20 +87,80 @@ def cancel(db: Session, followup_id: int, *, reason: str = "") -> dict:
 
 
 def notify_due(db: Session, *, now: datetime | None = None) -> int:
-    """Worker hook: one notification per follow-up, never repeated."""
+    """Worker hook: the reminder loop the owner described (v4.4.0).
+
+    1. A follow-up reaches its due time → one in-app notification (the Android
+       app polls /brain/reminders/due and shows the popup with
+       «انجام شد / دوباره یادآوری»).
+    2. The notification goes unanswered (no ack, no snooze) for
+       brain.reminder_escalate_hours (default 3) → an SMS goes to the manager's
+       phone (brain.manager_phone), and again every escalate-interval until the
+       follow-up is acknowledged — «اگه جواب نداد بازم پیامک کنه».
+    Never raises; returns the number of notifications/SMSes sent.
+    """
+    from ..sms import queue_sms
     now = now or datetime.utcnow()
     sent = 0
+    escalate_hours = 3
+    manager_phone = None
+    try:
+        from ...models import SystemSetting
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == "brain.reminder_escalate_hours")).scalar_one_or_none()
+        if row and str(row.value or "").strip().isdigit():
+            escalate_hours = max(1, int(row.value))
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == "brain.manager_phone")).scalar_one_or_none()
+        manager_phone = (str(row.value or "").strip() if row else "") or None
+    except Exception:
+        pass
     for row in due_items(db, now=now):
-        if row.notified_at is not None:
+        if row.notified_at is None:
+            notify(db, type="BRAIN_FOLLOWUP", title="پیگیری سررسید شد: " + row.title,
+                   body=(row.note or "")[:400], severity="WARN", reference_type="BrainFollowup",
+                   reference_id=row.id)
+            row.notified_at = now
+            sent += 1
             continue
-        notify(db, type="BRAIN_FOLLOWUP", title="پیگیری سررسید شد: " + row.title,
-               body=(row.note or "")[:400], severity="WARN", reference_type="BrainFollowup",
-               reference_id=row.id)
-        row.notified_at = now
-        sent += 1
+        # already notified and still open → SMS escalation to the manager
+        if not manager_phone:
+            continue
+        since = (now - row.notified_at).total_seconds() / 3600.0
+        next_at = getattr(row, "next_sms_at", None)
+        if next_at is None:
+            next_at = row.notified_at
+        if since >= escalate_hours and now >= next_at:
+            queue_sms(db, phone=manager_phone,
+                      text=f"[مغز فروشگاه] یادآوری بی‌پاسخ: {row.title}"
+                           + (f" — {row.note[:120]}" if row.note else ""),
+                      reference_type="BrainFollowup", reference_id=row.id)
+            row.next_sms_at = now + timedelta(hours=escalate_hours)   # again, until acked
+            sent += 1
     if sent:
         db.flush()
     return sent
+
+
+def snooze(db: Session, followup_id: int, *, hours: float = 2.0) -> dict:
+    """«دوباره یادآوری کن» — push the due time forward; the popup comes back."""
+    row = db.get(BrainFollowup, followup_id)
+    if row is None or row.status != "OPEN":
+        return {"ok": False, "error": "not_found"}
+    base = row.due_at if row.due_at and row.due_at > datetime.utcnow() else datetime.utcnow()
+    row.due_at = base + timedelta(hours=max(0.1, hours))
+    row.notified_at = None      # a fresh popup (and a fresh escalation clock)
+    row.next_sms_at = None
+    db.flush()
+    notify(db, type="BRAIN_FOLLOWUP", title="دوباره یادآوری می‌کنم: " + row.title,
+           body=(row.note or "")[:400], severity="INFO", reference_type="BrainFollowup",
+           reference_id=row.id)
+    return {"ok": True, "followup": to_dict(row)}
+
+
+def acknowledge(db: Session, followup_id: int, *, user_id: int | None = None) -> dict:
+    """«انجام شد» from the notification — the loop ends here."""
+    row = db.get(BrainFollowup, followup_id)
+    if row is None:
+        return {"ok": False, "error": "not_found"}
+    return resolve(db, followup_id, user_id=user_id)
 
 
 def auto_for_decision(db: Session, decision: BrainDecision, *, user_id: int | None = None) -> BrainFollowup | None:

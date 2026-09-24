@@ -285,7 +285,8 @@ def test_android_engine_has_no_dll_style_prerequisites():
 
 # ---------------------------------------------------------------- versions
 def test_versions_consistent():
+    """Version-agnostic since v4.4.0: backend and installer must simply agree."""
     from app import __version__
-    assert __version__ == "4.3.3"
+    assert __version__.count(".") == 2 and __version__.replace(".", "").isdigit()
     iss = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
-    assert '#define MyAppVersion "4.3.3"' in iss
+    assert f'#define MyAppVersion "{__version__}"' in iss

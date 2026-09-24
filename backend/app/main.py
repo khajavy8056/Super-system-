@@ -132,6 +132,48 @@ def _start_brain_autostart() -> None:
     threading.Thread(target=run, name="brain-autostart", daemon=True).start()
 
 
+def _start_brain_worker() -> None:
+    """v4.4.0 — the brain is ALWAYS analysing the store (owner's rule).
+
+    A quiet daemon thread runs one proactive pass every 15 minutes: expiring
+    stock, dying products, cash pressure, follow-up measurement windows… and
+    the reminder loop (due reminders → in-app notification; unanswered → SMS
+    to the manager, re-sent until acknowledged). Every tick is guarded — a
+    failure here must never touch the rest of the app.
+    Kill-switch: SUPERMARKET_BRAIN_WORKER=0.
+    """
+    import logging
+
+    if os.environ.get("SUPERMARKET_BRAIN_WORKER", "1") in ("0", "false", "off"):
+        return
+
+    log = logging.getLogger("supermarket.brain.worker")
+    stop = threading.Event()
+
+    def tick() -> None:
+        from .database import SessionLocal
+        from .services.business_brain import proactive as proactive_svc
+
+        db = SessionLocal()
+        try:
+            out = proactive_svc.evaluate(db, force=False)
+            log.info("brain pass: %s alert(s), %s skipped, %s notified",
+                     len(out.get("alerts", [])), len(out.get("skipped", [])),
+                     out.get("followups_notified", 0))
+        except Exception:                            # noqa: BLE001 — never propagate
+            log.warning("brain pass failed (will retry next tick)", exc_info=True)
+        finally:
+            db.close()
+
+    def loop() -> None:
+        stop.wait(60)                                # let the app finish booting first
+        while not stop.is_set():
+            tick()
+            stop.wait(15 * 60)                       # every 15 minutes, all day
+
+    threading.Thread(target=loop, name="brain-worker", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .database import SessionLocal
@@ -164,6 +206,7 @@ async def lifespan(app: FastAPI):
     if os.environ.get("SUPERMARKET_INSIGHTS_WORKER", "1") not in ("0", "false", "off"):
         insights_svc.start_worker(SessionLocal)  # v3.0: store intelligence (local analytics + A/B measurement)
     _start_brain_autostart()                     # v4.2: the local brain wakes up on first launch
+    _start_brain_worker()                       # v4.4.0: the brain never sleeps (analyze + reminders)
     yield
     insights_svc.stop_worker()
     relay_svc.stop_worker()
