@@ -27,6 +27,7 @@
         android:theme="@style/Theme.Supermarket"
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true"
+        android:extractNativeLibs="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- v2.0: fully native UI (no WebView). -->

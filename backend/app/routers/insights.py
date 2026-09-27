@@ -84,6 +84,13 @@ def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permissi
     return {"ok": True, "calibration": forecast.learn(db)}
 
 
+@router.get("/data-quality")
+def data_quality(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v3.8 — the Data Quality report the intelligence engine gates on."""
+    from ..services import data_quality as dq
+    return dq.run_all(db)
+
+
 @router.get("/customers/patterns")
 def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     """v3.2 — per-customer purchase rhythm: who is due in the next `days` days, their usual weekday,
@@ -213,6 +220,11 @@ def nudges(body: NudgeIn, db: Session = Depends(get_db), _: User = Depends(get_c
         cart = set(body.product_ids)
         for r in json.loads(manual.value or "[]"):
             if r["if"] in cart and r["then"] not in cart and all(o["product_id"] != r["then"] for o in out):
+                # v4.7.0: manual rules obey the same honesty check — never
+                # out-of-stock, never past expiry (owner's round-15 rule).
+                alive = svc.sellable_now(db, r["then"])
+                if alive is None:
+                    continue
                 out.append({"product_id": r["then"], "name": r["then_name"], "because": r["if_name"], "confidence": r["confidence"]})
     return out[:2]
 

@@ -1,4 +1,4 @@
-; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
+﻿; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
 ; Prerequisite: build the app first with build.ps1 (creates dist\SupermarketSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "3.6.6"
+  #define MyAppVersion "4.7.0"
 #endif
 #define MyAppExeName "SupermarketSystem.exe"
 #define MyAppPublisher "Supermarket System"
@@ -80,7 +80,6 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"

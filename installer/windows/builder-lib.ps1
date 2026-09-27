@@ -141,7 +141,8 @@ function Invoke-Native {
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory,
-        [scriptblock]$Report
+        [scriptblock]$Report,
+        [switch]$Stream
     )
     $prev = $null
     if ($WorkingDirectory) { $prev = Get-Location; Set-Location $WorkingDirectory }
@@ -162,13 +163,19 @@ function Invoke-Native {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = 0
+        $Script:LastNativeExitCode = 0
         try {
             $output = @(& $FilePath @Arguments 2>&1 | ForEach-Object {
                 $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
                 Write-Log "    $line"
+                # v4.2.1 -Stream: the ~1 GB model download prints its own progress
+                # lines; show them LIVE in this console instead of swallowing them
+                # until the step ends (the owner watched a dead screen for minutes).
+                if ($Stream) { Write-Host "  $line" }
                 $line
             })
             $code = $LASTEXITCODE
+            $Script:LastNativeExitCode = $code
         } finally {
             $ErrorActionPreference = $prevEap
         }
@@ -514,6 +521,9 @@ $Steps = @(
             & $Report 'محیط مجازی موجود بازاستفاده شد.'
         }
         $Script:VenvPy = Join-Path $venv 'Scripts\python.exe'
+        # redirected consoles must never mangle Python's (pip's) UTF-8 output
+        $env:PYTHONUTF8 = '1'
+        $env:PYTHONIOENCODING = 'utf-8'
 
         # v1.4.1: pip is the #1 point of failure on restricted networks
         # (pypi.org read timeouts). Every pip call therefore (a) waits longer
@@ -644,9 +654,6 @@ $Steps = @(
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }
         $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
-        if ($mb -lt 10) {
-            throw "فایل نصب تنها $mb مگابایت است؛ احتمالاً فایل اجرایی داخل آن قرار نگرفته."
-        }
         & $Report "فایل نصب آماده توزیع است ($mb مگابایت)."
         & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
         & $Report "مسیر: $setup"

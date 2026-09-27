@@ -266,12 +266,29 @@ def ask_advisor(db: Session, *, user=None) -> dict:
         if steps:
             body += "\n\nگام‌ها:\n" + "\n".join(f"{k+1}. {st}" for k, st in enumerate(steps))
         key = f"{now.date().isoformat()}:{i}"
+        # v3.8 — the LLM is NEVER a source of money figures. Whatever number the
+        # model puts in expected_gain_toman_month is recorded as an unverified
+        # CLAIM in the evidence (transparency) and dropped from expected_gain: the
+        # card's economics stay 0 until the deterministic engine measures them.
+        try:
+            llm_claim = int(float(sg.get("expected_gain_toman_month", 0) or 0))
+        except (TypeError, ValueError):
+            llm_claim = 0
         row = Insight(kind="AI_ADVISOR", dedupe_key=key, title=title, body=body[:2000], priority=max(1, min(4, int(sg.get("priority", 3) or 3))),
-                      evidence=json.dumps({"model": cfg["model"], "steps": steps, "summary": data.get("summary", ""), "report_digest": {k: report["store"][k] for k in ("sales_last30", "sales_prev30", "margin_pct")}}, ensure_ascii=False),
-                      actions=json.dumps(actions, ensure_ascii=False), expected_gain=Decimal(str(int(float(sg.get("expected_gain_toman_month", 0) or 0)))),
+                      evidence=json.dumps({"model": cfg["model"], "steps": steps, "summary": data.get("summary", ""), "report_digest": {k: report["store"][k] for k in ("sales_last30", "sales_prev30", "margin_pct")},
+                                           "llm_claimed_gain_toman_month": llm_claim,
+                                           "llm_economic_numbers": "dropped — the model explains and hypothesizes; it never prices"}, ensure_ascii=False),
+                      actions=json.dumps(actions, ensure_ascii=False), expected_gain=Decimal(0),
                       metric=json.dumps({"metric": "avg_basket_size", "window_days": 28}), status="NEW", last_seen_at=now)
         db.add(row); db.flush(); ids.append(row.id); created += 1
     _set_setting(db, "ai.last_advice_at", now.isoformat())
+    dropped = sum(1 for sg in sugg[:6]
+                  if (lambda v: isinstance(v, (int, float)) and v != 0)(sg.get("expected_gain_toman_month") or 0))
+    if dropped:
+        from .audit import write_audit
+        write_audit(db, action="AI_LLM_NUMBERS_DROPPED", entity_type="Insight", entity_id=0,
+                    after={"model": cfg["model"], "claims_dropped": dropped,
+                           "reason": "LLM economic numbers are never persisted"})
     db.commit()
     return {"ok": True, "created": created, "ids": ids, "summary": data.get("summary", ""), "model": cfg["model"], "report": report}
 

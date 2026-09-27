@@ -81,6 +81,16 @@ jobs:
           }
           Write-Host "frozen executable booted and served the panel"
 
+      - name: Fetch + verify the local AI model (embedded in the installer)
+        shell: pwsh
+        run: |
+          # The owner's requirement: the produced Setup.exe carries the verified
+          # local model inside it, so the shop PC works offline on first launch.
+          # A checksum failure here fails the release - never bundle unverified.
+          # --downloader builtin: no IDM on a CI runner; the built-in download
+          # manager does progress/resume/fallback sources on its own.
+          python scripts/model/prepare_windows_installer.py --engine --downloader builtin
+
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |

@@ -53,6 +53,17 @@ find "$W/classes" -name '*.class' > "$W/classes.txt"
 echo "== 5/6 package + align"
 cp "$W/base.apk" "$W/unsigned.apk"
 ( cd "$W/dex" && zip -q "$W/unsigned.apk" classes.dex )
+# v4.1 — the on-device inference engine (llama.cpp, static aarch64 build of the
+# same b6283 tag the Windows installer bundles). It ships as lib/<abi>/libllamaserver.so
+# so Android extracts it next to the app and it can be executed from there.
+for ABI_DIR in "$APP"/jniLibs/*/; do
+  [ -d "$ABI_DIR" ] || continue
+  ABI=$(basename "$ABI_DIR")
+  mkdir -p "$W/native/lib/$ABI"
+  cp "$ABI_DIR"*.so "$W/native/lib/$ABI/"
+  ( cd "$W/native" && zip -q "$W/unsigned.apk" "lib/$ABI/"* )
+  echo "   engine: packed lib/$ABI ($(du -ch "$W/native/lib/$ABI"/*.so | tail -1 | cut -f1))"
+done
 if [ -x "$TOOLS/zipalign" ]; then "$TOOLS/zipalign" -f -p 4 "$W/unsigned.apk" "$W/aligned.apk"; else cp "$W/unsigned.apk" "$W/aligned.apk"; fi
 
 echo "== 6/6 sign (apksigner v2+v3)"
@@ -67,4 +78,14 @@ APK="$OUT/SupermarketMobile-$VER.apk"
 "$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --ks-key-alias "$KS_ALIAS" --out "$APK" "$W/aligned.apk" 2>/dev/null
 "$JAVA" -jar "$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | head -3
 ( cd "$OUT" && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256" )
-echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+
+echo "== install-preflight (v4.1.1)"
+# what PackageManager actually checks (arsc alignment/storage, ABIs, zip CRC) —
+# apksigner/aapt2 alone missed the class of bugs that broke the owner's install
+PY="${PY:-python3}"
+if "$PY" "$ROOT/scripts/android/verify-apk.py" "$APK"; then
+  echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+else
+  echo "the APK fails install-preflight — refusing to call it done" >&2
+  exit 1
+fi

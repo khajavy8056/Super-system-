@@ -260,14 +260,16 @@ def _resolve_cart_line(db: Session, item: CartItem) -> CartItem:
             f"Only {batch.current_qty} available from batch {batch.batch_number}{hint}",
         )
 
-    item.unit_buy_price = item.unit_buy_price if item.unit_buy_price is not None else batch.buy_price
-    item.unit_consumer_price = (
-        item.unit_consumer_price if item.unit_consumer_price is not None else batch.consumer_price
-    )
-    if item.unit_sell_price is None:
-        item.unit_sell_price = batch.sell_price
-        if item.unit_sell_price is None or item.unit_sell_price == 0:
-            item.unit_sell_price = _default_sell_price(db, product)  # ADR-001 fallback
+    # v3.7 — prices come from the BATCH, never from the caller (§4/§33: a till
+    # must not be able to rewrite its own costs/profits). The CartItem price
+    # fields are *resolved values* (filled here), not inputs: any caller-set
+    # value is overwritten. The API layer never accepted prices anyway
+    # (CartLineIn has no price fields); this closes the service layer too.
+    item.unit_buy_price = batch.buy_price
+    item.unit_consumer_price = batch.consumer_price
+    item.unit_sell_price = batch.sell_price
+    if item.unit_sell_price is None or item.unit_sell_price == 0:
+        item.unit_sell_price = _default_sell_price(db, product)  # ADR-001 fallback
 
     if item.unit_sell_price is None:
         raise PosError("PRICE_NOT_AVAILABLE", f"No sell price for {product.name}")
@@ -317,6 +319,35 @@ def validate_cart(db: Session, items: list[CartItem]) -> list[CartItem]:
             merged[key] = it
 
     return [_resolve_cart_line(db, line) for line in merged.values()]
+
+
+def _enforce_manual_discount_cap(db: Session, *, manual_discount: Decimal, gross: Decimal) -> None:
+    """Reject manual (line + invoice) discounts above ``pos.max_manual_discount_pct``.
+
+    The setting is written by the manager UI and by the intelligence engine
+    (DISCOUNT_DEPENDENCY analyzers); the default (0/empty) means "no cap" so
+    existing shops keep working until they configure a policy. A corrupt value
+    fails open with a loud log — a bad setting must never block the till.
+    """
+    import logging
+
+    if gross <= 0 or manual_discount <= 0:
+        return
+    raw = (get_setting(db, "pos.max_manual_discount_pct", "0") or "0").strip()
+    try:
+        cap_pct = Decimal(raw)
+    except Exception:  # noqa: BLE001 — corrupt setting: loud log, no cap
+        logging.getLogger("supermarket.pos").error(
+            "pos.max_manual_discount_pct is not a number (%r); ignoring the cap", raw)
+        return
+    if cap_pct <= 0:
+        return
+    allowed = (gross * cap_pct / 100).quantize(CENT, ROUND_HALF_UP)
+    if manual_discount > allowed:
+        raise PosError(
+            "DISCOUNT_OVER_POLICY",
+            f"تخفیف دستی {manual_discount:,.0f} از سقف مجاز {cap_pct:g}٪ ({allowed:,.0f}) بیشتر است؛ "
+            "نیاز به مجوز مدیر دارد.")
 
 
 # --- Atomic invoice numbering (BUG-004) --------------------------------------
@@ -417,6 +448,9 @@ def checkout(
     if inv_disc > gross - discount:
         raise PosError("INVALID_DISCOUNT", "Invoice discount exceeds cart amount")
     discount += inv_disc
+    # v3.7 — manual-discount policy cap (DISCOUNT_OVER_POLICY). Coupons are
+    # campaign policy, not manual till discounts, so they are excluded.
+    _enforce_manual_discount_cap(db, manual_discount=discount, gross=gross)
 
     # Coupon is evaluated against the post-line-discount amount, then consumed
     # inside this same transaction (§37–38) so a failed sale never burns it.

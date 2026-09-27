@@ -10,11 +10,17 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, ProductBatch, Stocktake, StocktakeItem, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import inventory as inv
 from ..services.inventory import InventoryError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — buy costs leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class AdjustIn(BaseModel):
@@ -44,7 +50,7 @@ class CountIn(BaseModel):
 
 
 @router.get("/stock")
-def stock_summary(db: Session = Depends(get_db), _: User = Depends(require_permission("inventory.view"))):
+def stock_summary(db: Session = Depends(get_db), user: User = Depends(require_permission("inventory.view"))):
     products = db.execute(select(Product).where(Product.deleted_at.is_(None)).order_by(Product.name)).scalars().all()
     batches = db.execute(select(ProductBatch).order_by(ProductBatch.received_at)).scalars().all()
     by_product: dict[int, list] = {}
@@ -65,7 +71,7 @@ def stock_summary(db: Session = Depends(get_db), _: User = Depends(require_permi
                          "expiry_date": str(b.expiry_date) if b.expiry_date else None}
                         for b in rows],
         })
-    return out
+    return _maybe_redact(user, out)
 
 
 @router.post("/adjust")

@@ -96,7 +96,9 @@ const faDT = (iso, withTime = true) => {
   try { return new Intl.DateTimeFormat("fa-IR-u-ca-persian", o).format(d); } catch (_) { return d.toLocaleString("fa-IR"); }
 };
 window.faDT = faDT;
-const money = (n) => fmtNum(Math.round(Number(n || 0))) + " " + (state.currency.label || "");
+/* v3.7 (§34): the server redacts cost figures the user may not see as null —
+   render those as "—", never as 0 (a zero cost would be a lie). */
+const money = (n) => (n === null || n === undefined) ? "—" : fmtNum(Math.round(Number(n))) + " " + (state.currency.label || "");
 const qtyFmt = (n) => fmtNum(n);
 const unitById = (id) => state.units.find((u) => u.id === id) || null;
 
@@ -831,8 +833,8 @@ window.showReportsM = async () => {
       <div class="kpi-grid">
         <div class="kpi"><span class="k">فروش امروز</span><b>${money(d.sales.today)}</b></div>
         <div class="kpi"><span class="k">فروش ماه</span><b>${money(d.sales.month)}</b></div>
-        <div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
-        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>
+        ${d.profit ? `<div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
+        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>` : ""}
         <div class="kpi"><span class="k">ارزش موجودی</span><b>${money(d.inventory.value)}</b></div>
         <div class="kpi"><span class="k">میانگین فاکتور</span><b>${money(d.sales.avg_invoice_today)}</b></div>
       </div>

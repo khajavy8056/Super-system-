@@ -58,3 +58,16 @@ demo/demo_gen.log
 # Persistent demo simulation workspaces / generated stress backups (not release assets).
 /stress_store*.db*
 /tools/*.work/
+
+# v4.0 — Business Brain models are FETCHED, never committed (see
+# scripts/model/fetch_model.py). A stray .gguf in the tree must never be staged.
+*.gguf
+*.gguf.part
+**/brain/models/
+
+# v4.0 — Windows installer model payload (prepared at build time by
+# scripts/model/prepare_windows_installer.py, NEVER committed: ~1 GB + the
+# generated Inno fragment that points at it)
+installer/windows/model/
+installer/windows/runtime/
+installer/windows/model_payload.iss

@@ -57,30 +57,133 @@ def get_db():
         db.close()
 
 
-def init_db() -> None:
-    """Create tables + first-run bootstrap (idempotent).
+class MigrationError(RuntimeError):
+    """Raised when the schema cannot be brought to the Alembic head.
 
-    Alembic is the single migration path going forward (BUG-014): databases
-    created here are stamped at the current head, so ``alembic upgrade head``
-    never conflicts with ``create_all``; databases stamped at an older revision
-    are upgraded programmatically on startup.
+    v3.7 — the application must NOT start on a schema it has not verified.
+    There is no silent ``except Exception: warn; continue`` anywhere on this
+    path: a broken migration fails the boot loudly instead of crashing later
+    with ``no such column`` (or worse, silently writing into a wrong schema).
+    """
+
+
+def init_db() -> None:
+    """Bring the schema to the Alembic head + first-run bootstrap (idempotent).
+
+    v3.7 — Alembic is the SOLE schema manager. ``create_all`` is gone from the
+    runtime path (it survives only in tests, where a throwaway database is
+    built from the models directly): fresh databases are created by
+    ``alembic upgrade head``, stamped databases are upgraded, and legacy
+    databases without ``alembic_version`` (pre-1.0 shop files) are stamped at
+    head and bridged by the additive reconciler. Any failure raises
+    :class:`MigrationError` and the application refuses to start.
     """
     from . import models  # noqa: F401  (register mappers)
     from .bootstrap import bootstrap
 
-    Base.metadata.create_all(bind=engine)
-    _sync_alembic()
-    # Self-healing schema reconciliation (v1.2.5). ``create_all`` only creates
-    # MISSING TABLES; it never adds columns to tables that already exist. A
-    # shop database created by an older release (or one whose alembic_version
-    # table is absent, e.g. v0.x) therefore kept an old ``units`` table and the
-    # first SELECT crashed the installed app with "no such column:
-    # units.allow_decimal". Any column present in the models but missing in
-    # the database is now added in place (additive only, data preserved).
-    _reconcile_schema()
+    upgrade_schema()
     _ensure_indexes()
     with SessionLocal() as db:
         bootstrap(db)
+
+
+def upgrade_schema() -> str:
+    """Bring the live database to the Alembic head. Returns the head revision.
+
+    Raises :class:`MigrationError` on ANY failure — missing migration tree,
+    failed upgrade, or a legacy database whose bridge reconciliation could not
+    add a required column. Callers (application boot, backup restore) must let
+    this propagate: starting on an unverified schema is worse than not
+    starting at all.
+    """
+    import logging
+
+    from alembic import command
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import inspect
+
+    log = logging.getLogger("supermarket.db")
+    cfg = _alembic_config()
+    head = ScriptDirectory.from_config(cfg).get_heads()
+    head_rev = head[0] if head else "unknown"
+
+    # Drop pooled handles: a connection holding a read snapshot does not see
+    # DDL another connection just committed (v3.5 lesson, kept).
+    try:
+        engine.dispose()
+    except Exception:  # noqa: BLE001 — a pool that cannot be disposed is not fatal
+        log.debug("engine.dispose() before migration failed", exc_info=True)
+
+    has_version = inspect(engine).has_table("alembic_version")
+    has_app_tables = any(
+        t != "alembic_version" for t in inspect(engine).get_table_names()
+    )
+    try:
+        if not has_version and not has_app_tables:
+            log.warning("fresh database: creating schema with alembic upgrade head")
+            command.upgrade(cfg, "head")
+        elif not has_version:
+            # Legacy shop file (pre-1.0): no version stamp, real data inside.
+            # Stamp at head, then bridge any gap additively (data preserved).
+            # A failure here raises — silently booting on a half schema is
+            # exactly what bricked shops with "no such column" in the past.
+            log.warning("legacy database without alembic stamp: stamping at head + bridging")
+            command.stamp(cfg, "head")
+            _reconcile_schema(strict=True)
+        else:
+            command.upgrade(cfg, "head")
+    except MigrationError:
+        raise
+    except Exception as exc:
+        raise MigrationError(f"schema migration to {head_rev} failed: {exc}") from exc
+
+    # Verify-only pass: with a complete migration chain the reconciler must
+    # find NOTHING to do. If it adds a column, the chain is incomplete — the
+    # shop is healed, but the drift is recorded loudly (log + audit trail) so
+    # it can never pass silently again.
+    added = _reconcile_schema(strict=False)
+    if added:
+        log.error("SCHEMA DRIFT: migrations incomplete, reconciler added %s",
+                  ", ".join(added))
+        try:
+            from .services.audit import write_audit
+
+            with SessionLocal() as db:
+                write_audit(db, action="SCHEMA_DRIFT", entity_type="Database",
+                            after={"added_columns": added, "head": head_rev})
+                db.commit()
+        except Exception:  # noqa: BLE001 — the audit trail must not break the boot
+            log.exception("could not write SCHEMA_DRIFT audit entry")
+    return head_rev
+
+
+def _alembic_config():
+    """Locate the migration tree (source or frozen layout) and bind the live URL.
+
+    Raises :class:`MigrationError` when the tree cannot be found — without it
+    no schema operation is possible and booting would be dishonest.
+    """
+    import sys
+
+    from alembic.config import Config as AlembicConfig
+
+    roots = [Path(__file__).resolve().parent.parent]
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        roots = [exe_dir, exe_dir / "lib", Path(getattr(sys, "_MEIPASS", exe_dir))] + roots
+    for root in roots:
+        if (root / "alembic" / "env.py").exists():
+            backend_dir = root
+            break
+    else:
+        raise MigrationError(
+            f"alembic migration tree not found (looked in: {[str(r) for r in roots]}); "
+            "refusing to start on an unverifiable schema")
+    ini = backend_dir / "alembic.ini"
+    cfg = AlembicConfig(str(ini) if ini.exists() else None)
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    return cfg
 
 
 # v3.3 — indexes for stores with years of history (tens of thousands of invoices).
@@ -133,9 +236,16 @@ def _ensure_indexes() -> list[str]:
     return made
 
 
-def _reconcile_schema() -> list[str]:
+def _reconcile_schema(*, strict: bool = False) -> list[str]:
     """Add every model column missing from the live database. Returns the
-    list of ``table.column`` names added. Never destructive, never fatal."""
+    list of ``table.column`` names added. Never destructive.
+
+    v3.7 — two modes. As the *legacy bridge* (``strict=True``) a column that
+    cannot be added raises :class:`MigrationError`: the database is missing a
+    column the code requires and booting anyway would crash later. As the
+    *verify pass* (``strict=False``) failures are only logged, because the
+    Alembic upgrade that just ran is the authoritative step.
+    """
     import logging
 
     from sqlalchemy import inspect, text
@@ -189,8 +299,15 @@ def _reconcile_schema() -> list[str]:
             log.warning("schema reconciled: added missing columns %s", ", ".join(added))
         if failed:
             log.error("schema reconciliation could not add: %s", "; ".join(failed))
+            if strict:
+                raise MigrationError(
+                    "schema bridge could not add required columns: " + "; ".join(failed))
+    except MigrationError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         log.error("schema reconciliation failed: %s", exc)
+        if strict:
+            raise MigrationError(f"schema bridge failed: {exc}") from exc
     return added
 
 
@@ -221,39 +338,12 @@ def _add_column_ddl(conn, table: str, col) -> str:
     return f"ALTER TABLE {table} ADD COLUMN {spec}"
 
 
-def _sync_alembic() -> None:
-    """Stamp fresh databases and bring stamped ones up to head. Never fatal."""
-    import logging
+def _sync_alembic() -> None:  # pragma: no cover
+    """Removed in v3.7 (replaced by :func:`upgrade_schema`).
 
-    from alembic import command
-    from alembic.config import Config as AlembicConfig
-    from sqlalchemy import inspect
-
-    log = logging.getLogger("supermarket.db")
-    try:
-        # In a frozen build the source tree is gone; the migrations are
-        # bundled next to the executable instead. Check both layouts so an
-        # installed shop can still upgrade its schema on a later release.
-        import sys
-
-        roots = [Path(__file__).resolve().parent.parent]
-        if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).resolve().parent
-            roots = [exe_dir, exe_dir / "lib", Path(getattr(sys, "_MEIPASS", exe_dir))] + roots
-        for root in roots:
-            if (root / "alembic" / "env.py").exists():
-                backend_dir = root
-                break
-        else:
-            raise RuntimeError(
-                f"alembic tree not found (looked in: {[str(r) for r in roots]})")
-        ini = backend_dir / "alembic.ini"
-        cfg = AlembicConfig(str(ini) if ini.exists() else None)
-        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-        if not inspect(engine).has_table("alembic_version"):
-            command.stamp(cfg, "head")
-        else:
-            command.upgrade(cfg, "head")
-    except Exception as exc:  # e.g. frozen executable without the alembic tree
-        log.warning("Alembic sync skipped: %s", exc)
+    Kept as a loud, failing shim for one release so any out-of-tree caller
+    (custom shop scripts importing ``app.database``) gets an explicit error
+    instead of silently running the old stamp-and-warn behaviour.
+    """
+    raise MigrationError(
+        "_sync_alembic was removed in v3.7; call upgrade_schema() instead")

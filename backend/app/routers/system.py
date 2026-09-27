@@ -172,9 +172,13 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
         Path(tmp_path).unlink(missing_ok=True)
 
     # v3.5 — the restored file was written by an older release, so it can be missing
-    # model columns and (always) the v3.3 performance indexes. Self-heal in place,
-    # otherwise the shop silently drops back to full table scans after a restore.
-    from ..database import heal_schema
+    # model columns and (always) the v3.3 performance indexes. v3.7: migrate it to
+    # the Alembic head FIRST (its stamp says an older revision), then self-heal
+    # in place, otherwise the shop silently drops back to full table scans after
+    # a restore. A failed upgrade aborts the restore loudly — the safety backup
+    # above holds the pre-restore state.
+    from ..database import heal_schema, upgrade_schema
+    upgrade_schema()
     heal = heal_schema()
 
     write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
