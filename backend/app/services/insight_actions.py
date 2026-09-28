@@ -85,7 +85,9 @@ def act_reorder_note(db, insight, p, user):
             lst.append({"product_id": pid, "name": names.get(pid, str(pid)), "qty": p.get("qty"), "added": _now().isoformat(), "insight_id": insight.id})
     _set_setting(db, "insights.reorder_list", json.dumps(lst, ensure_ascii=False))
     notify(db, type="INSIGHT_TASK", title="به لیست سفارش اضافه شد", body="، ".join(names.values()), severity="INFO", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
-    return {"reorder_list": len(lst)}
+    # v4.8.0 — شناسهٔ کالاهایی که این اقدام در فهرست گذاشت، تا بازبینی بعدی روی
+    # «همان کالاها» بررسی کند و با هر خط جدیدِ بینش‌های دیگر، دروغ هشدار ندهد.
+    return {"reorder_list": len(lst), "added_ids": [int(x) for x in ids]}
 
 
 def act_set_min_stock(db, insight, p, user):
@@ -611,8 +613,21 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         n = db.execute(select(func.count(Notification.id)).where(Notification.reference_type == _ref(insight)[0], Notification.reference_id == insight.id)).scalar_one()
         return n > 0, f"{n} notification(s) for this insight"
     if kind == "reorder_list":
+        # v4.8.0 — «لیست سفارش» یک فهرست مشترک فروشگاه است: هر بینش خط‌های خودش را
+        # به آن اضافه می‌کند. مقایسهٔ *تعداد* کل یعنی دومین اقدام همیشه «از بین رفته»
+        # گزارش می‌شد. درست: همان کالاهایی که این اقدام اضافه کرده هنوز در فهرست باشند.
         lst = json.loads(_setting(db, "insights.reorder_list", "[]"))
-        return len(lst) == result.get("reorder_list"), f"reorder list holds {len(lst)} line(s)"
+        have = {x.get("product_id") for x in lst}
+        want_ids = [int(x) for x in (result.get("added_ids") or [])]
+        if want_ids:
+            missing = [i for i in want_ids if i not in have]
+            ok = not missing
+            detail = (f"همهٔ {len(want_ids)} کالای این اقدام در لیست سفارش هستند (کل لیست {len(lst)} خط)"
+                      if ok else f"{len(missing)} کالا از لیست سفارش افتاده (کل لیست {len(lst)} خط)")
+        else:   # ردیف‌های قدیمی (پیش از v4.8.0) شناسه ذخیره نکرده‌اند
+            ok = len(lst) >= int(result.get("reorder_list", 0))
+            detail = f"reorder list holds {len(lst)} line(s)"
+        return ok, detail
     if kind == "min_stock":
         pr = db.get(Product, params["product_id"])
         ok = pr is not None and pr.min_stock_alert == result.get("min_stock_alert")
@@ -636,10 +651,27 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         b = db.get(ProductBatch, params["batch_id"])
         if b is None:
             return False, "batch gone after plan was stored"
-        if float(b.sell_price) >= float(plan["base_price"]):
-            return False, f"price did not drop (still {float(b.sell_price):.0f}, base {float(plan['base_price']):.0f})"
-        return True, (f"step {plan['applied'][-1]} applied — price "
-                      f"{float(plan['base_price']):.0f} → {float(b.sell_price):.0f}")
+        base = float(plan["base_price"])
+        if float(b.sell_price) < base:
+            return True, (f"step {plan['applied'][-1]} applied — price "
+                          f"{base:.0f} → {float(b.sell_price):.0f}")
+        # v4.8.0 — «هنوز ارزان است» تنها شاهد نیست. در یک سالِ واقعی، بعد از تمام‌شدن
+        # موجودیِ بچِ تخفیف‌خورده، قیمت به نرخ لیست برمی‌گردد (یا قیمت‌گذاری جدید
+        # جای آن را می‌گیرد). آن‌وقت قیمتِ *فعلی* بالاتر از پایه است، ولی تخفیف سرِ
+        # جای خودش انجام شده. شاهد درست، خودِ ردیفِ تاریخچهٔ قیمت است (همان چیزی که
+        # صندوق می‌خواند): یک نسخهٔ SELL با منبعِ «پلهٔ تخفیف» و قیمتی پایین‌تر از پایه.
+        from ..models import PriceVersion
+        rows = db.execute(select(PriceVersion).where(
+            PriceVersion.product_id == b.product_id,
+            PriceVersion.price_type == "SELL",
+            PriceVersion.note.like("markdown step%"),
+            PriceVersion.price < Decimal(str(base)))).scalars().all()
+        if rows:
+            step = rows[-1]
+            return True, (f"markdown applied on its own date — price {base:.0f} → "
+                          f"{float(step.price):.0f} (list price since restored to "
+                          f"{float(b.sell_price):.0f}; batch {b.status})")
+        return False, f"price did not drop (still {float(b.sell_price):.0f}, base {base:.0f})"
     if kind == "waste":
         b = db.get(ProductBatch, params["batch_id"])
         if b is None:
@@ -769,6 +801,19 @@ class _ExecOwner:
     def __init__(self, id: int, reference_type: str = "Insight", kind: str = "") -> None:
         self.id, self.reference_type, self.kind = id, reference_type, kind
 
+    @classmethod
+    def for_insight(cls, row) -> "_ExecOwner":
+        """v4.8.0 — سازندهٔ درست برای یک ردیف ``Insight``.
+
+        باگ: در گزارش‌ها با ``_ExecOwner(r.id, r.kind, ...)`` ساخته می‌شد و *نوع*
+        بینش (مثلاً ``CROSS_SELL``) جای ``reference_type`` می‌نشست؛ بعد بازبینی
+        دنبال اعلان‌ها/پیامک‌هایی با همان برچسب می‌گشت، چیزی پیدا نمی‌کرد و اقدام
+        سالمِ مدیر را «از بین رفته» گزارش می‌کرد — همان هشدار دروغینی که باعث
+        می‌شود آدم گزارش بررسی را باور نکند.
+        """
+        return cls(int(row.id), str(getattr(row, "reference_type", "Insight") or "Insight"),
+                   str(getattr(row, "kind", "") or ""))
+
 
 #: verify kinds whose effect may legitimately change later (a price can be
 #: re-priced by hand) — re-checking them would cry wolf, so health reports
@@ -814,9 +859,14 @@ def execution_report(db: Session, *, limit: int = 40) -> dict:
     نتیجهٔ بازبینی **الان**. این همان چیزی است که مدیر روی صفحه می‌بیند تا
     بداند تخفیف پله‌ای روی بچ نشسته یا نه.
     """
+    # v4.8.0 — آمار روی *همهٔ* پیشنهادهای پذیرفته‌شده گرفته می‌شود و `limit` فقط
+    # تعداد ردیف‌های برگشتی را می‌بُرد. قبلاً هر دو یکی بودند و در یک سالِ شبیه‌سازی
+    # گزارش می‌گفت «۸۰ اقدام بازبینی شد» ولی جمعِ وضعیت‌ها ۴۷ بود؛ مدیری که این دو
+    # عدد را کنار هم ببیند به گزارش شک می‌کند — و حق دارد.
     rows = db.execute(select(Insight).where(Insight.status.in_(["ACCEPTED", "MEASURED"]))
-                      .order_by(Insight.accepted_at.desc()).limit(limit)).scalars().all()
+                      .order_by(Insight.accepted_at.desc())).scalars().all()
     out, tally = [], {"OK": 0, "LOST": 0, "FAILED": 0, "UNVERIFIED": 0, "UNKNOWN": 0}
+    kept = 0
     for r in rows:
         try:
             ev = json.loads(r.evidence or "{}")
@@ -825,7 +875,7 @@ def execution_report(db: Session, *, limit: int = 40) -> dict:
         executions = ev.get("executions") or []
         if not executions:
             continue
-        owner = _ExecOwner(r.id, r.kind or "Insight", r.kind or "")
+        owner = _ExecOwner.for_insight(r)
         items = []
         for e in executions:
             state, detail = health_check(db, e, owner)
@@ -833,10 +883,13 @@ def execution_report(db: Session, *, limit: int = 40) -> dict:
             items.append({"type": e.get("type"), "at": e.get("at"), "status": e.get("status"),
                           "detail": e.get("verify") or e.get("error") or "",
                           "health": state, "health_detail": detail})
-        out.append({"insight_id": r.id, "kind": r.kind, "title": r.title, "status": r.status,
-                    "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None,
-                    "actions": items})
-    return {"generated_at": _now().isoformat(), "counts": tally, "rows": out}
+        if kept < limit:
+            out.append({"insight_id": r.id, "kind": r.kind, "title": r.title, "status": r.status,
+                        "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None,
+                        "actions": items})
+            kept += 1
+    return {"generated_at": _now().isoformat(), "counts": tally, "rows": out,
+            "insights_checked": len(rows), "actions_checked": sum(tally.values())}
 
 
 def health_scan(db: Session, *, notify_lost: bool = True) -> dict:
@@ -855,7 +908,7 @@ def health_scan(db: Session, *, notify_lost: bool = True) -> dict:
         executions = ev.get("executions") or []
         if not executions:
             continue
-        owner = _ExecOwner(r.id, r.kind or "Insight", r.kind or "")
+        owner = _ExecOwner.for_insight(r)
         flagged = list(ev.get("health_alerted") or [])
         dirty = False
         for i, e in enumerate(executions):

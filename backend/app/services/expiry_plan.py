@@ -148,12 +148,18 @@ def _schedule(today: _date, days_left: int, steps: list[int], sell: float) -> li
 
 def build_plan(*, today: _date, expiry: _date | None, qty: float, velocity: float,
                buy: float, sell: float, lead_days: int = DEFAULT_LEAD_DAYS,
-               safety: float = SAFETY_BUFFER, window: int = WINDOW_DAYS) -> dict | None:
+               safety: float = SAFETY_BUFFER, window: int = WINDOW_DAYS,
+               force_waste: bool = False) -> dict | None:
     """تصمیم کامل برای یک بچ — بدون دیتابیس (خالص و قابل تست).
 
     ``None`` یعنی «کاری لازم نیست»: یا تاریخ ندارد، یا خیلی دور است، یا موجودی
     به‌طور واضح پیش از انقضا فروش می‌رود. هر عدد دیگر یعنی «اکنون اقدام کن» —
     و دلیلش در همان دیکشنری است.
+
+    ``force_waste=True`` یعنی این بچ هرچقدر هم تاریخش دور باشد فروشی نیست (وضعیتش
+    در انبار «منقضی» ثبت شده) — پس تنها اقدام صادقانه ثبت ضایعات است. بدون این
+    پرچم، اسکن انقضای فروشگاه یا ثبت دستی وضعیت می‌توانست بچِ فاسد را از چشم
+    موتور پنهان کند و مدیر هیچ‌وقت پیشنهاد ضایعات را نمی‌دید.
     """
     if expiry is None or qty <= 0:
         return None
@@ -164,12 +170,13 @@ def build_plan(*, today: _date, expiry: _date | None, qty: float, velocity: floa
     base = {"days_left": days_left, "qty": round(float(qty), 3), "velocity_per_day": round(float(velocity), 4),
             "sell_by": expiry.isoformat(), "sell_by_jdate": jdate(expiry), "lead_days": lead_days}
 
-    # ---- کالای تاریخ‌گذشته: دیگر تخفیف معنا ندارد؛ فقط صداقت و ثبت ضایعات --------
-    if days_left < 0:
+    # ---- کالای تاریخ‌گذشته (یا بچِ غیرقابل‌فروش): فقط صداقت و ثبت ضایعات ----------
+    if days_left < 0 or force_waste:
         at_risk = float(qty) * float(buy)
         if at_risk < 50_000:
             return None
         base.update({"mode": "waste", "at_risk": round(at_risk), "surplus": round(float(qty), 3),
+                     "waste_reason": "expired" if days_left < 0 else "unsellable",
                      "will_sell": 0.0, "timeline": [
                          {"step": 1, "kind": "expired", "date": today.isoformat(), "jdate": jdate(today),
                           "label": "از قفسه برداشته شود و ضایعات ثبت گردد"}]})
@@ -207,15 +214,22 @@ def build_plan(*, today: _date, expiry: _date | None, qty: float, velocity: floa
     return base
 
 
-def plan_for_batch(ctx, batch, *, cfg: dict | None = None) -> dict | None:
-    """پلان یک ``ProductBatch`` واقعی روی داده‌های همین فروشگاه."""
+def plan_for_batch(ctx, batch, *, cfg: dict | None = None, force_waste: bool | None = None) -> dict | None:
+    """پلان یک ``ProductBatch`` واقعی روی داده‌های همین فروشگاه.
+
+    ``force_waste`` پیش‌فرض از وضعیت خود بچ می‌آید: بچی که انبار آن را «EXPIRED»
+    ثبت کرده، حتی اگر تاریخش در داده‌ها جلو باشد، فروشی نیست (صندوق هم آن را
+    نمی‌فروشد) — پس تخفیف روی آن بی‌معناست و فقط ضایعات می‌ماند.
+    """
     cfg = cfg or settings(ctx.db)
     from .insights import _f
 
+    if force_waste is None:
+        force_waste = str(getattr(batch, "status", "") or "").upper() == "EXPIRED"
     plan = build_plan(today=ctx.today, expiry=batch.expiry_date, qty=_f(batch.current_qty),
                       velocity=conservative_velocity(ctx, batch.product_id),
                       buy=_f(batch.buy_price), sell=_f(batch.sell_price),
-                      lead_days=cfg["lead_days"], safety=cfg["safety"])
+                      lead_days=cfg["lead_days"], safety=cfg["safety"], force_waste=bool(force_waste))
     if plan is not None:
         plan["batch_id"] = batch.id
         plan["product_id"] = batch.product_id

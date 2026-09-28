@@ -91,7 +91,17 @@ _CLOCK: ContextVar[datetime | None] = ContextVar("insight_clock", default=None)
 
 
 def set_clock(dt: datetime | None) -> None:
+    """ساعت «امروز» را برای شبیه‌سازی/تست جابه‌جا می‌کند (v4.8.0: یک منبع واحد).
+
+    قبلاً این ساعت فقط داخل خودِ هوش فروشگاه بود؛ نتیجه این بود که صندوق و انقضا
+    هنوز ساعت واقعی ماشین را می‌دیدند و یک سالِ شبیه‌سازی‌شده نمی‌توانست تایم‌لاین
+    تخفیف/انقضا را واقعاً تجربه کند. حالا ساعت در :mod:`timeservice` نگه داشته
+    می‌شود و همهٔ ماژول‌ها (``local_today``، ``now_utc``) همان را می‌بینند.
+    """
+    from . import timeservice
+
     _CLOCK.set(dt)
+    timeservice.set_simulation_clock(dt)
 
 
 def _now() -> datetime:
@@ -99,6 +109,8 @@ def _now() -> datetime:
 
 
 def _today() -> date:
+    from . import timeservice
+
     clock = _CLOCK.get()
     return (clock + timedelta(hours=3, minutes=30)).date() if clock else local_today()
 
@@ -236,8 +248,14 @@ def a_expiry_ladder(ctx: Ctx) -> list[Draft]:
 
     out: list[Draft] = []
     cfg = expiry_plan.settings(ctx.db)
+    # v4.8.0 — بچ‌هایی که انبارگردانی/اسکن انقضا وضعیتشان را «EXPIRED» کرده هم دیده
+    # می‌شوند: این‌ها فروشی نیستند و دقیقاً همان‌هایی هستند که باید پیشنهاد «ثبت
+    # ضایعات» بگیرند. قبلاً فیلتر فقط ACTIVE بود، پس به‌محض اینکه اسکن انقضا بچ را
+    # EXPIRED می‌کرد، بچِ فاسد از چشم موتور پنهان می‌شد و مدیر هیچ‌وقت پیشنهاد
+    # صادقانهٔ ضایعات را نمی‌دید (کالا در انبار می‌ماند و فقط صورت‌حساب الکی بود).
     rows = ctx.db.execute(
-        select(ProductBatch).where(ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0,
+        select(ProductBatch).where(ProductBatch.status.in_(["ACTIVE", "EXPIRED"]),
+                                   ProductBatch.current_qty > 0,
                                    ProductBatch.expiry_date.is_not(None))
     ).scalars().all()
     for b in rows:
@@ -255,11 +273,18 @@ def a_expiry_ladder(ctx: Ctx) -> list[Draft]:
 
         # ---- کالای تاریخ‌گذشته: فقط صداقت و ثبت ضایعات (نه تخفیف) ------------------
         if plan["mode"] == "waste":
+            # دو حالتِ «ضایعات»: تاریخ گذشته، یا بچی که وضعیتش در انبار غیرقابل‌فروش
+            # ثبت شده. متن هر دو صادقانه و بدون دور زدن واقعیت است.
+            if plan.get("waste_reason") == "unsellable":
+                why = (f"وضعیت این بچ در انبار «منقضی/غیرقابل‌فروش» ثبت شده و صندوق آن را نمی‌فروشد؛ "
+                       f"{_fa(qty)} عدد ({_money(plan['at_risk'])}) روی قفسه مانده است.")
+            else:
+                why = (f"تاریخ این بچ گذشته است ({_fa(abs(plan['days_left']))} روز پیش) و {_fa(qty)} عدد از آن "
+                       f"در انبار مانده — یعنی {_money(plan['at_risk'])} سرمایهٔ ازدست‌رفته.")
             out.append(Draft(
                 kind="EXPIRY_LADDER", dedupe_key=f"batch:{b.id}",
                 title=f"{name}: {_fa(qty)} عدد تاریخ‌گذشته در انبار است",
-                body=(f"تاریخ این بچ گذشته است ({_fa(abs(plan['days_left']))} روز پیش) و {_fa(qty)} عدد از آن "
-                      f"در انبار مانده — یعنی {_money(plan['at_risk'])} سرمایهٔ ازدست‌رفته. "
+                body=(f"{why} "
                       f"فروش این کالا درست نیست؛ «ثبت ضایعات» را بزنید تا موجودی و حساب‌ها با واقعیت قفسه یکی شود. "
                       f"دفعهٔ بعد این پیشنهاد چند هفته زودتر می‌آید تا به این نقطه نرسیم."),
                 priority=1,
