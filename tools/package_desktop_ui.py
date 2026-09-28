@@ -2,8 +2,10 @@
 from pathlib import Path
 import zipfile, hashlib
 ROOT = Path(__file__).resolve().parents[1]
-def build():
-    out = ROOT/'releases/windows/SupermarketDesktopUI-3.6.6.zip'
+#: نسخهٔ بستهٔ رابط کاربری ویندوز (مستقل از نسخهٔ بک‌اند؛ ۳٫۷٫۰ = بازآرایی ظاهر v4.8.0)
+UI_VERSION = "3.7.0"
+def build(version: str = UI_VERSION):
+    out = ROOT/f'releases/windows/SupermarketDesktopUI-{version}.zip'
     out.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
         for p in sorted((ROOT/'frontend').rglob('*')):

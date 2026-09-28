@@ -884,11 +884,23 @@ const unitIdByName = (name) => {
   return u ? u.id : null;
 };
 
+/* v4.8.0 — نشان انقضا برای هر بچ در صندوق: رنگ + متن فارسی («۳ روز» نه «3 روز»).
+ * قبلاً فقط تاریخ خام و عدد لاتین بود؛ صندوق‌دار باید یک نگاه بفهمد کدام بچ فوری است. */
+function batchExpiryChip(o) {
+  if (!o || !o.expiry_date) return "";
+  const d = o.days_left;
+  const when = `${Jalali.fromIso(o.expiry_date)}`;
+  if (d === null || d === undefined) return ` · انقضا: ${when}`;
+  const cls = d < 0 ? "expired" : d <= 7 ? "soon" : d <= 30 ? "near" : "";
+  const label = d < 0 ? "منقضی شد" : d === 0 ? "امروز آخرین روز" : `${fa(d)} روز`;
+  return ` · <span class="exp-chip ${cls}">⏰ ${label}</span> <span class="muted">(${when})</span>`;
+}
+
 function posBatchChooser(product, opts) {
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">موجودی: ${qty(o.current_qty)}${o.expiry_date ? " · انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+      <div class="b-meta">موجودی: ${qty(o.current_qty)}${batchExpiryChip(o)}</div>
     </div>`).join("");
   openModal(`<h3>${esc(product.name)} — انتخاب قیمت / بچ</h3>${rows}
     <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ بچ واقعی قفسه را شما انتخاب می‌کنید.</p>`);
@@ -922,7 +934,7 @@ async function posAddByBarcode(barcode) {
   const rows = opts.map((o) => `
     <div class="batch-option ${o.is_recommended ? "recommended" : ""}" data-batch="${o.batch_id}">
       <div class="b-title">${o.is_recommended ? "⭐ " : ""}${esc(o.batch_number)} — ${money(o.sell_price)}</div>
-      <div class="b-meta">موجودی: ${o.current_qty} ${o.expiry_date ? "· انقضا: " + Jalali.fromIso(o.expiry_date) + " (" + (o.days_left ?? "—") + " روز)" : ""}</div>
+      <div class="b-meta">موجودی: ${o.current_qty} ${batchExpiryChip(o)}</div>
     </div>`).join("");
   openModal(`<h3>${esc(p.name)} — انتخاب قیمت / Batch</h3>${rows}
     <p class="muted">پیشنهاد سیستم بر اساس سیاست موجودی است؛ Batch واقعی قفسه را شما انتخاب می‌کنید.</p>`);
@@ -1902,8 +1914,8 @@ async function renderStocktakeAlarms(targetSel = "#st-alarms") {
   if (!alarms.length) { host.innerHTML = ""; return; }
   host.innerHTML = alarms.map((a) => {
     const lvl = a.level === "overdue" ? "bad" : a.level === "today" ? "warn" : a.level === "soon" ? "soon" : "info";
-    const when = a.days_left === null ? "" : a.days_left < 0 ? `${Math.abs(a.days_left)} روز از موعد گذشته` : a.days_left === 0 ? "امروز" : `${a.days_left} روز دیگر`;
-    const prog = a.total ? ` · پیشرفت ${a.counted}/${a.total}` : "";
+    const when = a.days_left === null ? "" : a.days_left < 0 ? `${fa(Math.abs(a.days_left))} روز از موعد گذشته` : a.days_left === 0 ? "امروز" : `${fa(a.days_left)} روز دیگر`;
+    const prog = a.total ? ` · پیشرفت ${fa(a.counted)}/${fa(a.total)}` : "";
     return `<div class="alarm ${lvl}">
       <span class="alarm-ic">${a.level === "overdue" ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>' : '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M8 15h3"/></svg>'}</span>
       <div class="alarm-body"><b>انبارگردانی «${esc(a.name)}»</b> ${when ? "— " + when : ""}${prog}

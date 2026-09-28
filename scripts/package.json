@@ -5,7 +5,8 @@
   "scripts": {
     "smoke": "node uitest/smoke-views.js && node uitest/smoke-mobile.js && node uitest/smoke-v1_1.js && node uitest/smoke-v1_2.js",
     "shots": "node shoot_chromium.js shots.json",
-    "pdf": "node make_pdf_chromium.js"
+    "pdf": "node make_pdf_chromium.js",
+    "smoke-v48": "node uitest/smoke-v4_8.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^131.0.1",

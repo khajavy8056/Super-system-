@@ -100,9 +100,9 @@ public final class Ui {
     public static GradientDrawable surface(float radius) { return gradient(dark ? CARD2 : BG2, CARD, BORDER, radius); }
     /** premium card: dark surface with a gold hairline — hero sections, totals, the POS pay bar. */
     public static GradientDrawable luxe(float radius) { GradientDrawable g = gradient(dark ? 0xFF142857 : 0xFF263D7B, dark ? 0xFF07152F : 0xFF142954, 0, radius); g.setStroke(dp(1), GOLD_LINE | 0x66000000); return g; }
-    public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(22)); l.setPadding(dp(18), dp(16), dp(18), dp(16)); l.setElevation(dark ? 0 : dp(2.5f)); if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor(0x33000000); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(16), dp(15), dp(16), dp(15)); l.setElevation(dark ? 0 : dp(2.5f)); if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor(0x33000000); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** hero card (dashboard welcome): teal gradient, white text. */
-    public static LinearLayout hero(Context c) { LinearLayout l = col(c); GradientDrawable g = gradient(0xFF214EC0, dark ? 0xFF101D4E : 0xFF343D8D, BORDER, 24); g.setStroke(dp(1), 0x667383EF); l.setBackground(g); l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout hero(Context c) { LinearLayout l = col(c); GradientDrawable g = gradient(0xFF214EC0, dark ? 0xFF101D4E : 0xFF343D8D, BORDER, 22); g.setStroke(dp(1), dark ? 0x66FFC65A : 0x667383EF); l.setBackground(g); l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** dashboard tile: rounded icon badge + label + big value (+ optional custom view below). */
     public static LinearLayout tile(Context c, String icon, int accent, String label, String value, View extra) {
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14)); l.setMinimumHeight(dp(118));
@@ -154,7 +154,7 @@ public final class Ui {
     public static Button danger(Context c, String s, Runnable r) { Button b = btn(c, s, Color.TRANSPARENT, RED, r); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22E05252), rounded(Color.TRANSPARENT, RED, 14), null)); return b; }
     /** big call-to-action (POS «پرداخت»). */
     public static Button cta(Context c, String s, Runnable r) { Button b = primary(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16); b.setMinHeight(dp(54)); b.setMinimumHeight(dp(54)); GradientDrawable g = gradient(PRIMARY2, PRIMARY, 0, 16); g.setStroke(dp(1), 0x889C8EFF); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), g, null)); b.setElevation(dp(3)); return b; }
-    public static Button ghost(Context c, String s, Runnable r) { return btn(c, s, BG2, TEXT, r); }
+    public static Button ghost(Context c, String s, Runnable r) { Button b = btn(c, s, BG2, TEXT, r); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), rounded(dark ? 0x22000000 | BG2 : BG2, BORDER, 14), null)); return b; }
     public static Button small(Context c, String s, Runnable r) { Button b = ghost(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); b.setMinHeight(dp(34)); b.setMinimumHeight(dp(34)); b.setLayoutParams(margin(lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT), 4, 2, 0, 2)); return b; }
     public static Button chip(Context c, String s, boolean active, Runnable r) { Button b = small(c, s, r); b.setBackground(rounded(active ? PRIMARY : CARD2, active ? 0 : BORDER, 20)); b.setTextColor(active ? Color.WHITE : TEXT); b.setPadding(dp(14), 0, dp(14), 0); return b; }
     /** icon-less pill chip with a leading glyph (POS: مشتری / کوپن / تخفیف). */
@@ -168,7 +168,7 @@ public final class Ui {
     /* ---------------- list rows ---------------- */
     /** two-line list row (title / subtitle) with an optional trailing value and click. */
     public static LinearLayout item(Context c, String title, String sub, String trailing, int trailingColor, Runnable onClick) {
-        LinearLayout r = row(c); r.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), surface(16), null)); r.setPadding(dp(14), dp(12), dp(14), dp(12)); r.setLayoutParams(margin(match(), 0, 0, 0, 8));
+        LinearLayout r = row(c); r.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), surface(16), null)); r.setPadding(dp(14), dp(13), dp(14), dp(13)); r.setMinimumHeight(dp(56)); r.setGravity(Gravity.CENTER_VERTICAL); r.setLayoutParams(margin(match(), 0, 0, 0, 8));
         LinearLayout col = col(c); col.addView(text(c, title, 14, TEXT, true)); if (sub != null && !sub.isEmpty()) { TextView s = muted(c, sub); s.setPadding(0, dp(2), 0, 0); col.addView(s); }
         col.setLayoutParams(weight(1)); r.addView(col);
         if (trailing != null) { TextView t = text(c, trailing, 14, trailingColor == 0 ? TEXT : trailingColor, true); t.setGravity(Gravity.END); t.setPadding(dp(8), 0, 0, 0); r.addView(t); }
@@ -201,8 +201,8 @@ public final class Ui {
     /** KPI tile. */
     public static LinearLayout kpi(Context c, String label, String value, String sub, int accent) {  // v2.9: accent bar + larger value
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14));
-        View bar = new View(c); bar.setBackground(rounded(accent, 0, 2)); bar.setLayoutParams(margin(lp(dp(28), dp(3)), 0, 0, 0, 8)); l.addView(bar);
-        l.addView(muted(c, label)); TextView v = text(c, value, 18, TEXT, true); v.setPadding(0, dp(2), 0, 0); l.addView(v);
+        View bar = new View(c); bar.setBackground(rounded(accent, 0, 2)); bar.setLayoutParams(margin(lp(dp(30), dp(4)), 0, 0, 0, 8)); l.addView(bar);
+        l.addView(muted(c, label)); TextView v = text(c, value, 19, TEXT, true); v.setPadding(0, dp(2), 0, 0); l.addView(v);
         if (sub != null) l.addView(muted(c, sub)); return l;
     }
     public static LinearLayout grid2(Context c, View a, View b) {
@@ -211,8 +211,14 @@ public final class Ui {
         LinearLayout.LayoutParams lb = weight(1); lb.setMargins(dp(5), 0, 0, 0); b.setLayoutParams(lb);
         r.addView(a); r.addView(b); return r;
     }
-    public static TextView badge(Context c, String s, int color) { TextView t = text(c, s, 11, color, true); t.setBackground(rounded((color & 0x00FFFFFF) | 0x22000000, 0, 10)); t.setPadding(dp(8), dp(2), dp(8), dp(2)); return t; }
-    public static TextView empty(Context c, String s) { TextView t = muted(c, s); t.setGravity(Gravity.CENTER); t.setPadding(0, dp(24), 0, dp(24)); return t; }
+    public static TextView badge(Context c, String s, int color) { TextView t = text(c, s, 11, color, true); t.setBackground(rounded((color & 0x00FFFFFF) | 0x26000000, 0, 20)); t.setPadding(dp(10), dp(3), dp(10), dp(3)); return t; }
+    public static TextView empty(Context c, String s) {   // v4.8.0: یک کارت خط‌چین، نه یک خط خاکستری
+        TextView t = muted(c, s); t.setGravity(Gravity.CENTER); t.setPadding(dp(14), dp(22), dp(14), dp(22));
+        GradientDrawable g = rounded(dark ? 0x14000000 | BG2 : 0x66FFFFFF, BORDER, 16);
+        g.setStroke(dp(1), BORDER, dp(6), dp(5));
+        t.setBackground(g); t.setLayoutParams(margin(match(), 0, dp(4), 0, dp(10)));
+        return t;
+    }
     public static HorizontalScrollView chips(Context c, LinearLayout inner) { HorizontalScrollView h = new HorizontalScrollView(c); h.setHorizontalScrollBarEnabled(false); h.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); h.addView(inner); return h; }
 
     /* ---------------- sheets / dialogs ---------------- */

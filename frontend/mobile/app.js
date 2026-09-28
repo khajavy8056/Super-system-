@@ -1280,7 +1280,7 @@ window.showProductSheet = (item) => {
         <div class="batch-info">
           <div><b>${money(b.sell_price)}</b> <span class="muted">مصرف‌کننده ${money(b.consumer_price)}</span></div>
           <div class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
+            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} <span class="exp-chip ${Number(b.days_left) < 0 ? "expired" : Number(b.days_left) <= 7 ? "soon" : Number(b.days_left) <= 30 ? "near" : ""}">⏰ ${Number(b.days_left) < 0 ? "منقضی شد" : fmtNum(b.days_left) + " روز"}</span>` : ""}</div>
         </div>`).join("") || `<p class="muted">بچ فعالی ندارد</p>`}
       ${item.price_count > 1 ? `<p class="amber">این کالا ${item.price_count} قیمت فعال دارد.</p>` : ""}
       <button class="btn" onclick="closeSheet()">بستن</button>

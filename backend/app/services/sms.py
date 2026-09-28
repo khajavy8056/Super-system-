@@ -432,8 +432,11 @@ def stop_worker() -> None:
 # --- §166 templates / §173–§176 typed messages / §171 manual retry -----------
 
 TEMPLATE_KEYS = {
+    #: v4.8.0 — قالب فاکتور حالا «{items}» دارد: ردیف‌های مرتب کالاها (یک ردیف
+    #: برای هر کالا). قالب کهنهٔ تک‌خطی هم پشتیبانی می‌شود و در آن حالت ردیف‌ها
+    #: به پیام اضافه می‌شوند — هرگز خطوط خریداری‌شده حذف نمی‌شوند.
     "invoice": ("sms.template.invoice",
-                "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم"),
+                "{store} | فاکتور {invoice}\n{items}\nاز خرید شما سپاسگزاریم"),
     "debt_reminder": ("sms.template.debt_reminder",
                       "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر."),
     "coupon": ("sms.template.coupon",
@@ -445,16 +448,19 @@ TEMPLATE_KEYS = {
 }
 
 
+class _SafeDict(dict):
+    """قالب با جای‌نگهدار ناشناخته هم نمی‌شکند (اشتباه تایپی مدیر نباید فروش را بخواباند)."""
+
+    def __missing__(self, k):  # pragma: no cover - defensive
+        return "{" + k + "}"
+
+
 def render_template(db: Session, kind: str, **values) -> str:
     """Fill the shop-editable template for ``kind`` (§166). Unknown placeholders
     are left untouched so a typo in a template never crashes a sale."""
     key, default = TEMPLATE_KEYS[kind]
     tpl = get_setting(db, key, default) or default
-
-    class _Safe(dict):
-        def __missing__(self, k):  # pragma: no cover - defensive
-            return "{" + k + "}"
-    return tpl.format_map(_Safe(values))
+    return tpl.format_map(_SafeDict(values))
 
 
 def _store_ctx(db: Session) -> dict:
@@ -570,21 +576,155 @@ def outbox_report(db: Session, *, sms_id: int, status: str, response: str | None
     return msg
 
 
-def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
-    """Complete receipt; legacy short templates must never suppress purchased lines."""
+#: v4.8.0 — سقف ردیف‌های کالا در پیامک. پیش‌فرض **صفر = بدون سقف**: هیچ خط
+#: خریداری‌شده‌ای هرگز پنهان نمی‌شود (قرارداد v3.6.3). اگر فروشگاهی خواست
+#: پیامک کوتاه‌تر شود، ``sms.invoice_max_items`` را روی عدد دلخواه می‌گذارد و
+#: آن‌وقت باقیِ اقلام در یک ردیف صریح «و N قلم دیگر» خلاصه می‌شوند — نه حذف.
+INVOICE_MAX_ITEMS = 0
+#: حداکثر طول نام کالا در یک ردیف (کاراکتر) — ردیف‌ها هم‌تراز می‌مانند.
+INVOICE_NAME_LIMIT = 26
+
+
+def _fa_digits(text: str) -> str:
+    return text.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def _qty_txt(q) -> str:
+    """۲ · ۱٫۵ — عدد بدون صفر اضافی (واحدهای وزنی درست نمایش داده شوند)."""
+    f = float(q)
+    return f"{f:g}".translate(str.maketrans("0123456789.", "۰۱۲۳۴۵۶۷۸۹٫"))
+
+
+def _short(name: str, limit: int = INVOICE_NAME_LIMIT) -> str:
+    name = " ".join(str(name or "").split())
+    return name if len(name) <= limit else name[: limit - 1].rstrip() + "…"
+
+
+def render_invoice_lines(db: Session, invoice, coupon_line: str = "") -> list[str]:
+    """ردیف‌های مرتب پیامک فاکتور (v4.8.0 — درخواست مالک: «متن‌ها به‌هم‌ریخته نباشد»).
+
+    ساختار ثابت و یک‌خط‌به‌ازای‌هر‌کالا:
+
+        {store} | فاکتور {شماره} | {تاریخ}
+        ۱. نام کالا  ۲ × ۵۰٬۰۰۰ = ۱۰۰٬۰۰۰
+        …
+        جمع کالاها: …   تخفیف: …   مالیات: …   پرداختی: …
+        کد تخفیف خرید بعدی: …
+        از خرید شما سپاسگزاریم — {store}
+
+    چرا این‌طور؟ پیامک قبلی سه خط برای هر کالا داشت و روی گوشی‌های ساده به‌هم
+    می‌ریخت. اینجا هر کالا **یک ردیف** است، مبالغ با جداکنندهٔ هزارگان، و
+    ردیف‌های جمع همیشه در انتها و با ترتیب ثابت. اگر کالاها بیش از حد باشند،
+    بقیه در یک ردیف «و N قلم دیگر» خلاصه می‌شوند تا پیامک بریده نشود.
+    """
     ctx = _store_ctx(db)
-    store = ctx["store"].strip() or "فروشگاه"
-    lines = [store, f"فاکتور {invoice.invoice_number}", f"واحد مبالغ: {ctx['currency']}"]
-    for n, item in enumerate(sorted(invoice.items, key=lambda x: x.id or 0), 1):
+    store = (ctx["store"] or "").strip() or "فروشگاه"
+    cur = ctx["currency"]
+    try:
+        max_items = int(float(get_setting(db, "sms.invoice_max_items", str(INVOICE_MAX_ITEMS)) or INVOICE_MAX_ITEMS))
+    except (TypeError, ValueError, AttributeError):   # بی‌سشن در تست/پیش‌نمایش: پیش‌فرض
+        max_items = INVOICE_MAX_ITEMS
+    if max_items <= 0:
+        max_items = len(invoice.items or []) or 0
+    try:                                               # تاریخ شمسی، مثل رسید صندوق
+        from .timeservice import to_jalali
+        d = _lt_today()
+        jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+        date_txt = _fa_digits(f"{jy:04d}/{jm:02d}/{jd:02d}")
+    except Exception:                                  # never break a sale over a date
+        date_txt = ""
+    head = f"{store} | فاکتور {invoice.invoice_number}"
+    if date_txt:
+        head += f" | {date_txt}"
+
+    items = sorted(list(invoice.items or []), key=lambda x: x.id or 0)
+    digits = "۰۱۲۳۴۵۶۷۸۹"
+    lines = [head, "────────────"]
+    for n, item in enumerate(items[:max_items], 1):
         name = item.product.name if item.product else f"کالا {item.product_id}"
-        lines.extend([f"{n}. {name}",
-                      f"تعداد {item.qty:g} × قیمت واحد {_fmt(item.unit_sell_price)}",
-                      f"تخفیف {_fmt(item.discount)} | مالیات {_fmt(item.tax)} | جمع {_fmt(item.subtotal)}"])
-    lines.extend([f"جمع پیش از تخفیف: {_fmt(invoice.subtotal)}",
-                  f"تخفیف کل: {_fmt(invoice.discount)}",
-                  f"مالیات: {_fmt(invoice.tax)}",
-                  f"مبلغ نهایی: {_fmt(invoice.total_amount)} {ctx['currency']}"])
+        row = (f"{str(n).translate(str.maketrans('0123456789', digits))}. {_short(name)}  "
+               f"{_qty_txt(item.qty)} × {_fa_digits(_fmt(item.unit_sell_price))} "
+               f"= {_fa_digits(_fmt(item.subtotal))}")
+        if float(item.discount or 0) > 0:
+            row += f" (−{_fa_digits(_fmt(item.discount))})"
+        lines.append(row)
+    if len(items) > max_items:
+        rest = len(items) - max_items
+        lines.append(f"و {str(rest).translate(str.maketrans('0123456789', digits))} قلم دیگر "
+                     f"(جزئیات کامل روی رسید صندوق)")
+
+    parts = [f"جمع کالاها: {_fa_digits(_fmt(invoice.subtotal))}"]
+    if float(invoice.discount or 0) > 0:
+        parts.append(f"تخفیف: {_fa_digits(_fmt(invoice.discount))}")
+    if float(invoice.tax or 0) > 0:
+        parts.append(f"مالیات: {_fa_digits(_fmt(invoice.tax))}")
+    lines.append(" | ".join(parts))
+    lines.append(f"پرداختی: {_fa_digits(_fmt(invoice.total_amount))} {cur}")
     if coupon_line.strip():
         lines.append(coupon_line.strip())
-    lines.extend(["از خرید شما سپاسگزاریم", store])
-    return "\n".join(lines)
+    lines.append(f"از خرید شما سپاسگزاریم — {store}")
+    return lines
+
+
+def render_invoice_short(db: Session, invoice, coupon_line: str = "") -> str:
+    """نسخهٔ کوتاه فاکتور مخصوص «حالت الگو» (ملی‌پیامک §166).
+
+    الگوی ثبت‌شده در پنل، تعداد متغیرهای ثابت دارد؛ اگر رسیدِ کامل (یک ردیف برای
+    هر کالا) فرستاده شود، سرویس پیام را رد می‌کند. پس در این حالت همان قالب
+    کوتاهِ خود فروشگاه می‌رود: «{store} | فاکتور {invoice} | مبلغ …».
+    """
+    ctx = _store_ctx(db)
+    key, _default = TEMPLATE_KEYS["invoice"]
+    try:
+        tpl = (get_setting(db, key, "") or "").strip()
+    except AttributeError:          # بی‌سشن (تست/پیش‌نمایش)
+        tpl = ""
+    if not tpl or "{items}" in tpl:
+        tpl = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}"
+    body = tpl.format_map(_SafeDict({"store": ctx["store"], "invoice": invoice.invoice_number,
+                                     "amount": _fa_digits(_fmt(invoice.total_amount)), "currency": ctx["currency"],
+                                     "items": "", "customer": ""}))
+    body = "\n".join(line for line in (ln.strip() for ln in body.splitlines()) if line)
+    if coupon_line.strip():
+        body += "\n" + coupon_line.strip()
+    return body
+
+
+def render_invoice_for_mode(db: Session, invoice, coupon_line: str = "") -> str:
+    """متن فاکتور با توجه به روش ارسال (v4.8.0).
+
+    * خط اختصاصی / کاوه‌نگار / گوشی → رسید مرتب (یک ردیف برای هر کالا).
+    * حالت الگوی ملی‌پیامک → متن کوتاه، چون تعداد متغیرهای الگو ثابت است.
+    """
+    try:
+        provider = (get_setting(db, "sms.provider", "") or "").strip().lower()
+        mode = (get_setting(db, "sms.melipayamak_mode", "line") or "line").strip().lower()
+    except AttributeError:
+        provider, mode = "", "line"
+    if provider == "melipayamak" and mode == "pattern":
+        return render_invoice_short(db, invoice, coupon_line)
+    return render_invoice(db, invoice, coupon_line)
+
+
+def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
+    """Complete receipt; legacy short templates must never suppress purchased lines.
+
+    v4.8.0 — the shop-editable ``sms.template.invoice`` is honoured when it is
+    rich enough to carry the sale: a template that contains ``{items}`` gets the
+    ordered rows injected. A legacy one-line template (which used to drop every
+    purchased line) is **upgraded**: the tidy rows are appended, never replaced.
+    """
+    rows = render_invoice_lines(db, invoice, coupon_line)
+    key, default = TEMPLATE_KEYS["invoice"]
+    try:
+        tpl = (get_setting(db, key, "") or "").strip()
+    except AttributeError:      # بی‌سشن (تست/پیش‌نمایش): همان چیدمان پیش‌فرض
+        tpl = ""
+    if tpl and "{items}" in tpl:
+        ctx = _store_ctx(db)
+        body = tpl.format_map(_SafeDict({"items": "\n".join(rows[1:]),
+                                         "store": ctx["store"], "invoice": invoice.invoice_number,
+                                         "amount": _fmt(invoice.total_amount), "currency": ctx["currency"],
+                                         "customer": ""}))
+        return body
+    return "\n".join(rows)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,6 +46,8 @@ class PaymentIn(BaseModel):
 
 
 from .customers import norm_phone as _norm_phone
+
+log = logging.getLogger("supermarket.pos")
 
 
 class CheckoutIn(BaseModel):
@@ -159,6 +163,15 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depe
 def checkout(body: CheckoutIn, db: Session = Depends(get_db),
              user: User = Depends(require_permission("pos.sell"))):
     try:
+        # v4.8.0 — «تخفیفِ اجراشده باید روی صندوق باشد»: پیش از هر فروش، پله‌های
+        # تخفیف انقضایی که امروز موعدشان رسیده اعمال می‌شوند. کارگر پس‌زمینه هم
+        # این کار را می‌کند، اما فروشگاهی که کارگر را خاموش کرده نباید کالای
+        # «تخفیف‌خورده در تئوری» را به قیمت قدیم بفروشد. عمل idempotent است.
+        from ..services import insight_actions as _ia
+        try:
+            _ia.apply_markdown_steps(db)
+        except Exception:
+            log.exception("markdown steps skipped before checkout")   # never block a sale
         customer_id = body.customer_id
         if customer_id is None and body.customer_phone:
             # Phone book: a phone number alone is enough to create a customer (§30)
@@ -210,10 +223,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             # the next-purchase coupon rides along in the same message.
             coupon_line = ""
             if issued:
-                coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
+                coupon_line = f"کد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
-                    coupon_line += f" (تا {issued.valid_until.date()})"
-            text = sms_svc.render_invoice(db, invoice, coupon_line)
+                    # v4.8.0 — تاریخ شمسی با ارقام فارسی (متن پیامک یکدست می‌ماند)
+                    from ..services.timeservice import to_jalali
+                    d = issued.valid_until.date()
+                    jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+                    coupon_line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
+                                    .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+            text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line)
             msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)

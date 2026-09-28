@@ -218,9 +218,24 @@ def a_cross_sell(ctx: Ctx) -> list[Draft]:
     return out
 
 
+#: حداکثر کارت انقضا در هر اجرای تحلیل‌گر (۲۵ کارتِ فوری‌تر + بقیه در اجراهای بعدی)
+EXPIRY_DRAFTS_CAP = 25
+
+
 def a_expiry_ladder(ctx: Ctx) -> list[Draft]:
-    """Batches that will not sell out before expiry at current velocity → step markdowns."""
+    """بچ‌هایی که با سرعت **واقعی** فروش، پیش از انقضا فروش نمی‌روند → برنامهٔ پله‌ای با تاریخ.
+
+    v4.8.0 — تایم‌لاین درست (گزارش مالک: «وقتی صفر روز مانده بود پیشنهاد می‌داد»).
+    همهٔ محاسبه در :mod:`app.services.expiry_plan` است: سرعت محافظه‌کارانه
+    (کمینهٔ نرخ ۷/۲۸/۹۰ روز)، حاشیهٔ اطمینان ۱۵٪، و تایم‌لاینی که هر پله را روی
+    یک تاریخ شمسی می‌نشاند و **آخرین پله را دست‌کم دو روز پیش از انقضا** اعمال
+    می‌کند. بچِ تاریخ‌گذشته دیگر تخفیف نمی‌گیرد (تخفیف روی کالای فاسد بی‌معنا
+    است) — یک هشدار صادقانه با اقدام واقعی «ثبت ضایعات» می‌گیرد.
+    """
+    from . import expiry_plan
+
     out: list[Draft] = []
+    cfg = expiry_plan.settings(ctx.db)
     rows = ctx.db.execute(
         select(ProductBatch).where(ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0,
                                    ProductBatch.expiry_date.is_not(None))
@@ -232,43 +247,82 @@ def a_expiry_ladder(ctx: Ctx) -> list[Draft]:
         # advice again). Guard it rather than trust the filter.
         if b.expiry_date is None:
             continue
-        days_left = (b.expiry_date - ctx.today).days
-        if days_left < 0 or days_left > 45:
+        plan = expiry_plan.plan_for_batch(ctx, b, cfg=cfg)
+        if plan is None:
             continue
-        v = _daily_velocity(ctx, b.product_id)
-        qty = _f(b.current_qty)
-        will_sell = v * days_left
-        if will_sell >= qty * 0.9:
-            continue
-        surplus = max(0.0, qty - will_sell)
-        cost, price = _f(b.buy_price), _f(b.sell_price)
-        at_risk = surplus * cost
-        if at_risk < 50_000:
-            continue
-        # ladder: 3 steps sized so that the deepest step still covers cost
-        max_disc = max(5, min(60, int((1 - cost / price) * 100) - 3)) if price > 0 else 20
-        steps = [max(5, max_disc // 3), max(10, (max_disc * 2) // 3), max_disc]
-        s1 = max(1, days_left // 3)
-        ladder = [{"from_day": 0, "percent": steps[0]}, {"from_day": s1, "percent": steps[1]}, {"from_day": 2 * s1, "percent": steps[2]}]
-        recovered = surplus * price * (1 - steps[1] / 100) * 0.7  # assume ~70 % moves at mid step
         name = _pname(ctx, b.product_id)
+        qty, cost, price = plan["qty"], _f(b.buy_price), _f(b.sell_price)
+
+        # ---- کالای تاریخ‌گذشته: فقط صداقت و ثبت ضایعات (نه تخفیف) ------------------
+        if plan["mode"] == "waste":
+            out.append(Draft(
+                kind="EXPIRY_LADDER", dedupe_key=f"batch:{b.id}",
+                title=f"{name}: {_fa(qty)} عدد تاریخ‌گذشته در انبار است",
+                body=(f"تاریخ این بچ گذشته است ({_fa(abs(plan['days_left']))} روز پیش) و {_fa(qty)} عدد از آن "
+                      f"در انبار مانده — یعنی {_money(plan['at_risk'])} سرمایهٔ ازدست‌رفته. "
+                      f"فروش این کالا درست نیست؛ «ثبت ضایعات» را بزنید تا موجودی و حساب‌ها با واقعیت قفسه یکی شود. "
+                      f"دفعهٔ بعد این پیشنهاد چند هفته زودتر می‌آید تا به این نقطه نرسیم."),
+                priority=1,
+                evidence={**plan, "buy": cost, "sell": price},
+                actions=[{"type": "write_off_waste", "label": "ثبت ضایعات (برداشتن از موجودی)",
+                          "params": {"batch_id": b.id, "qty": plan["qty"], "reason": "تاریخ‌گذشته — هشدار هوش فروشگاه"}},
+                         {"type": "shelf_note", "label": "یادداشت برداشتن از قفسه", "params": {"products": [b.product_id]}}],
+                expected_gain=0.0,   # دیگر پولی برنمی‌گردد؛ ارزش این پیشنهاد، صداقت انبار است
+                metric={"metric": "product_units", "product_id": b.product_id, "window_days": 7},
+            ))
+            continue
+
+        # ---- ریسک ضایعات بدون امکان تخفیف (حاشیهٔ سود صفر) -------------------------
+        if plan["mode"] == "risk_only":
+            out.append(Draft(
+                kind="EXPIRY_LADDER", dedupe_key=f"batch:{b.id}",
+                title=f"{name}: {_fa(plan['surplus'])} عدد تا انقضا نمی‌فروشد (تخفیف ممکن نیست)",
+                body=(f"{_fa(plan['days_left'])} روز تا انقضا مانده و با سرعت واقعی فروش، حدود {_fa(plan['surplus'])} عدد "
+                      f"({_money(plan['at_risk'])}) ضایعات می‌شود. قیمت فروش ({_money(price)}) به قیمت خرید "
+                      f"({_money(cost)}) چسبیده است، پس تخفیف پله‌ای جای امن ندارد. "
+                      f"راه‌های صادقانه: باندل با کالای پرفروش، جابه‌جایی به قفسهٔ ورودی، یا مصرف در سفارش‌های عمده."),
+                priority=1 if plan["days_left"] <= 7 else 2,
+                evidence={**plan, "buy": cost, "sell": price},
+                actions=[{"type": "shelf_note", "label": "یادداشت جابه‌جایی به قفسهٔ ورودی", "params": {"products": [b.product_id]}},
+                         {"type": "sms_buyers", "label": "پیامک به خریداران قبلی", "params": {"product_id": b.product_id, "percent": 10}}],
+                expected_gain=plan["at_risk"] * 0.35,
+                metric={"metric": "product_units", "product_id": b.product_id, "window_days": min(28, max(7, plan["days_left"]))},
+            ))
+            continue
+
+        # ---- مسیر اصلی: تخفیف پله‌ای با تایم‌لاین واقعی ------------------------------
+        timeline = plan["timeline"]
+        steps = [t["percent"] for t in timeline]
+        recovered = plan["surplus"] * price * (1 - steps[1 if len(steps) > 1 else 0] / 100) * 0.7
+        schedule_txt = "، ".join(f"{t['jdate']} → {_fa(t['percent'])}٪" for t in timeline)
+        last = timeline[-1]
+        runway = plan["final_runway_days"]
+        runway_txt = (f"آخرین پله از {last['jdate']} اعمال می‌شود و {_fa(runway)} روز تا انقضا فرصت فروش دارد"
+                      if runway > 0 else
+                      f"فرصت پله‌بندی تمام شده؛ امروز ({_fa(plan['days_left'])} روز مانده) آخرین فرصت فروش است")
         out.append(Draft(
             kind="EXPIRY_LADDER", dedupe_key=f"batch:{b.id}",
-            title=f"{name}: {_fa(surplus)} عدد تا انقضا نمی‌فروشد",
-            body=(f"{_fa(days_left)} روز تا انقضا مانده؛ سرعت فروش {_fa(v*7,1)} عدد در هفته است و از {_fa(qty)} عدد موجود "
-                  f"حدود {_fa(surplus)} عدد ضایعات می‌شود ({_money(at_risk)} ضرر). "
-                  f"پیشنهاد: تخفیف پله‌ای {steps[0]}٪ ← {steps[1]}٪ ← {steps[2]}٪ (آخرین پله هنوز بالای قیمت خرید است) "
-                  f"و پیامک به مشتریانی که قبلاً این کالا را خریده‌اند."),
-            priority=1 if days_left <= 7 else 2,
-            evidence={"batch_id": b.id, "product_id": b.product_id, "days_left": days_left, "qty": qty, "velocity_per_day": round(v, 3),
-                      "surplus": round(surplus, 1), "at_risk": round(at_risk), "buy": cost, "sell": price, "ladder": ladder},
-            actions=[{"type": "markdown_ladder", "label": "اجرای تخفیف پله‌ای روی این بچ", "params": {"batch_id": b.id, "ladder": ladder}},
-                     {"type": "sms_buyers", "label": "پیامک به خریداران قبلی", "params": {"product_id": b.product_id, "percent": steps[1]}}],
+            title=(f"{name}: {_fa(plan['surplus'])} عدد تا انقضا نمی‌فروشد — "
+                   + (f"امروز آخرین فرصت" if plan.get("urgent") else f"{_fa(plan['days_left'])} روز فرصت دارید")),
+            body=(f"{_fa(plan['days_left'])} روز تا انقضا مانده؛ سرعت فروش واقعی (محافظه‌کارانه) "
+                  f"{_fa(plan['velocity_per_day']*7,1)} عدد در هفته است و از {_fa(qty)} عدد موجود حدود "
+                  f"{_fa(plan['surplus'])} عدد ضایعات می‌شود ({_money(plan['at_risk'])} ضرر). "
+                  f"پیشنهاد: تخفیف پله‌ای با تاریخ مشخص → {schedule_txt} "
+                  f"(آخرین پله هنوز بالای قیمت خرید است) و پیامک به مشتریانی که قبلاً این کالا را خریده‌اند. "
+                  f"{runway_txt}."),
+            priority=1 if plan["days_left"] <= 10 or plan.get("urgent") else 2,
+            evidence={**plan, "buy": cost, "sell": price},
+            actions=[{"type": "markdown_ladder", "label": "اجرای تخفیف پله‌ای روی این بچ", "params": {"batch_id": b.id, "ladder": plan["ladder"]}},
+                     {"type": "sms_buyers", "label": "پیامک به خریداران قبلی", "params": {"product_id": b.product_id, "percent": steps[1 if len(steps) > 1 else 0]}}],
             expected_gain=recovered - 0,  # money that would otherwise be written off
-            metric={"metric": "product_units", "product_id": b.product_id, "window_days": min(28, max(7, days_left))},
+            metric={"metric": "product_units", "product_id": b.product_id, "window_days": min(28, max(7, plan["days_left"]))},
         ))
     out.sort(key=lambda d: (d.priority, -d.expected_gain))
-    return out[:8]
+    # v4.8.0 — سقفِ کارت‌های انقضا. قبلاً ۸ بود؛ در فروشگاهی که ده‌ها بچ نزدیک
+    # انقضا دارد، بچ‌های بعدی هرگز کارت نمی‌گرفتند (سکوت دقیقاً همان چیزی است که
+    # مالک شکایت داشت). صفحهٔ هوش فروشگاه فهرست را صفحه‌بندی می‌کند، پس سقف بالاتر
+    # هیچ‌چیز را شلوغ نمی‌کند و هیچ بچی از قلم نمی‌افتد.
+    return out[:EXPIRY_DRAFTS_CAP]
 
 
 def a_dead_stock(ctx: Ctx) -> list[Draft]:
@@ -1447,7 +1501,7 @@ def to_dict(r: Insight) -> dict:
     }
 
 
-def sellable_now(db: Session, product_id: int) -> dict | None:
+def sellable_now(db: Session, product_id: int, *, pos_days: int = 30) -> dict | None:
     """v4.7.0 — the honesty check every POS suggestion must pass.
 
     A product is suggestable ONLY if it is alive (active, not deleted) and has at
@@ -1455,6 +1509,10 @@ def sellable_now(db: Session, product_id: int) -> dict | None:
     of the ``expiry.block_sale`` policy (a nudge must never advertise a dead item,
     even when the store would still allow selling it manually). Returns the
     product's name + freshness info, or ``None`` when it must not be suggested.
+
+    v4.8.0 — the returned record also carries the soonest-expiring sellable
+    ``batch_id``/``expiry_date`` (the till can act on it directly) and the
+    near-expiry horizon is a shop setting (``insights.pos_expiry_days``).
     """
     from datetime import date as _date
 
@@ -1468,9 +1526,14 @@ def sellable_now(db: Session, product_id: int) -> dict | None:
              if b.expiry_date is None or b.expiry_date >= today]
     if not fresh:
         return None
-    days_left = min(((b.expiry_date - today).days for b in fresh if b.expiry_date), default=None)
+    dated = [b for b in fresh if b.expiry_date is not None]
+    soonest = min(dated, key=lambda b: b.expiry_date) if dated else None
+    days_left = (soonest.expiry_date - today).days if soonest is not None else None
     return {"product_id": product.id, "name": product.name,
-            "days_left": days_left, "near_expiry": days_left is not None and 0 <= days_left <= 30}
+            "batch_id": soonest.id if soonest is not None else fresh[0].id,
+            "expiry_date": soonest.expiry_date.isoformat() if soonest is not None else None,
+            "days_left": days_left,
+            "near_expiry": days_left is not None and 0 <= days_left <= int(pos_days)}
 
 
 def nudges(db: Session, product_ids: list[int]) -> list[dict]:
@@ -1484,7 +1547,14 @@ def nudges(db: Session, product_ids: list[int]) -> list[dict]:
       3. among the honest candidates, an item whose batch is NEAR expiry is
          pushed FIRST (purpose sell_before_expiry): selling it today is pure
          saved loss, exactly the extra criterion the owner asked for.
+
+    v4.8.0 — the near-expiry horizon comes from ``insights.pos_expiry_days``
+    (default ۳۰ روز) so a shop with short shelf-life goods can widen it, and
+    every returned hint carries the batch/days-left the cashier acts on.
     """
+    from . import expiry_plan
+
+    pos_days = expiry_plan.settings(db)["pos_days"]
     row = db.execute(select(Insight).where(Insight.kind == "BASKET_NUDGE", Insight.status.in_(["ACCEPTED", "MEASURED"]))
                      .order_by(Insight.accepted_at.desc())).scalars().first()
     if not row:
@@ -1496,14 +1566,14 @@ def nudges(db: Session, product_ids: list[int]) -> list[dict]:
         if len(candidates) >= 6:
             break
         if r["if"] in cart and r["then"] not in cart and r["then"] not in seen:
-            alive = sellable_now(db, r["then"])
+            alive = sellable_now(db, r["then"], pos_days=pos_days)
             if alive is None:   # honest stock: never out-of-stock, never past expiry
                 continue
             product = db.get(Product, r["then"])
             days_left, near_expiry = alive["days_left"], alive["near_expiry"]
             seen.add(product.id)
             candidates.append({"product_id": product.id, "name": product.name, "because": r["if_name"],
-                               "confidence": r["confidence"], "days_left": days_left,
+                               "confidence": r["confidence"], "days_left": days_left, "batch_id": alive["batch_id"],
                                "near_expiry": near_expiry,
                                "purpose": "sell_before_expiry" if near_expiry else "sell_now",
                                "_rank": (0 if near_expiry else 1, -(r["confidence"] * r.get("lift", 1.0)))})
@@ -1512,7 +1582,9 @@ def nudges(db: Session, product_ids: list[int]) -> list[dict]:
     out = []
     for c in candidates[:2]:
         if c["near_expiry"]:
-            c["reason"] = f"موجودی «{c['name']}» تا {c['days_left']} روز آینده تاریخ می‌خورد؛ اگر امروز نفروشد ضرر می‌شود"
+            # v4.8.0 — ارقام فارسی: متن روی صفحهٔ صندوق به چشم ایرانی خوانده می‌شود،
+            # «20 روز» لاتین کنار بقیهٔ رابط که همه‌جا فارسی است، ناهماهنگ بود.
+            c["reason"] = f"موجودی «{c['name']}» تا {_fa(c['days_left'])} روز آینده تاریخ می‌خورد؛ اگر امروز نفروشد ضرر می‌شود"
         out.append(c)
     return out
 
@@ -1533,6 +1605,14 @@ def _worker_tick(session_factory) -> None:
         if row and row.value == "false":
             return
         insight_actions.apply_markdown_steps(db)
+        # v4.8.0 — «فروشگاه را بررسی کن»: اقدام‌هایی که قبلاً تأیید شده‌اند و
+        # حالا اثرشان از بین رفته (مثلاً تخفیف پله‌ای روی بچ پاک شده) را پیدا
+        # می‌کند و به مدیر اطلاع می‌دهد. تا پیش از این، «اجرا» یک نقطهٔ یک‌باره
+        # بود؛ از این نسخه، اثر هر اقدام دوره‌ای بازبینی می‌شود.
+        try:
+            insight_actions.health_scan(db)
+        except Exception:
+            log.exception("action health scan failed")   # never block the worker
         db.commit()
         last = db.execute(select(_SS).where(_SS.key == "insights.last_run")).scalar_one_or_none()
         every_h = 6

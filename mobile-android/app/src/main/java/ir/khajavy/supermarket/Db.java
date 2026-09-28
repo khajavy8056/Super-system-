@@ -727,6 +727,7 @@ public final class Db extends SQLiteOpenHelper {
     }
     /** Apply a sale locally: decrement batches, store the invoice; returns the local number. */
     public static String localSale(JSONObject payload, double total) {
+        try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {}   // v4.8.0 — تخفیف سررسیدشده پیش از فروش (مثل صندوق رایانه)
         SQLiteDatabase d = w(); d.beginTransaction();
         try {
             JSONArray items = payload.optJSONArray("items");

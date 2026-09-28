@@ -118,8 +118,20 @@
       parts.push(`<div class="ev-kpis"><div><span class="muted">تعداد راکد</span><b>${fa(ev.qty)}</b></div><div><span class="muted">سرمایهٔ قفل‌شده</span><b class="err">${money(ev.locked_value)}</b></div><div><span class="muted">عمر در انبار</span><b>${fa(ev.age_days)} روز</b></div><div><span class="muted">فروش ۶۰ روز</span><b>${fa(ev.sold_60d)}</b></div></div>`);
       parts.push(svgBars([{ label: "قفل در این کالا", value: Number(ev.locked_value), color: "#e5484d" }, { label: "کل کالاهای راکد", value: Number(ev.total_locked), color: "#f5a524" }]));
     } else if (k === "EXPIRY_LADDER") {
-      parts.push(`<div class="ev-kpis"><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
-      if (Array.isArray(ev.ladder)) parts.push(svgBars(ev.ladder.map((l, n) => ({ label: `از روز ${fa(l.from_day)} — ${fa(l.percent)}٪ تخفیف`, value: Number(l.price), color: PALETTE[n % PALETTE.length] }))));
+      // v4.8.0 — تایم‌لاین تاریخ‌دار: هر پله یک تاریخ شمسی و قیمت مشخص دارد، پس مدیر
+      // می‌داند دقیقاً چه روزی چه تخفیفی اعمال می‌شود (نه «روز صفر، وقتی دیر شده»).
+      const mode = ev.mode || "ladder";
+      const modeTxt = mode === "waste" ? "تاریخ گذشته — ثبت ضایعات"
+        : mode === "risk_only" ? "بدون تخفیف — بازبینی دستی قفسه"
+          : "تخفیف پله‌ای زمان‌بندی‌شده";
+      parts.push(`<div class="ev-kpis"><div><span class="muted">وضعیت</span><b class="${mode === "ladder" ? "ok" : "err"}">${modeTxt}</b></div><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
+      if (Array.isArray(ev.timeline) && ev.timeline.length) {
+        parts.push(`<div class="table-wrap"><table class="tbl"><thead><tr><th>پله</th><th>تاریخ (شمسی)</th><th>تخفیف</th><th>قیمت پیشنهادی</th><th>کار</th></tr></thead><tbody>${ev.timeline.map((t) => `<tr><td>${fa(t.step)}</td><td>${esc(t.jdate || t.date || "")}</td><td>${t.percent != null ? fa(t.percent) + "٪" : "—"}</td><td>${t.suggested_price != null ? money(t.suggested_price) : "—"}</td><td class="muted">${esc(t.label || "")}</td></tr>`).join("")}</tbody></table></div>`);
+        const priced = ev.timeline.filter((t) => t.suggested_price != null);
+        if (priced.length > 1) parts.push(svgLine([{ name: "قیمت بچ در هر پله", color: "#f5a524", points: priced.map((t) => Number(t.suggested_price)), area: true }], { labels: priced.map((t) => t.jdate || null), height: 140 }));
+      }
+      if (ev.velocity_per_day != null) parts.push(`<p class="muted">سرعت واقعی فروش (محافظه‌کارانه — کندترین نرخ ۷/۲۸/۹۰ روز): ${fa(ev.velocity_per_day)} عدد در روز · پیش‌بینی فروش تا انقضا: ${fa(ev.will_sell)} عدد${ev.final_runway_days != null ? ` · آخرین پله ${fa(ev.final_runway_days)} روز پیش از انقضا` : ""}</p>`);
+      if (ev.urgent) parts.push(`<p class="err"><b>امروز آخرین فرصت فروش این بچ است.</b></p>`);
     } else if (k === "CROSS_SELL") {
       parts.push(`<div class="ev-kpis"><div><span class="muted">هم‌خرید</span><b>${fa(ev.pair_count)}</b><span class="muted">از ${fa(ev.invoices)} فاکتور</span></div><div><span class="muted">اطمینان</span><b>${pct(ev.confidence)}</b></div><div><span class="muted">ضریب هم‌خرید</span><b class="ok">${fa(ev.lift)}×</b></div><div><span class="muted">پشتیبانی</span><b>${pct(ev.support)}</b></div></div>`);
       parts.push(donut([{ label: "با هم", value: Number(ev.pair_count), color: "#3dd6c4" }, { label: "جدا", value: Math.max(0, Number(ev.invoices) - Number(ev.pair_count)), color: "#2a3140" }], `${pct(Number(ev.pair_count) / Math.max(1, Number(ev.invoices)))} فاکتورها`));
@@ -312,6 +324,46 @@
     };
   }
 
+  /** v4.8.0 — «سیستم بررسی فروشگاه»: آیا اقدام‌هایی که «اجرا» کردیم هنوز برقرارند؟
+   *
+   *  درخواست مالک: «دکمهٔ اجرا باید واقعاً کار را انجام دهد» و «یک سیستم بررسی کلی
+   *  برای مسیر پیشنهاد → اجرا». هر اجرا با پارامترهایش ذخیره می‌شود، همان لحظه
+   *  بازبینی می‌شود، و کارگر پس‌زمینه هم اگر اثرش از بین برود خبر می‌دهد.
+   */
+  const HEALTH_L = { OK: ["برقرار", "ok"], LOST: ["از بین رفته", "err"], FAILED: ["اجرا ناموفق", "err"], UNVERIFIED: ["بدون بازبینی", "warn"], UNKNOWN: ["نامعلوم", "warn"], WARNING: ["قابل بازبینی", "warn"] };
+  const ACT_L = { markdown_ladder: "تخفیف پله‌ای", write_off_waste: "ثبت ضایعات", set_price: "تغییر قیمت", set_min_stock: "حد موجودی", reorder_note: "لیست سفارش", shelf_note: "چیدمان قفسه", note: "یادداشت", pos_nudge: "پیشنهاد صندوق", enable_nudges: "فعال‌سازی پیشنهاد صندوق", sms_buyers: "پیامک به خریداران", visit_sms: "پیامک دعوت", debt_reminders: "یادآوری بدهی", personal_sms: "پیامک شخصی", vip_coupons: "کوپن VIP", winback_sms: "پیامک بازگشت", flash_sale: "فروش ویژه", bundle_campaign: "باندل", threshold_campaign: "کمپین سقف خرید", tag_customers: "برچسب مشتری", set_credit_limit: "سقف اعتبار", set_setting: "تنظیمات" };
+  async function healthDialog() {
+    let rep;
+    try { rep = await api("/insights/actions/report"); } catch (e) { toast(e.message, "err"); return; }
+    const c = rep.counts || {}, rows = rep.rows || [];
+    const body = rows.flatMap((r) => (r.actions || []).map((a) => {
+      const [label, cls] = HEALTH_L[a.health] || [a.health || "—", ""];
+      return `<tr><td>${esc(r.title || "")}</td><td>${esc(ACT_L[a.type] || a.type || "")}</td><td><span class="badge ${cls === "ok" ? "badge-green" : cls === "err" ? "badge-red" : "badge-amber"}">${esc(label)}</span></td><td class="muted">${esc(a.health_detail || a.detail || "")}</td></tr>`;
+    })).join("");
+    openModal(`<div class="ins-detail">
+      <h3>بررسی اجراها — آیا کارها سر جایشان مانده‌اند؟</h3>
+      <p class="muted">هر «اجرا» با پارامترهایش ثبت می‌شود و همان لحظه بازبینی می‌شود. اگر بعداً کسی قیمت، حد موجودی یا تنظیمات را دستی تغییر دهد یا بچ پاک شود، اینجا دیده می‌شود (کارگر پس‌زمینه هم یک‌بار اعلان می‌دهد).</p>
+      <div class="ev-kpis">
+        <div><span class="muted">برقرار</span><b class="ok">${fa(c.OK || 0)}</b></div>
+        <div><span class="muted">از بین رفته</span><b class="err">${fa(c.LOST || 0)}</b></div>
+        <div><span class="muted">اجرای ناموفق</span><b class="err">${fa(c.FAILED || 0)}</b></div>
+        <div><span class="muted">بدون بازبینی / نامعلوم</span><b class="warn">${fa((c.UNVERIFIED || 0) + (c.UNKNOWN || 0))}</b></div>
+      </div>
+      ${body ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>پیشنهاد</th><th>اقدام</th><th>وضعیت</th><th>جزئیات</th></tr></thead><tbody>${body}</tbody></table></div>` : `<p class="muted">هنوز اقدام اجراشده‌ای ثبت نشده است.</p>`}
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn btn-primary" id="hs-scan">بازبینی همین حالا</button><button class="btn" onclick="closeModal()">بستن</button></div>
+    </div>`);
+    const btn = $("#hs-scan");
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const r = await api("/insights/actions/health-scan", { method: "POST" });
+        const lost = r.lost || [];
+        toast(lost.length ? `${fa(lost.length)} اقدام از بین رفته پیدا شد: ${lost.map((x) => x.title).slice(0, 3).join("، ")}` : "همهٔ اقدام‌های اجراشده برقرارند", lost.length ? "err" : "ok");
+        closeModal(); healthDialog();
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; }
+    };
+  }
+
   function refreshCurrent() { if (state.view === "insights") RENDER.insights(); else if (state.view === "dashboard") RENDER.dashboard(); }
 
   // ---------------------------------------------------------------- insights view
@@ -330,6 +382,7 @@
       try { const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created || 0)} پیشنهاد جدید، ${fa(r.refreshed || 0)} به‌روزرسانی`); if (state.view === "insights") await RENDER.insights(); }
       catch (e) { toast(e.message, "err"); } finally { button.disabled = false; }
     } }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "بررسی اجراها", onclick: healthDialog }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
