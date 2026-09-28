@@ -72,7 +72,7 @@
 ## Verification
 
 ### Test suite
-- **651 passed / 1 skipped** (was 624 at v4.7.0; +27) — `pytest tests/ -q -p no:randomly`
+- **652 passed / 1 skipped** (was 624 at v4.7.0; +28) — `pytest tests/ -q -p no:randomly`
 - New: `test_v48_expiry_timeline.py` (15: pure timeline math, real-stock analyzer, execution + verification, waste, lost-effect detection, pre-sale application, card cap), `test_v48_release_artifacts.py` (7: version single-source, APK structure + checksum, Windows bundle carries the new layer, the frozen 3.6.6 hash, Android engine tokens, SMS placeholder parity server↔phone, Persian-digit nudges)
 - Updated deliberately: `test_v47_pos_suggestions.py` (the nudge reason is now asserted to carry **Persian** digits) and the SMS layout tests (`{items}` layout) — both documented in the files
 
