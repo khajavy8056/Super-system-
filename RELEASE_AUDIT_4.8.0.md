@@ -60,6 +60,7 @@
 | Stocktake alarms / list digits | Persian digits in the alarms and the mobile report list |
 | Android | `Ui.java` (cards r20, hero hairline, taller touch rows, dashed empty state, KPI bars) + violet POS «whisper» card with an expiry badge + a «بررسی اجراها» button on the intelligence screen |
 | Online toast | «اجرا شد — اندازه‌گیری آغاز شد» (no more silent success) |
+| Framing policy | Default stays `X-Frame-Options: DENY`; `SUPERMARKET_ALLOW_EMBED=1` opens the panel for framed hosting (cloud preview / frame-based shell) and adds `frame-ancestors *` — covered by `test_v37_security.py` |
 
 ### 6. Release artifacts
 

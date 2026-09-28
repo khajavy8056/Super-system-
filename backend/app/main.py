@@ -266,11 +266,19 @@ async def license_gate(request: Request, call_next):
     return await call_next(request)
 
 
+#: v4.8.0 — آینهٔ پیش‌نمایش/دسکتاپ: به‌طور پیش‌فرض هیچ‌کس اجازهٔ قاب‌گرفتن پنل را ندارد
+#: (X-Frame-Options: DENY). برای اجرای پنل داخل یک قاب — مثل پیش‌نمایش میزبان ابری
+#: یا یک پوستهٔ دسکتاپ قاب‌محور — مالک می‌تواند با SUPERMARKET_ALLOW_EMBED=1 اجازه
+#: بدهد؛ در آن حالت هدر DENY فرستاده نمی‌شود و CSP با frame-ancestors باز می‌شود.
+_ALLOW_EMBED = os.environ.get("SUPERMARKET_ALLOW_EMBED", "0") not in ("0", "false", "off", "")
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    if not _ALLOW_EMBED:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     # v3.7 (§34) — the shop panel needs no camera/mic/geolocation; deny the lot.
     response.headers.setdefault(
@@ -279,10 +287,11 @@ async def security_headers(request: Request, call_next):
     )
     # CSP: inline handlers are used by the panel, so allow 'unsafe-inline' for
     # scripts in this phase; tighten when the frontend moves to a bundler.
+    frame_ancestors = " frame-ancestors *;" if _ALLOW_EMBED else ""
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'; connect-src 'self'",
+        "script-src 'self' 'unsafe-inline'; connect-src 'self';" + frame_ancestors,
     )
     return response
 
