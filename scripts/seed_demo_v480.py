@@ -66,7 +66,15 @@ for i in range(26):
     names = random.sample(list(products), 3)
     lines = [{"product_id": products[n]["product"]["id"], "quantity": 1} for n in names]
     v = C.post("/api/pos/cart/validate", headers=H, json={"items": lines}).json()
-    total = (v.get("totals") or {}).get("subtotal") or (v.get("totals") or {}).get("gross")
+    totals = v.get("totals") or {}
+    total = totals.get("subtotal")
+    if total is None:
+        total = totals.get("gross")
+    if not total:
+        # v4.8.0 — اگر اعتبارسنجی همهٔ خط‌ها را رد کند (منقضی/ناموجود) جمع صفر (و در
+        # Python «فالس») است؛ قبلاً `str(None or 0)` عملاً None می‌شد و صندوق ۴۲۲
+        # می‌داد. فروشی که وجود ندارد را نمی‌فروشیم.
+        continue
     r = C.post("/api/pos/checkout", headers=H, json={
         "items": lines, "payments": [{"method": "CASH", "amount": str(total)}]})
     if r.status_code in (200, 201):
