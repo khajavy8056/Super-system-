@@ -139,7 +139,7 @@ def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
     lines.append(center(note or "از خرید شما سپاسگزاریم"))
     lines.append(center("منتظر دیدار دوبارهٔ شما هستیم"))
     lines.append(thin)
-    lines.append(center("سوپری من · supery"))
+    lines.append(center("رسا سیستم · RASA"))
     return "\n".join(lines)
 
 

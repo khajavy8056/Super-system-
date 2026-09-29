@@ -3,6 +3,397 @@
 همه تغییرات مهم این پروژه در این فایل ثبت می‌شود. فرمت بر اساس [Keep a Changelog](https://keepachangelog.com) و نسخه‌گذاری [SemVer](https://semver.org).
 
 
+## [1.0.0] - 2026-09-29
+
+### رسا سیستم (RASA SYSTEM) — نسخهٔ رسمی محصول؛ ۴٫۸٫۰ بتا بود
+
+نخستین نسخهٔ تولیدیِ کامل با برند «رسا سیستم». هیچ قابلیت کارآمدی حذف نشد؛ کارِ این نسخه
+برندینگ کامل، بازطراحی رابط ویندوز، یکپارچه‌سازی تم روشن، درستی و کارایی، و بستن باگ‌های
+باقی‌مانده بود.
+
+#### ۱) برند و هویت یکسان در همه‌جا
+- نام محصول **«مدیریت سوپرمارکت رسا سیستم»** (لاتین: **RASA SYSTEM**) در: عنوان‌های پنل،
+  نصب‌کنندهٔ ویندوز (`RasaSystem-Setup-1.0.0.exe`)، پوشهٔ دادهٔ کاربر (`~/RasaSystem` با
+  تحویل درجای پوشهٔ قدیمی `~/SupermarketSystem`)، سرویس PWA، اپ اندروید (`RasaSystemMobile-1.0.0.apk`،
+  برچسب «رسا سیستم»)، رسیدها، و مستندات.
+- **نشان جدید (نه سبد خرید):** سه ستون صعودی روی خط پایه + گرهٔ طلایی — ترکیب
+  «قفسه/رشد فروش + فناوری + هوشمندی». ۲۸ خروجی از یک هندسهٔ واحد: SVG (لاتین/RTL/مونو/تیره)،
+  PNG ۱۶ تا ۵۱۲، maskable، `icon.ico` ویندوز، همهٔ چگالی‌های لانچر اندروید، لوگوی اسپلش و
+  نسخهٔ چاپی. `scripts/make_logo.py --check` هش فایل‌ها را بررسی می‌کند.
+- **نسخه:** `backend/app/__init__.py` = ۱٫۰٫۰؛ اندروید `versionName 1.0.0`، `versionCode 48000`
+  (بیلد ۴۸۰) — همیشه بزرگ‌تر از نسخهٔ معنایی، تا اندروید به‌روزرسانی درجا را رد نکند.
+
+#### ۲) حالت روشن، درست از ریشه (نه وصله‌ی صفحه‌به‌صفحه)
+- مجموعهٔ توکن‌های پوسته (`--shell-bg/-fg/-muted/-border/-hover/-sec/-active-*`،
+  `--topbar-bg`، `--statusbar-bg`، `--brand-plate`) برای **هر دو پالت** تعریف شد؛ نوار کناری،
+  سربرگ، نوار وضعیت و بلوک برند از همین توکن‌ها رنگ می‌گیرند.
+- ۱۷ قاعدهٔ «رنگ تیرهٔ دستی» در پوسته پیدا و توکنی شد (دو گرادیان تیرهٔ پنهان هم پیدا شد).
+- تست `test_v100_theme_contract.py` (۱۸ تست) هر رنگ دستی در قواعد پوسته، کامل‌بودن پالت
+  روشن، ترتیب لایه‌ها و وجود همهٔ دارایی‌های برند را قفل می‌کند.
+
+#### ۳) بازطراحی داشبورد ویندوز و لایهٔ طراحی RASA
+- سلسله‌مراتب تازه: نوار قهرمان (۴ کاشی: فروش امروز، فاکتور امروز، سود امروز، ارزش موجودی) +
+  ریل هشدار با پیوند مستقیم به اقدام، سپس باندهای «عملیات فروشگاه / مالی و تسویه / سامانه».
+- لایهٔ طراحی `frontend/rasa-ui.css` (ششمین و آخرین لایهٔ ظاهر): فاصله، شعاع، تایپوگرافی،
+  ارتفاع، دکمه/فرم/جدول/حالت‌ها، قواعد چاپ — همه بر پایهٔ توکن (بدون رنگ دستی).
+- ناوبری دسته‌بندی‌شده با زیرعنوان هر صفحه (`VIEW_SUBS`) و نام واقعی فروشگاه در بلوک برند.
+
+#### ۴) هوش فروشگاه: «چرا؟» و چهار فعل
+- هر کارت پیشنهاد یک بخش **«چرا؟»** گرفت (از `narrative`/`evidence` خودِ بینش) و فعل‌های
+  «اقدام / مشاهده / بررسی / جزئیات» روی کارت اجرا شد؛ «بررسی» همان سیستم بررسی سلامت است.
+
+#### ۵) کارایی (روی فروشگاه نمونهٔ یک‌ساله: ۳۸٬۴۷۴ فاکتور، ۱۶۵٬۴۲۷ سطر دفتر کل)
+- `accounting.overview` شش پرس‌وجوی جدا برای شش حساب می‌زد → **یک پرس‌وجوی جمعی**
+  (۳۷ms در برابر ۸۲ms)؛ دو ایندکس پوشا برای دفتر کل (`ix_perf_jl_account_cover`،
+  `ix_perf_je_status_date`) → داشبورد از **۱۱۳ms به ۷۸ms**.
+- `/api/batches` همهٔ بچ‌ها را بی‌سقف برمی‌گرداند (۳۲۶۴ ردیف = ۱٫۲MB) ولی رابط فقط ۵۰ ردیف
+  نشان می‌داد → پارامترهای `limit/offset` + هدر `X-Total-Count` و مصرف ۶۰ ردیف در رابط:
+  **۲۱۰ms/۱٫۲MB → ۲۲ms/۳۶KB**.
+- `/api/products?ids=` برای نام‌بردن دقیق (پایان «#۱۲۳» به‌جای نام در بچ‌های قدیمی)،
+  سقف ۲۰۰ ردیف در گزارش سود به تفکیک Batch (قبلاً همهٔ ردیف‌ها در DOM ریخته می‌شد).
+
+#### ۶) امنیت: هیچ رازی در کد و فایل‌های انتشار نیست
+- توکن کانال پشتیبانی از `config.py` **حذف** شد (در مخزن عمومی، نصب‌کننده و APK بود).
+  اکنون هر نصب مقدار خودش را در `system_settings` دارد؛ `scripts/provision_relay.py`
+  برای تأمین نصب‌ها و متغیرهای محیطی `SUPPORT_RELAY_*`/`RASA_RELAY_*` برای سازنده.
+- اندروید: هیچ توکنی در APK نیست — از `assets/relay.json` (ساختهٔ زمان بیلد، در مخزن
+  نیست) یا از کارت «کانال پشتیبانی این نصب» در صفحهٔ پشتیبانی خوانده می‌شود؛ بدون توکن،
+  درخواست ذخیره می‌شود و «در انتظار ارسال مجدد» می‌ماند (هیچ موفقیت جعلی).
+- تست `test_v100_no_secrets.py`: کلید خصوصی/توکن شبه‌راز/`Bearer` نوشته‌شده در کل درخت
+  سورس را رد می‌کند. (توکنی که یک بار در مخزن عمومی بوده باید در ربات باطل شود.)
+
+#### ۷) پشتیبانی: باگ «ثبت نشدن تیکت در ویندوز» — ریشه‌ای
+- ریشه: دروازهٔ لایسنس `GET /api/support/types` را هم ۴۰۲ می‌کرد؛ فهرست نوع خالی برمی‌گشت،
+  ارسال رد می‌شد و تیکت هرگز ساخته نمی‌شد — دقیقاً وقتی فروشگاه برای فعال‌سازی لایسنس به
+  پشتیبانی نیاز دارد. (اندروید به این مشکل نمی‌خورد چون رله را مستقیم صدا می‌زد.)
+- اصلاح: پشتیبانی و ورود از دروازه آزاد شدند (سطح حمله بسته ماند: مسیر بدون‌نشست فقط تیکت
+  نوع «لایسنس» می‌پذیرد، با سقف نرخ ۵/نصب-ساعت و ۱۰/IP-ساعت)، موقعیت مکانی **اختیاری** با
+  مهلت ۱٫۵ ثانیه (WebView2 هیچ‌وقت پاسخ نمی‌داد و فرم معلق می‌ماند)، و فهرست نوع/اولویت
+  مستقل از سرور با جایگزین داخلی. تست‌ها: `test_v100_support_gate.py` (۵) و
+  `smoke-v1_0_ticket.js` (۱۰ سنجه، شامل شبیه‌سازی همان حالت خرابی ویندوز).
+
+#### ۸) انتشار
+- `releases/windows/RasaSystemDesktopUI-1.0.0.zip`، `releases/android/RasaSystemMobile-1.0.0.apk`
+  (امضاشده با همان کلید نسخه‌های قبلی؛ به‌روزرسانی درجا کار می‌کند) و بستهٔ نصب ویندوز از
+  `installer/windows/BUILD-SETUP.bat` روی ویندوز ساخته می‌شود (PyInstaller/InnoSetup روی
+  لینوکس اجرا نمی‌شوند).
+
+### تست‌ها
+- بک‌اند: ۶۷۳ عبور / ۶ شکست (هر شش مورد، انتظارهای قدیمیِ تست‌ها بودند: نام پوشهٔ داده، نام کش
+  PWA، نام محصول اندروید، آیکون ورود، و دو مورد پین‌کردن نسخه/فایل‌های انتشار) — همه به‌روز شدند.
+- jsdom: `smoke-v48`، `smoke-v100` (۱۳/۱۳)، `smoke-v100-ticket` (۱۰/۱۰)، `smoke-v1_7` — همه سبز.
+
+## [4.8.0] - 2026-09-27
+
+### تایم‌لاین انقضا، اجرای واقعی پیشنهادها، بررسی اجرا و ظاهر تازه
+
+#### ۱) پیشنهاد انقضا دیگر روی «روز صفر» نمی‌آید — هفته‌ها زودتر، با تاریخ هر پله
+«وقتی صفر روز مانده بود پیشنهاد می‌داد، عملاً فاسد شده؛ باید یک هفته قبلش پیشنهاد بدهد.»
+- **ریشهٔ باگ:** موتور قدیمی «آیا پیش از انقضا فروش می‌رود؟» را با **یک میانگین خوش‌بین ۲۸روزه و بدون حاشیهٔ اطمینان** حساب می‌کرد؛ هر هفتهٔ شلوغ (یا یک جشنواره) میانگین را بالا می‌برد و هشدار را ساکت می‌کرد — تا آخرین روز که فقط «۰۰ روز مانده» می‌ماند.
+- **سرعت محافظه‌کارانه (اصلاح ریشه‌ای):** برنامه روی **کندترین نرخ واقعی** (کمینهٔ فروش ۷/۲۸/۹۰ روز) بسته می‌شود، چون تصمیم باید هفتهٔ آرام را دوام بیاورد، نه بهترین هفته را.
+- **حاشیهٔ اطمینان ۱۵٪:** «تقریباً همه‌اش فروش می‌رود» کافی نیست؛ تا ریسک واقعی وجود دارد، اقدام لازم است.
+- **تایم‌لاین تاریخ‌دار:** هر پله یک **تاریخ شمسی** و یک **قیمت پیشنهادی** دارد؛ سه پله برای ≥۷ روز فرصت، دو پله برای ۳ تا ۶ روز، یک پله برای ۲ روز و کمتر. **آخرین پله دست‌کم ۲ روز پیش از انقضا** اعمال می‌شود و هیچ پله‌ای از قیمت خرید پایین نمی‌زند (سقف تخفیف ۶۰٪).
+- **کالای تاریخ‌گذشته تخفیف نمی‌گیرد:** یک هشدار صادقانه می‌گیرد با اقدام واقعی **«ثبت ضایعات»** (کاهش موجودی + حرکت WASTE + سند حسابداری؛ همان مسیر دستی انبار).
+- **سقف کارت‌ها ۸ → ۲۵:** در فروشگاهی با ده‌ها بچ نزدیک انقضا، بچ‌های بعدی هرگز کارت نمی‌گرفتند؛ حالا صفحه فهرست را صفحه‌بندی می‌کند.
+- سه تنظیم جدید فروشگاه: `insights.expiry_lead_days` (۲۱)، `insights.expiry_safety` (۱٫۱۵)، `insights.pos_expiry_days` (۳۰).
+
+#### ۲) «اجرا» واقعاً کار را انجام می‌دهد — و ماندگاری‌اش بررسی می‌شود
+- **بازبینی همان لحظه:** هر اقدام پس از اجرا راستی‌آزمایی می‌شود؛ اگر اثرش در داده نباشد، پیشنهاد «اجرا شده» ثبت نمی‌شود (به‌جای تیک سبز دروغین، خطای صریح).
+- **قیمت پله‌ای:** پله‌ها با **اندیس** ثبت می‌شوند (دو پله با درصد برابر هم هر دو اعمال می‌شوند)، هر اعمال قیمت + **تاریخچهٔ قیمت** + حسابرسی + اعلان دارد، و برنامه تا آخرین پله می‌مانَد.
+- **سیستم بررسی فروشگاه (جدید):** `GET /api/insights/actions/report` وضعیت فعلی همهٔ اقدام‌های اجراشده را می‌دهد (برقرار / از بین رفته / ناموفق / بدون بازبینی) و `POST /api/insights/actions/health-scan` بازبینی زنده اجرا می‌کند. کارگر هوش فروشگاه در هر تیک اگر اثر اقدامی از بین رفته باشد **یک‌بار** خبر می‌دهد. دکمهٔ «بررسی اجراها» در هر دو رابط (اندروید و ویندوز) همین گزارش را نشان می‌دهد.
+- **صندوق ضمانت اجرا:** پیش از هر فروش، پله‌های سررسیدشده روی همان بچ اعمال می‌شوند — حتی اگر کارگر خاموش باشد. روی گوشی هم صفحهٔ صندوق و لحظهٔ ثبت فاکتور همین کار را می‌کنند.
+- اندروید: پیشنهادِ انقضا با همان منطق سرور بازنویسی شد، اقدام **«ثبت ضایعات»** اضافه شد، و بازبینی/گزارش اجرا روی خود گوشی هم کار می‌کند.
+
+#### ۳) پیشنهاد پای صندوق روی اندروید هم می‌آید (باگ گزارش‌شده)
+- **ریشهٔ باگ:** مسیر آفلاین گوشی فقط برای درخواست‌های GET به موتور محلی برمی‌گشت؛ `/insights/nudges` یک POST است، پس روی گوشیِ مستقل (یا وقتی رایانه در دسترس نیست) بی‌پاسخ می‌مانْد و نوار پیشنهاد هرگز ظاهر نمی‌شد.
+- **اصلاح:** صندوق گوشی حالا در حالت مستقل/آفلاین از موتور محلی همان گوشی جواب می‌گیرد؛ فیلدهای `days_left`/`batch_id`/`near_expiry`/`reason` و ترتیب «نزدیک‌انقضا اول» **دقیقاً همان** قواعد رایانه است.
+- نوار تکراری قدیمی (v3.0) حذف شد؛ فقط یک کارت «نجوا» با نشان «⏰ N روز» می‌ماند که با هر تغییر سبد تازه می‌شود.
+
+#### ۴) پیامک فاکتور مرتب و یک‌خطی شد
+- **چیدمان ثابت:** «فروشگاه | فاکتور N | تاریخ شمسی» ← یک ردیف برای هر کالا «۱. نام  qty × قیمت = جمع» ← ردیف جمع‌ها (جمع کالاها | تخفیف | مالیات) ← «پرداختی» ← کد تخفیف ← امضا. متن قبلی سه خط برای هر کالا داشت و روی گوشی‌های ساده به‌هم می‌ریخت.
+- ارقام فارسی، جداکنندهٔ هزارگان، سقف اختیاری اقلام (`sms.invoice_max_items`) با ردیف صریح «و N قلم دیگر» — هیچ‌وقت حذف بی‌صدا.
+- **حالت الگوی ملی‌پیامک:** تعداد متغیرهای الگو ثابت است، پس در آن حالت متن **کوتاه** فرستاده می‌شود (وگرنه سرویس پیام را رد می‌کرد). روی رایانه و گوشی، هر دو.
+- قالب پیش‌فرض حالا `{items}` دارد و قالب‌های کهنهٔ تک‌خطی هم پشتیبانی می‌شوند (ردیف‌ها اضافه می‌شوند، هرگز حذف نمی‌شوند).
+
+#### ۵) ظاهر حرفه‌ای‌تر در هر دو برنامه
+- **ویندوز (پنل):** لایهٔ تازهٔ `ui-refresh.css` — تایپوگرافی و فاصله‌های یکنواخت، جدول‌های خوانا (سرصفحهٔ چسبان، ردیف‌های یک‌درمیان، اعداد هم‌عرض)، سلسله‌مراتب دکمه‌ها، حالت خالی خط‌چین، نوار «نجوا»ی صندوق، و پشتیبانی `prefers-reduced-motion` + استایل چاپ. بستهٔ رابط ویندوز: `SupermarketDesktopUI-3.7.0.zip`.
+- **نشان انقضا روی هر بچ صندوق:** در انتخاب بچ (مثلاً وقتی کالا چند قیمت دارد) حالا کنار موجودی یک نشان رنگی هست — کهربایی تا ۳۰ روز، نارنجی تا ۷ روز، قرمز برای بچ منقضی («⏰ ۳ روز» / «⏰ منقضی شد») — و ارقام همه‌جا فارسی است؛ زنگ انبارگردانی و فهرست‌های گوشی هم فارسی شدند.
+- **اندروید:** کارت‌ها/دکمه‌ها/ردیف‌ها بازتنظیم شدند (لبه‌های نرم‌تر، ردیف لمسی بلندتر، حالت خالی خط‌چین، کارت «نجوا» با نشان انقضا)، سرصفحهٔ صفحهٔ هوش فروشگاه دکمهٔ «بررسی اجراها» گرفت.
+- **پنل در قاب/پیش‌نمایش:** به‌طور پیش‌فرض همان سیاست سخت‌گیرانه برجاست (`X-Frame-Options: DENY`)، ولی مالک می‌تواند با `SUPERMARKET_ALLOW_EMBED=1` پنل را داخل قاب اجرا کند (پیش‌نمایش ابری یا پوستهٔ قاب‌محور) — بدون این کلید صفحه در قاب سفید می‌ماند و دلیلش پیدا نیست.
+
+#### ۶) متن‌های فارسی و هم‌خوانی گوشی
+- **پیشنهاد پای صندوق با ارقام فارسی:** «تا ۱۲ روز» (نه «تا 12 روز») — روی سرور، روی قاعده‌های دستی، و روی گوشی.
+- فهرست جای‌نگهدارهای پیامک در تنظیمات گوشی با سرور یکی شد (قالب فاکتور حالا `{items}` را هم نشان می‌دهد).
+
+#### ۷) کیفیت
+- تست‌های جدید: `test_v48_expiry_timeline.py` (۱۵ تست: ریاضیات خالص تایم‌لاین، تحلیل‌گر روی موجودی واقعی، اجرا و بازبینی، ضایعات، بررسی اثر ازبین‌رفته، اعمال پیش از فروش، سقف کارت‌ها) و `test_v48_release_artifacts.py` (۷ تست نسخه‌ها/APK/بستهٔ ویندوز/موتورد اندروید/هم‌خوانی جای‌نگهدارهای پیامک/ارقام فارسی). تست‌های قدیمی پیامک با چیدمان جدید به‌روز شدند (قرارداد «هیچ خط خریداری‌شده‌ای پنهان نمی‌شود» دست‌نخورده).
+- **بازبینی زندهٔ سرتاسری** روی یک دیتابیس تازه (`backend/tests/_e2e_v480.py`): کارت انقضا با ۲۰ روز فرصت → «اجرا» → قیمت ۵۲٬۰۰۰ → ۴۸٬۴۰۰ + تاریخچهٔ قیمت → گزارش بازبینی «برقرار» → خراب‌کردن عمدی قیمت → تشخیص «از بین رفته» → ضایعات ۱۲ → ۰ با حرکت WASTE → پیشنهاد صندوق با روز باقی‌مانده. همه سبز.
+- **بازبینی رابط ویندوز با کلیک واقعی** (`scripts/uitest/smoke-v4_8.js`): دکمهٔ «اجرا کن» روی کارت واقعی زده می‌شود و بعد از تأیید، قیمت روی سرور واقعاً کم می‌شود (۵۵٬۰۰۰ → ۴۹٬۰۰۰) و پیام موفقیت و گزارش «برقرار» دیده می‌شود.
+- فروشگاه نمایشی برای مشاهدهٔ سریع: `scripts/seed_demo_v480.py` (۲۴ کالا، ۲۲ فروش، ۱۲ کارت انقضا، پیشنهاد صندوق فعال).
+- مجموعهٔ کامل: **۶۵۲ passed / ۱ skipped** (پیش از این نسخه: ۶۲۴).
+- `releases/android/SupermarketMobile-4.8.0.apk` (versionCode 40800، ۱٫۴ مگابایت، همان گواهی → به‌روزرسانی درجا، preflight نصب PASS، sha256 در فایل کنارش).
+
+#### ۸) به‌روزرسانی پس از انتشار — نوت‌بوک شبیه‌ساز یک/دوساله با نسخهٔ ۴.۸ کار می‌کند
+- **نوتبوک شبیه‌ساز (`tools/colab_year_simulator.ipynb`):** شاخهٔ رسمی درست شد (نام شاخهٔ قدیمی می‌توانست بی‌صدا شبیه‌سازی را روی کدِ قدیمی ببرد)؛ حالا ترتیب «شاخهٔ همین نسخه ← تگ منتشرشده ← توقف با پیام روشن» است، نه اجرای خاموشِ کدِ اشتباه. پایان کار، خلاصهٔ ماشین‌خوان (`*.summary.json`) و گزارش فارسی «بررسی اجراها» را نشان می‌دهد. یک سال یا دو سال (۳۶۵/۷۳۰ روز) از همان خانهٔ تنظیمات.
+- **ساعت شبیه‌سازی روی کل فروشگاه:** صندوق، انقضا و موتور هوش یک منبع زمان مشترک می‌گیرند، پس پله‌های تخفیف روی تاریخِ خودشان اجرا می‌شوند و بچِ تاریخ‌گذشته واقعاً کارت ضایعات می‌گیرد (پیش‌تر «امروز»ِ صندوق ساعت واقعی ماشین بود و شبیه‌سازی یک سال، تایم‌لاین را زندگی نمی‌کرد).
+- **هشدارهای دروغ «از بین رفته» رفع شد:** نوع ارجاعِ بینش در بازبینی درست خوانده می‌شود (اعلان‌های سالم دیگر پیدا نشدن‌بهانه نمی‌شوند)، «لیست سفارش» به‌جای مقایسهٔ تعدادِ کل، همان کالاهای خودِ اقدام را بررسی می‌کند، و تخفیفِ پله‌ای پس از برگشتنِ قیمت به نرخ لیست، از تاریخچهٔ قیمت راستی‌آزمایی می‌شود.
+- **گزارش هم‌خوان:** شمارش وضعیت‌ها روی همهٔ اقدامها است و `limit` فقط تعداد سطرهای نمایش را می‌بُرد (قبلاً «۸۰ بازبینی‌شده / ۴۷ برقرار» می‌داد).
+- مجموعهٔ کامل تست‌ها پس از این تغییرات: **۶۵۲ passed / ۱ skipped**.
+
+## [4.7.0] - 2026-09-24
+
+### پیشنهاد صادقانهٔ پای صندوق + شبیه‌ساز یک‌سالهٔ گوگل کولب
+
+#### ۱) پیشنهاد پای صندوق دیگر هرگز کالای ناموجود یا تاریخ‌گذشته پیشنهاد نمی‌دهد
+«موجود نداریم نباید پیشنهاد بده… نزدیک شدیم نه عبور کرده.»
+- **ریشهٔ باگ گزارش‌شده:** فیلتر موجودیِ پیشنهادها به تنظیم «فروش کالای تاریخ‌گذشته» (`expiry.block_sale`) متکی بود؛ اگر این تنظیم خاموش بود، کالای منقضی هم پای صندوق پیشنهاد می‌شد.
+- **اصلاح ریشه‌ای:** قانون صداقت به خودِ پیشنهاد منتقل شد (`sellable_now`): فقط کالایی پیشنهاد می‌شود که **زنده** باشد (فعال، حذف‌نشده) و **حداقل یک بچِ فعال با موجودی** داشته که **تاریخش نگذشته** باشد — مستقل از هر تنظیم فروشگاه. قوانین دستی مدیر هم از همین فیلتر رد می‌شوند (درِ دوم همان باگ، بسته شد).
+- **معیار جدید — «نزدیک انقضا»:** بین پیشنهادهای صادقانه، کالایی که تاریخش در ۳۰ روز آینده است **اول** پیشنهاد می‌شود (`purpose: sell_before_expiry`) با دلیل فارسی و شفاف: «موجودی «گوجه‌فرنگی» تا ۴ روز آینده تاریخ می‌خورد؛ اگر امروز نفروشد ضرر می‌شود». کالای سادهٔ بدون تاریخ (`days_left: null`) بدون خطا پیشنهاد می‌شود (رفع خطای `min()` روی مجموعهٔ خالی).
+- **هر دو رابط:** اندروید — نوار پیشنهاد داخل صفحهٔ صندوق (بالای سبد، هر بار تغییر سبد تازه می‌شود، با یک لمس اضافه می‌شود، دلیل نزدیک‌انقضا با نشان کهربایی). ویندوز — تراشهٔ پیشنهاد در همان صفحه با نشان «⏰ N روز» برای نزدیک‌انقضا.
+- خروجی سرویس: حداکثر ۲ پیشنهاد `{product_id, name, because, confidence, days_left, near_expiry, purpose, reason?}` — مرتب‌شده: اول نزدیک‌انقضا، بعد قوی‌ترین قانون.
+
+#### ۲) شبیه‌ساز یک‌ساله در مقیاس ~۱۰۰ فروشگاه بزرگ روزانه — نوت‌بوک گوگل کولب در tools/
+- `tools/simulate_year.py` — شبیه‌ساز خط فرمان با نوار پیشرفت فارسی (tqdm)، قابل ادامه پس از قطعی (`--resume-dir`)، خروجی: فایل پشتیبان واقعی قابل بازیابی روی **ویندوز و اندروید**.
+- `tools/colab_year_simulator.ipynb` — نوت‌بوک کولب: کل پروژه را از گیت‌هاب می‌گیرد، نصب می‌کند، سال کامل را با `--days 365 --per-day 9500` (≈۱۰۰ فروشگاه) می‌سازد و فایل پشتیبان را خودکار دانلود می‌کند؛ با یادداشت صادقانه: شبیه‌سازی CPU-محور است و GPU چیزی عوض نمی‌کند.
+- **داده‌های جدیدِ سالِ شبیه‌سازی‌شده:** **شیفت‌بندی کارکنان** (جلسهٔ صندوق هفتگی برای هر صندوق‌دار: موجودی اولیه ← فروش واقعی هفته ← شمارش نقدی با مغایرت جزئی انسانی ← گزارش Z) و **چندین انبارگردانی** در طول سال (شمارش نمونه‌ای با خطای انسانی ← تکمیل ← تأیید مدیر، با اصلاح موجودی و رکورد STOCKTAKE و رد حسابرسی — همه از مسیر واقعی سرویس‌های برنامه).
+- در حالت بانک کامل کالا (۱۳٬۵۷۰ کالای پیش‌فرض)، حالا تا ۱۲ پیشنهاد برتر هوش فروشگاه واقعاً «اجرا و سنجش» می‌شود (قبلاً هیچ).
+- فایل خروجی با همان مسیر بازیابی برنامه اعتبارسنجی می‌شود (integrity + جدول‌های ضروری) — تست زندهٔ بازیابی از `/api/system/restore` موفق: ۱۵۷ فاکتور، ۳ شیفت، ۳ انبارگردانی دقیقاً برگشت.
+
+#### ۳) کیفیت
+- ۱۰ تست جدید در `test_v47_pos_suggestions.py` (باگ نامبردهٔ کالای منقضی با `block_sale` خاموش، بدون موجودی، اولویت نزدیک‌انقضا با دلیل، کالای بدون تاریخ، قوانین دستی، گیت، شیفت‌ها و انبارگردانی‌های شبیه‌ساز، اعتبار JSON نوت‌بوک، CLI).
+- مجموعهٔ کامل: **۶۲۴ passed / 1 skipped**.
+
+- `releases/android/SupermarketMobile-4.7.0.apk` (versionCode 40700، ۱٫۴ مگابایت، همان گواهی → به‌روزرسانی درجا، preflight نصب PASS).
+
+## [4.6.0] - 2026-09-24
+
+### حذف کامل مغز فروشگاه (مدل زبانی) + هوش فروشگاهِ با توضیحات کامل
+
+#### ۱) مغز فروشگاه و مدل زبانی به‌طور کامل حذف شد — تصمیم صاحب فروشگاه
+«اضافه کردن مدل زبانی در حالت فعلی اشتباه بود و مغز فروشگاه نیاز نبود؛ فعلاً همان هوش فروشگاه کافی بود.»
+- **بک‌اند:** پکیج `business_brain` (۲۵ فایل)، `routers/brain.py`، `models/brain.py`، اتوستارت و ورکر ۱۵ دقیقه‌ای، همهٔ مسیرهای `/api/brain/*` حذف شدند. مهاجرت جدید `c9e1f2a4b6d8` شش جدول `brain_*` را در هد حذف می‌کند (downgrade بازسازی می‌کند — قابل بازگشت).
+- **اندروید:** شش فایل (BrainScreens/BrainModel/BrainModelService/BrainEngine/BrainVoice/ReminderRx)، مجوز میکروفون، سرویس دانلود مدل در پس‌زمینه، گیرندهٔ یادآوری، هر دو مسیر ناوبری و **موتور llama.cpp (libllamaserver.so) از داخل APK** حذف شدند — APK حدود ۶.۸ مگابایت در هر ABI سبک‌تر شد.
+- **ویندوز:** مرحلهٔ «آماده‌سازی مدل هوش محلی» از بیلدر حذف شد — دیگر هیچ دانلود ۱ گیگابایتی، هش GGUF یا تأیید موتور در کار نیست؛ `ساخت-فایل-نصب.bat` مستقیم تا Setup.exe می‌رود. `scripts/model/` کامل حذف شد.
+- **پنل وب:** `brain.js`، نمای گفت‌وگو و ارجاع‌های آن حذف شدند. اگر قبلاً مدل گرفته‌اید، پوشهٔ `brain` در دادهٔ کاربر دیگر استفاده نمی‌شود و می‌توانید دستی حذفش کنید (~۱ گیگابایت آزاد شود).
+- حذف تست‌های مربوط به مغز/مدل/صوت/موتور (۱۷ فایل) و بازنویسی تست‌های مهاجرت.
+
+#### ۲) هوش فروشگاه، مشاور اصلی — با راهنمای کامل و قابل‌فهم برای هر پیشنهاد
+«وقتی روی جزئیات یک پیشنهاد می‌زنیم توضیحات کامل باشد که هر کسی درک کند — کاربر چه می‌داند مشتری VIP چیست، چه فرقی با سایر مشتریان دارد.»
+- هر پیشنهاد حالا یک **راهنمای کامل به زبان ساده** دارد: **تعریف** (مثلاً مشتری VIP یعنی چه و چه فرقی با مشتری معمولی دارد)، **چرا برای فروشگاه شما مهم است**، **چه کاری گام‌به‌گام انجام دهید**، **اگر انجام نشود چه می‌شود** و **یک مثال ملموس**.
+- راهنما برای هر ۱۳ نوع اصلی (VIP، بازگشت مشتری، هم‌خرید، حراج انقضا، سرمایهٔ راکد، اتمام موجودی، نقدینگی، قیمت‌گذاری، کنترل تلفات، الگوی هفتگی، تأمین‌کننده، پیشنهاد پای صندوق، پیش‌بینی خرید) دست‌نویس و برای انواع PRO یک راهنمای صادقانهٔ عمومی نوشته شد — **قطعی، بدون مدل، بدون شبکه**.
+- رندر در هر دو رابط: کارت «این پیشنهاد یعنی چه؟ (راهنمای کامل)» در جزئیات اندروید و پنل وب، با گام‌های شماره‌دار.
+
+#### ۳) آنالیز کل سیستم
+- مسیرهای `/api/brain/*` با ۴۰۴ تمیز برمی‌گردند (نه ۵۰۰).
+- تست مهاجرت‌ها بازنویسی شد: حذف جدول‌ها در هد، بازگشت با downgrade، دست‌نخوردگی دادهٔ فروشگاه.
+- مجموعهٔ کامل: **۶۱۴ passed / 1 skipped** (۱۲ تست جدید در `test_v46_brain_removal.py`).
+
+- `releases/android/SupermarketMobile-4.6.0.apk` (versionCode 40600، بدون موتور llama.cpp، همان گواهی → به‌روزرسانی درجا). ویندوز: بیلد بدون مرحلهٔ مدل، بسیار سریع‌تر و سبک‌تر.
+
+## [4.5.0] - 2026-09-24
+
+### سه مشکل گزارش‌شدهٔ مدیر، ریشه‌ای حل شد
+
+#### ویندوز: خطای ساخت نصب‌کننده روی DLLهای خود مایکروسافت
+- **ریشه:** تأییدگر import-graph موتور (v4.3.3) سه DLL را «گم‌شده» می‌شمرد که هر سه جزء مایکروسافت‌اند، نه خروجی llama.cpp: `wldap32.dll` (WinLDAP — جزء System32، لازمِ libcurl رسمی)، `psapi.dll` (Process Status API — جزء System32) و `msvcp140_codecvt_ids.dll` (عضو همان خانوادهٔ VC++ 2015+ که msvcp140/vcruntime140 از قبل مجاز شمرده می‌شدند؛ msvcp140 آن را delay-load می‌کند و llama-server هرگز به آن مسیر نمی‌رسد).
+- **اصلاح:** فهرست SYSTEM_DLLS با همین سه مورد + بقیهٔ اعضای خانوادهٔ VC++ redist (`msvcp140_2`, `msvcp140_atomic_wait`, `concrt140`, `vcomp140`) و چند DLL کلاسیک سیستم (`ncrypt`, `dnsapi`, `wintrust`) کامل شد. **سخت‌گیری برای DLLهای خود llama.cpp دست‌نخورده ماند** — اگر `llama.dll`/`ggml-base.dll`/`libcurl-x64.dll` کنار موتور نباشند، بیلد همان‌جا FAIL می‌شود (تست شد).
+- **تور ایمنی اجرا:** اگر روی ویندزِ بدون VC++ Redistributable موتور بالا نیاید، پیام فارسی با لینک رسمی مایکروسافت (`aka.ms/vs/17/release/vc_redist.x64.exe`) نمایش داده می‌شود — دیگر نه دیالوگ مبهم DLL، نه سکوت.
+- سناریوی دقیقِ لاگ مالک (همان سه FAIL) به‌صورت سنتزی بازتولید و PASS شدنش تست شد؛ دانلود نیمه‌کارهٔ موتور روی دستگاه مدیر سر جای خود است و بیلد از همان‌جا ادامه می‌یابد.
+
+#### اندروید: محیط چت واقعاً چت شد
+- **باگ ریشه‌ای یافت شد:** خطای خواندن تاریخچهٔ گفت‌وگو (قطع PC یا 403) به کانتینری یتیم رندر می‌شد که هرگز نمایش داده نمی‌شد → صفحه برای همیشه روی «در حال خواندن گفت‌وگو…» می‌ماند و چت «کار نکننده» به نظر می‌رسید. حالا همهٔ مسیرها (خالی/خطا/مستقل) به حالت خوش‌آمد می‌روند.
+- **UI/UX بازسازی شد:** نوار پایینِ همیشه‌نمایان = ورودی گرد بزرگ + دکمهٔ اصلی «بفرست» (و کلید ارسال کیبورد هم می‌فرستد) + دکمهٔ میکروفون رنگی (طلایی هنگام شنیدن). سربرگ جمع‌وجور با وضعیت زنده («وصل به رایانهٔ فروشگاه» / «مدل محلی روی خود گوشی · آماده ✓») و کلید حالت صوتی.
+- **حالت خوش‌آمد:** پیام معرفی + پیشنهادهای آمادهٔ لمسی («وضعیت فروشگاه امروز چطوره؟»، «چه کالایی نزدیک انقضاست؟»، «فردا صبح یادم بنداز سفارش شیر بدم»، «متن پیامک یادآوری مشتری‌ها را با هم ببینیم»).
+- **صوتی درست شد:** بعد از دادن مجوزٔ میکروفون، شنیدن خودش شروع می‌شود (قبلاً باید دوباره می‌زدید — «کار نمی‌کند» می‌نمود)؛ ردِ مجوز هم پیام صریح فارسی می‌دهد.
+- **ورودی برجسته:** دکمهٔ اصلی «💬 گفت‌وگو با مغز فروشگاه» در هر دو حالت وصل/مستقل، بالای صفحهٔ مغز.
+- دکمه‌های تأیید/ویرایش/رد و چیپ یادآوری (v4.4.0) دست‌نخورده ماندند.
+
+#### مدل در بخش هوشمندی هم عمل می‌کند (نه فقط چت)
+- **`/api/brain/briefing`** — «تحلیل مغز فروشگاه»: روایت کوتاه فارسی برای مدیر، نوشتهٔ خود مدل محلی روی نتایج ممیزی‌شدهٔ پاس پرواکتیو (کارت‌های باز، تصمیم‌ها، یادآوری‌های سررسیدشده) با **دروازهٔ عدد** (هر عددی که از داده‌ها نیامده → کل روایت مردود و متن قطعی جایگزین)، کش ~۱۵ دقیقه.
+- ورکر مغز (هر ۱۵ دقیقه) بریفینگ را هم به‌روز می‌کند.
+- اندروید: کارت «تحلیل مغز فروشگاه» با بج «زنده» بالای صفحهٔ هوش فروشگاه + دکمهٔ «گفت‌وگو دربارهٔ این تحلیل».
+- پنل وب: همان کارت بالای صفحهٔ هوشمندی + دکمهٔ به‌روزرسانی.
+
+- Tests: جدید `test_v45_round13.py` (۱۴ تست — بازتولید دقیق لاگ ویندوز، حفظ سخت‌گیری، سازندهٔ چت/خوش‌آمد/میکروفون، بریفینگ + گراوندینگ + کش + سیم‌کشی هر دو صفحه). مجموعهٔ کامل **۸۰۲ passed / 1 skipped** (رکورد).
+- `releases/android/SupermarketMobile-4.5.0.apk` (versionCode 40500، هر دو ABI، همان گواهی → به‌روزرسانی درجا). ویندوز: `ساخت-فایل-نصب.bat` را دوباره اجرا کنید — آرشیو موتور از همان دانلود قبلی ادامه می‌یابد و این بار تأیید DLL پاس می‌شود.
+
+## [4.4.0] - 2026-09-24
+
+### قدرت‌های مدیر: چتِ انسانی، دسترسی به همه‌جای برنامه، یادآوری با پیامک، تأیید دکمه‌ای
+
+#### اندروید: ریشهٔ «آماده است ولی می‌گوید مدل تأییدشده نیست»
+- **Root cause:** `brain_model_state` prefs یک JSONObject به ازای هر مدل نگه می‌دارد و `optString()` روی مقدارِ OBJECT بی‌صدا fallback («») برمی‌گرداند — یعنی `ready()`/`readySpec()`/`autoSetup` همیشه «» می‌دیدند در حالی که بِج ( تغذیه‌شده از listener زنده) می‌گفت آماده. اصلاح: `optJSONObject(id).optString("state","")` — سمت نوشتن (`putState`) از قبل دقیقاً همین قالب را می‌نوشت؛ خواننده حالا با نویسنده هم‌قالب است.
+- **کارت‌های دانلود پس از نصب حذف می‌شوند** (خواست صریح مدیر): وقتی `readySpec()` مدل تأییدشده برگرداند، تبِ مدل فقط «یک» کارت نصب‌شده نشان می‌دهد (آیکن، «… نصب و تأیید شده»، مگابایت، بِج سبز «آماده»، «حذف فایل مدل» با تأیید) و return می‌کند — کارت‌های دریافت و توضیحات فقط وقتی هست که هیچ مدلی نصب نیست.
+
+#### چت: مدل، اولِ اول یک مدل زبانی است
+- «سلام» دیگر گزارش موجودی نمی‌دهد: تعارف/احوال‌پرسی/تشکر/خداحافظی با پاسخ طبیعی و کوتاه و آنی جواب می‌گیرند (`_smalltalk_answer` در planner، کنارِ جواب‌های هویتی v4.3.1)؛ سؤال‌های بی‌ربط هم محاوره‌ای جواب می‌گیرند. قالب چهاربخشی (وضعیت/دلیل/پیشنهاد/اقدام بعدی) فقط برای تصمیم‌های واقعی فروشگاهی.
+- `SYSTEM_PROMPT` بازنویسی شد: «تو در درجهٔ اول یک مدل زبانی هستی که با صاحب فروشگاه گفت‌وگو می‌کند» + قواعد قطعی قبلی (عددسازی ممنوع، صداقتِ حالت محلی، اولویت سیاست‌ها).
+
+#### قدرت‌های جدید مغز (با تأیید مدیر در چت)
+- **`get_setting` / `set_setting`** — مشورت و ثبت تنظیم‌های مجاز (لیست‌سفید: متون پیامک یادآوری/بدهی/بازگشت، شمارهٔ مدیر، فاصلهٔ ارتقای یادآوری، نام فروشگاه). کلیدهای محرمانه (مثل رمز پیامک) هرگز در فهرست نیستند. `set_setting` کلاس APPROVAL است — با دکمهٔ «تأیید» ذخیره می‌شود.
+- **`sms_draft`** — پیش‌نویس پیامک به یک مشتری: تصمیم WAITING_APPROVAL می‌سازد؛ ارسالِ واقعی فقط از مسیر ممیزی‌شدهٔ `personal_sms` و فقط با تأیید مدیر. تصمیمِ ساخته‌شده در ابزار، به پاسخ چت هم وصل می‌شود (دکمه‌ها زیر همان پیام).
+- **دکمه‌های شیشه‌ای زیر پیام چت (اندروید)** — هر پاسخی که تصمیمِ نیازمند تأیید داشته باشد: «تأیید» (اجرا از طریق `/brain/decisions/{id}/approve`)، «ویرایش» (پرسیدن تغییر و ارسال مجدد)، «رد». یادآوریِ ثبت‌شده در همان پاسخ هم به‌صورت چیپ طلایی دیده می‌شود.
+
+#### یادآوری‌ها: همان حلقه‌ای که مدیر توصیف کرد
+- «فردا … یادم بنداز» → ابزار `create_followup` → در سررسید، نوتیفیکیشن پاپ‌آپی روی گوشی (`ReminderRx`، کانال HIGH، دکمه‌های «انجام شد» / «دوباره یادآوری (۲ ساعت)»؛ poll دوره‌ای از `/brain/reminders/due` داخل Checker).
+- بی‌پاسخ ماند → بعد از `brain.reminder_escalate_hours` (پیش‌فرض ۳ ساعت) پیامک به شمارهٔ مدیر (`brain.manager_phone`) و تکرار در هر بازه تا تسویه — «اگه جواب نداد بازم پیامک کنه». «دوباره یادآوری کن» ساعتِ سررسید را جلو می‌برد و پاپ‌آپ برمی‌گردد؛ «انجام شد» حلقه را می‌بندد.
+- مهاجرت idempotent جدید (`b7e9f1a3c5d8`): ستون `next_sms_at` روی `brain_followups`.
+
+#### مغز همیشه در حال تحلیل است
+- ورکر دائمی `brain-worker` (هر ۱۵ دقیقه، daemon، محافظ‌دار، kill-switch: `SUPERMARKET_BRAIN_WORKER=0`): یک پاس `proactive.evaluate` — انقضا، افت فروش، نقدینگی، پنجره‌های اندازه‌گیری — که همان حلقهٔ یادآوری/پیامک هم داخلش اجرا می‌شود.
+
+- Tests: جدید `test_v44_owner_powers.py` (۱۶ تست — تعارف/سلام، لیست‌سفید تنظیم‌ها، پیش‌نویس پیامک، ارتقای پیامکیِ یادآوری بی‌پاسخ + snooze + ack، APIهای یادآوری، ورکر، دکمه‌های تأیید اندروید، رگرسیونِ باگ org.json). مجموعهٔ کامل **788 passed / 1 skipped**. تست‌های پین‌شده به نسخه/هدِ مهاجرت به‌روز شدند.
+- `releases/android/SupermarketMobile-4.4.0.apk` (versionCode 40400، هر دو ABI، همان گواهی → به‌روزرسانی درجا). ویندوز: نصب‌کننده از همین درخت دوباره ساخته شود (بدون تغییر موتور — فقط نسخه).
+
+## [4.3.3] - 2026-09-24
+
+### ویندوز: «llama.dll was not found» — DLLهای موتور واقعاً داخل نصب‌کننده
+- **Root cause:** the official llama.cpp Windows build is a DYNAMIC build — llama-server.exe imports `llama.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `libcurl-x64.dll`… — and `prepare_engine` extracted EXACTLY ONE file from the official archive: the exe. The DLLs were thrown away, so the shop PC failed at launch with the owner's exact error list.
+- **The engine now ships complete:** the extractor takes llama-server.exe AND every DLL from the official archive, then verifies the ACTUAL PE import graph — a pure-stdlib parser (`scripts/model/verify_engine.py`) reads every file's import table (imports + delay-loads), recurses into the bundled DLLs, and requires each dependency to be either bundled next to the exe or a Windows system DLL. A half engine FAILS the build (exit 1, Persian list) — it must never ship, because the brain's autostart would pop DLL dialogs on every launch.
+- **verify_setup cross-checks the final Setup.exe** too: if an engine is present, its import graph must pass, `engine.json` must say `complete: true`, and `model_payload.iss` must carry the `runtime\*` line that packs the DLLs.
+- **Old markers bust themselves:** a v4.2-era `engine.json` (exe only — what the owner's machine has right now) is detected as incomplete and the engine is RE-FETCHED on the next build instead of short-circuiting.
+- **Clean degradation:** if the engine download fails, the partial archive is deleted so Inno never packs a half zip; the build continues without an engine (the model still ships, the brain says so honestly).
+- **Android needs nothing of this** — its engines are STATIC ELFs (no PT_INTERP, no PT_DYNAMIC ⇒ no shared-library imports at all), test-pinned since 4.1.0 and re-asserted by name this round for both ABIs. No DLL-style prerequisite can exist on Android by construction.
+- Tests: new `test_v433_engine_dlls.py` (12 tests — synthetic PE import tables, recursive verification, extraction completeness, old-marker re-fetch, half-engine build failure, verify_setup engine branch, Android static proof). Full suite **771 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.3.apk` (versionCode 40303, both ABIs, preflight PASS, same cert → in-place update; Android code unchanged this round — version-consistent build). Windows: **rebuild once from this tree** — the engine step re-downloads the archive (~a few tens of MB, resume-capable) and packs the full DLL set.
+
+## [4.3.2] - 2026-09-24
+
+### اندروید: موتور واقعاً روشن می‌شود — دروازهٔ رم از «عدد مخصوص رایانه» به نیاز واقعی گوشی
+- **Root cause of «همچنان روشن نمیشه»:** the engine's start gate compared the phone's total RAM against the registry's `minRamMb` (q3_k_m = 3584 MB) — a number written for "4 GB" WINDOWS machines that report 3.8 GB. On the owner's 32-bit ARMv7 phone (2-3 GB) pressing start always failed BEFORE ANY ATTEMPT. The phone's real requirement is the model file + ~400 MB overhead (q3: ≈1281 MB, q4: ≈1465 MB) — both comfortably inside a 2 GB phone.
+- **The gate is now honest and dynamic**: `neededRamMb = weights + 400`, `canRun()`, `tightRam()`; start() ATTEMPTS whenever it can physically fit, refuses with real numbers only when it truly cannot («رم گوشی: X مگابایت، لازم: حدود Y مگابایت — مغز روی رایانهٔ وصل‌شده کامل در دسترس است»).
+- **حالت اقتصادی رم**: when RAM is tight (< 2× model) the engine launches with half the context (1024 instead of 2048) so the KV cache fits comfortably — the note says so in Persian.
+- **OOM death is now explainable**: if Android kills the engine, the message carries the phone's RAM, the model size, the advice, and llama-server's last words.
+- **«کپی گزارش موتور برای پشتیبانی» button** on the FAILED card: one tap copies state + note + RAM + the engine's full output to the clipboard, so a failure can be pasted to support verbatim (no screenshot needed).
+- Network security config verified: cleartext to 127.0.0.1 was already permitted — not the cause.
+- Tests: new `test_v432_engine_ram.py` (7 tests — RAM math vs the registry numbers, gate replacement, economy context, notes, copy-report, versions). Full suite **760 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.2.apk` (versionCode 40302, both ABIs, preflight PASS, same cert → in-place update).
+
+## [4.3.1] - 2026-09-24
+
+### پایداری: موتور اندروید، پنجرهٔ llama-server، چتِ قفل‌شده، هویت مدل
+- **Android engine would not start after the model verified** — three real defects fixed: (۱) start() always took the *recommended* model, so if the user had fetched the other one the engine refused although a model was ready → now `readySpec()` runs whichever model is READY (engine button + standalone chat); (۲) a llama-server that outlived the app still owned port 8081, and every new start spawned a duplicate that failed to bind → the running server is now ADOPTED; (۳) the output drain discarded everything, so a failure had no reason and a slow load looked dead → the last 25 lines are kept, shown on the FAILED card («آخرین پیام‌های موتور»), the load window is 240 s with live «…ثانیه — آخرین پیام موتور» progress notes.
+- **Download honesty (owner's rule):** a touched/corrupt model is NEVER auto-downloaded again (auto only on a truly fresh install — `anyState()` gate); the CORRUPT card says so and offers an explicit manual «دریافت مجدد (فقط با خواست شما)»; a PAUSED download quietly CONTINUES on Wi-Fi when the app opens; stop/resume unchanged and byte-exact.
+- **Windows: the «لوما سرور» black console window the owner saw** — that was llama-server's console (the engine executing the model), spawned without `CREATE_NO_WINDOW`. It is an internal component and is now INVISIBLE; nothing changed functionally.
+- **Windows chat no longer hangs on «در حال بررسی داده‌های فروشگاه…»**: the LLM call timeout drops 180 s → 75 s (a slow shop CPU generating 512 tokens looked like a hang); after the bound, the planner shows the deterministic answer with the honest MODEL_FAILED note (the model is an enhancement, never a dependency). A llama-server that is mid-load (health 503 «loading model») is waited for, not double-spawned.
+- **`Cannot set properties of null (setting 'innerHTML')` never kills a page again**: a display-error shield catches window errors and unhandled rejections, logs them, and reports once per minute in Persian — the app stays usable instead of a dead half-rendered page.
+- **The boot loading now PREPARES the environment (owner's rule)**: while it shows, the six real view endpoints (dashboard, products, stock, expiry, insights, brain status) are fetched in parallel and served one-shot from the warm cache — after entering the app, those pages render instantly instead of starting from «در حال بارگذاری…».
+- **The model introduces itself (owner's explicit answer)**: «تو کی هستی / چه کارهایی می‌توانی / سازنده‌ات کیست» → an instant, complete, fluent Persian answer naming **محمد صدیق خواجوی** as the creator and «مغز فروشگاه سوپری‌من» as its name — deterministic (no model wait on slow CPUs), and the same identity is baked into both system prompts (PC + phone) so the model phrases it the same way.
+- Tests: new `test_v431_reliability.py` (14 tests); stale version pins made version-agnostic. Full suite **750 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.3.1.apk` (versionCode 40301, both ABIs, preflight PASS, same cert → in-place update). Windows: rebuild from this tree.
+
+## [4.3.0] - 2026-09-24
+
+### گفتگوی صوتی با مغز فروشگاه — همان مدل، بدون سنگین‌تر شدن
+- **The owner's constraint is a test now**: the AI model is EXACTLY what it was (q4_k_m «مدل تخصصی سوپری‌من» 1,117 MB / q3_k_m «سوپری‌من لایت» 924 MB, same sha256 pins, same single llama.cpp engine in the APK) — `test_v43_voice.py` fails if anyone adds or grows a model. Voice is pure I/O around the model, built from what the device already has: **nothing new is downloaded**.
+- **گوش (speech-to-text):** the system speech recognizer, Persian `fa-IR`, preferring offline when the device can. In the chat: tap «گفتار», speak — the recognized text lands in the input, and in voice mode the question is sent immediately. Uses `RECORD_AUDIO` (runtime permission, asked once). On Windows/web: the Web Speech API with feature detection — where the environment cannot listen (the packaged WebView), it says so honestly instead of failing silently.
+- **دهان (text-to-speech):** the system TTS reads **THE SAME answer text** aloud («همون متن به صورت صوتی می‌خونه») — not a different generated voice. Voice mode (ON by default) auto-reads every answer; each assistant bubble also gets a «بخوان» button to replay it; a new question cuts the previous reading; going to the background stops the voice (`BrainVoice.onBackground()` — never talk behind the user's back).
+- **Honest degradation (the product's rule):** if the device has no Persian TTS voice, the app says so in Persian and names the exact setting to fix it («زبان و ورودی ← خروجی تبدیل متن به گفتار»); if speech recognition is unavailable, it says that too. No silent failures.
+- **Windows panel gets the same voice UX**: mic button in the composer (fa-IR), «صوتی: روشن/خاموش» toggle in the chat header (persisted), per-answer «بخوان» button, auto-read in voice mode, Persian voice selection from the OS list, pulsing-red listening state.
+- Tests: new `test_v43_voice.py` (10 tests) — model-unchanged lock (registry + jniLibs), BrainVoice wiring (system STT/TTS, fa-IR, offline preference, permission flow, honest notes), chat wiring (mic, voice mode, auto-read PC + standalone answers, «بخوان», stop-on-new-question), manifest permission, background stop, web voice controls, CSS, versions.
+- `releases/android/SupermarketMobile-4.3.0.apk` (versionCode 40300, both ABIs, preflight PASS, same cert → in-place update).
+
+## [4.2.1] - 2026-09-23
+
+### «خطای ساخت فایل نصبی» — و نکات نمایشی مالک
+- **Root cause of the failed build: MY verifier checked the WRONG place for the Inno signature.** The owner's build was PERFECT — Setup.exe 1,153.8 MB with the verified 1,117 MB model inside — but `verify_setup.py` searched the first/last 4 KiB, while the official Inno source (`Shared.Struct.pas`/`Compiler.SetupCompiler.pas`, tag `is-6_7_3`) writes the 64-byte `'Inno Setup Setup Data (6.7.0)'` record at the START of the embedded setup-0 block — several hundred KiB into the file. The verifier failed, the builder DELETED his 8-minute ISCC build. Fixed: scan the first 4 MiB (never the whole file — v4.2.0 also loaded 1.1 GB into RAM), exact-case signature, and **exit codes split**: 1 = model really missing (delete), 2 = structural suspicion only (FAIL but KEEP the file). The builder now records `$Script:LastNativeExitCode` and only deletes on 1. Tests cover the owner's exact file layout.
+- **Builder shows the model download LIVE** (`Invoke-Native -Stream` on the model step + milestone lines every 5%/8s instead of 30s): the console is no longer dead for minutes during the ~1 GB fetch. IDM integration unchanged.
+- **Android: the download shows progress and SURVIVES app close.** New `BrainModelService` (foreground service, `dataSync` type — the same anchor InstallService uses) keeps the process alive with a live status-bar notification («دریافت مدل تخصصی سوپری‌من · ۲۳۴ از ۹۲۴ مگابایت · ۲۵٪ — می‌توانید برنامه را ببندید»); state lands in Prefs as before, so the Model tab progress bar keeps working. If the process dies anyway, the `.part` file resumes from the same byte.
+- **Fixed the invisible progress bar**: `BrainModel.listen()` was a single slot — the second model card's registration silently killed the first card's live updates («هیچ خط پیشرفت نمیاد»). Now named listeners per card (`listen("card:"+id, …)`).
+- **Branding (owner's rule): the model is «مدل تخصصی سوپری‌من»** (q4_k_m) and **«سوپری‌من لایت»** (q3_k_m) everywhere the user looks — backend `display_name` in the registry + `active_name` in status, Windows panel (brain page, settings KPI), Android (model cards, notifications, chat header, auto-setup toast). Technical ids stay in code (they pin file + sha256) but are no longer shown as names.
+- **A proper model icon** (generated, navy/cobalt/gold, matching the app): `res/drawable/ic_model.png` on Android (model cards, chat header, assistant avatar) and `/icons/model-192.png` + `model-512.png` in the web panel.
+- **Chat upgraded on BOTH platforms.** Android: messenger bubbles (user = cobalt→violet gradient on the right, brain = card surface with avatar on the left), timestamps in Persian digits, role labels, animated three-dot «در حال تایپ» indicator. Windows: `.brain-bubble` had NO CSS anywhere (the chat rendered as bare divs) — full messenger styling added (bubbles, avatar, meta, animated typing dots, rounded composer).
+- **The Windows panel now wears the Android palette** (owner: «تک رنگی در ویندوز مشابه تم رنگی اندروید باشد»): midnight navy `#030B1D`/`#091733`, cobalt `#2563EB` → violet `#9654FF` gradient accents, teal `#14B8B0` + gold `#FFC65A` highlights, in BOTH `styles.css` and `theme-pro.css`, dark + light.
+- Tests: `test_v42_model_presence.py` updated to the real Inno layout (16 tests) + new `test_v421_polish.py` (14 tests). Full suite **729 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.2.1.apk` (versionCode 40201, 9,668,191 B, both ABIs, icon packed, preflight PASS, same cert → in-place update). Windows: **rebuild once from this tree** — the already-downloaded model is kept and verified, the 1 GB download does not repeat; the build cannot end on the false marker error again.
+
+## [4.2.0] - 2026-09-23
+
+### «مدل کجاست؟» — مدل واقعاً داخل محصول، مغز از لحظهٔ اول زنده، بدون هیچ ابر
+- **Root cause of the 56 MB Setup.exe: the owner was building/running a 3.8-era tree.** The v4.0+ builder (builder-lib.ps1) already downloads + embeds the model; a 3.8 build never did. On top of that, two real defects made the failure silent and the brain lazy — both fixed below. Nothing about «هیچ فرقی با ۳.۸ نکرد» was by design: the 3.8 binary on the shop PC simply predates the model system.
+- **A modelless Setup.exe can no longer be declared "done"** (`scripts/model/verify_setup.py`, wired into builder-lib.ps1 after ISCC): reads the payload the installer was supposed to carry (model_payload.iss + seed.json), then checks the produced Setup.exe — at least one GGUF [Files] entry, the GGUF exists on disk, Setup.exe ≥ 0.8 × model size (quantized weights barely compress; the owner's 56 MB failure fails at a ~850 MB floor), and the Inno marker present. A failing setup is **deleted**, the build fails loudly, and the Persian error names the recovery paths (resume-capable re-download, or manual `--from-file`). The old check (`$mb -lt 10`) could not see a missing model.
+- **The brain now wakes up by itself at app startup** (`main.py` `_start_brain_autostart`): a daemon thread adopts the installer's preinstalled model (idempotent, re-hashed, never deletes) and warm-starts llama-server, so «مغز فروشگاه» is green on first launch instead of «در دسترس نیست». Fully guarded: no model/engine → no-op; any failure → logged, never blocks startup. Kill-switch `SUPERMARKET_BRAIN_AUTOSTART=0`.
+- **Cloud/GPT settings removed from the UI — the owner's rule.** The روایت ابری panel (provider/base URL/API key/model/presets/تست) is gone from تنظیمات ← هوش فروشگاه, replaced by a **local-model status KPI** (`/brain/model/status`: مدل، کیفیت، حجم، پشتیبان). The insights «مشاور هوش مصنوعی» button now routes to مغز فروشگاه itself. No OpenRouter/Groq/Gemini/Ollama mention remains anywhere in the frontend (test-enforced).
+- **Android: the model speaks and sets itself up.** Chat now sends `prefer_llm:true` (grounding still rejects any number a tool did not produce, server-side). On first open of مغز فروشگاه, if the phone is on **Wi-Fi/unmetered** and no model was ever fetched, the recommended model (~1 GB q3_k_m) **starts downloading by itself** (once per install; mobile data never burns gigabytes unasked). When the PC is unreachable the Brain Center no longer shows a dead screen — it renders a standalone mode with «گفت‌وگو با مغز محلی» + the model tab.
+- Brain status reports the real product version (dynamic `__version__`), not a hardcoded 4.0.0.
+- Tests: new `test_v42_model_presence.py` (14 tests) — verify_setup pass/reject matrix incl. the exact 56 MB case, builder wiring, autostart source + kill-switch, cloud-UI absence, version honesty, Android prefer_llm/self-setup/standalone. Full suite **713 passed / 1 skipped**.
+- `releases/android/SupermarketMobile-4.2.0.apk` (versionCode 40200, 9,606,680 B, both ABIs, install-preflight PASS, same signing certificate as 4.1.x → in-place update). Windows: rebuild with builder-lib.ps1 — it now cannot ship a modelless setup.
+
+## [4.1.1] - 2026-09-23
+
+### رفع «برنامه نصب نشد» روی اندروید
+- **Root cause found and fixed: the APK shipped only arm64-v8a.** A 32-bit phone (armeabi-v7a) refuses the whole package with INSTALL_FAILED_NO_MATCHING_ABIS — the exact «برنامه نصب نشد» the owner reported. The engine is now built for **both** ABIs: `arm64-v8a` AND a static `armeabi-v7a` binary (zig cross-compile, cortex-a7 + NEON, hard-float musl — zig's ARM32 backend cannot compile NEON under soft/softfp, and a fully static binary carries its own ABI so hard-float runs on every ARMv7 device). `scripts/android/build-engine.sh` builds both; `build-apk.sh` packs both.
+- New **install-preflight** (`scripts/android/verify-apk.py`, pure stdlib): checks what PackageManager actually enforces — resources.arsc stored AND 4-byte aligned (Android 11+ rejects the APK otherwise), classes.dex present, zip CRC pass, and which ABIs ship (warns when armeabi-v7a is missing). `build-apk.sh` refuses to call an APK "done" without a PASS; the parity test suite re-runs it against the released APK.
+- Device-side causes that no APK can fix (check these if install still fails): an existing build of the same package with a **different signing key** (uninstall it first), Play Protect («جزئیات ← نصب به هر حال»), a corrupted transfer (compare sha256), or Android below 7.0 (below minSdk).
+- Tests: parity suite now requires BOTH engine ABIs as static ELFs of the right machine (EM_AARCH64=183 / EM_ARM=40) and runs the preflight on the released APK.
+
+## [4.1.0] - 2026-09-23
+
+### اندروید: مدل فعال روی گوشی + «یک مدل، یک سیستم» (درخواست مالک)
+- **The model is now ACTIVE on the phone.** New `BrainEngine.java`: the app ships the SAME engine the PC runs — llama.cpp `llama-server` (same pinned tag `b6283` as the Windows installer) — built from the official source for arm64 as a fully static binary (`lib/arm64-v8a/libllamaserver.so`, ~7 MB; APK stays 5.3 MB) and executed from `nativeLibraryDir` as a subprocess over HTTP on `127.0.0.1:8081`, a faithful port of the PC's `LlamaCppProvider` (same launch flags, same `/health`, same `/v1/chat/completions` body, same "fast" sampling preset, same `<think>`-stripping).
+- **One system, not two brains** (the owner's rule): paired with the PC → the PC's brain answers over the full deterministic pipeline; standalone → the SAME model file answers on the phone, labelled «پاسخ از مدل محلی روی خود گوشی — بدون دادهٔ زندهٔ فروشگاه», with the product's system-prompt rules (no invented numbers; وضعیت/دلیل/پیشنهاد/اقدام بعدی) plus the honest no-live-data admission. The model file is byte-identical on both platforms.
+- **No NDK needed**: the engine is cross-compiled with official zig (PyPI `ziglang`) to static aarch64-linux-musl — reproducible via the new `scripts/android/build-engine.sh` (source tarball sha256-pinned; no dl.google.com access required). Verified live in-sandbox with an x86_64 twin build of the same source/flags: it loaded a valid generated Qwen2 GGUF and actually generated tokens over the exact HTTP contract `BrainEngine.java` uses; the arm64 ELF is verified static (no PT_INTERP/PT_DYNAMIC).
+- **ModelScope fallback on Android too**: if Hugging Face is unreachable, the phone downloads the same file (same sha256) from the official Qwen channel on ModelScope — mirroring the v4.0.1 Windows download manager.
+- Model tab gains an engine card (status badge, start/stop, RAM-fit line); the old honest "engine not active in this version" note is replaced by the truth of this version. `AppActivity.onDestroy()` stops the engine (battery honesty).
+- **Parity enforced by tests** (`test_v41_android_parity.py`, 7 tests): Java pins == Model Registry (id/file/urls/sha256/bytes/min-RAM), engine tag == Windows installer tag, the .so must be a static aarch64 ELF, the APK must pack it + request `extractNativeLibs`, the local prompt must keep the product's rules and honesty.
+- Real signed APK: `releases/android/SupermarketMobile-4.1.0.apk` (versionCode 40100, 5.3 MB, sha256 876bec4a459b930e2557d5e5399450132d4dd409923a64fb9dc2d63e3ac18b95) — same signing certificate as 3.8.0/4.0.0 (installs as an update). Honest remaining: on-device run on a physical phone (no ARM device/emulator here).
+
+### ویندوز: رفع رگرسیون BOM (خطای «PowerShell cannot parse»)
+- The v4.0.1 edit accidentally stripped the UTF-8 BOM from `builder-lib.ps1`; Windows PowerShell 5.1 then read it as ANSI and the whole build died with mojibake "Unexpected token" errors before anything ran (owner report 2026-09-23). BOM restored + new `test_installer_scripts.py` (9 tests) pins it forever: every installer `.ps1` must carry the BOM, decode as UTF-8 and keep consistent CRLF; `.bat` files must not carry one.
+
+## [4.0.1] - 2026-09-23
+
+### مدیر دانلود مدل (درخواست مالک: دانلود با دانلود منیجر و نوار پیشرفت)
+- New `backend/app/services/business_brain/download_manager.py` (stdlib only — no new dependencies): a real download manager with a live progress bar (percent, MB, speed, ETA; ASCII-safe for redirected Windows consoles), 1–16 parallel HTTP Range connections (default 4), **resume after an interruption** via a per-segment control file (`*.part.dl.control.json`), per-segment retries with exponential backoff, single-stream fallback for servers without Range support, and honest per-source failure reporting.
+- **Official fallback source**: Hugging Face first, then ModelScope — Alibaba's own hub, where the Qwen org publishes the same objects (ModelScope reports the identical sha256 for both quants; verified 2026-09-23). This is the publisher's other first-party channel, not a mirror; the pinned-sha256 gate applies to every source equally. `allowed_source()` also tightened: only an exact official host or a subdomain of it passes (`xhuggingface.co`-style lookalikes are refused).
+- **Internet Download Manager**: on Windows, `--downloader auto` (the default) hands the URL to IDMan.exe when IDM is installed — IDM's own window shows the progress bar — and the result is still hash-verified by us afterwards; `builtin`/`idm` force a specific engine. The runtime download (`ModelManager.download`) uses the same manager, with `SUPERMARKET_BRAIN_DOWNLOADER` / `SUPERMARKET_BRAIN_CONNECTIONS` env knobs.
+- `prepare_windows_installer.py`: new `--downloader`/`--connections` flags; a stable `*.part` path so an interrupted installer build resumes instead of re-fetching ~1 GB; UTF-8-safe console output; the llama.cpp engine download goes through the same manager. `builder-lib.ps1` sets `PYTHONUTF8` and explains the IDM/progress/resume behaviour in Persian; the release workflow forces `--downloader builtin` on the runner.
+- Interrupted downloads now KEEP their partial (a `DOWNLOAD_FAILED` no longer deletes it — the final sha256 gate still decides adoption, and the next attempt resumes).
+- Verified live in-sandbox against a real CDN: 4-connection segmented download, a SIGINT-interrupted run resumed from its saved state, and automatic fallback to the second source when the first returned 404 — final hashes matched independent pins. 22 new offline tests (`test_v40_download_manager.py`: local Range-capable HTTP server + injectable clock for the IDM state machine). Full suite: **682 passed, 1 skipped**.
+
+## [4.0.0] - 2026-09-22
+
+### Business Brain — مغز کسب‌وکار (محلی، بدون ابر اجباری)
+- New service `backend/app/services/business_brain/` (26 modules) turning the v3.8.0 analysis engine into a *decision layer*: DATA → BUSINESS STATE → SITUATION → RETRIEVAL → SPECIALIST TOOLS → REASONING → OPTIONS → DECISION → POLICY → APPROVAL → ACTION → VERIFICATION → MEASUREMENT → MEMORY.
+- 8 specialist agents (Finance, Inventory, Sales, Customer, Supplier, Pricing, Operations, Marketing) emit **evidence only** — the brain decides; cross-agent contradictions are detected (BUY_WITHOUT_CASH, DISCOUNT_BELOW_MARGIN, DATA_QUALITY, MARGIN_AND_CASH, …).
+- Tool Registry with 37 tools + 5 action tools; every tool declares name/description/input/output schema, permissions, side effects, reversibility, risk level and data sources. **No LLM → SQL path exists**: the model can only emit tool calls. 32 read-only tools verified against a seeded shop with 0 failures.
+- Five memories (conversation, business facts, structured policies, store profile, decision memory) + follow-up engine and measurement contracts with real outcomes (Positive/Neutral/Negative/Insufficient/Not-Measurable). No online fine-tuning, no fake learning.
+- Deterministic finance only: cash, cheques, payables/receivables, expected collections, margin, profit forecast and option economics all come from the existing services; an unsourced number is rejected (`grounding.py`).
+- Actions go through the existing Action Engine (`insight_actions.py`) unchanged: AUTO / APPROVAL / HIGH_RISK, payments-transfers-deletions always need approval; nothing executes before approval.
+- Decision Center UI (`frontend/brain.js`, nav-gated on `settings.manage`): short Persian cards with بررسی / اجرا / بعداً / رد, reasoning on expand, plus an admin-only chat that never shows tool calls, JSON or model reasoning.
+- Proactive engine: 8 watchers, dedupe + cooldown, ceiling from the `max_active_alerts` policy (0 is allowed), one card per domain, and silence when the shop is healthy — 0 recommendations is a valid answer.
+- 24 `/api/brain/*` routes, all behind the admin gate (`reports.view` + `settings.manage`); cashiers get 403 everywhere; financial/strategy tools raise `ToolDenied` and are traced.
+- Model runtime: `AIProvider` (load/unload/chat/generate/structured_output/tool_call/health_check/benchmark) with llama.cpp over subprocess/HTTP (no heavy Python deps), ModelManager detect→select→download→verify sha256→install→load→benchmark→activate→rollback, hard 2 GB cap (test-enforced), 4096 context by default. Local-only is the default mode.
+- New `scripts/model/fetch_model.py` (list / fetch / `--verify` / `--record`) — models are fetched, never committed.
+- Windows installer carries the model INSIDE it (owner request, 2026-09-23): `scripts/model/prepare_windows_installer.py` downloads the official Qwen GGUF, verifies sha256 against the registry (mismatch = file deleted + build fails — an unverified model never enters a Setup.exe), writes the payload + `seed.json`, and generates the `model_payload.iss` fragment; `setup.iss` installs it into `%USERPROFILE%\SupermarketSystem\brain\models` and (with `--engine`) the official llama.cpp Windows build into `brain\runtime`. The frozen launcher now sets `SUPERMARKET_DATA_DIR` so the model survives launches, and `ModelManager.adopt_preinstalled()` re-hashes the file on first run before installing/activating it (7 new tests in `test_v40_model_seed.py`). `BUILD-SETUP.bat` and the release workflow run this step automatically and refuse to ship a Setup.exe without a verified model.
+- Android 4.0.0 (owner request: APK installs lean, the model downloads after install as app data): new `BrainModel.java` — post-install download from the official Qwen source with a pinned sha256, resumable (Range), full on-device hash verification, corrupt files deleted, stored in the app's private storage. New `BrainScreens.java` — the admin-only Business Brain surface over the same `/api/brain` contract: decision cards (بررسی/اجرا/بعداً/رد + measure), reasoning-on-expand, answer-only chat (never tool calls/JSON/reasoning text), follow-ups, and the local-model manager with honest states (the on-device inference engine is NOT linked in this version and the app says so instead of hiding it). Offline approvals queue locally and replay on reconnect; a server refusal is shown as a conflict, never silently dropped or overwritten. Real signed APK built with the repo's Gradle-less pipeline: `releases/android/SupermarketMobile-4.0.0.apk` (versionCode 40000, 1.3 MB, sha256 992684569918c4cc9d6a55691011e60a75dd52b264bc0286ca0d30805e68158e) — same signing certificate as 3.8.0 (upgrade installs over it), verified by apksigner digest comparison.
+- New tables (migration `d4f6a8b1c2e3`): `brain_messages`, `brain_decisions`, `brain_followups`, `brain_policies`, `brain_model_installs`, `brain_memory_facts`. Additive and idempotent; no existing feature removed and no analyzer rewritten.
+- Docs: AI_BRAIN_ARCHITECTURE, AI_MODEL_RUNTIME, AI_MODEL_INSTALLATION, AI_TOOL_REGISTRY, AI_MEMORY, AI_SECURITY, AI_TESTING, RELEASE_AUDIT_4.0.0.
+- Verified: **660 backend tests pass, 1 skipped (395 s)** — 67 of them new in v4.0 (brain 18, model manager 17, security 12, proactive 10, api 3, installer-model seed 7). **Deviations recorded honestly:** the official `Qwen/Qwen3-1.7B-GGUF` repo publishes only Q8_0 (banned) and no Q4_K_M/Q3_K_M, so the default is the official `Qwen2.5-1.5B-Instruct` GGUF (Q4_K_M default, Q3_K_M for 4 GB devices) — deviation accepted by the owner on 2026-09-23. The Android APK is real and built (same signer as 3.8.0); the Windows Setup.exe still requires a real Windows machine — the model-embedding machinery is ready and verified by tests (see RELEASE_AUDIT_4.0.0.md).
+
+## [3.8.0] - 2026-09-22
+
+- Data Quality Engine wired into Intelligence: Critical findings BLOCK analysis, Medium/Low cut confidence and are audited; DQ status API + tests.
+- Economics honesty: `expected_gain`/money comes only from deterministic calculation (LLM writes narrative only); `economic_impact`/`evidence_strength`/`prediction_uncertainty` tracked separately; invalid numbers rejected before DB.
+- Honest calibration: no positive floors; Positive/Neutral/Negative outcomes with sample counts, MAE/mean-error/direction-accuracy/CI recorded; confidence follows real performance.
+- Action Engine runs VALIDATE → BEGIN/SAVEPOINT → EXECUTE → VERIFY → COMMIT with real rollback, per-action isolation, post-run traceability and pre-declared irreversible ops; partial-failure proof.
+- Measurement Contracts per action (what/baseline/window/success rule) with NOT_MEASURABLE / INSUFFICIENT_DATA / NEGATIVE_OUTCOME states.
+- Real Experiment lifecycle (CREATE → PLAN → ASSIGN → START → EXPOSE → OUTCOME → CLOSE → EVALUATE): immutable assignments, assigned ≠ exposed, missing ≠ zero, linked to Insight, no fabricated results.
+- SMS retry honesty: `next_retry_at` + exponential backoff with jitter, due-only dispatch, claim-based double-send control, stuck-worker recovery.
+- New unified Hardware Integration Layer: 6 adapters (receipt printer, cash drawer, barcode scanner, customer display, label printer, scale) over pluggable transports (TCP/serial/file/mock); USB discovery, pinned-PyPI-only driver manager (no untrusted downloads), UNSUPPORTED_DEVICE honesty, health tracking + reconnect backoff, self-tests with confirmations.
+- CI: new `tests.yml` gate (full suite on every push/PR) alongside the Windows/Android release workflows; activation still needs a maintainer with the `workflow` scope (see `scripts/activate-ci.sh`).
+- Verified: 593 backend tests passed, 1 skipped; real release-signed APK `SupermarketMobile-3.8.0.apk` (versionCode 30800, same signer as prior releases). Setup.exe still needs the real `windows-latest` CI run — no final Release yet (see RELEASE_AUDIT_3.8.0.md).
+
+
+## [3.7.0] - 2026-09-22
+
+- Database migrations are Alembic-only: strict `upgrade_schema()` with legacy bridge, `SCHEMA_DRIFT` audit on divergence, restore upgrades before healing; catch-up migration makes `alembic upgrade head` equal the models (new `Experiment` + `SmsMessage.next_retry_at`).
+- Till security (§34): cost figures (profit, buy prices, at-cost valuations, accounting block) are redacted to `null` for users without `pricing.view_cost` across reports, batches, stock, invoices, POS, product detail, warehouses and mobile sync; `/reports/profit` requires the permission outright; web + mobile UIs render redacted values as «—» and hide the finance/profit sections they may not see.
+- POS integrity (§6–§8, §37): cart line prices are always resolved from the batch (caller-supplied prices overwritten); manager-configured manual-discount cap (`pos.max_manual_discount_pct`, `DISCOUNT_OVER_POLICY`); concurrent checkouts keep unique sequential invoice numbers.
+- Setup hardening: production refuses the factory `SECRET_KEY`; the wizard cannot complete without admin credentials (`ADMIN_REQUIRED`); `Permissions-Policy` header shipped.
+- Verified: 542 backend tests passed, 1 skipped. No new APK or Setup.exe in this environment — artifacts require the real CI builds (see RELEASE_AUDIT_3.7.0.md).
+
+
 ## [3.6.6] - 2026-09-21
 
 - Desktop workspace redesign: adaptive grids, forms, tables, compact navigation, accessible focus and light/dark layouts.

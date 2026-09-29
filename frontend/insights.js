@@ -43,12 +43,17 @@
 
   function card(i, compact) {
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
+    /* v1.0.0 (RASA) — «چرا این پیشنهاد آمد؟» — مالک باید بداند چه چیزی دیده شده و
+     * چه چیزی در خطر است، نه فقط یک تیتر. متن از دادهٔ خود بینش ساخته می‌شود
+     * (`narrative` اگر موتور نوشته باشد، وگرنه خلاصهٔ شواهد). */
+    const why = String(i.narrative || (i.evidence && (i.evidence.summary || i.evidence.reason)) || "").trim();
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
       <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}
+      ${compact || !why ? "" : `<p class="ins-why">${ico("sparkle", 14)}<span><b>چرا؟</b> ${esc(why)}</span></p>`}
       <div class="ins-foot">${gainLine(i)}<span class="muted">${faDateTime(i.created_at, false)}</span></div>
       <div class="ins-actions"></div>`;
     const act = c.querySelector(".ins-actions");
@@ -61,6 +66,8 @@
       }
     } else if (i.status === "ACCEPTED" && can("reports.view")) {
       act.append(el("button", { class: "btn btn-sm", text: "اندازه‌گیری الان", onclick: async () => { try { await api(`/insights/${i.id}/measure`, { method: "POST" }); toast("اندازه‌گیری به‌روز شد"); } catch (e) { toast(e.message, "err"); } refreshCurrent(); } }));
+      // «بررسی» — همان سیستم بررسی فروشگاه: آیا اثری که اجرا کردیم هنوز سر جایش است؟
+      act.append(el("button", { class: "btn btn-sm btn-ghost", text: "بررسی", onclick: () => healthDialog() }));
     }
     return c;
   }
@@ -118,8 +125,20 @@
       parts.push(`<div class="ev-kpis"><div><span class="muted">تعداد راکد</span><b>${fa(ev.qty)}</b></div><div><span class="muted">سرمایهٔ قفل‌شده</span><b class="err">${money(ev.locked_value)}</b></div><div><span class="muted">عمر در انبار</span><b>${fa(ev.age_days)} روز</b></div><div><span class="muted">فروش ۶۰ روز</span><b>${fa(ev.sold_60d)}</b></div></div>`);
       parts.push(svgBars([{ label: "قفل در این کالا", value: Number(ev.locked_value), color: "#e5484d" }, { label: "کل کالاهای راکد", value: Number(ev.total_locked), color: "#f5a524" }]));
     } else if (k === "EXPIRY_LADDER") {
-      parts.push(`<div class="ev-kpis"><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
-      if (Array.isArray(ev.ladder)) parts.push(svgBars(ev.ladder.map((l, n) => ({ label: `از روز ${fa(l.from_day)} — ${fa(l.percent)}٪ تخفیف`, value: Number(l.price), color: PALETTE[n % PALETTE.length] }))));
+      // v4.8.0 — تایم‌لاین تاریخ‌دار: هر پله یک تاریخ شمسی و قیمت مشخص دارد، پس مدیر
+      // می‌داند دقیقاً چه روزی چه تخفیفی اعمال می‌شود (نه «روز صفر، وقتی دیر شده»).
+      const mode = ev.mode || "ladder";
+      const modeTxt = mode === "waste" ? "تاریخ گذشته — ثبت ضایعات"
+        : mode === "risk_only" ? "بدون تخفیف — بازبینی دستی قفسه"
+          : "تخفیف پله‌ای زمان‌بندی‌شده";
+      parts.push(`<div class="ev-kpis"><div><span class="muted">وضعیت</span><b class="${mode === "ladder" ? "ok" : "err"}">${modeTxt}</b></div><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
+      if (Array.isArray(ev.timeline) && ev.timeline.length) {
+        parts.push(`<div class="table-wrap"><table class="tbl"><thead><tr><th>پله</th><th>تاریخ (شمسی)</th><th>تخفیف</th><th>قیمت پیشنهادی</th><th>کار</th></tr></thead><tbody>${ev.timeline.map((t) => `<tr><td>${fa(t.step)}</td><td>${esc(t.jdate || t.date || "")}</td><td>${t.percent != null ? fa(t.percent) + "٪" : "—"}</td><td>${t.suggested_price != null ? money(t.suggested_price) : "—"}</td><td class="muted">${esc(t.label || "")}</td></tr>`).join("")}</tbody></table></div>`);
+        const priced = ev.timeline.filter((t) => t.suggested_price != null);
+        if (priced.length > 1) parts.push(svgLine([{ name: "قیمت بچ در هر پله", color: "#f5a524", points: priced.map((t) => Number(t.suggested_price)), area: true }], { labels: priced.map((t) => t.jdate || null), height: 140 }));
+      }
+      if (ev.velocity_per_day != null) parts.push(`<p class="muted">سرعت واقعی فروش (محافظه‌کارانه — کندترین نرخ ۷/۲۸/۹۰ روز): ${fa(ev.velocity_per_day)} عدد در روز · پیش‌بینی فروش تا انقضا: ${fa(ev.will_sell)} عدد${ev.final_runway_days != null ? ` · آخرین پله ${fa(ev.final_runway_days)} روز پیش از انقضا` : ""}</p>`);
+      if (ev.urgent) parts.push(`<p class="err"><b>امروز آخرین فرصت فروش این بچ است.</b></p>`);
     } else if (k === "CROSS_SELL") {
       parts.push(`<div class="ev-kpis"><div><span class="muted">هم‌خرید</span><b>${fa(ev.pair_count)}</b><span class="muted">از ${fa(ev.invoices)} فاکتور</span></div><div><span class="muted">اطمینان</span><b>${pct(ev.confidence)}</b></div><div><span class="muted">ضریب هم‌خرید</span><b class="ok">${fa(ev.lift)}×</b></div><div><span class="muted">پشتیبانی</span><b>${pct(ev.support)}</b></div></div>`);
       parts.push(donut([{ label: "با هم", value: Number(ev.pair_count), color: "#3dd6c4" }, { label: "جدا", value: Math.max(0, Number(ev.invoices) - Number(ev.pair_count)), color: "#2a3140" }], `${pct(Number(ev.pair_count) / Math.max(1, Number(ev.invoices)))} فاکتورها`));
@@ -260,6 +279,7 @@
     openModal(`<div class="ins-detail">
       <header><span class="ins-ic">${ico(iconOf(i), 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
       ${i.narrative ? `<div class="ins-narr">${esc(i.narrative).replace(/\n/g, "<br/>")}</div>` : `<p>${esc(i.body)}</p>`}
+      ${guideBlock(i)}
       ${abBlock(i)}
       ${predictBlock(i)}
       <h4>اقدام‌ها</h4><ul class="ins-list">${(i.actions || []).map((a) => `<li>${esc(a.label)}</li>`).join("") || "<li class='muted'>—</li>"}</ul>
@@ -269,6 +289,25 @@
         <button class="btn" onclick="closeModal()">بستن</button></div>
     </div>`);
     const b = $("#ins-acc"); if (b) b.onclick = () => { closeModal(); acceptDialog(i); };
+  }
+
+  // v4.6.0 — the complete plain-language guide (owner's rule: «توضیحات کامل
+  // باشد که هر کسی درک کند — کاربر چه می‌داند مشتری VIP چیست؟»).
+  function guideBlock(i) {
+    const g = i.guide;
+    if (!g || !g.what) return "";
+    const section = (label, text) => text ? `<div class="ins-guide-sec"><b>${esc(label)}</b><p style="margin:4px 0 0;line-height:1.9">${esc(text)}</p></div>` : "";
+    const how = (g.how || []).length
+      ? `<div class="ins-guide-sec"><b>چه کاری انجام دهید؟ (گام‌به‌گام)</b><ol style="margin:6px 0 0;padding-inline-start:20px;line-height:1.9">${g.how.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></div>`
+      : "";
+    return `<div class="card" style="margin:12px 0;background:rgba(20,184,176,.06);border:1px solid rgba(20,184,176,.25)">
+      <h3 style="font-size:14.5px;margin:0 0 4px">این پیشنهاد یعنی چه؟ (راهنمای کامل)</h3>
+      ${section("تعریف", g.what)}
+      ${section("چرا برای فروشگاه شما مهم است؟", g.why)}
+      ${how}
+      ${section("اگر انجام نشود چه می‌شود؟", g.if_ignored)}
+      ${section("مثال ملموس", g.example)}
+    </div>`;
   }
 
   function acceptDialog(i) {
@@ -292,6 +331,46 @@
     };
   }
 
+  /** v4.8.0 — «سیستم بررسی فروشگاه»: آیا اقدام‌هایی که «اجرا» کردیم هنوز برقرارند؟
+   *
+   *  درخواست مالک: «دکمهٔ اجرا باید واقعاً کار را انجام دهد» و «یک سیستم بررسی کلی
+   *  برای مسیر پیشنهاد → اجرا». هر اجرا با پارامترهایش ذخیره می‌شود، همان لحظه
+   *  بازبینی می‌شود، و کارگر پس‌زمینه هم اگر اثرش از بین برود خبر می‌دهد.
+   */
+  const HEALTH_L = { OK: ["برقرار", "ok"], LOST: ["از بین رفته", "err"], FAILED: ["اجرا ناموفق", "err"], UNVERIFIED: ["بدون بازبینی", "warn"], UNKNOWN: ["نامعلوم", "warn"], WARNING: ["قابل بازبینی", "warn"] };
+  const ACT_L = { markdown_ladder: "تخفیف پله‌ای", write_off_waste: "ثبت ضایعات", set_price: "تغییر قیمت", set_min_stock: "حد موجودی", reorder_note: "لیست سفارش", shelf_note: "چیدمان قفسه", note: "یادداشت", pos_nudge: "پیشنهاد صندوق", enable_nudges: "فعال‌سازی پیشنهاد صندوق", sms_buyers: "پیامک به خریداران", visit_sms: "پیامک دعوت", debt_reminders: "یادآوری بدهی", personal_sms: "پیامک شخصی", vip_coupons: "کوپن VIP", winback_sms: "پیامک بازگشت", flash_sale: "فروش ویژه", bundle_campaign: "باندل", threshold_campaign: "کمپین سقف خرید", tag_customers: "برچسب مشتری", set_credit_limit: "سقف اعتبار", set_setting: "تنظیمات" };
+  async function healthDialog() {
+    let rep;
+    try { rep = await api("/insights/actions/report"); } catch (e) { toast(e.message, "err"); return; }
+    const c = rep.counts || {}, rows = rep.rows || [];
+    const body = rows.flatMap((r) => (r.actions || []).map((a) => {
+      const [label, cls] = HEALTH_L[a.health] || [a.health || "—", ""];
+      return `<tr><td>${esc(r.title || "")}</td><td>${esc(ACT_L[a.type] || a.type || "")}</td><td><span class="badge ${cls === "ok" ? "badge-green" : cls === "err" ? "badge-red" : "badge-amber"}">${esc(label)}</span></td><td class="muted">${esc(a.health_detail || a.detail || "")}</td></tr>`;
+    })).join("");
+    openModal(`<div class="ins-detail">
+      <h3>بررسی اجراها — آیا کارها سر جایشان مانده‌اند؟</h3>
+      <p class="muted">هر «اجرا» با پارامترهایش ثبت می‌شود و همان لحظه بازبینی می‌شود. اگر بعداً کسی قیمت، حد موجودی یا تنظیمات را دستی تغییر دهد یا بچ پاک شود، اینجا دیده می‌شود (کارگر پس‌زمینه هم یک‌بار اعلان می‌دهد).</p>
+      <div class="ev-kpis">
+        <div><span class="muted">برقرار</span><b class="ok">${fa(c.OK || 0)}</b></div>
+        <div><span class="muted">از بین رفته</span><b class="err">${fa(c.LOST || 0)}</b></div>
+        <div><span class="muted">اجرای ناموفق</span><b class="err">${fa(c.FAILED || 0)}</b></div>
+        <div><span class="muted">بدون بازبینی / نامعلوم</span><b class="warn">${fa((c.UNVERIFIED || 0) + (c.UNKNOWN || 0))}</b></div>
+      </div>
+      ${body ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>پیشنهاد</th><th>اقدام</th><th>وضعیت</th><th>جزئیات</th></tr></thead><tbody>${body}</tbody></table></div>` : `<p class="muted">هنوز اقدام اجراشده‌ای ثبت نشده است.</p>`}
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn btn-primary" id="hs-scan">بازبینی همین حالا</button><button class="btn" onclick="closeModal()">بستن</button></div>
+    </div>`);
+    const btn = $("#hs-scan");
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const r = await api("/insights/actions/health-scan", { method: "POST" });
+        const lost = r.lost || [];
+        toast(lost.length ? `${fa(lost.length)} اقدام از بین رفته پیدا شد: ${lost.map((x) => x.title).slice(0, 3).join("، ")}` : "همهٔ اقدام‌های اجراشده برقرارند", lost.length ? "err" : "ok");
+        closeModal(); healthDialog();
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; }
+    };
+  }
+
   function refreshCurrent() { if (state.view === "insights") RENDER.insights(); else if (state.view === "dashboard") RENDER.dashboard(); }
 
   // ---------------------------------------------------------------- insights view
@@ -310,10 +389,10 @@
       try { const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created || 0)} پیشنهاد جدید، ${fa(r.refreshed || 0)} به‌روزرسانی`); if (state.view === "insights") await RENDER.insights(); }
       catch (e) { toast(e.message, "err"); } finally { button.disabled = false; }
     } }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "بررسی اجراها", onclick: healthDialog }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
-    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "مشاور هوش مصنوعی", onclick: aiAdvisor }));
     let s, list, gr;
     try {
       [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
@@ -349,7 +428,7 @@
         <div class="ins-kpi"><span class="muted">اثر اندازه‌گیری‌شدهٔ کل</span><b class="${s.total_gain >= 0 ? "ok" : "err"}">${money(s.total_gain)}</b><span class="muted">${fa(s.measured)} اقدام اندازه‌گیری‌شده</span></div>
         <div class="ins-kpi"><span class="muted">اثر ۳۰ روز اخیر</span><b>${money(s.month_gain)}</b><span class="muted">${share || "—"}</span></div>
         <div class="ins-kpi"><span class="muted">پیشنهادهای باز</span><b>${fa(s.open)}</b><span class="muted">برآورد ${money(s.expected_open)} / ماه</span></div>
-        <div class="ins-kpi"><span class="muted">موتور تحلیل</span><b>${s.ai && s.ai.online ? "محلی + روایت ابری" : "محلی (آفلاین)"}</b><span class="muted">${s.ai && s.ai.online ? esc(s.ai.model) : "روایت متنی داخلی"}</span></div>
+        <div class="ins-kpi"><span class="muted">موتور تحلیل</span><b>محلی (آفلاین)</b><span class="muted">مدل اختصاصی فروشگاه — بدون سرویس خارجی</span></div>
       </div>
       ${s.by_kind && s.by_kind.length ? `<div class="ins-bars">${s.by_kind.map((k) => `<div class="ins-bar"><span>${esc(k.label)}</span><i style="width:${Math.min(100, Math.round(Math.abs(k.gain) / Math.max(1, Math.abs(s.by_kind[0].gain)) * 100))}%" class="${k.gain >= 0 ? "" : "neg"}"></i><b>${money(k.gain)}</b></div>`).join("")}</div>` : ""}`;
   }
@@ -358,9 +437,9 @@
   async function aiAdvisor() {
     const s = await api("/insights/summary");
     if (!s.ai || !s.ai.online) {
-      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">هنوز سرویسی انتخاب نشده. از تنظیمات ← هوش فروشگاه یکی از سرویس‌های رایگان (OpenRouter، Groq، Gemini یا Ollama محلی) را انتخاب کنید و کلید رایگان را وارد کنید.</p>
-        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به تنظیمات</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
-      $("#aa-go").onclick = () => { closeModal(); go("settings"); setTimeout(() => { const b = document.querySelector('[data-cat="ai"]'); if (b) b.click(); }, 200); };
+      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">مشاور این محصول همان «هوش فروشگاه» است — تحلیل محلی روی دادهٔ خودتان. هر پیشنهاد را از بخش هوش فروشگاه باز کنید؛ توضیح کامل آن، دلیل و طرز اجرا آنجاست.</p>
+        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به هوش فروشگاه</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
+      $("#aa-go").onclick = () => { closeModal(); go("insights"); };
       return;
     }
     openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی <span class="muted" style="font-size:12px">(${esc(s.ai.model)})</span></h3>
@@ -420,7 +499,7 @@
           if (!r.length) { host.innerHTML = ""; host.classList.add("hidden"); return; }
           host.classList.remove("hidden");
           host.innerHTML = `<span class="nudge-ic">${ico("sparkle", 16)}</span><span class="nudge-txt">پیشنهاد به مشتری:</span>` +
-            r.map((n) => `<button class="nudge-chip" title="چون ${esc(n.because)} در سبد است" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}</button>`).join("");
+            r.map((n) => `<button class="nudge-chip" title="${n.near_expiry ? esc(n.reason || "نزدیک انقضا") : "چون " + esc(n.because) + " در سبد است"}" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}${n.near_expiry ? ` <span style="opacity:.8">⏰ ${fa(n.days_left)} روز</span>` : ""}</button>`).join("");
         } catch (_) { host.classList.add("hidden"); }
       }, 350);
     },
@@ -468,43 +547,18 @@
       const g = (k) => { const r = allRows.find((x) => x.key === k); return r ? (r.value || "") : ""; };
       const card = el("div", { class: "card" });
       card.innerHTML = `<h3>${ico("sparkle", 18)} هوش فروشگاه</h3>
-        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود. «روایت ابری» اختیاری است: فقط متن گزارش‌ها را زیباتر می‌نویسد و هیچ شمارهٔ تلفن یا نام مشتری ارسال نمی‌شود.</p>
+        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود — با موتور تحلیل خود برنامه، بدون هیچ سرویس خارجی؛ هیچ داده‌ای از دستگاه خارج نمی‌شود.</p>
         <div class="form-grid">
           <label>موتور تحلیل<select id="ai-en"><option value="true" ${g("insights.enabled") !== "false" ? "selected" : ""}>فعال</option><option value="false" ${g("insights.enabled") === "false" ? "selected" : ""}>غیرفعال</option></select></label>
           <label>فاصلهٔ تحلیل (ساعت)<input id="ai-int" type="number" min="1" max="48" value="${esc(g("insights.interval_hours") || "6")}"/></label>
           <label>پیشنهاد لحظه‌ای در صندوق<select id="ai-nd"><option value="true" ${g("insights.pos_nudges") === "true" ? "selected" : ""}>نمایش</option><option value="false" ${g("insights.pos_nudges") !== "true" ? "selected" : ""}>خاموش</option></select></label>
-          <label>روایت ابری<select id="ai-pr"><option value="" ${!g("ai.provider") ? "selected" : ""}>خاموش (متن داخلی)</option><option value="openai_compatible" ${g("ai.provider") === "openai_compatible" ? "selected" : ""}>سرویس سازگار با OpenAI</option></select></label>
-          <label>آدرس سرویس (Base URL)<input id="ai-url" class="ltr" placeholder="https://api.openai.com/v1" value="${esc(g("ai.base_url"))}"/></label>
-          <label>کلید API<input id="ai-key" class="ltr" type="password" placeholder="${g("ai.api_key") ? "•••••• (ذخیره‌شده)" : "sk-…"}"/></label>
-          <label>مدل<input id="ai-model" class="ltr" placeholder="gpt-4o-mini" value="${esc(g("ai.model"))}"/></label>
         </div>
-        <div id="ai-presets" class="ins-presets" style="margin-top:10px"></div>
-        <p class="muted" style="margin-top:8px">هر سرویس با API سازگار با OpenAI کار می‌کند (OpenAI، OpenRouter، Groq، یا مدل محلی مثل Ollama روی همین شبکه). هزینهٔ آن بر عهدهٔ شماست و بدون آن هم همهٔ امکانات کار می‌کند.</p>
-        <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button><button class="btn" id="ai-test">تست روایت</button></div>`;
+        <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button></div>`;
       body.append(card);
-      api("/insights/ai/presets").then((p) => {   // v3.5 — one-tap free providers
-        const box = $("#ai-presets"); if (!box) return;
-        box.append(el("div", { class: "muted", text: "سرویس‌های رایگان — یکی را انتخاب کنید، کلید رایگان را از سایتش بگیرید و همین‌جا وارد کنید:" }));
-        const wrap = el("div", { class: "row", style: "flex-wrap:wrap;gap:6px;margin-top:6px" });
-        p.presets.forEach((pr) => wrap.append(el("button", { class: "btn btn-sm" + (p.current.preset === pr.id ? " btn-primary" : ""), text: pr.label + (pr.free ? "" : " (پولی)"), title: pr.note, onclick: async () => {
-          const key = $("#ai-key").value.trim();
-          try { const r = await api("/insights/ai/preset", { method: "POST", body: JSON.stringify({ preset: pr.id, api_key: key || null }) });
-            $("#ai-pr").value = "openai_compatible"; $("#ai-url").value = r.base_url; $("#ai-model").value = r.model; toast(`${pr.label} انتخاب شد`);
-            if (!r.has_key && pr.id !== "ollama") { window.open(pr.keys_url, "_blank"); toast("کلید رایگان را از صفحهٔ بازشده بگیرید و در «کلید API» وارد و ذخیره کنید", "ok"); }
-          } catch (e) { toast(e.message, "err"); }
-        } })));
-        box.append(wrap);
-        const tb = el("button", { class: "btn btn-sm btn-ghost", text: "تست اتصال", style: "margin-top:6px", onclick: async () => {
-          try { const r = await api("/insights/ai/test", { method: "POST" }); toast(r.ok ? `متصل شد (${fa(r.ms)} ms): ${r.reply}` : r.error, r.ok ? "ok" : "err"); } catch (e) { toast(e.message, "err"); }
-        } });
-        box.append(tb);
-      }).catch(() => {});
       $("#ai-save").onclick = async () => {
-        const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value, "ai.provider": $("#ai-pr").value, "ai.base_url": $("#ai-url").value.trim(), "ai.model": $("#ai-model").value.trim() };
-        if ($("#ai-key").value) upd["ai.api_key"] = $("#ai-key").value.trim();
-        try { for (const [k, v] of Object.entries(upd)) await api("/settings", { method: "PUT", body: JSON.stringify({ key: k, value: v, is_secret: k === "ai.api_key" }) }); toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
+        const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value };
+        try { for (const [k, v] of Object.entries(upd)) await api("/settings", { method: "PUT", body: JSON.stringify({ key: k, value: v }) }); toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
       };
-      $("#ai-test").onclick = async () => { try { const r = await api("/insights/report"); openModal(`<div class="ins-detail"><h3>نمونهٔ روایت</h3><div class="ins-narr">${esc(r.narrative).replace(/\n/g, "<br/>")}</div><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">بستن</button></div></div>`); } catch (e) { toast(e.message, "err"); } };
     },
   };
 

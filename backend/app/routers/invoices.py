@@ -7,11 +7,17 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Invoice, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — line costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class VoidIn(BaseModel):
@@ -40,17 +46,17 @@ def _out(inv: Invoice) -> dict:
 
 @router.get("")
 def list_invoices(limit: int = Query(default=100, le=1000), offset: int = 0,
-                  db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+                  db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit).offset(offset)).scalars().all()
-    return {"items": [_out(i) for i in rows]}
+    return _maybe_redact(user, {"items": [_out(i) for i in rows]})
 
 
 @router.get("/{invoice_id}")
-def get_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def get_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
-    return _out(inv)
+    return _maybe_redact(user, _out(inv))
 
 
 @router.post("/{invoice_id}/void")

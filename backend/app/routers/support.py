@@ -1,7 +1,7 @@
 """v1.7 — /api/support: درخواست پشتیبانی (تیکت)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -67,6 +67,77 @@ def list_tickets(limit: int = Query(default=50, ge=1, le=500), db: Session = Dep
     for t in rows:
         t._unread = int(unread.get(t.id, 0))
     return [_out(t) for t in rows]
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 (RASA) — «درخواست پشتیبانی از صفحهٔ قفل»
+# ---------------------------------------------------------------------------
+# چرا این مسیر وجود دارد: دروازهٔ لایسنس همهٔ /api را با ۴۰۲ می‌بندد تا فروشگاه
+# بدون لایسنس کار نکند — و پیش از این «پشتیبانی» را هم می‌بست. نتیجه: فروشگاهی
+# که لایسنسش فعال نمی‌شد، نه می‌توانست کلید بگیرد و نه می‌توانست بگوید کلید کار
+# نمی‌کند (باگ گزارش‌شدهٔ مالک: «از ویندوز تیکت ثبت نمی‌شود»). روی گوشی این
+# مشکل دیده نمی‌شد چون حالت مستقل گوشی مستقیم به رله وصل می‌شود.
+#
+# این مسیر عمداً بدون نشست کار می‌کند (روی صفحهٔ قفل، کاربر وارد نشده است) اما
+# سه محدودیت سخت دارد تا سطح حمله باز نشود:
+#   ۱) فقط نوع LICENSE — هیچ تیکت دلخواهی از این راه ثبت نمی‌شود؛
+#   ۲) سقف تعداد در ساعت برای هر نصب (۵) و برای هر IP (۱۰)؛
+#   ۳) همان رلهٔ خودِ فروشگاه؛ مقصد پیام تغییر نمی‌کند.
+# اگر کاربر وارد شده باشد، مسیر معمولی `/tickets` استفاده می‌شود.
+_LOCKED_MAX_PER_INSTALL_HOUR = 5
+_LOCKED_MAX_PER_IP_HOUR = 10
+_LOCKED_HITS: dict[str, list[float]] = {}
+
+
+def _locked_rate_ok(key: str, limit: int) -> bool:
+    import time as _t
+    now = _t.time()
+    hits = [x for x in _LOCKED_HITS.get(key, []) if now - x < 3600]
+    if len(hits) >= limit:
+        _LOCKED_HITS[key] = hits
+        return False
+    hits.append(now)
+    _LOCKED_HITS[key] = hits
+    return True
+
+
+class LockedTicketIn(BaseModel):
+    """حداقلِ لازم برای اینکه پشتیبانی بتواند کمک کند — بدون هیچ دادهٔ فروش."""
+
+    description: str = Field(min_length=10, max_length=2000)
+    contact: str | None = Field(default=None, max_length=120)
+    device: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/locked-ticket", status_code=201)
+def create_locked_ticket(body: LockedTicketIn, request: Request,
+                         db: Session = Depends(get_db)):
+    """درخواست کمک از صفحهٔ قفل لایسنس (بدون نشست، فقط نوع «لایسنس»)."""
+    from ..services.license import hwid
+    ip = (request.client.host if request.client else "?") or "?"
+    if not _locked_rate_ok(f"ip:{ip}", _LOCKED_MAX_PER_IP_HOUR) or \
+       not _locked_rate_ok(f"hw:{hwid()}", _LOCKED_MAX_PER_INSTALL_HOUR):
+        raise HTTPException(status_code=429, detail={"code": "TOO_MANY",
+                                                     "message": "درخواست‌های زیادی ثبت شد؛ کمی بعد دوباره تلاش کنید یا با شمارهٔ پشتیبانی تماس بگیرید"})
+    try:
+        from ..services import license as lic_svc  # noqa: WPS433 — the lock screen's own view
+        lic = lic_svc.state(db)
+    except Exception:  # noqa: BLE001 — the licence state is context, never a blocker
+        lic = {}
+    who = db.execute(select(User).order_by(User.id)).scalars().first()
+    extra = ["", f"🆔 شناسهٔ دستگاه: {hwid()}"]
+    if lic:
+        extra.append(f"وضعیت لایسنس: {lic.get('status') or '—'} · فعال: {'بله' if lic.get('activated') else 'خیر'}"
+                     f" · دلیل: {lic.get('reason') or '—'}")
+    t = svc.submit(db, user_id=who.id if who else None, reporter_name=(who.full_name or who.username) if who else None,
+                   type="LICENSE", priority="HIGH", subject="مشکل لایسنس — درخواست کمک از صفحهٔ قفل",
+                   description=body.description + "\n".join(extra), contact=body.contact,
+                   device=(body.device or "Windows") + " (قفل لایسنس)")
+    write_audit(db, action="SUPPORT_TICKET_CREATED", user_id=who.id if who else None,
+                entity_type="SupportTicket", entity_id=t.id, reference=t.number)
+    db.commit()
+    db.refresh(t)
+    return _out(t)
 
 
 @router.post("/tickets", status_code=201)

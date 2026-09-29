@@ -8,9 +8,9 @@ REM
 REM  What it does: runs build.ps1 which
 REM    1. verifies the repository is complete (11 critical files),
 REM    2. finds Python 3.11+ (or tells you exactly how to install it),
-REM    3. builds dist\SupermarketSystem.exe with PyInstaller,
-REM    4. always publishes installer\output\SupermarketSystem-<ver>-portable.exe,
-REM    5. builds installer\output\SupermarketSystem-Setup-<ver>.exe with Inno
+REM    3. builds dist\RasaSystem.exe with PyInstaller,
+REM    4. always publishes installer\output\RasaSystem-<ver>-portable.exe,
+REM    5. builds installer\output\RasaSystem-Setup-<ver>.exe with Inno
 REM       Setup 6 when it is installed.
 REM
 REM  This is the RECOMMENDED entry point. It is deliberately console-only: no

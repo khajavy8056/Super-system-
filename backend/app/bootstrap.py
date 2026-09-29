@@ -16,6 +16,10 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "insights.enabled": ("true", "Store intelligence engine on/off", False),
     "insights.interval_hours": ("6", "How often the local analyzers re-run (hours)", False),
     "insights.pos_nudges": ("false", "Show whisper-suggestions at the POS (enabled by accepting the BASKET_NUDGE insight)", False),
+    # v4.8.0 — تایم‌لاین انقضا: پیشنهاد باید وقتِ اقدام برسد، نه روز صفر.
+    "insights.expiry_lead_days": ("21", "چند روز پیش از انقضا هشدار تخفیف داده شود (۳ تا ۴۵)", False),
+    "insights.expiry_safety": ("1.15", "ضریب حاشیهٔ اطمینان در پیش‌بینی فروش‌رفت (۱.۱۵ = ۱۵٪ بافر)", False),
+    "insights.pos_expiry_days": ("30", "افق «نزدیک انقضا» در پیشنهاد پای صندوق (روز)", False),
     "ai.provider": ("", "Cloud narrator: '' (local templates) | openai_compatible", False),
     "ai.base_url": ("", "OpenAI-compatible base URL (e.g. https://api.openai.com/v1, https://openrouter.ai/api/v1, http://127.0.0.1:11434/v1)", False),
     "ai.api_key": ("", "API key for the narrator endpoint", True),
@@ -35,6 +39,7 @@ DEFAULT_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "expiry.days.seven": ("7", "Threshold (days) for 'expiring in 7 days' bucket", False),
     "expiry.days.thirty": ("30", "Threshold (days) for 'expiring in 30 days' bucket", False),
     "barcode.scanner.min_interval_ms": ("30", "Minimum inter-keystroke interval to detect a scanner", False),
+    "sms.invoice_max_items": ("0", "سقف ردیف کالا در پیامک فاکتور (۰ = همهٔ اقلام، هیچ خطی پنهان نمی‌شود)", False),
     "sms.provider": ("", "SMS provider code: melipayamak | kavenegar | file | (empty=disabled)", False),
     "sms.username": ("", "SMS provider username", True),
     "sms.password": ("", "SMS provider password", True),

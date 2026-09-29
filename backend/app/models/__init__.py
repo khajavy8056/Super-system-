@@ -9,7 +9,7 @@ from .external import BankItem, ExternalSource, ImageAsset, MarketPrice, Product
 from .inventory import (ProductBatch, StockMovement, Stocktake, StocktakeItem,
                         StorageLocation, Warehouse)
 from .marketing import Campaign, Coupon, CouponRedemption
-from .insights import Insight
+from .insights import Experiment, Insight
 from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
 from .sales import (Customer, CustomerLedgerEntry, Invoice, InvoiceItem,
@@ -53,6 +53,7 @@ __all__ = [
     "Counter",
     "Notification",
     "Insight",
+    "Experiment",
     "SystemSetting",
     "SupportTicket",
     "SupportMessage",

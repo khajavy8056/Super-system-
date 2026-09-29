@@ -1,0 +1,248 @@
+{
+  "schema": "super-system-release-manifest/1",
+  "version": "3.7.0",
+  "base_commit": "3e52ae4275fa7b229ae9eb96d6e9f0dc8e6c9d53",
+  "branch": "arena/01a0c664-super-system",
+  "generated_at": "2026-09-22T00:45:00Z",
+  "version_source_of_truth": "backend/app/__init__.py::__version__",
+  "scope": [
+    "Alembic-only migrations (strict upgrade_schema, legacy bridge, SCHEMA_DRIFT audit, restore upgrades first, v3.7 catch-up head f7a1c2d3e4b5)",
+    "Till security §34 (cost redaction to null without pricing.view_cost; /reports/profit perm-gated; web+PWA null-safe UI)",
+    "POS integrity §6-§8/§37 (batch-only prices, manual-discount cap, unique sequential numbers under concurrency)",
+    "Setup hardening (production default-secret refusal, mandatory wizard admin creds, Permissions-Policy header)"
+  ],
+  "tests": {
+    "backend": {
+      "passed": 542,
+      "skipped": 1,
+      "failed": 0,
+      "duration_s": 268,
+      "new_files": [
+        "backend/tests/test_v37_migrations.py (6)",
+        "backend/tests/test_v37_pos.py (3)",
+        "backend/tests/test_v37_security.py (8)"
+      ]
+    },
+    "frontend_js": {
+      "node_check": [
+        "frontend/app.js",
+        "frontend/mobile/app.js",
+        "frontend/mobile/app-more.js",
+        "frontend/onboarding.js"
+      ],
+      "result": "all pass"
+    }
+  },
+  "artifacts": [
+    {
+      "file": "releases/android/SupermarketMobile-3.7.0.apk",
+      "sha256": "174208e915882ff747e57e41e8e13d2287facac150dfd27f2d85fa7744bce06a",
+      "built_by": "scripts/android/build-apk.sh (same SDK-less pipeline as installer/ci/release-android.yml)",
+      "versionCode": 30700,
+      "versionName": "3.7.0",
+      "signer_sha256": "18b4ab1868c026476c4027fe823d38a8e3965f70194cc0d65e60eac4e7321fa5",
+      "signer_matches_3_6_6": true,
+      "bundled_catalog": "byte-identical to mobile-android/app/src/main/assets/default_catalog.csv",
+      "note": "Not installed on a physical device in this environment; install-over-previous on the user's device required."
+    },
+    {
+      "file": "installer/windows Setup.exe",
+      "status": "NOT BUILT",
+      "reason": "Requires a real windows-latest CI runner (PyInstaller + Inno Setup do not run on Linux). Trigger: push v3.7.0 tag after wiring installer/ci/release-windows.yml via scripts/activate-ci.sh."
+    }
+  ],
+  "changes": [
+    {
+      "file": "CHANGELOG.md",
+      "added": 9,
+      "removed": 0,
+      "sha256": "77c50f649e1489c0b4cb144a538170fd67b3ca148a558f92376f33273bc228b2"
+    },
+    {
+      "file": "backend/alembic/env.py",
+      "added": 6,
+      "removed": 1,
+      "sha256": "345905f05123494d7c75f73d4c6d0fbd7a756a10ef7393c5e5b299b47b595cd3"
+    },
+    {
+      "file": "backend/app/__init__.py",
+      "added": 1,
+      "removed": 1,
+      "sha256": "5477f5d706d3022c40effd562e5891ce9f24ac35431a611449a77f43142a1a68"
+    },
+    {
+      "file": "backend/app/config.py",
+      "added": 20,
+      "removed": 1,
+      "sha256": "a66e9f366bd92f286cd205aa9711f1a420d982e04cd22b44feeef6767462c736"
+    },
+    {
+      "file": "backend/app/database.py",
+      "added": 143,
+      "removed": 53,
+      "sha256": "462829532238b1d94177405ac38a357ffbfd2069af14cf29cb42be77d85d4934"
+    },
+    {
+      "file": "backend/app/main.py",
+      "added": 5,
+      "removed": 0,
+      "sha256": "811b9e8689f9cbd92fe05da869bd3e709850198fe25d2927157a3acacafe8b1f"
+    },
+    {
+      "file": "backend/app/models/__init__.py",
+      "added": 2,
+      "removed": 1,
+      "sha256": "ff1a54178a318f280d267cad57abd49ba1373727919b07ae626257bb085e1c82"
+    },
+    {
+      "file": "backend/app/models/insights.py",
+      "added": 46,
+      "removed": 1,
+      "sha256": "f02b0fb1b3269854dac2d0f0c7dbc204926a3b5046848006d9f301b7dd8508c8"
+    },
+    {
+      "file": "backend/app/models/system.py",
+      "added": 4,
+      "removed": 0,
+      "sha256": "a1427f71ae91df643763b80d17bd02635735d1dd199f6c7d42db3a9ce4a9cef5"
+    },
+    {
+      "file": "backend/app/routers/batches.py",
+      "added": 12,
+      "removed": 5,
+      "sha256": "4371a277596709629e7374829861b90c620cc6ca24a44434eac99acadf2e369e"
+    },
+    {
+      "file": "backend/app/routers/inventory.py",
+      "added": 9,
+      "removed": 3,
+      "sha256": "bfa398b30a6bf3dcdc94275bfc479a76904ad7c7a6e95040c4b1533acc60c6de"
+    },
+    {
+      "file": "backend/app/routers/invoices.py",
+      "added": 11,
+      "removed": 5,
+      "sha256": "3f3d3a276d796128e3b1d2e65a4b58583c794e17ce0a35c59384451022dedfc1"
+    },
+    {
+      "file": "backend/app/routers/mobile.py",
+      "added": 5,
+      "removed": 1,
+      "sha256": "881319f5bb632e8430add92f1c1cf8b7d6225ad0157e0c120a2e55aef4b6666d"
+    },
+    {
+      "file": "backend/app/routers/pos.py",
+      "added": 16,
+      "removed": 10,
+      "sha256": "c85d2714fcd7f424bf31a302da55b8271629b3a5dd66b7464f67442be13cea43"
+    },
+    {
+      "file": "backend/app/routers/products.py",
+      "added": 10,
+      "removed": 4,
+      "sha256": "88bed10550cab5668b788fe1fe77c3a3e74283e23899e21908cabe27a5bab577"
+    },
+    {
+      "file": "backend/app/routers/reports.py",
+      "added": 24,
+      "removed": 12,
+      "sha256": "78ee3441e26319c50f6863ec97ecc9e72bddaebf84c9925f7b8f21920aed88a7"
+    },
+    {
+      "file": "backend/app/routers/setup.py",
+      "added": 25,
+      "removed": 24,
+      "sha256": "6c7656bcbf22ba080289413de2fa26099ce54339d8a4a417cb5652c99423e280"
+    },
+    {
+      "file": "backend/app/routers/system.py",
+      "added": 7,
+      "removed": 3,
+      "sha256": "212caf90ad4f4e69a7683354e7d7c54966b8da2468debef800f16527b940c6ee"
+    },
+    {
+      "file": "backend/app/routers/warehouses.py",
+      "added": 9,
+      "removed": 3,
+      "sha256": "1ad4b8370360bdfd3107d7f970a59c63e8aeb26b1d1bf3b5aaf401ce19ba6853"
+    },
+    {
+      "file": "backend/app/services/pos.py",
+      "added": 42,
+      "removed": 8,
+      "sha256": "1ad545b6c9f523227426bbc82f817c28db29a657cb56d0031e676415f3b99f68"
+    },
+    {
+      "file": "backend/app/services/reports.py",
+      "added": 41,
+      "removed": 0,
+      "sha256": "5d1d10ae448e0e30a955c015c306def714f857f6f9ed5c49f4cbba7120b7c7af"
+    },
+    {
+      "file": "frontend/app.js",
+      "added": 18,
+      "removed": 9,
+      "sha256": "2b6d06c25fb56cd013054d2cdcd651fb71a1fa4315e5d8d2b4ef5705916313ba"
+    },
+    {
+      "file": "frontend/mobile/app-more.js",
+      "added": 2,
+      "removed": 2,
+      "sha256": "ce237d6c344527d2c3a674cbbf7793980885a4b6a30f55a6d6de11f7414a367e"
+    },
+    {
+      "file": "frontend/mobile/app.js",
+      "added": 5,
+      "removed": 3,
+      "sha256": "a5ae9b1a888947fed25be55e4d5c87eb922a7b97c30dcec884c4368eb786bc46"
+    },
+    {
+      "file": "installer/windows/setup.iss",
+      "added": 1,
+      "removed": 1,
+      "sha256": "69fcf8f40dadf0abe362ec1f530f54fea91175164d25bd2f6fcb1b74e9c5a54c"
+    },
+    {
+      "file": "backend/alembic/versions/20260922_f7a1c2d3e4b5_v3_7_catchup.py",
+      "added": "new",
+      "removed": "new",
+      "sha256": "6903602a78e7cb57ccd7b1800303a600d90a0d65050338725aa23e0bcf1628c6"
+    },
+    {
+      "file": "backend/app/services/data_quality.py",
+      "added": "new",
+      "removed": "new",
+      "sha256": "b3d9d6fc934498bd0d5ce250aaf2428c25c227f589d7325b714a2965b077d848"
+    },
+    {
+      "file": "backend/tests/test_v37_migrations.py",
+      "added": "new",
+      "removed": "new",
+      "sha256": "3a56bd8503aa17be21285ab002beb28f1097bb6716c11064c4c4afab8905f700"
+    },
+    {
+      "file": "backend/tests/test_v37_pos.py",
+      "added": "new",
+      "removed": "new",
+      "sha256": "fb36acf7b7a988ce180fa6657a9a53767aa902876acd56ac13a12605cc4f64ed"
+    },
+    {
+      "file": "backend/tests/test_v37_security.py",
+      "added": "new",
+      "removed": "new",
+      "sha256": "1dbd50b3148a279c09a9d5d9154e4adba516ef484462b4cd5e62f896a57431df"
+    },
+    {
+      "file": "releases/android/SupermarketMobile-3.7.0.apk",
+      "added": "new",
+      "removed": "new",
+      "sha256": "174208e915882ff747e57e41e8e13d2287facac150dfd27f2d85fa7744bce06a"
+    },
+    {
+      "file": "releases/android/SupermarketMobile-3.7.0.apk.sha256",
+      "added": "new",
+      "removed": "new",
+      "sha256": "87b4ad3b1c10786af2df78ed37425e2c583effc299bfaf11bb73139ea6a5de97"
+    }
+  ]
+}

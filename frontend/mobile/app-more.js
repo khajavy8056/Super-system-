@@ -289,7 +289,7 @@
   window.showReportsM = async () => {
     screen("گزارش‌ها", null, `<div id="rp">${empty("در حال بارگذاری…")}</div><div class="menu-list">
       <button class="menu-item" onclick="mReport('sales')">${icon("chart")} فروش ۳۰ روز اخیر</button>
-      <button class="menu-item" onclick="mReport('profit')">${icon("chart")} سود</button>
+      ${can("pricing.view_cost") ? `<button class="menu-item" onclick="mReport('profit')">${icon("chart")} سود</button>` : ""}
       <button class="menu-item" onclick="mReport('low-stock')">${icon("box")} کالاهای رو به اتمام</button>
       <button class="menu-item" onclick="mReport('expiry')">${icon("clipboard")} انقضا</button>
       <button class="menu-item" onclick="mReport('cashiers')">${icon("user")} عملکرد صندوق‌داران</button>
@@ -298,7 +298,7 @@
     try {
       const d = await api("/reports/dashboard");
       const k = (l, val, warn) => `<div class="kpi ${warn ? "warn" : ""}"><span class="k">${l}</span><b>${val}</b></div>`;
-      $("#rp").innerHTML = `<div class="kpi-grid">${k("فروش امروز", money(d.sales.today))}${k("فروش ماه", money(d.sales.month))}${k("سود امروز", money(d.profit.today))}${k("سود ماه", money(d.profit.month))}${k("فاکتور امروز", d.sales.count_today ?? d.sales.invoices_today ?? "—")}${k("میانگین فاکتور", money(d.sales.avg_invoice_today))}${k("ارزش موجودی", money(d.inventory.value))}${k("کالای کم‌موجود", d.inventory.low_stock ?? (d.low_stock || []).length, true)}${k("در آستانهٔ انقضا", (d.expiry && (d.expiry.soon_count ?? d.expiry.count)) ?? "—", true)}${k("بدهی مشتریان", money(d.customers ? d.customers.debt_total : 0))}${k("ضایعات ماه", money(d.waste ? d.waste.month : 0))}${k("مرجوعی ماه", money(d.returns ? d.returns.month : 0))}</div>`;
+      $("#rp").innerHTML = `<div class="kpi-grid">${k("فروش امروز", money(d.sales.today))}${k("فروش ماه", money(d.sales.month))}${d.profit ? k("سود امروز", money(d.profit.today)) + k("سود ماه", money(d.profit.month)) : ""}${k("فاکتور امروز", d.sales.count_today ?? d.sales.invoices_today ?? "—")}${k("میانگین فاکتور", money(d.sales.avg_invoice_today))}${k("ارزش موجودی", money(d.inventory.value))}${k("کالای کم‌موجود", d.inventory.low_stock ?? (d.low_stock || []).length, true)}${k("در آستانهٔ انقضا", (d.expiry && (d.expiry.soon_count ?? d.expiry.count)) ?? "—", true)}${k("بدهی مشتریان", money(d.customers ? d.customers.debt_total : 0))}${k("ضایعات ماه", money(d.waste ? d.waste.month : 0))}${k("مرجوعی ماه", money(d.returns ? d.returns.month : 0))}</div>`;
     } catch (e) { $("#rp").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
   };
   window.mReport = async (kind) => {
@@ -309,7 +309,7 @@
       const d = await api(`/reports/${kind}${qs}`);
       const rows = Array.isArray(d) ? d : (d.rows || d.items || d.groups || d.expiring || d.products || d.cashiers || []);
       const summary = !Array.isArray(d) ? Object.entries(d).filter(([, val]) => typeof val === "number").map(([key, val]) => `<div class="kpi"><span class="k">${esc(key)}</span><b>${/amount|total|value|profit|revenue|cost/.test(key) ? money(val) : qtyFmt(val)}</b></div>`).join("") : "";
-      $("#rd").innerHTML = (summary ? `<div class="kpi-grid">${summary}</div>` : "") + (rows.length ? rows.slice(0, 200).map((r) => row(esc(r.name || r.product_name || r.label || r.period || r.day || r.date || r.cashier || r.username || r.batch_number || ""), esc([r.barcode, r.expiry_date && J(r.expiry_date, false), r.days_left != null && r.days_left + " روز", r.count != null && r.count + " فاکتور", r.status].filter(Boolean).join(" · ")), `<b>${r.total != null ? money(r.total) : r.total_amount != null ? money(r.total_amount) : r.profit != null ? money(r.profit) : r.value != null ? money(r.value) : r.total_stock != null ? qtyFmt(r.total_stock) : r.current_qty != null ? qtyFmt(r.current_qty) : ""}</b>`)).join("") : empty());
+      $("#rd").innerHTML = (summary ? `<div class="kpi-grid">${summary}</div>` : "") + (rows.length ? rows.slice(0, 200).map((r) => row(esc(r.name || r.product_name || r.label || r.period || r.day || r.date || r.cashier || r.username || r.batch_number || ""), esc([r.barcode, r.expiry_date && J(r.expiry_date, false), r.days_left != null && fmtNum(r.days_left) + " روز", r.count != null && r.count + " فاکتور", r.status].filter(Boolean).join(" · ")), `<b>${r.total != null ? money(r.total) : r.total_amount != null ? money(r.total_amount) : r.profit != null ? money(r.profit) : r.value != null ? money(r.value) : r.total_stock != null ? qtyFmt(r.total_stock) : r.current_qty != null ? qtyFmt(r.current_qty) : ""}</b>`)).join("") : empty());
     } catch (e) { $("#rd").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
   };
 

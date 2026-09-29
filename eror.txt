@@ -1,0 +1,11 @@
+  verifying the downloaded bytes (sha256) …
+  done: 14.1 MB from github.com (sha256 4a0ec90237e1bff1…)
+FAIL: «msvcp140_codecvt_ids.dll» برای اجرای llama-server لازم است ولی کنارش نیست — باید داخل نصب‌کننده باشد
+FAIL: «wldap32.dll» برای اجرای llama-server لازم است ولی کنارش نیست — باید داخل نصب‌کننده باشد
+FAIL: «psapi.dll» برای اجرای llama-server لازم است ولی کنارش نیست — باید داخل نصب‌کننده باشد
+موتور رسمی بعد از استخراج ناقص است — نصب‌کنندهٔ بدون موتورِ خراب ساخته نمی‌شود؛ دوباره بیلد بگیرید (دانلود از همان‌جا ادامه می‌یابد).
+راه‌ها: (۱) اینترنت و تلاش دوباره — دانلود نیمه‌کاره نگه داشته شده و از همان‌جا ادامه می‌یابد  (۲) دانلود دستی فایل GGUF رسمی و اجرای
+scripts\model\prepare_windows_installer.py --from-file <path-to-gguf>
+نسخهٔ قابل‌حمل (بدون مدل) همین حالا ساخته شده و کار می‌کند.
+FAIL - see C:\Users\HP\Downloads\Super-system--arena-01a0ca3c-super-system (7)\Super-system--arena-01a0ca3c-super-system\installer\windows\build.log and installer\windows\README.md
+

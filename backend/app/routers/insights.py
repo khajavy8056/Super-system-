@@ -84,6 +84,13 @@ def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permissi
     return {"ok": True, "calibration": forecast.learn(db)}
 
 
+@router.get("/data-quality")
+def data_quality(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v3.8 — the Data Quality report the intelligence engine gates on."""
+    from ..services import data_quality as dq
+    return dq.run_all(db)
+
+
 @router.get("/customers/patterns")
 def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     """v3.2 — per-customer purchase rhythm: who is due in the next `days` days, their usual weekday,
@@ -146,6 +153,25 @@ def groups(db: Session = Depends(get_db), _: User = Depends(require_permission("
     return {"groups": out, "analyzers": len(svc.ANALYZERS)}
 
 
+@router.get("/actions/report")
+def actions_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+    """v4.8.0 — «آیا اقدام‌ها واقعاً انجام شد؟» گزارش بازبینی زندهٔ هر اقدام اجراشده.
+
+    برای هر پیشنهاد پذیرفته‌شده: چه اقدام‌هایی، چه زمانی، با چه نتیجه‌ای اجرا
+    شدند و **همین حالا** اثرشان برقرار است یا از کار افتاده. پاسخ مالک به
+    «یک سیستم بررسی باشد که وقتی روی اجرا می‌زنیم واقعاً کارها انجام شود».
+    """
+    return insight_actions.execution_report(db)
+
+
+@router.post("/actions/health-scan")
+def actions_health_scan(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+    """اجرای دستی بازبینی اقدام‌ها (همان کاری که کارگر دوره‌ای می‌کند)."""
+    out = insight_actions.health_scan(db)
+    db.commit()
+    return {"ok": True, **out}
+
+
 @router.get("/{insight_id}")
 def get_insight(insight_id: int, narrate: bool = False, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
     row = _get(db, insight_id)
@@ -204,16 +230,32 @@ def nudges(body: NudgeIn, db: Session = Depends(get_db), _: User = Depends(get_c
     """POS: given the cart's product ids, return up to two whisper-suggestions."""
     import json
     from ..models import SystemSetting
+    from ..services import expiry_plan
     on = db.execute(select(SystemSetting).where(SystemSetting.key == "insights.pos_nudges")).scalar_one_or_none()
     if not on or on.value != "true":
         return []
+    pos_days = expiry_plan.settings(db)["pos_days"]
     out = svc.nudges(db, body.product_ids)
     manual = db.execute(select(SystemSetting).where(SystemSetting.key == "insights.manual_rules")).scalar_one_or_none()
     if manual:
         cart = set(body.product_ids)
         for r in json.loads(manual.value or "[]"):
             if r["if"] in cart and r["then"] not in cart and all(o["product_id"] != r["then"] for o in out):
-                out.append({"product_id": r["then"], "name": r["then_name"], "because": r["if_name"], "confidence": r["confidence"]})
+                # v4.7.0: manual rules obey the same honesty check — never
+                # out-of-stock, never past expiry (owner's round-15 rule).
+                # v4.8.0: and they now carry the same near-expiry details as
+                # rule-based hints, so the till shows one consistent card.
+                alive = svc.sellable_now(db, r["then"], pos_days=pos_days)
+                if alive is None:
+                    continue
+                item = {"product_id": r["then"], "name": r["then_name"], "because": r["if_name"],
+                        "confidence": r["confidence"], "days_left": alive["days_left"],
+                        "batch_id": alive["batch_id"], "near_expiry": alive["near_expiry"],
+                        "purpose": "sell_before_expiry" if alive["near_expiry"] else "sell_now"}
+                if alive["near_expiry"]:
+                    item["reason"] = (f"موجودی «{alive['name']}» تا {svc._fa(alive['days_left'])} روز آینده تاریخ می‌خورد؛ "
+                                      f"اگر امروز نفروشد ضرر می‌شود")
+                out.append(item)
     return out[:2]
 
 

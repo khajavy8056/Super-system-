@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import socket
 import struct
+from contextvars import ContextVar
 from datetime import date as _date
 from datetime import datetime, timezone
 
@@ -231,8 +232,30 @@ def check_time_sync(servers: list[str], max_drift_seconds: int = 120,
     }
 
 
+#: v4.8.0 — «ساعت شبیه‌سازی». وقتی شبیه‌ساز فروشگاه (یا یک تست) این ساعت را
+#: ست می‌کند، **همهٔ** تصمیم‌های «امروز» در فروشگاه — از جمله مقایسهٔ تاریخ انقضای
+#: بچ در صندوق و اعمال پله‌های تخفیف — روی همان روزِ شبیه‌سازی‌شده انجام می‌شود.
+#: چرا لازم شد؟ قبلاً فقط موتور هوش فروشگاه ساعت شبیه‌سازی را می‌دید؛ صندوق هنوز
+#: ساعت واقعی ماشین را می‌گرفت، پس یک سالِ شبیه‌سازی‌شده نمی‌توانست تایم‌لاین
+#: تخفیف/انقضا را واقعاً زندگی کند (تاریخ‌های گذشته را «منقضی» می‌دید).
+#: در فروشگاه واقعی هیچ‌کس این را ست نمی‌کند، پس رفتار عوض نمی‌شود.
+_SIM_CLOCK: ContextVar[datetime | None] = ContextVar("store_simulation_clock", default=None)
+
+
+def set_simulation_clock(dt: datetime | None) -> None:
+    """Set/clear the simulated store clock (naive UTC, same shape as ``now_utc``)."""
+    _SIM_CLOCK.set(dt)
+
+
+def simulation_clock() -> datetime | None:
+    return _SIM_CLOCK.get()
+
+
 def now_utc() -> datetime:
     """The single source of truth for record timestamps."""
+    sim = _SIM_CLOCK.get()
+    if sim is not None:
+        return sim if sim.tzinfo is not None else sim.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc)
 
 

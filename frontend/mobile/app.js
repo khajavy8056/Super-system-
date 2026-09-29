@@ -96,7 +96,9 @@ const faDT = (iso, withTime = true) => {
   try { return new Intl.DateTimeFormat("fa-IR-u-ca-persian", o).format(d); } catch (_) { return d.toLocaleString("fa-IR"); }
 };
 window.faDT = faDT;
-const money = (n) => fmtNum(Math.round(Number(n || 0))) + " " + (state.currency.label || "");
+/* v3.7 (§34): the server redacts cost figures the user may not see as null —
+   render those as "—", never as 0 (a zero cost would be a lie). */
+const money = (n) => (n === null || n === undefined) ? "—" : fmtNum(Math.round(Number(n))) + " " + (state.currency.label || "");
 const qtyFmt = (n) => fmtNum(n);
 const unitById = (id) => state.units.find((u) => u.id === id) || null;
 
@@ -277,7 +279,7 @@ function showLogin() {
   $("#app").innerHTML = `
     <div class="screen" style="justify-content:center;max-width:420px;margin:auto;width:100%">
       <div class="card">
-        <h2 class="brand">${icon("cart", 22)} سامانه سوپرمارکت</h2>
+        <h2 class="brand">${icon("cart", 22)} رسا سیستم</h2>
         <label>نام کاربری</label><input id="l-user" autocomplete="username" />
         <label>رمز عبور</label><input id="l-pass" type="password" autocomplete="current-password" />
         <button id="l-go" class="btn btn-primary" style="margin-top:14px">ورود</button>
@@ -831,8 +833,8 @@ window.showReportsM = async () => {
       <div class="kpi-grid">
         <div class="kpi"><span class="k">فروش امروز</span><b>${money(d.sales.today)}</b></div>
         <div class="kpi"><span class="k">فروش ماه</span><b>${money(d.sales.month)}</b></div>
-        <div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
-        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>
+        ${d.profit ? `<div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
+        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>` : ""}
         <div class="kpi"><span class="k">ارزش موجودی</span><b>${money(d.inventory.value)}</b></div>
         <div class="kpi"><span class="k">میانگین فاکتور</span><b>${money(d.sales.avg_invoice_today)}</b></div>
       </div>
@@ -1278,7 +1280,7 @@ window.showProductSheet = (item) => {
         <div class="batch-info">
           <div><b>${money(b.sell_price)}</b> <span class="muted">مصرف‌کننده ${money(b.consumer_price)}</span></div>
           <div class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
+            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} <span class="exp-chip ${Number(b.days_left) < 0 ? "expired" : Number(b.days_left) <= 7 ? "soon" : Number(b.days_left) <= 30 ? "near" : ""}">⏰ ${Number(b.days_left) < 0 ? "منقضی شد" : fmtNum(b.days_left) + " روز"}</span>` : ""}</div>
         </div>`).join("") || `<p class="muted">بچ فعالی ندارد</p>`}
       ${item.price_count > 1 ? `<p class="amber">این کالا ${item.price_count} قیمت فعال دارد.</p>` : ""}
       <button class="btn" onclick="closeSheet()">بستن</button>

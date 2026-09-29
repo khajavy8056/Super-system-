@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,11 +11,17 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import CartItem, PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/pos", tags=["pos"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — unit costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class CartLineIn(BaseModel):
@@ -38,6 +46,8 @@ class PaymentIn(BaseModel):
 
 
 from .customers import norm_phone as _norm_phone
+
+log = logging.getLogger("supermarket.pos")
 
 
 class CheckoutIn(BaseModel):
@@ -99,18 +109,18 @@ def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
 
 
 @router.get("/batch-options/{product_id}")
-def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def batch_options(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
     if not product or product.deleted_at is not None or not product.is_active:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     options = pos_svc.get_batch_options(db, product)
-    return {"product_id": product_id, "product_name": product.name,
-            "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
-            "options": [o.as_dict() for o in options]}
+    return _maybe_redact(user, {"product_id": product_id, "product_name": product.name,
+                                "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
+                                "options": [o.as_dict() for o in options]})
 
 
 @router.post("/cart/validate")
-def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     try:
         items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
                                                    batch_id=i.batch_id, discount=i.discount)
@@ -144,7 +154,7 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
             except coupon_svc.CouponError as exc:
                 coupon = {"code": body.coupon_code, "ok": False,
                           "error_code": exc.code, "message": exc.message}
-        return {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon}
+        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon})
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -153,6 +163,15 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
 def checkout(body: CheckoutIn, db: Session = Depends(get_db),
              user: User = Depends(require_permission("pos.sell"))):
     try:
+        # v4.8.0 — «تخفیفِ اجراشده باید روی صندوق باشد»: پیش از هر فروش، پله‌های
+        # تخفیف انقضایی که امروز موعدشان رسیده اعمال می‌شوند. کارگر پس‌زمینه هم
+        # این کار را می‌کند، اما فروشگاهی که کارگر را خاموش کرده نباید کالای
+        # «تخفیف‌خورده در تئوری» را به قیمت قدیم بفروشد. عمل idempotent است.
+        from ..services import insight_actions as _ia
+        try:
+            _ia.apply_markdown_steps(db)
+        except Exception:
+            log.exception("markdown steps skipped before checkout")   # never block a sale
         customer_id = body.customer_id
         if customer_id is None and body.customer_phone:
             # Phone book: a phone number alone is enough to create a customer (§30)
@@ -204,10 +223,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             # the next-purchase coupon rides along in the same message.
             coupon_line = ""
             if issued:
-                coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
+                coupon_line = f"کد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
-                    coupon_line += f" (تا {issued.valid_until.date()})"
-            text = sms_svc.render_invoice(db, invoice, coupon_line)
+                    # v4.8.0 — تاریخ شمسی با ارقام فارسی (متن پیامک یکدست می‌ماند)
+                    from ..services.timeservice import to_jalali
+                    d = issued.valid_until.date()
+                    jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+                    coupon_line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
+                                    .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+            text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line)
             msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)
@@ -231,7 +255,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
                                  "valid_until": issued.valid_until.isoformat()
                                  if issued.valid_until else None} if issued else None)
         db.commit()
-        return out
+        return _maybe_redact(user, out)
     except PosError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
@@ -293,7 +317,7 @@ def _invoice_out(inv) -> dict:
 
 @router.get("/search")
 def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
-               _: User = Depends(require_permission("pos.sell"))):
+               user: User = Depends(require_permission("pos.sell"))):
     """Cashier search by barcode, product name, SKU or product code.
 
     An exact barcode/SKU hit is always returned first so scanning stays instant,
@@ -368,4 +392,4 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "exact": p in exact,
             "batches": [o.as_dict() for o in options],
         })
-    return {"query": term, "count": len(items), "items": items}
+    return _maybe_redact(user, {"query": term, "count": len(items), "items": items})

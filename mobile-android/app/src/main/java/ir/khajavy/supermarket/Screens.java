@@ -66,7 +66,7 @@ public final class Screens {
         }
         return null;
     }
-    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view"}, {"backup", "settings.manage"}};
+    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view"}, {"backup", "settings.manage"}, {"insightsCustomers", "reports.view"}};
     public static boolean allowed(String key) {
         String need = null; for (String[] p : PERMS) if (p[0].equals(key)) need = p[1];
         if (need == null) return true;
@@ -249,7 +249,7 @@ public final class Screens {
             n.addView(toggle("پاسخ پشتیبانی", "notif_" + Notify.CH_SUPPORT)); n.addView(toggle("انقضا و کمبود موجودی", "notif_" + Notify.CH_STOCK)); n.addView(toggle("سامانه و همگام‌سازی", "notif_" + Notify.CH_SYSTEM));
             if (android.os.Build.VERSION.SDK_INT >= 33 && a.checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED)
                 n.addView(Ui.primary(c, "اجازهٔ نمایش اعلان", () -> { Prefs.set("notif_asked", ""); Notify.askPermission(a); }));
-            n.addView(Ui.ghost(c, "ارسال اعلان آزمایشی", () -> Notify.show(a, Notify.CH_SYSTEM, 199, "اعلان آزمایشی", "اعلان‌های سوپری من درست کار می‌کند ✓", "notifications", "note")));
+            n.addView(Ui.ghost(c, "ارسال اعلان آزمایشی", () -> Notify.show(a, Notify.CH_SYSTEM, 199, "اعلان آزمایشی", "اعلان‌های رسا سیستم درست کار می‌کند ✓", "notifications", "note")));
             n.addView(Ui.ghost(c, "بررسی اکنون (انقضا / موجودی / پشتیبانی)", () -> { Prefs.set("notif_expiry_day", ""); Api.bg(() -> { Notify.checkLocal(a); if (Api.standalone()) { int k = SupportRelay.poll(); if (k > 0) Notify.supportReply(a, k); } else Notify.checkPcSupport(a); Api.ui(() -> Ui.toast("بررسی انجام شد")); }); }));
             body.addView(n);
             LinearLayout so = Ui.card(c, "صداها"); so.addView(Ui.muted(c, "صداها مانند نسخهٔ رایانه ملایم‌اند: ثبت فروش، افزودن کالا، خطا، ابطال، نگه‌داشتن و اعلان هرکدام صدای جداگانه دارند."));
@@ -270,7 +270,7 @@ public final class Screens {
             clear();
             LinearLayout hero = Ui.col(c); hero.setGravity(android.view.Gravity.CENTER); hero.setPadding(0, Ui.dp(18), 0, Ui.dp(10));
             android.widget.ImageView logo = new android.widget.ImageView(c); logo.setImageResource(R.mipmap.ic_launcher); logo.setLayoutParams(Ui.lp(Ui.dp(84), Ui.dp(84))); hero.addView(logo);
-            TextView t = Ui.text(c, "سامانه جامع مدیریت سوپرمارکت", 18, Ui.TEXT, true); t.setGravity(android.view.Gravity.CENTER); t.setPadding(0, Ui.dp(10), 0, 0); hero.addView(t);
+            TextView t = Ui.text(c, "مدیریت سوپرمارکت رسا سیستم", 18, Ui.TEXT, true); t.setGravity(android.view.Gravity.CENTER); t.setPadding(0, Ui.dp(10), 0, 0); hero.addView(t);
             TextView v = Ui.muted(c, "اپ اندروید بومی · نسخهٔ " + Ui.fa(Version.NAME)); v.setGravity(android.view.Gravity.CENTER); hero.addView(v); body.addView(hero);
             LinearLayout cd = Ui.card(c, null); cd.addView(Ui.body(c, "اپ بومی اندروید (بدون مرورگر و وب‌ویو) که به‌طور مستقل روی گوشی کار می‌کند و فقط داده را با رایانهٔ فروشگاه — از طریق شبکهٔ محلی، بدون اینترنت — رد و بدل می‌کند. همهٔ بخش‌های نسخهٔ ویندوز در همین اپ در دسترس است: صندوق، کالا و انبار، مشتری و دفتر حساب، جشنواره، گزارش، حسابداری، کاربران، تنظیمات، سخت‌افزار، پشتیبانی.")); body.addView(cd);
             LinearLayout dev = Ui.card(c, null); TextView d1 = Ui.text(c, "طراحی و توسعه توسط خواجوی", 15, Ui.TEXT, true); d1.setGravity(android.view.Gravity.CENTER); dev.addView(d1); body.addView(dev);

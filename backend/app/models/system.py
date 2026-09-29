@@ -18,8 +18,12 @@ class SmsMessage(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     phone: Mapped[str] = mapped_column(String(32))
     text: Mapped[str] = mapped_column(Text)
+    # PENDING | SENDING | SENT | RETRYING | FAILED | DEAD_LETTER
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: v3.7 — exponential-backoff gate: a RETRYING row is only picked up again
+    #: after this timestamp (UTC). NULL = eligible immediately.
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -39,6 +43,16 @@ class HardwareDevice(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
     paper_width_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(default=True)
+    # --- v3.8 hardware layer: discovery ids, health tracking, reconnect backoff ---
+    vendor_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    product_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    serial_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # CONNECTED | DEGRADED | DISCONNECTED | UNKNOWN | UNSUPPORTED_DEVICE | DRIVER_MISSING
+    health: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    capabilities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of Capability values
 
 
 class Counter(Base):

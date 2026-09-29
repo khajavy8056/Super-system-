@@ -1,4 +1,4 @@
-/* Supermarket System — service worker (PWA shell cache).
+/* RASA SYSTEM (رسا سیستم) — service worker (PWA shell cache).
  *
  * Policy (honest offline):
  * - App shell (panel + mobile pages, styles, icons): cache-first, versioned.
@@ -6,16 +6,17 @@
  *   fail visibly. The mobile app queues writes locally in IndexedDB and syncs
  *   when the network returns (§25–26); the SW does not fake responses.
  */
-const CACHE = "supermarket-shell-v366";
+const CACHE = "rasa-shell-v100";
 const SHELL = [
   "/", "/app.js", "/styles.css", "/theme-pro.css", "/jalali.js", "/vendor-qrcode.js",
-  "/accounting.js", "/insights.js", "/desktop.css", "/mobile-shell.css", "/mobile-shell.js",
+  "/accounting.js", "/insights.js", "/desktop.css", "/ui-refresh.css", "/rasa-ui.css", "/mobile-shell.css", "/mobile-shell.js",
   "/onboarding.js",
   "/tour.js",
   "/sfx.js",
   "/mobile/", "/mobile/app.js", "/mobile/app-more.js", "/mobile/tour.js", "/mobile/vendor/zxing.min.js", "/mobile/styles.css",
   "/manifest.webmanifest",
-  "/icons/icon-192.png", "/icons/icon-512.png", "/icons/logo.svg",
+  "/icons/icon-192.png", "/icons/icon-512.png", "/icons/icon-maskable-512.png",
+  "/icons/logo.svg", "/icons/mark.svg",
   "/fonts/Vazirmatn-Regular.woff2", "/fonts/Vazirmatn-Bold.woff2",
 ];
 

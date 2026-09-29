@@ -728,11 +728,18 @@ def overview(db: Session) -> dict:
     due_soon = list(db.execute(select(Cheque).where(Cheque.status == "PENDING",
                                                     Cheque.due_date <= today.replace(day=today.day))
                                .order_by(Cheque.due_date).limit(5)).scalars())
+    # v1.0.0 (RASA) — کارایی: این شش تراز قبلاً شش پرس‌وجوی جداگانه روی دفتر کل بود
+    # (روی پایگاه‌دادهٔ یک‌ساله ≈ ۸۰ms، هر بار بازشدن داشبورد). اکنون یک پرس‌وجو با
+    # همان معنی: جمع بدهکار/بستانکار برای همین شش حساب.
+    codes = (A_CASH, A_BANK, A_CARD, A_RECEIVABLE, A_PAYABLE, A_INVENTORY)
+    accs = [account_by_code(db, c) for c in codes]
+    pooled = _balances(db, None, None, [a.id for a in accs])
+    bal = {a.code: _signed(a, *pooled.get(a.id, (ZERO, ZERO))) for a in accs}
     return {
-        "cash": float(account_balance(db, A_CASH)), "bank": float(account_balance(db, A_BANK)),
-        "card": float(account_balance(db, A_CARD)),
-        "receivables": float(account_balance(db, A_RECEIVABLE)), "payables": float(account_balance(db, A_PAYABLE)),
-        "inventory_value": float(account_balance(db, A_INVENTORY)),
+        "cash": float(bal[A_CASH]), "bank": float(bal[A_BANK]),
+        "card": float(bal[A_CARD]),
+        "receivables": float(bal[A_RECEIVABLE]), "payables": float(bal[A_PAYABLE]),
+        "inventory_value": float(bal[A_INVENTORY]),
         "month": {"revenue": pl["revenue"]["total"], "cogs": pl["cogs"]["total"],
                   "expenses": pl["expenses"]["total"], "net_profit": pl["net_profit"],
                   "gross_margin_pct": pl["gross_margin_pct"]},

@@ -107,6 +107,26 @@ def test_sms_failure_retries_then_fails(client, admin_h):
     assert mine["status"] == "RETRYING" and mine["retry_count"] == 1
     assert "ALWAYS_FAIL" in mine["error_message"]
 
+    # v3.8 (user-ordered): retries sleep on exponential backoff — an immediate
+    # second dispatch must NOT hammer the provider again.
+    d2 = client.post("/api/sms/dispatch", headers=admin_h).json()
+    assert d2.get("not_due", 0) >= 1
+    rows = client.get("/api/sms", headers=admin_h).json()
+    mine = next(m for m in rows if m["id"] == msg_id)
+    assert mine["status"] == "RETRYING" and mine["retry_count"] == 1
+
+    # simulate the clock passing the backoff, then the retry really runs
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import SmsMessage
+    s = SessionLocal()
+    try:
+        m = s.get(SmsMessage, msg_id)
+        assert m.next_retry_at is not None and m.next_retry_at > datetime.utcnow()
+        m.next_retry_at = datetime.utcnow() - timedelta(seconds=1)
+        s.commit()
+    finally:
+        s.close()
     client.post("/api/sms/dispatch", headers=admin_h)
     rows = client.get("/api/sms", headers=admin_h).json()
     mine = next(m for m in rows if m["id"] == msg_id)

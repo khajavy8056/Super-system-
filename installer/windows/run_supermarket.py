@@ -30,7 +30,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-APP_NAME = "SupermarketSystem"
+# v1.0.0 (RASA) — brand + data folder. The folder is RasaSystem for new installs;
+# an existing ~/SupermarketSystem (v4.x and older) is taken over once, IN PLACE, so
+# an update never loses the shop's database. Both names are recognised forever.
+APP_NAME = "RasaSystem"
+LEGACY_APP_NAME = "SupermarketSystem"
 
 
 def backend_dir() -> Path:
@@ -40,7 +44,15 @@ def backend_dir() -> Path:
 
 
 def data_dir() -> Path:
+    """User data folder — migrates the pre-1.0 folder name without touching the data."""
     base = Path.home() / APP_NAME
+    legacy = Path.home() / LEGACY_APP_NAME
+    if not base.exists() and legacy.exists():
+        try:
+            legacy.rename(base)                       # same volume: atomic, nothing is copied
+        except OSError:
+            import shutil
+            shutil.copytree(legacy, base)             # different volume (rare): copy, keep the original
     (base / "logs").mkdir(parents=True, exist_ok=True)
     return base
 
@@ -142,7 +154,7 @@ def open_native_window(url: str, base: Path, log, on_closed):
         os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
         kiosk = os.environ.get("SUPERMARKET_KIOSK", "").strip().lower() in ("1", "true", "yes")
         win = webview.create_window(
-            "سیستم مدیریت سوپرمارکت", url,
+            "مدیریت سوپرمارکت رسا سیستم", url,
             width=1440, height=900, min_size=(640, 480),
             fullscreen=kiosk, frameless=kiosk, easy_drag=False,
             text_select=True, zoomable=True, confirm_close=False,
@@ -247,6 +259,11 @@ def main() -> None:
     sys.path.insert(0, str(backend_dir()))
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
+    # v4.0 — one data dir for everything the app persists (DB, logs, brain models,
+    # llama.cpp runtime). Without this the frozen backend would resolve its data
+    # dir inside the PyInstaller temp extraction dir and lose the model the
+    # installer placed in ~/SupermarketSystem/brain/models on every launch.
+    os.environ.setdefault("SUPERMARKET_DATA_DIR", str(base))
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
     os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
     if getattr(sys, "frozen", False):
