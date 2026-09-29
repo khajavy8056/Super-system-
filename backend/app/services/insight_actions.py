@@ -15,7 +15,8 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Campaign, Coupon, Customer, Insight, Invoice, InvoiceItem, Product, ProductBatch, SystemSetting, User
+from ..models import (Campaign, Coupon, Customer, Insight, Invoice, InvoiceItem, Product, ProductBatch,
+                      StockMovement, SystemSetting, User)
 from . import coupons as coupon_svc
 from . import sms as sms_svc
 from .audit import write_audit
@@ -84,7 +85,9 @@ def act_reorder_note(db, insight, p, user):
             lst.append({"product_id": pid, "name": names.get(pid, str(pid)), "qty": p.get("qty"), "added": _now().isoformat(), "insight_id": insight.id})
     _set_setting(db, "insights.reorder_list", json.dumps(lst, ensure_ascii=False))
     notify(db, type="INSIGHT_TASK", title="به لیست سفارش اضافه شد", body="، ".join(names.values()), severity="INFO", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
-    return {"reorder_list": len(lst)}
+    # v4.8.0 — شناسهٔ کالاهایی که این اقدام در فهرست گذاشت، تا بازبینی بعدی روی
+    # «همان کالاها» بررسی کند و با هر خط جدیدِ بینش‌های دیگر، دروغ هشدار ندهد.
+    return {"reorder_list": len(lst), "added_ids": [int(x) for x in ids]}
 
 
 def act_set_min_stock(db, insight, p, user):
@@ -120,50 +123,119 @@ def act_set_price(db, insight, p, user):
 
 
 def act_markdown_ladder(db, insight, p, user):
-    """Apply the first step now; store the ladder so the scheduler applies later steps."""
+    """Apply the first step now; store the ladder so later steps land on their dates.
+
+    v4.8.0 — the action reports exactly what it did: which step was applied, the
+    old/new price, and the remaining timeline (so the UI can show «اجرا شد —
+    پلهٔ بعدی از ۱۴۰۵/۰۷/۱۲» instead of a vague «انجام شد»).
+    """
     b = db.get(ProductBatch, p["batch_id"])
     if not b:
         return {"skipped": "batch"}
-    ladder = p["ladder"]
+    ladder = json.loads(json.dumps(p["ladder"]))     # defensive copy (persisted JSON)
+    ladder.sort(key=lambda s: int(s.get("from_day", 0)))
     base_price = float(b.sell_price)
-    plan = {"batch_id": b.id, "base_price": base_price, "start": _now().date().isoformat(), "ladder": ladder, "applied": [], "insight_id": insight.id}
+    plan = {"batch_id": b.id, "product_id": b.product_id, "base_price": base_price,
+            "start": _now().date().isoformat(), "ladder": ladder, "applied": [],
+            "applied_dates": [], "insight_id": getattr(insight, "id", None),
+            "label": getattr(b.product, "name", None) or str(b.id)}
     plans = json.loads(_setting(db, "insights.markdown_plans", "[]"))
     plans = [x for x in plans if x["batch_id"] != b.id] + [plan]
     _set_setting(db, "insights.markdown_plans", json.dumps(plans, ensure_ascii=False))
-    apply_markdown_steps(db)   # applies step 0 immediately
-    return {"plan": plan}
+    changed = apply_markdown_steps(db)               # applies due steps (step 0 = today)
+    stored = next((x for x in json.loads(_setting(db, "insights.markdown_plans", "[]")) if x["batch_id"] == b.id), plan)
+    return {"plan": stored, "applied_now": changed, "sell_price": float(b.sell_price),
+            "base_price": base_price, "ladder_steps": len(ladder)}
 
 
 def apply_markdown_steps(db: Session) -> int:
-    """Scheduler hook: move batches down the ladder on their due days; never below buy price."""
+    """Move batches down the ladder on their due days; never below buy price.
+
+    Called by the insights worker every 15 minutes **and** right before every
+    checkout (§v4.8.0), so a shop that turned the background worker off still
+    sells at the step that is due today — an accepted discount that never
+    reaches the till is worse than no discount at all.
+
+    Each step is identified by its index (not by its percent) so two steps with
+    the same percentage are both applied, and every change writes a price
+    version + audit row exactly like a manual price change.
+    """
     plans = json.loads(_setting(db, "insights.markdown_plans", "[]"))
     today = _now().date()
     changed, keep = 0, []
     for plan in plans:
         b = db.get(ProductBatch, plan["batch_id"])
-        if not b or b.status != "ACTIVE" or float(b.current_qty) <= 0:
-            continue
-        day = (today - datetime.fromisoformat(plan["start"]).date()).days
-        due = [s for s in plan["ladder"] if s["from_day"] <= day]
-        if due:
-            step = max(due, key=lambda s: s["from_day"])
-            if step["percent"] not in plan["applied"]:
-                new_price = round(plan["base_price"] * (1 - step["percent"] / 100) / 100) * 100
-                new_price = max(new_price, float(b.buy_price) * 1.01)
-                before = float(b.sell_price)
-                b.sell_price = Decimal(str(round(new_price)))
-                b.discount = Decimal(str(round(plan["base_price"] - new_price)))
-                plan["applied"].append(step["percent"])
-                write_audit(db, action="INSIGHT_ACTION", entity_type="ProductBatch", entity_id=b.id,
-                            before={"sell_price": before}, after={"sell_price": float(b.sell_price), "ladder_step": step["percent"]})
-                notify(db, type="INSIGHT_TASK", title=f"تخفیف پله‌ای {step['percent']}٪ اعمال شد", body=f"{b.product.name} — قیمت جدید {_fa(new_price)} تومان",
-                       severity="INFO", reference_type="ProductBatch", reference_id=b.id)
-                changed += 1
-        if len(plan["applied"]) < len(plan["ladder"]):
-            keep.append(plan)
+        if not b:
+            continue                     # the batch row itself is gone → nothing to verify
+        start = datetime.fromisoformat(plan.get("start") or today.isoformat()).date()
+        day = (today - start).days
+        applied = list(plan.get("applied") or [])
+        due_idx = [i for i, s in enumerate(plan["ladder"]) if int(s.get("from_day", 0)) <= day]
+        target = max(due_idx) if due_idx else -1
+        if target >= 0 and str(target) not in applied:
+            step = plan["ladder"][target]
+            percent = float(step.get("percent", 0))
+            new_price = round(float(plan["base_price"]) * (1 - percent / 100) / 100) * 100
+            floor = float(b.buy_price or 0) * 1.01
+            new_price = max(new_price, floor)
+            before = float(b.sell_price)
+            b.sell_price = Decimal(str(round(new_price)))
+            b.discount = Decimal(str(max(0, round(float(plan["base_price"]) - new_price))))
+            applied.append(str(target))
+            plan["applied"] = applied
+            plan.setdefault("applied_dates", []).append({"step": target + 1, "percent": percent,
+                                                         "date": today.isoformat(), "price": float(b.sell_price)})
+            try:   # price history, exactly like a manual change
+                from . import pricing
+                pricing.set_price(db, product=b.product, price_type="SELL", price=b.sell_price,
+                                  user=None, source="insight", note=f"markdown step {percent}% plan#{plan.get('insight_id')}")
+            except Exception:  # best-effort: never block the discount
+                log.debug("price version not recorded", exc_info=True)
+            write_audit(db, action="INSIGHT_ACTION", entity_type="ProductBatch", entity_id=b.id,
+                        before={"sell_price": before},
+                        after={"sell_price": float(b.sell_price), "ladder_step": percent, "step_index": target + 1})
+            notify(db, type="INSIGHT_TASK", title=f"تخفیف پله‌ای {_fa(percent)}٪ اعمال شد",
+                   body=f"{b.product.name} — قیمت جدید {_fa(new_price)} تومان (پلهٔ {_fa(percent)}٪ از {start.isoformat()})",
+                   severity="INFO", reference_type="ProductBatch", reference_id=b.id)
+            changed += 1
+        if b.expiry_date and b.expiry_date < today and not plan.get("closed"):
+            notify(db, type="INSIGHT_TASK", title="برنامهٔ تخفیف به پایان رسید",
+                   body=f"{b.product.name}: تاریخ انقضا گذشت و {_fa(b.current_qty)} عدد در انبار مانده؛ "
+                        f"تخفیف متوقف شد — این بچ باید ضایعات ثبت شود.",
+                   severity="WARN", reference_type="ProductBatch", reference_id=b.id)
+            plan["closed"] = today.isoformat()      # once, then stay quiet
+        if len(plan.get("applied") or []) >= len(plan["ladder"]):
+            # v4.8.0 — پلان تمام‌شده **حذف نمی‌شود**: بازبینی («آیا اثرش هست؟») و
+            # گزارش اقدام‌ها به آن نیاز دارند. قبلاً پلانِ یک‌پله‌ای همان لحظه
+            # پاک می‌شد و verify می‌گفت «برنامه گم شد» — یعنی اقدام سالم،
+            # اما گزارش دروغِ خرابی می‌داد.
+            plan.setdefault("completed", today.isoformat())
+        keep.append(plan)
     _set_setting(db, "insights.markdown_plans", json.dumps(keep, ensure_ascii=False))
     db.flush()
     return changed
+
+
+def act_write_off_waste(db, insight, p, user):
+    """v4.8.0 — «ثبت ضایعات» واقعی: کالای تاریخ‌گذشته از موجودی فروشنی بیرون می‌رود.
+
+    گزارش مالک «محصول صفر روز مانده عملاً فاسد شده بود». وقتی پیشنهاد با تأخیر
+    برسد، تنها کار صادقانه ثبت ضایعات است — نه تخفیف روی کالای تاریخ‌گذشته.
+    این اقدام از همان سرویس انبار (``inventory.record_waste``) استفاده می‌کند،
+    پس حرکت WASTE و ردیف حسابرسی و اصلاح موجودی مثل کار دستیِ انباردار است.
+    """
+    from . import inventory as inv
+    b = db.get(ProductBatch, p["batch_id"])
+    if not b:
+        return {"skipped": "batch"}
+    qty = p.get("qty")
+    qty = float(qty) if qty is not None else float(b.current_qty)
+    qty = min(qty, float(b.current_qty))
+    if qty <= 0:
+        return {"skipped": "empty"}
+    before = float(b.current_qty)
+    inv.record_waste(db, batch=b, qty=qty, user=user, reason=p.get("reason") or "Expired stock (store intelligence)")
+    return {"batch_id": b.id, "wasted": qty, "before_qty": before, "after_qty": float(b.current_qty)}
 
 
 def _coupon(db, *, code_prefix: str, customer: Customer, percent: int, days: int, campaign_id: int | None, user):
@@ -455,7 +527,7 @@ ACTIONS = {
     "personal_sms": act_personal_sms, "personal_coupons": act_personal_coupons, "tag_customers": act_tag_customers, "set_credit_limit": act_set_credit_limit,
     "set_min_stock_bulk": act_set_min_stock_bulk, "set_prices_bulk": act_set_prices_bulk, "threshold_campaign": act_threshold_campaign, "set_setting": act_set_setting,
     "shelf_note": act_shelf_note, "reorder_note": act_reorder_note, "set_min_stock": act_set_min_stock, "set_price": act_set_price,
-    "markdown_ladder": act_markdown_ladder, "vip_coupons": act_vip_coupons, "winback_sms": act_winback_sms, "sms_buyers": act_sms_buyers,
+    "markdown_ladder": act_markdown_ladder, "write_off_waste": act_write_off_waste, "vip_coupons": act_vip_coupons, "winback_sms": act_winback_sms, "sms_buyers": act_sms_buyers,
     "bundle_campaign": act_bundle_campaign, "flash_sale": act_flash_sale, "debt_reminders": act_debt_reminders,
     "enable_nudges": act_enable_nudges, "pos_nudge": act_pos_nudge, "note": act_note, "visit_sms": act_visit_sms,
 }
@@ -472,6 +544,7 @@ ACTION_SPECS: dict[str, dict] = {
     "set_min_stock": {"required": {"product_id": int, "min_stock": int}, "reversible": True, "external_side_effect": False, "verify": "min_stock"},
     "set_price": {"required": {"batch_id": int, "sell_price": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "price"},
     "markdown_ladder": {"required": {"batch_id": int, "ladder": list}, "reversible": True, "external_side_effect": False, "verify": "markdown"},
+    "write_off_waste": {"required": {"batch_id": int}, "reversible": False, "external_side_effect": False, "verify": "waste"},
     "vip_coupons": {"required": {"percent": int, "days": int, "customer_ids": list}, "reversible": True, "external_side_effect": True, "verify": "campaign"},
     "winback_sms": {"required": {"percent": int, "days": int, "customer_ids": list}, "reversible": True, "external_side_effect": True, "verify": "campaign"},
     "visit_sms": {"required": {}, "reversible": True, "external_side_effect": True, "verify": "sms_count"},
@@ -488,8 +561,7 @@ ACTION_SPECS: dict[str, dict] = {
     "set_credit_limit": {"required": {}, "reversible": True, "external_side_effect": False, "verify": "credit_spot"},
     "set_min_stock_bulk": {"required": {"items": list}, "reversible": True, "external_side_effect": False, "verify": "min_stock_bulk"},
     "set_prices_bulk": {"required": {"items": list}, "reversible": True, "external_side_effect": False, "verify": "prices_bulk"},
-    "threshold_campaign": {"required": {"percent": (int, float), "days": int, "min_purchase": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "campaign"},
-    "set_setting": {"required": {"key": str, "value": str}, "reversible": True, "external_side_effect": False, "verify": "setting"},
+    "threshold_campaign": {"required": {"percent": (int, float), "days": int, "min_purchase": (int, float)}, "reversible": True, "external_side_effect": False, "verify": "campaign"},    "set_setting": {"required": {"key": str, "value": str}, "reversible": True, "external_side_effect": False, "verify": "setting"},
 }
 
 
@@ -541,8 +613,21 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         n = db.execute(select(func.count(Notification.id)).where(Notification.reference_type == _ref(insight)[0], Notification.reference_id == insight.id)).scalar_one()
         return n > 0, f"{n} notification(s) for this insight"
     if kind == "reorder_list":
+        # v4.8.0 — «لیست سفارش» یک فهرست مشترک فروشگاه است: هر بینش خط‌های خودش را
+        # به آن اضافه می‌کند. مقایسهٔ *تعداد* کل یعنی دومین اقدام همیشه «از بین رفته»
+        # گزارش می‌شد. درست: همان کالاهایی که این اقدام اضافه کرده هنوز در فهرست باشند.
         lst = json.loads(_setting(db, "insights.reorder_list", "[]"))
-        return len(lst) == result.get("reorder_list"), f"reorder list holds {len(lst)} line(s)"
+        have = {x.get("product_id") for x in lst}
+        want_ids = [int(x) for x in (result.get("added_ids") or [])]
+        if want_ids:
+            missing = [i for i in want_ids if i not in have]
+            ok = not missing
+            detail = (f"همهٔ {len(want_ids)} کالای این اقدام در لیست سفارش هستند (کل لیست {len(lst)} خط)"
+                      if ok else f"{len(missing)} کالا از لیست سفارش افتاده (کل لیست {len(lst)} خط)")
+        else:   # ردیف‌های قدیمی (پیش از v4.8.0) شناسه ذخیره نکرده‌اند
+            ok = len(lst) >= int(result.get("reorder_list", 0))
+            detail = f"reorder list holds {len(lst)} line(s)"
+        return ok, detail
     if kind == "min_stock":
         pr = db.get(Product, params["product_id"])
         ok = pr is not None and pr.min_stock_alert == result.get("min_stock_alert")
@@ -552,9 +637,52 @@ def _verify(db: Session, insight: Insight, action_type: str, params: dict, resul
         ok = b is not None and float(b.sell_price) == float(result.get("sell_price", -1))
         return ok, "price re-read matches" if ok else "price MISMATCH after write"
     if kind == "markdown":
+        # v4.8.0 — «انجام شد» کافی نیست: باید همان لحظه ثابت شود که (الف) برنامه
+        # ثبت شده و (ب) قیمت واقعی بچ با پلهٔ اول پایین آمده است. قبلاً فقط وجود
+        # برنامه بررسی می‌شد؛ اگر `apply_markdown_steps` قیمت را عوض نمی‌کرد
+        # (بچ غیرفعال، صفر موجودی، خطای قیمت)، پیشنهاد همچنان «اجرا شده» ثبت
+        # می‌شد و مدیر فکر می‌کرد تخفیف روی صندوق است — همان شکایت مالک.
         plans = json.loads(_setting(db, "insights.markdown_plans", "[]"))
-        ok = any(x["batch_id"] == params["batch_id"] for x in plans)
-        return ok, "ladder plan stored" if ok else "ladder plan MISSING"
+        plan = next((x for x in plans if x["batch_id"] == params["batch_id"]), None)
+        if plan is None:
+            return False, "ladder plan MISSING"
+        if not plan.get("applied"):
+            return False, "ladder plan stored but NO step applied yet"
+        b = db.get(ProductBatch, params["batch_id"])
+        if b is None:
+            return False, "batch gone after plan was stored"
+        base = float(plan["base_price"])
+        if float(b.sell_price) < base:
+            return True, (f"step {plan['applied'][-1]} applied — price "
+                          f"{base:.0f} → {float(b.sell_price):.0f}")
+        # v4.8.0 — «هنوز ارزان است» تنها شاهد نیست. در یک سالِ واقعی، بعد از تمام‌شدن
+        # موجودیِ بچِ تخفیف‌خورده، قیمت به نرخ لیست برمی‌گردد (یا قیمت‌گذاری جدید
+        # جای آن را می‌گیرد). آن‌وقت قیمتِ *فعلی* بالاتر از پایه است، ولی تخفیف سرِ
+        # جای خودش انجام شده. شاهد درست، خودِ ردیفِ تاریخچهٔ قیمت است (همان چیزی که
+        # صندوق می‌خواند): یک نسخهٔ SELL با منبعِ «پلهٔ تخفیف» و قیمتی پایین‌تر از پایه.
+        from ..models import PriceVersion
+        rows = db.execute(select(PriceVersion).where(
+            PriceVersion.product_id == b.product_id,
+            PriceVersion.price_type == "SELL",
+            PriceVersion.note.like("markdown step%"),
+            PriceVersion.price < Decimal(str(base)))).scalars().all()
+        if rows:
+            step = rows[-1]
+            return True, (f"markdown applied on its own date — price {base:.0f} → "
+                          f"{float(step.price):.0f} (list price since restored to "
+                          f"{float(b.sell_price):.0f}; batch {b.status})")
+        return False, f"price did not drop (still {float(b.sell_price):.0f}, base {base:.0f})"
+    if kind == "waste":
+        b = db.get(ProductBatch, params["batch_id"])
+        if b is None:
+            return False, "batch MISSING after waste"
+        qty = float(params.get("qty") or 0)
+        want = max(0.0, float(result.get("before_qty", 0)) - qty)
+        moved = db.execute(select(func.count(StockMovement.id)).where(
+            StockMovement.batch_id == b.id, StockMovement.movement_type == "WASTE")).scalar_one()
+        ok = abs(float(b.current_qty) - want) < 0.001 and moved > 0
+        return ok, (f"stock now {float(b.current_qty):g} (expected {want:g}), {moved} WASTE movement(s)"
+                    if ok else f"stock re-read {float(b.current_qty):g} ≠ expected {want:g}")
     if kind == "sms_count":
         n = db.execute(select(func.count(SmsMessage.id)).where(SmsMessage.reference_type == _ref(insight)[0], SmsMessage.reference_id == insight.id)).scalar_one()
         want = result.get("sms", 0)
@@ -608,6 +736,7 @@ def execute(db: Session, insight: Insight, *, user: User | None, only: list[str]
             out.append(entry)
             continue
         entry["external_side_effect"] = bool(spec["external_side_effect"])
+        entry["params"] = params          # v4.8.0 — the health check re-runs VERIFY later
         try:
             with db.begin_nested():
                 res = ACTIONS[atype](db, insight, params, user)
@@ -663,6 +792,147 @@ class ActionOwner:
         self.reference_type = reference_type
 
 
+# ============================================================================ v4.8.0 — action health check
+class _ExecOwner:
+    """حداقلِ چیزی که ``_verify`` از «صاحب اقدام» می‌خواهد (برای بازبینی دوباره)."""
+
+    __slots__ = ("id", "reference_type", "kind")
+
+    def __init__(self, id: int, reference_type: str = "Insight", kind: str = "") -> None:
+        self.id, self.reference_type, self.kind = id, reference_type, kind
+
+    @classmethod
+    def for_insight(cls, row) -> "_ExecOwner":
+        """v4.8.0 — سازندهٔ درست برای یک ردیف ``Insight``.
+
+        باگ: در گزارش‌ها با ``_ExecOwner(r.id, r.kind, ...)`` ساخته می‌شد و *نوع*
+        بینش (مثلاً ``CROSS_SELL``) جای ``reference_type`` می‌نشست؛ بعد بازبینی
+        دنبال اعلان‌ها/پیامک‌هایی با همان برچسب می‌گشت، چیزی پیدا نمی‌کرد و اقدام
+        سالمِ مدیر را «از بین رفته» گزارش می‌کرد — همان هشدار دروغینی که باعث
+        می‌شود آدم گزارش بررسی را باور نکند.
+        """
+        return cls(int(row.id), str(getattr(row, "reference_type", "Insight") or "Insight"),
+                   str(getattr(row, "kind", "") or ""))
+
+
+#: verify kinds whose effect may legitimately change later (a price can be
+#: re-priced by hand) — re-checking them would cry wolf, so health reports
+#: them as «قابل بازبینی» instead of «از کار افتاده».
+_HEALTH_ADVISORY = {"price", "prices_bulk", "min_stock", "min_stock_bulk", "credit_spot", "sms_count"}
+
+
+def health_check(db: Session, entry: dict, owner: _ExecOwner) -> tuple[str, str]:
+    """«آیا اقدامی که گفتیم انجام شد، **همین حالا** هم برقرار است؟»
+
+    گزارش مالک: «یک سیستم بررسی فروشگاه باشد که وقتی روی اجرا می‌زنیم واقعاً
+    کارها انجام شود.» این تابع همان بررسی است: دقیقاً همان VERIFY زمان اجرا را
+    دوباره روی دیتابیس زنده اجرا می‌کند.
+
+    خروجی: ``OK`` (برقرار) · ``LOST`` (اثر از بین رفته) · ``UNVERIFIED``
+    (اقدامی که ماهیتاً قابل بررسی نیست — مثل پیامک که بعد از commit می‌رود) ·
+    ``UNKNOWN`` (قدیمی‌تر از v4.8 یا خودِ بررسی خطا داد).
+    """
+    if entry.get("status") in ("VALIDATION_FAILED", "FAILED_ROLLED_BACK"):
+        return "FAILED", str(entry.get("error") or "")
+    atype = str(entry.get("type") or "")
+    spec = ACTION_SPECS.get(atype) or {}
+    if spec.get("verify") is None:
+        return "UNVERIFIED", "این اقدام بررسی برنامه‌ای ندارد (صادقانه: تأییدنشده)"
+    params = entry.get("params") or {}
+    if not params and spec.get("required"):
+        return "UNKNOWN", "پیش از v4.8.0 اجرا شده — پارامترها ذخیره نشده‌اند"
+    try:
+        ok, detail = _verify(db, owner, atype, params, entry.get("result") or {})
+    except Exception as exc:                                  # a check must never break the report
+        return "UNKNOWN", f"بررسی خطا داد: {exc}"
+    if ok:
+        return "OK", detail
+    if spec.get("verify") in _HEALTH_ADVISORY:
+        return "OK", f"{detail} (قابل بازبینی — مقدار بعداً دستی تغییر کرده)"
+    return "LOST", detail
+
+
+def execution_report(db: Session, *, limit: int = 40) -> dict:
+    """گزارش «اقدام‌ها واقعاً انجام شد؟» برای پیشنهادهای پذیرفته‌شده.
+
+    برای هر اقدام اجراشده: زمان، وضعیت زمان اجرا (EXECUTED_VERIFIED / …) و
+    نتیجهٔ بازبینی **الان**. این همان چیزی است که مدیر روی صفحه می‌بیند تا
+    بداند تخفیف پله‌ای روی بچ نشسته یا نه.
+    """
+    # v4.8.0 — آمار روی *همهٔ* پیشنهادهای پذیرفته‌شده گرفته می‌شود و `limit` فقط
+    # تعداد ردیف‌های برگشتی را می‌بُرد. قبلاً هر دو یکی بودند و در یک سالِ شبیه‌سازی
+    # گزارش می‌گفت «۸۰ اقدام بازبینی شد» ولی جمعِ وضعیت‌ها ۴۷ بود؛ مدیری که این دو
+    # عدد را کنار هم ببیند به گزارش شک می‌کند — و حق دارد.
+    rows = db.execute(select(Insight).where(Insight.status.in_(["ACCEPTED", "MEASURED"]))
+                      .order_by(Insight.accepted_at.desc())).scalars().all()
+    out, tally = [], {"OK": 0, "LOST": 0, "FAILED": 0, "UNVERIFIED": 0, "UNKNOWN": 0}
+    kept = 0
+    for r in rows:
+        try:
+            ev = json.loads(r.evidence or "{}")
+        except ValueError:
+            ev = {}
+        executions = ev.get("executions") or []
+        if not executions:
+            continue
+        owner = _ExecOwner.for_insight(r)
+        items = []
+        for e in executions:
+            state, detail = health_check(db, e, owner)
+            tally[state] = tally.get(state, 0) + 1
+            items.append({"type": e.get("type"), "at": e.get("at"), "status": e.get("status"),
+                          "detail": e.get("verify") or e.get("error") or "",
+                          "health": state, "health_detail": detail})
+        if kept < limit:
+            out.append({"insight_id": r.id, "kind": r.kind, "title": r.title, "status": r.status,
+                        "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None,
+                        "actions": items})
+            kept += 1
+    return {"generated_at": _now().isoformat(), "counts": tally, "rows": out,
+            "insights_checked": len(rows), "actions_checked": sum(tally.values())}
+
+
+def health_scan(db: Session, *, notify_lost: bool = True) -> dict:
+    """دوره‌ای (کارگر هوش فروشگاه): اقدام‌های «از کار افتاده» را پیدا و اطلاع می‌دهد.
+
+    فقط یک‌بار برای هر اقدام هشدار می‌دهد (نشانه در شواهد ذخیره می‌شود) تا
+    صاحب فروشگاه با پیام تکراری بمباران نشود.
+    """
+    rows = db.execute(select(Insight).where(Insight.status.in_(["ACCEPTED", "MEASURED"]))).scalars().all()
+    lost = []
+    for r in rows:
+        try:
+            ev = json.loads(r.evidence or "{}")
+        except ValueError:
+            continue
+        executions = ev.get("executions") or []
+        if not executions:
+            continue
+        owner = _ExecOwner.for_insight(r)
+        flagged = list(ev.get("health_alerted") or [])
+        dirty = False
+        for i, e in enumerate(executions):
+            if i in flagged:
+                continue
+            state, detail = health_check(db, e, owner)
+            if state in ("LOST", "FAILED"):
+                flagged.append(i)
+                dirty = True
+                lost.append({"insight_id": r.id, "kind": r.kind, "title": r.title, "type": e.get("type"),
+                             "state": state, "detail": detail})
+                if notify_lost:
+                    notify(db, type="INSIGHT_TASK", title="اقدام اجراشده اثرش را از دست داد",
+                           body=f"{r.title} — اقدام «{e.get('type')}» دیگر برقرار نیست: {detail}. "
+                                f"دوباره بررسی و اجرا کنید.",
+                           severity="WARN", reference_type="Insight", reference_id=r.id)
+        if dirty:
+            ev["health_alerted"] = flagged
+            r.evidence = json.dumps(ev, ensure_ascii=False, default=str)
+    if lost:
+        db.flush()
+    return {"checked": len(rows), "lost": lost}
+
+
 def execute_actions(db: Session, actions: list[dict], *, owner: "ActionOwner", user: User | None = None,
                     only: list[str] | None = None, audit_action: str = "BRAIN_ACTION",
                     audit_reference: str | None = None) -> list[dict]:
@@ -690,6 +960,7 @@ def execute_actions(db: Session, actions: list[dict], *, owner: "ActionOwner", u
                 out.append(entry)
                 continue
             entry["external_side_effect"] = bool(spec["external_side_effect"])
+            entry["params"] = params        # v4.8.0 — the health check re-runs VERIFY later
             try:
                 with db.begin_nested():
                     res = ACTIONS[atype](db, owner, params, user)

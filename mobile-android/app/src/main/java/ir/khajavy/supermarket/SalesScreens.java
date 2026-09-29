@@ -53,6 +53,7 @@ public final class SalesScreens {
             root.addView(Ui.chips(c, cs));
             custTxt = Ui.text(c, "مشتری آزاد", 12, Ui.MUTED, false); custTxt.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); custTxt.setOnClickListener(v -> pickCustomer()); root.addView(custTxt);
             nudgeBar = Ui.col(c); nudgeBar.setVisibility(View.GONE); root.addView(nudgeBar);   // v4.7.0
+            applyDueDiscounts();                                                              // v4.8.0 — تخفیف‌های سررسیدشده، قبل از اولین قیمت
             // cart list (scrolls)
             lines = Ui.col(c); android.widget.ScrollView sv = new android.widget.ScrollView(c); sv.addView(lines); sv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1)); root.addView(sv);
             // footer
@@ -114,37 +115,60 @@ public final class SalesScreens {
             if (nudgePend != null) h.removeCallbacks(nudgePend);
             if (key.isEmpty()) { nudgeBar.setVisibility(View.GONE); nudgeBar.removeAllViews(); return; }
             nudgePend = () -> {
+                applyDueDiscounts();   // v4.8.0 — تخفیف پله‌ای سررسیدشده پیش از نمایش قیمت‌ها اعمال شود
+                final JSONArray ids = new JSONArray();
+                for (JSONObject l : cart) ids.put(l.optLong("product_id"));
                 JSONObject body = new JSONObject();
-                try { JSONArray ids = new JSONArray(); for (JSONObject l : cart) ids.put(l.optLong("product_id")); body.put("product_ids", ids); } catch (Exception ignore) {}
-                Api.post("/insights/nudges", body, r -> {
+                try { body.put("product_ids", ids); } catch (Exception ignore) {}
+                Api.Cb<Object> show = r -> {
                     if (nudgeBar == null) return;
                     JSONArray ns = (JSONArray) r;
                     nudgeBar.removeAllViews();
                     if (ns == null || ns.length() == 0) { nudgeBar.setVisibility(View.GONE); return; }
-                    LinearLayout row = Ui.row(c); row.setPadding(Ui.dp(2), Ui.dp(6), Ui.dp(2), Ui.dp(2));
-                    row.setBackground(Ui.rounded((Ui.TEAL & 0x00FFFFFF) | 0x1A000000, Ui.TEAL, 14));
-                    TextView lbl = Ui.text(c, "پیشنهاد به مشتری:", 12, Ui.TEAL, true);
-                    lbl.setPadding(Ui.dp(10), 0, Ui.dp(6), 0);
-                    row.addView(lbl);
-                    LinearLayout chips = Ui.col(c); chips.setLayoutParams(Ui.weight(1));
+                    // v4.8.0 — ظاهر کارت «نجوا»: یک کارت آرام با نوار رنگی، نه یک نوار چسبیده
+                    LinearLayout card = Ui.col(c);
+                    card.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
+                    card.setBackground(Ui.rounded(Ui.dark ? 0x228950FF : 0x148950FF, Ui.VIOLET, 16));
+                    LinearLayout head = Ui.row(c); head.setGravity(Gravity.CENTER_VERTICAL);
+                    head.addView(Icons.view(c, "star", Ui.GOLD, 16));
+                    TextView lbl = Ui.text(c, "پیشنهاد به مشتری", 12.5f, Ui.VIOLET, true);
+                    lbl.setPadding(Ui.dp(6), 0, Ui.dp(6), 0); lbl.setLayoutParams(Ui.weight(1)); head.addView(lbl);
+                    JSONObject first = ns.optJSONObject(0);
+                    if (first != null && first.optBoolean("near_expiry")) head.addView(Ui.badge(c, "⏰ " + Ui.num(first.optInt("days_left")) + " روز به انقضا", Ui.AMBER));
+                    card.addView(head);
                     for (int i = 0; i < ns.length(); i++) {
                         JSONObject n = ns.optJSONObject(i);
                         if (n == null) continue;
                         boolean near = n.optBoolean("near_expiry");
-                        String label = n.optString("name") + (near ? "  ⏰ " + Ui.num(n.optInt("days_left")) + " روز تا انقضا" : "");
+                        String label = n.optString("name") + (near ? "  ⏰ " + Ui.num(n.optInt("days_left")) + " روز" : "");
                         android.widget.Button chip = Ui.small(c, label, () -> addFromNudge(n.optLong("product_id")));
                         chip.setTextColor(near ? Ui.AMBER : Ui.TEAL);
-                        chip.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 4));
-                        chips.addView(chip);
-                        if (near && !n.optString("reason", "").isEmpty()) chips.addView(Ui.muted(c, n.optString("reason")));
+                        chip.setMinHeight(Ui.dp(38));
+                        chip.setLayoutParams(Ui.margin(Ui.match(), 0, dp4(), 0, 0));
+                        card.addView(chip);
+                        if (!n.optString("reason", "").isEmpty()) {
+                            LinearLayout note = Ui.row(c); note.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 6));
+                            TextView t = Ui.body(c, n.optString("reason")); t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11.5f); t.setTextColor(Ui.MUTED);
+                            note.addView(t); card.addView(note);
+                        }
                     }
-                    row.addView(chips);
-                    nudgeBar.addView(row);
+                    nudgeBar.addView(card);
                     nudgeBar.setVisibility(View.VISIBLE);
-                }, e -> { nudgeBar.setVisibility(View.GONE); });
+                };
+                // v4.8.0 — گزارش مالک: «پیشنهاد صندوق روی گوشی نمی‌آمد». دلیلش این بود که
+                // مسیر آفلاین فقط برای GET به Local برمی‌گشت؛ روی گوشیِ مستقل (یا وقتی
+                // رایانه در دسترس نیست) POST بی‌پاسخ می‌ماند. حالا همان موتور محلی گوشی
+                // جواب می‌دهد، با همان قواعد و همان فیلدها.
+                if (Api.standalone()) { try { show.ok(Insights.nudges(ids)); } catch (Exception ignore) {} return; }
+                Api.post("/insights/nudges", body, show, e -> { try { show.ok(Insights.nudges(ids)); } catch (Exception ignore) { nudgeBar.setVisibility(View.GONE); } });
             };
             h.postDelayed(nudgePend, 350);
         }
+
+        static int dp4() { return Ui.dp(6); }
+
+        /** v4.8.0 — پله‌های تخفیفی که موعدشان رسیده، پیش از فروش اعمال می‌شوند (هم‌تای سرور). */
+        void applyDueDiscounts() { try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {} }
 
         /** fetch the suggested product + its honest batch options, then add to the cart. */
         void addFromNudge(long pid) {
@@ -184,18 +208,6 @@ public final class SalesScreens {
             total -= invoiceDiscount; if (total < 0) total = 0;
             tot.setText(Ui.money(total)); cnt.setText(Ui.num(cart.size()) + " قلم · " + Ui.num(n) + " واحد" + (invoiceDiscount > 0 ? " · تخفیف فاکتور " + Ui.money(invoiceDiscount) : "") + (coupon != null ? " · کوپن " + coupon : ""));
             custTxt.setText(customer == null ? "مشتری آزاد (بدون ثبت)" : "مشتری: " + customer.optString("name") + " " + Screens.Screen.s(customer, "last_name") + " · " + Ui.fa(customer.optString("phone")));
-            nudge();
-        }
-        /* v3.0 — real-time upsell line for the cashier ("customer bought X → offer Y?"), fed by the store-intelligence rules */
-        long nudgeSeq = 0;
-        void nudge() {
-            final long seq = ++nudgeSeq; if (cart.isEmpty()) return; JSONArray ids = new JSONArray(); for (JSONObject l : cart) ids.put(l.optLong("product_id"));
-            JSONObject nb = new JSONObject(); try { nb.put("product_ids", ids); } catch (Exception ignore) {}
-            Api.post("/insights/nudges", nb, r -> { if (seq != nudgeSeq) return; JSONArray n = r instanceof JSONArray ? (JSONArray) r : new JSONArray(); if (n.length() == 0) return;
-                LinearLayout bar = Ui.row(c); bar.setBackground(Ui.rounded(0x1ACBA75A, 0x55CBA75A, 14)); bar.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8)); bar.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8)); bar.setGravity(Gravity.CENTER_VERTICAL);
-                bar.addView(Icons.view(c, "star", Ui.GOLD, 18)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0);
-                for (int i = 0; i < n.length(); i++) { JSONObject x = n.optJSONObject(i); TextView t = Ui.text(c, "مشتری «" + x.optString("because") + "» خرید — «" + x.optString("name") + "» هم پیشنهاد بده؟", 12.5f, Ui.TEXT, i == 0); t.setOnClickListener(v -> get("/products/" + x.optLong("product_id"), pr -> get("/pos/batch-options/" + x.optLong("product_id"), br -> { try { JSONObject product=(JSONObject)pr; product.put("batches",((JSONObject)br).optJSONArray("options")); add(product,null); } catch(Exception ex) { Ui.toast("موجودی قابل فروش دوباره بررسی شود"); } }))); tc.addView(t); }
-                bar.addView(tc); lines.addView(bar, 0); }, e -> {});
         }
         View qbtn(String s, Runnable r) { TextView t = Ui.text(c, s, 18, "+".equals(s) ? Color.WHITE : Ui.TEXT, true); t.setGravity(Gravity.CENTER); t.setBackground(Ui.rounded("+".equals(s) ? Ui.PRIMARY : Ui.CARD2, "+".equals(s) ? 0 : Ui.BORDER, 10)); t.setLayoutParams(Ui.lp(Ui.dp(36), Ui.dp(34))); t.setOnClickListener(v -> r.run()); return t; }
         static void set(JSONObject o, String k, double v) { try { o.put(k, v); } catch (Exception ignore) {} }
@@ -260,7 +272,7 @@ public final class SalesScreens {
                 String no = Db.localSale(body, total); if (heldId != null) removeHeld(heldId);
                 // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
                 try {
-                if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) SmsLocal.enqueueAndSend(ph, SmsLocal.renderInvoice(no, total), no); else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
+                if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) SmsLocal.enqueueAndSend(ph, SmsLocal.patternMode() ? SmsLocal.renderInvoiceShort(no, total) : SmsLocal.renderInvoice(no, total), no); else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
                 } catch (Exception smsError) { Ui.toast("فروش ثبت شد؛ ساخت پیامک ناموفق بود: " + smsError.getMessage()); }
                 smsPhone = null;
                 Sync.queue("POS_CHECKOUT", body, "فاکتور " + no + " · " + Ui.money(total), no);

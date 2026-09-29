@@ -54,6 +54,39 @@ public final class InsightScreens {
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
 
+        /** v4.8.0 — «سیستم بررسی فروشگاه»: آیا کارهایی که «اجرا» کردیم هنوز سر جایشان‌اند؟
+         *
+         *  گزارش را از سرور (یا موتور محلی گوشی در حالت مستقل) می‌گیرد و یک‌بار
+         *  بازبینی زنده هم اجرا می‌کند؛ نتیجهٔ ازبین‌رفته‌ها را هم به مدیر خبر می‌دهد.
+         */
+        void health() {
+            get("/insights/actions/report", r -> {
+                JSONObject x = r instanceof JSONObject ? (JSONObject) r : new JSONObject();
+                JSONObject cnt = x.optJSONObject("counts"); if (cnt == null) cnt = new JSONObject();
+                LinearLayout l = Ui.col(c);
+                LinearLayout kp = Ui.row(c);
+                kp.addView(Ui.kpi(c, "برقرار", Ui.num(cnt.optInt("OK")), "اقدام هنوز سر جایش است", Ui.GREEN));
+                kp.addView(Ui.kpi(c, "از بین رفته", Ui.num(cnt.optInt("LOST")), "نیاز به اقدام دوباره", Ui.RED));
+                l.addView(kp);
+                if (cnt.optInt("FAILED") + cnt.optInt("UNVERIFIED") + cnt.optInt("UNKNOWN") > 0)
+                    l.addView(Ui.muted(c, Ui.num(cnt.optInt("FAILED")) + " اجرای ناموفق · " + Ui.num(cnt.optInt("UNVERIFIED") + cnt.optInt("UNKNOWN")) + " اجرای قدیمی بدون بازبینی"));
+                JSONArray rows = x.optJSONArray("rows"); if (rows == null) rows = new JSONArray();
+                if (rows.length() == 0) l.addView(Ui.empty(c, "هنوز اقدام اجراشده‌ای ثبت نشده است"));
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject row = rows.optJSONObject(i); JSONArray acts = row.optJSONArray("actions");
+                    int total = acts == null ? 0 : acts.length(), bad = 0;
+                    for (int k = 0; acts != null && k < acts.length(); k++) { String h = acts.optJSONObject(k).optString("health"); if ("LOST".equals(h) || "FAILED".equals(h)) bad++; }
+                    l.addView(Ui.kv(c, row.optString("title"), total == 0 ? "بدون اقدام" : (bad == 0 ? "همهٔ " + Ui.num(total) + " اقدام برقرار" : Ui.num(bad) + " از " + Ui.num(total) + " از بین رفته"), bad == 0 ? Ui.GREEN : Ui.RED));
+                }
+                l.addView(Ui.primary(c, "بازبینی همین حالا", () -> post("/insights/actions/health-scan", new JSONObject(), rr -> {
+                    JSONObject y = rr instanceof JSONObject ? (JSONObject) rr : new JSONObject();
+                    JSONArray lost = y.optJSONArray("lost"); int n = lost == null ? 0 : lost.length();
+                    Ui.toast(n > 0 ? Ui.num(n) + " اقدام از بین رفته پیدا شد — پایین ببینید" : "همهٔ اقدام‌های اجراشده برقرارند");
+                })));
+                Ui.sheet(c, "بررسی اجراها — آیا کارها مانده‌اند؟", l);
+            });
+        }
+
         void render(JSONArray all) {
             JSONArray items = all; clear();
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
@@ -64,6 +97,7 @@ public final class InsightScreens {
             br.addView(Ui.small(c, "پیش‌بینی سود", () -> a.route("insightsPlan"))); br.addView(Ui.small(c, "مشتریان در نوبت", () -> a.route("insightsCustomers")));
             android.widget.Button rep = Ui.small(c, "گزارش هفتگی", () -> get("/insights/report", r -> { JSONObject x = (JSONObject) r; LinearLayout l = Ui.col(c); TextView tv = Ui.body(c, x.optString("narrative")); tv.setLineSpacing(0, 1.35f); l.addView(tv); Ui.sheet(c, "گزارش هوش فروشگاه", l); })); br.addView(rep);
             android.widget.Button lst = Ui.small(c, "لیست سفارش", () -> get("/insights/tasks", r -> { JSONArray t = arr(r); LinearLayout l = Ui.col(c); if (t.length() == 0) l.addView(Ui.empty(c, "لیست سفارش خالی است")); for (int i = 0; i < t.length(); i++) { JSONObject x = t.optJSONObject(i); l.addView(Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("qty")) + " عدد", Ui.AMBER)); } Ui.sheet(c, "لیست سفارش پیشنهادی", l); })); br.addView(lst); hero.addView(br); body.addView(hero);
+            android.widget.Button chk = Ui.small(c, "بررسی اجراها", this::health); br.addView(chk);   // v4.8.0
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             // v3.5 — group strip; filtering is local so switching is instant
             java.util.Map<String, Integer> cnt = new java.util.HashMap<>(); for (int i = 0; i < items.length(); i++) cnt.merge(group(items.optJSONObject(i).optString("kind")), 1, Integer::sum);
@@ -401,7 +435,7 @@ public final class InsightScreens {
             if (fs != null) { java.util.Arrays.sort(fs, (x, y) -> Long.compare(y.lastModified(), x.lastModified())); for (java.io.File f : fs) { if (!f.getName().endsWith(".db")) continue; n++; final java.io.File ff = f; list.addView(Ui.item(c, f.getName(), Ui.num(f.length() / 1024) + " KB", "بازیابی", Ui.PRIMARY, () -> { LinearLayout l = Ui.col(c); l.addView(Ui.ghost(c, "اشتراک‌گذاری این فایل", () -> share(ff))); l.addView(Ui.primary(c, "بازیابی از این نسخه", () -> Ui.confirm(c, "داده‌های فعلی با «" + ff.getName() + "» جایگزین شود؟", () -> restore(() -> { try { return new java.io.FileInputStream(ff); } catch (Exception e) { return null; } })))); Ui.sheet(c, ff.getName(), l); })); } }
             if (n == 0) list.addView(Ui.empty(c, "هنوز پشتیبانی ساخته نشده")); body.addView(list);
         }
-        void share(java.io.File f) { try { android.net.Uri u = BackupProvider.uri(a, f); Intent i = new Intent(Intent.ACTION_SEND); i.setType("application/octet-stream"); i.putExtra(Intent.EXTRA_STREAM, u); i.putExtra(Intent.EXTRA_SUBJECT, "پشتیبان سوپری من — " + f.getName()); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); Biometric.markInternal(); a.startActivity(Intent.createChooser(i, "ارسال فایل پشتیبان")); } catch (Exception e) { Ui.toast("اشتراک‌گذاری ممکن نشد: " + e.getMessage()); } }
+        void share(java.io.File f) { try { android.net.Uri u = BackupProvider.uri(a, f); Intent i = new Intent(Intent.ACTION_SEND); i.setType("application/octet-stream"); i.putExtra(Intent.EXTRA_STREAM, u); i.putExtra(Intent.EXTRA_SUBJECT, "پشتیبان رسا سیستم — " + f.getName()); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); Biometric.markInternal(); a.startActivity(Intent.createChooser(i, "ارسال فایل پشتیبان")); } catch (Exception e) { Ui.toast("اشتراک‌گذاری ممکن نشد: " + e.getMessage()); } }
         void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); a.pickCb = uri -> restore(() -> { try { return a.getContentResolver().openInputStream(uri); } catch (Exception e) { return null; } }); Biometric.markInternal(); a.startActivityForResult(Intent.createChooser(i, "انتخاب فایل پشتیبان"), AppActivity.REQ_PICK); }
         void restore(java.util.function.Supplier<java.io.InputStream> src) {
             // v3.3: dedicated thread (never one of the 4 API workers the screens depend on), a modal progress sheet

@@ -198,6 +198,11 @@ PERF_INDEXES = (
     ("ix_perf_sm_created", "stock_movements", "created_at"),
     ("ix_perf_ai_status", "ai_insights", "status"),
     ("ix_perf_led_customer_created", "customer_ledger_entries", "customer_id, created_at"),
+    # v1.0.0 — دفتر کل: تراز حساب‌ها روی پایگاه‌دادهٔ یک‌ساله چند صد میلی‌ثانیه بود.
+    # ایندکس پوشا (account_id + مقادیر) جمع‌زدن را از خودِ ایندکس انجام می‌دهد و
+    # ایندکس تاریخ به گزارش‌های دوره‌ای (سود و زیان ماهانه، ترازنامه) کمک می‌کند.
+    ("ix_perf_jl_account_cover", "acc_journal_lines", "account_id, entry_id, debit, credit"),
+    ("ix_perf_je_status_date", "acc_journal_entries", "status, entry_date"),
 )
 
 

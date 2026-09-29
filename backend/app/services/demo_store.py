@@ -1,5 +1,13 @@
-"""v3.0 — «فروشگاه نمونه»: generate one realistic year of a neighbourhood
+"""v3.0 — «فروشگاه نمونه»: generate one realistic year (or two) of a neighbourhood
 supermarket through the REAL service layer, then back-date the timestamps.
+
+v4.8.0 — the simulated shop now lives the new timeline too: the daily loop plays
+the store-intelligence worker (dated markdown steps land on their day, exactly
+like ``apply_markdown_steps`` in production), the periodic manager review accepts
+the expiry cards as well (discount ladder for the living batch, «ثبت ضایعات» for
+the expired one), and the finished year carries a **verification report** —
+``insight_actions.health_scan`` re-checks every executed action against the data,
+so a Colab run proves the suggestions were not just accepted but still hold.
 
 Why through the service layer: checkout allocates batches, writes movements,
 profit per line, ledger entries, payments, coupons; receiving writes batches,
@@ -192,6 +200,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     rnd = _rng(seed)
     from contextlib import nullcontext
     from . import simulation_checkpoint as checkpoint
+    from . import insights as ins_clock     # v4.8.0 — ساعت شبیه‌سازی برای کل روزِ فروشگاه
     if resumable and not isinstance(db, checkpoint.ReplaySession):
         raise ValueError("RESUMABLE_REQUIRES_REPLAY_SESSION")
     if pause_after_days is not None and (not resumable or pause_after_days < 1):
@@ -370,10 +379,13 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         if d["shelf"]:
             life = shelf_override or (int(d["shelf"] * rnd.uniform(0.45, 0.7)) if rnd.random() < short else int(d["shelf"] * rnd.uniform(0.8, 1.2)))
             exp = (when + timedelta(days=max(2, life))).date()
-        # The POS filters expired batches against the REAL clock, so historical batches are received
-        # without an expiry and get their (back-dated) expiry stamped at the end of the simulation.
+        # v4.8.0 — تاریخ انقضا همان لحظهٔ دریافت ثبت می‌شود (کار واقعی انبار همین است).
+        # قبلاً تاریخ‌ها تا پایان شبیه‌سازی نگه داشته می‌شدند چون صندوق هنوز ساعت
+        # واقعی ماشین را «امروز» می‌گرفت و بچ‌های تاریخ‌دارِ گذشته را منقضی می‌دید.
+        # حالا کل روزِ شبیه‌سازی با ساعت شبیه‌سازی اجرا می‌شود (timeservice)، پس
+        # تاریخ‌ها از روز اول واقعی‌اند و موتور می‌تواند وسط سال هم کارت انقضا بسازد.
         b = catalog.receive_batch(db, product=d["p"], quantity_received=D(str(round(qty, 3 if d["loose"] else 0))), buy_price=D(buy),
-                                  consumer_price=D(d["cons"]) if d["cons"] else None, sell_price=D(d["sell"]), expiry_date=None,
+                                  consumer_price=D(d["cons"]) if d["cons"] else None, sell_price=D(d["sell"]), expiry_date=exp,
                                   received_at=when, user=admin, paid_from="PAYABLE" if rnd.random() < 0.6 else "CASH", supplier_id=s.id)
         d["stock"] += float(b.quantity_received)
         db.flush()
@@ -385,10 +397,15 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         return b
 
     def sellable(d: dict, on: date) -> float:
-        """Stock the POS would actually allocate: ACTIVE batches not expired on that day."""
+        """Stock the POS would actually allocate: ACTIVE batches not expired on that day.
+
+        v4.8.0 — تاریخ انقضا حالا از لحظهٔ دریافت ثبت می‌شود، پس این تابع هم مثل
+        صندوق واقعی، بچِ تاریخ‌گذشته را «موجودی قابل فروش» نمی‌شمارد (وگرنه انبار
+        از نظر برنامه پر بود ولی قفسه خالی).
+        """
         rows = db.execute(select(ProductBatch.current_qty, ProductBatch.expiry_date).where(
             ProductBatch.product_id == d["p"].id, ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).all()
-        return float(sum(q for q, _ in rows))
+        return float(sum(q for q, exp in rows if exp is None or exp >= on))
 
     def order(d: dict, day: date):
         """Place a purchase order. Suppliers deliver the next morning (50 %), in two days (35 %)
@@ -461,11 +478,29 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         event_callback({"phase": "days", "done": (day - start).days,
                         "total": (today - start).days + 1, "invoices": stats["invoices"]})
     completed_here = 0
+
+    def _sim_clock(d: date) -> datetime:
+        """ساعت شبیه‌سازی برای یک روز فروشگاه (۱۰ صبح تهران، مثل وقتی مدیر کار می‌کند)."""
+        return datetime.combine(d, datetime.min.time()) + timedelta(hours=6, minutes=30)
+
     while day <= today:
         with db.atomic_day() if resumable else nullcontext():
+            # v4.8.0 — کلِ روزِ شبیه‌سازی روی ساعت شبیه‌سازی اجرا می‌شود: صندوق،
+            # انقضا، تایم‌لاین تخفیف و کارگر هوش فروشگاه همه همان «امروز» را
+            # می‌بینند که فروشِ فردا خواهد دید. بدون این، یک سالِ شبیه‌سازی‌شده
+            # نمی‌توانست رفتار نسخهٔ جدید را واقعاً تمرین کند.
+            ins_clock.set_clock(_sim_clock(day))
             di = (day - start).days
             if progress:
                 progress(0.05 + 0.87 * (di / total_days))   # v3.5.9: daily, mapped into the build's 5..92 %
+            # ---- v4.8.0: کارگر روزانهٔ هوش فروشگاه ----------------------------------
+            # پله‌های تخفیفی که مدیر پذیرفته **تاریخ** دارند؛ اگر کسی آن‌ها را روی
+            # روز خودشان اعمال نکند، قیمت روی پلهٔ اول می‌ماند و سال شبیه‌سازی‌شده
+            # دروغ می‌گوید. پس هر روز، ساعت موتور را روی همان روز می‌گذاریم و
+            # دقیقاً همان تابعی را صدا می‌زنیم که کارگر پس‌زمینه در فروشگاه اجرا
+            # می‌کند (apply_markdown_steps) — با همان نوشتن تاریخچهٔ قیمت و حسابرسی.
+            _run_daily_intelligence(db, day, stats)
+
             if di in (total_days - 45, total_days - 20):
                 db.commit()
                 _manager_reviews(db, day, admin, products, customers, fx, stats, by_name)
@@ -804,6 +839,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                     log.warning("demo: stocktake skipped: %r", exc)
 
             day += timedelta(days=1)
+            ins_clock.set_clock(None)
 
             if resumable:
                 checkpoint.save(db, config, checkpoint_state())
@@ -873,9 +909,30 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             db.commit()
             if progress:
                 progress(0.98)
+            # ---- v4.8.0: «سیستم بررسی فروشگاه» روی کل سال اجرا می‌شود ----------------
+            # هر اقدامی که در طول شبیه‌سازی اجرا شده (تخفیف پله‌ای، ضایعات، تغییر قیمت،
+            # کوپن…) دوباره روی داده بازبینی می‌شود؛ حاصل در خلاصهٔ اجرا می‌آید تا
+            # کاربر کولب ببیند «اجرا» واقعاً انجام شده و اثرش سر جایش هست.
+            verification = {"checked": 0, "lost": [], "counts": {}}
+            try:
+                from . import insight_actions as ia_svc
+                with db.begin_nested():   # its own SAVEPOINT: a report must never poison the year
+                    scan = ia_svc.health_scan(db, notify_lost=True)
+                    report = ia_svc.execution_report(db)
+                verification = {"checked": int(scan.get("checked", 0)),
+                                "insights_checked": int(report.get("insights_checked", len(scan.get("lost") or [])) or 0),
+                                "actions_checked": int(report.get("actions_checked", 0) or 0),
+                                "lost": [{"insight_id": x.get("insight_id"), "kind": x.get("kind"),
+                                          "type": x.get("type"), "state": x.get("state"),
+                                          "detail": x.get("detail")} for x in (scan.get("lost") or [])][:20],
+                                "counts": report.get("counts") or {}}
+                db.flush()
+            except Exception as exc:                    # never fail the build over a report
+                verification["errors"] = [repr(exc)]
             ins = {"errors": run_res.get("errors", []), "generated": int(run_res.get("created", 0)) + int(run_res.get("refreshed", 0)),
                    "accepted": accepted, "measured": ins_svc.measure_all(db),
-                   "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all())}
+                   "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all()),
+                   "verification": verification}
             db.commit()
         except Exception:
             db.rollback()
@@ -889,13 +946,50 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             db.commit()
         except Exception:
             db.rollback()
-        summary = {"days": days, "start_date": str(start), "end_date": str(today), "products": len(products), "long_tail_products": len(long_tail),
+        summary = {"days": days, "start_date": str(start), "end_date": str(today),
+                   "verification": (ins or {}).get("verification") or {"checked": 0, "lost": [], "counts": {}},
+                   "months": round(days / 30.4375, 1),
+                   "products": len(products), "long_tail_products": len(long_tail),
                 "suppliers": len(sups), "customers": len(customers), "insights": ins,
                 **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
 
         if resumable:
             checkpoint.save(db, config, {"phase": "complete", "summary": summary})
         return summary
+
+
+def _run_daily_intelligence(db: Session, day: date, stats: dict) -> None:
+    """یک تیکِ کارگر هوش فروشگاه در پایان روزِ شبیه‌سازی‌شده (v4.8.0).
+
+    ساعت موتور روی ``day`` تنظیم می‌شود تا «امروز» همان روزِ شبیه‌سازی باشد؛ بعد:
+
+    * ``insight_actions.apply_markdown_steps`` — پله‌های سررسیدشده روی بچ می‌نشینند
+      (قیمت + تاریخچهٔ قیمت + حسابرسی + اعلان، همان مسیر تولید)،
+    * ردیف‌هایی که این تابع با ساعت واقعیِ ماشین نوشته، به روزِ شبیه‌سازی برگردانده
+      می‌شوند تا گزارش‌های سالانه (تاریخچهٔ قیمت، حسابرسی) تاریخ درست بدهند.
+
+    هیچ استثنایی روزِ شبیه‌سازی را نمی‌خورد: خرابی این قلاب فقط لاگ می‌شود.
+    """
+    from . import insight_actions as ia_svc
+    from . import insights as ins_svc
+
+    when = datetime.combine(day, datetime.min.time()) + timedelta(hours=7)
+    previous = ins_svc._CLOCK.get()          # caller (the day loop) may have its own sim clock
+    try:
+        with db.begin_nested():
+            ins_svc.set_clock(when)
+            try:
+                applied = int(ia_svc.apply_markdown_steps(db) or 0)
+            finally:
+                ins_svc.set_clock(previous)
+            if applied:
+                stats["markdown_steps"] = stats.get("markdown_steps", 0) + applied
+        # ردیف‌هایی که این تیک با ساعت واقعی ماشین نوشت، به روزِ شبیه‌سازی برمی‌گردند
+        for table in ("price_versions", "audit_logs", "notifications"):
+            db.execute(text(f"UPDATE {table} SET created_at=:t WHERE created_at > :t"), {"t": when})
+        db.flush()
+    except Exception as exc:                                  # a broken tick must never kill the day
+        log.warning("demo: daily intelligence tick skipped on %s: %r", day, exc)
 
 
 def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dict, stats: dict, by_name: dict) -> None:
@@ -905,6 +999,7 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
     from . import insights as ins
     from ..models import Insight
     clock = datetime.combine(day, datetime.min.time()) + timedelta(hours=6, minutes=30)   # 10:00 Tehran
+    previous = ins._CLOCK.get()
     ins.set_clock(clock)
     try:
         ins.run(db)
@@ -946,6 +1041,23 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
             elif r.kind == "DEAD_STOCK":
                 take = True   # bundle + shelf move: the dead stock starts to move slowly
                 fx["boosted_products"][ev["product_id"]] = 0.035
+            # v4.8.0 — کارت‌های انقضا هم مثل یک مدیر واقعی «اجرا» می‌شوند:
+            # بچ زنده نردبان تخفیف می‌گیرد (پله‌ها بعداً روی تاریخ خودشان می‌نشینند)
+            # و بچِ تاریخ‌گذشته «ثبت ضایعات» — همان دو اقدامی که در نسخهٔ جدید آمد.
+            elif r.kind == "EXPIRY_LADDER" and accepted < 26:
+                mode = str(ev.get("mode") or "")
+                if mode == "ladder":
+                    take, only = True, ["markdown_ladder"]
+                    pid = ev.get("product_id")
+                    if pid:
+                        # حراج، تقاضای همان کالا را بالا می‌برد (اثر واقعی تخفیف پله‌ای)
+                        fx["boosted_products"][pid] = max(fx["boosted_products"].get(pid, 0.0), 0.12)
+                        stats["expiry_markdowns"] = stats.get("expiry_markdowns", 0) + 1
+                elif mode == "waste":
+                    take, only = True, ["write_off_waste"]
+                    stats["expiry_waste_actions"] = stats.get("expiry_waste_actions", 0) + 1
+                elif mode == "risk_only":
+                    take, only = True, ["shelf_note"]
             elif r.kind == "VELOCITY" and accepted < 20:
                 take, only = True, ["set_min_stock"]
             elif r.kind == "VISIT_PATTERN":
@@ -973,7 +1085,7 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
         stats["accepted_insights"] += accepted
         log.warning("demo manager review on %s: %d suggestions accepted", day, accepted)
     finally:
-        ins.set_clock(None)
+        ins.set_clock(previous)
 
 
 def is_demo(db: Session) -> bool:

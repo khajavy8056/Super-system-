@@ -126,7 +126,9 @@ def test_inapp_google_signin_endpoints(client, auth_headers, monkeypatch):
 def test_android_v21_wizard_datepicker_name_and_support():
     src = _src()
     strings = (ANDROID / "res" / "values" / "strings.xml").read_text(encoding="utf-8")
-    assert "سوپرمارکت خواجوی" not in strings and 'name="app_name">سوپری من<' in strings
+    # v1.0.0 (RASA) — نام محصول «رسا سیستم» است (نسخهٔ بتا: «سوپری من»)
+    assert 'name="app_name">رسا سیستم<' in strings
+    assert "سوپرمارکت خواجوی" not in strings and "سوپری من" not in strings
     assert "طراحی و توسعه توسط خواجوی" in strings
     manifest = (ANDROID / "AndroidManifest.xml").read_text(encoding="utf-8")
     for act in (".SetupActivity", ".LockActivity", ".SupportActivity"):

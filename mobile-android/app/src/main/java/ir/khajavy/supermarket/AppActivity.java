@@ -87,7 +87,7 @@ public class AppActivity extends Activity {
     void bioGate() {
         if (bioShowing || !Biometric.lockDue()) return;
         bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
-        Biometric.prompt(this, "باز کردن سوپری من", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
+        Biometric.prompt(this, "باز کردن رسا سیستم", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
     }
     @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); }
     @Override protected void onStop() { super.onStop(); Biometric.onBackground(); }   // v4.3

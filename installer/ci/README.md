@@ -24,8 +24,8 @@ installer/ci/release-windows.yml
 > بخش **NOT VERIFIED on real hardware** است (سند صداقت).
 
 این workflow **هر دو** خروجی را می‌سازد و به Release پیوست می‌کند:
-`SupermarketSystem-Setup-<version>.exe` (ویندوز) و
-`SupermarketSystem-<version>-linux-x86_64.tar.gz` (لینوکس).
+`RasaSystem-Setup-<version>.exe` (ویندوز) و
+`RasaSystem-<version>-linux-x86_64.tar.gz` (لینوکس).
 عدد نسخه از `backend/app/__init__.py` خوانده می‌شود، نه از مقدار سخت‌کدشده.
 
 ## اجرا
@@ -52,7 +52,7 @@ production-ready گزارش نمی‌شود»، مسیر ساخت روی سخت�
 ۴. بسته‌بندی با PyInstaller (`installer/windows/app.spec`)
 ۵. **boot واقعی فایل اجرایی** و اطمینان از اینکه پنل را سرو می‌کند
    (اگر بالا نیاید، build شکست می‌خورد — نه اینکه بی‌صدا رد شود)
-۶. ساخت `SupermarketSystem-Setup-<version>.exe` با Inno Setup
+۶. ساخت `RasaSystem-Setup-<version>.exe` با Inno Setup
 ۷. محاسبهٔ SHA256 و پیوست به Release
 ۸. job جداگانهٔ لینوکس: ساخت، بوت واقعی، tar.gz + checksum
 
@@ -74,9 +74,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer\windows\build.ps1
 خروجی‌ها:
 
 ```
-installer\windows\dist\SupermarketSystem.exe
-installer\output\SupermarketSystem-<version>-portable.exe   ← همیشه ساخته می‌شود
-installer\output\SupermarketSystem-Setup-<version>.exe      ← نیازمند Inno Setup 6
+installer\windows\dist\RasaSystem.exe
+installer\output\RasaSystem-<version>-portable.exe   ← همیشه ساخته می‌شود
+installer\output\RasaSystem-Setup-<version>.exe      ← نیازمند Inno Setup 6
 ```
 
 پیش‌نیازها: Python 3.11+ و [Inno Setup 6](https://jrsoftware.org/isdl.php).

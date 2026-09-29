@@ -172,3 +172,32 @@ def test_permissions_policy_header_present(client):
     r = client.get("/api/reports/dashboard", headers={})
     assert r.status_code in (401, 403)  # unauthenticated — but headers still applied
     assert "camera=()" in r.headers.get("Permissions-Policy", "")
+
+
+def test_panel_cannot_be_framed_by_default_but_owner_can_allow_it(monkeypatch):
+    """v4.8.0 — قاب‌گرفتن پنل به‌طور پیش‌فرض ممنوع است، ولی مالک می‌تواند باز کند.
+
+    پیش‌نمایش‌های میزبانی‌شده و پوسته‌های قاب‌محور به این کلید نیاز دارند؛ اگر
+    هدر ``DENY`` همیشه فرستاده شود، صفحه در قاب سفید می‌ماند و کسی نمی‌فهمد چرا.
+    """
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    from app import main as main_mod
+
+    assert main_mod._ALLOW_EMBED is False
+    normal = TestClient(main_mod.app).get("/")
+    assert "X-Frame-Options" in normal.headers and normal.headers["X-Frame-Options"] == "DENY"
+    assert "frame-ancestors" not in normal.headers.get("Content-Security-Policy", "")
+
+    monkeypatch.setenv("SUPERMARKET_ALLOW_EMBED", "1")
+    reloaded = importlib.reload(main_mod)
+    try:
+        assert reloaded._ALLOW_EMBED is True
+        framed = TestClient(reloaded.app).get("/")
+        assert "X-Frame-Options" not in framed.headers
+        assert "frame-ancestors *" in framed.headers.get("Content-Security-Policy", "")
+    finally:
+        monkeypatch.delenv("SUPERMARKET_ALLOW_EMBED", raising=False)
+        importlib.reload(main_mod)

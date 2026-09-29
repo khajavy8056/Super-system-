@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""v4.7.0 — one-year store simulator (CLI, runs anywhere — Google Colab ready).
+"""v4.8.0 — one-to-two-year store simulator (CLI, runs anywhere — Google Colab ready).
 
 Builds a COMPLETE year of a big supermarket through the project's REAL service
 layer (POS checkout, receiving, accounting, cash sessions/shifts, stocktakes,
@@ -9,13 +9,23 @@ accepted suggestions), then writes a backup file that restores on BOTH Windows
 (Settings ← Backup ← بازیابی از فایل) and Android (تنظیمات ← پشتیبان ← انتخاب
 فایل — the phone imports a Windows backup natively).
 
+What the simulated year now includes (v4.8.0): the daily loop plays the real
+store-intelligence worker, so **dated markdown steps land on their day**, the
+periodic manager review accepts the **expiry cards** (discount ladder for the
+living batch, «ثبت ضایعات» for the expired one), and the finished year carries a
+**verification report** (`health_scan` + `execution_report`) proving the executed
+actions still hold in the data.
+
 Usage:
     python tools/simulate_year.py                       # full defaults: 365 days, ~100 sales/day, full default catalogue
+    python tools/simulate_year.py --days 730            # TWO years (~73 000 invoices) — the Colab notebook's two-year switch
     python tools/simulate_year.py --days 90 --per-day 100 --seed 7 --out my_store.db.gz
     python tools/simulate_year.py --resume-dir /content/sim_work   # resumable build (pause/restart safe)
 
 The progress is a live tqdm bar (0–100 %) fed by the build's own progress
 protocol; every phase is printed in Persian so the log reads like a story.
+Two years is roughly twice the build time and about twice the backup size; a
+Colab run of 730 days at ~100 invoices/day is the honest upper bound.
 """
 from __future__ import annotations
 
@@ -28,10 +38,11 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 
 
-def _bar():
+def _bar(total_days: int = 365):
+    label = f"شبیه‌سازی {total_days} روزه" if total_days != 365 else "شبیه‌سازی یک‌ساله"
     try:
         from tqdm.auto import tqdm        # Colab/Jupyter render it natively
-        return tqdm(total=100, desc="شبیه‌سازی سال", unit="%", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+        return tqdm(total=100, desc=label, unit="%", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
     except Exception:                      # plain terminal without tqdm
         class _Plain:
             def __init__(self): self.last = -1
@@ -56,15 +67,16 @@ _PHASES = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="یک سال کامل فروشگاه را شبیه‌سازی و فایل پشتیبان سازندهٔ برنامه می‌سازد")
-    ap.add_argument("--days", type=int, default=365, help="طول شبیه‌سازی به روز (پیش‌فرض ۳۶۵)")
+    ap = argparse.ArgumentParser(description="یک تا دو سال کامل فروشگاه را شبیه‌سازی و فایل پشتیبان سازندهٔ برنامه می‌سازد")
+    ap.add_argument("--days", type=int, default=365,
+                    help="طول شبیه‌سازی به روز — ۳۶۵ = یک سال (پیش‌فرض)، ۷۳۰ = دو سال")
     ap.add_argument("--per-day", type=float, default=100.0, help="میانگین فاکتور در روز (پیش‌فرض ۱۰۰ — فروشگاه بزرگ)")
     ap.add_argument("--seed", type=int, default=1404, help="بذر تصادفی (تکرارپذیری)")
     ap.add_argument("--out", default=None, help="مسیر فایل خروجی (پیش‌فرض supermarket_sim_<days>d_<seed>.db.gz)")
     ap.add_argument("--no-compress", action="store_true", help="خروجی .db بدون فشرده‌سازی")
     ap.add_argument("--no-full-catalog", action="store_true",
                     help="فقط ~۱۲۰ کالای منتخب به‌جای کل بانک پیش‌فرض (سریع‌تر برای آزمون)")
-    ap.add_argument("--resume-dir", default=None, help="پوشهٔ کار قابل-from-ادامه (قطع شد؟ از همان روز ادامه می‌دهد)")
+    ap.add_argument("--resume-dir", default=None, help="پوشهٔ کار قابل‌ادامه (قطع شد؟ از همان روز ادامه می‌دهد)")
     args = ap.parse_args(argv)
 
     if not BACKEND.exists():
@@ -78,14 +90,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from app.services.demo_store import generate_backup_file   # noqa: E402  (needs sys.path first)
 
+    years = args.days / 365.0
     print("=" * 64)
-    print("شبیه‌ساز یک‌سالهٔ فروشگاه — سوپری‌من")
+    print(f"شبیه‌ساز فروشگاه — سوپری‌من v4.8.0  ({args.days} روز ≈ {years:.2f} سال)")
     print(f"  {args.days} روز · ~{args.per_day:.0f} فاکتور در روز · بذر {args.seed}")
     print(f"  بانک کامل کالاها: {'خاموش' if args.no_full_catalog else 'روشن (۱۳٬۵۷۰ کالای پیش‌فرض)'}")
     print(f"  خروجی: {out}")
     print("=" * 64)
 
-    bar = _bar()
+    bar = _bar(args.days)
     events = {"phase": ""}
 
     def on_progress(pct: float) -> None:
@@ -135,12 +148,46 @@ def main(argv: list[str] | None = None) -> int:
         ("انبارگردانی‌های تأییدشده", f"{summary.get('stocktakes', 0):,}"),
         ("پیشنهادهای اجراشده (هوش فروشگاه)", f"{summary.get('accepted_insights', 0):,}"),
         ("پیشنهادهای سنجیده‌شده", f"{(ins or {}).get('measured', 0):,}"),
+        ("پله‌های تخفیف اعمال‌شده روی تاریخ خودشان", f"{summary.get('markdown_steps', 0):,}"),
+        ("کارت‌های انقضای اجراشده (تخفیف پله‌ای)", f"{summary.get('expiry_markdowns', 0):,}"),
+        ("ثبت ضایعات کالای منقضی (اقدام واقعی)", f"{summary.get('expiry_waste_actions', 0):,}"),
         ("مرجوعی‌ها", f"{summary.get('returns', 0):,}"),
     ]
     for k, v in rows:
         print(f"  {k:<38} {v}")
     size = out.stat().st_size if out.exists() else 0
     print(f"  {'حجم فایل پشتیبان':<38} {size / 1048576:.1f} مگابایت")
+    print()
+    # ---- v4.8.0: «سیستم بررسی فروشگاه» — آیا اقدام‌های اجراشده هنوز برقرارند؟ ----------
+    verification = summary.get("verification") or {}
+    counts = verification.get("counts") or {}
+    lost = verification.get("lost") or []
+    print("بررسی اجراها (آیا «اجرا» واقعاً انجام شده و اثرش مانده؟):")
+    if counts:
+        checked = verification.get("actions_checked")
+        checked = sum(counts.values()) if checked is None else int(checked)
+        print(f"  {'اقدام‌های بازبینی‌شده':<38} {checked:,}"
+              f"   (از {int(verification.get('insights_checked', 0) or 0):,} پیشنهاد پذیرفته‌شده)")
+        print(f"  {'وضعیت':<38} برقرار {counts.get('OK', 0):,} · از بین رفته {counts.get('LOST', 0):,} · "
+              f"ناموفق {counts.get('FAILED', 0):,} · بدون بازبینی {counts.get('UNVERIFIED', 0):,}"
+              + (f" · نامعلوم {counts['UNKNOWN']:,}" if counts.get("UNKNOWN") else ""))
+        if not any(counts.values()):
+            print(f"  {'یادداشت':<38} در این مدت هیچ پیشنهادی پذیرفته نشد")
+    if lost:
+        for x in lost[:5]:
+            print(f"  {'اثر ازبین‌رفته':<38} {x.get('kind')} → {x.get('state')} — {str(x.get('detail'))[:60]}")
+        if len(lost) > 5:
+            print(f"  {'':<38} … و {len(lost) - 5:,} مورد دیگر (فهرست کامل در خلاصهٔ ماشین‌خوان)")
+    print()
+
+    # خلاصهٔ ماشین‌خوان کنار خروجی (نوت‌بوک/CI بدون پارس‌کردن لاگ می‌خواند)
+    try:
+        side = out.with_suffix(out.suffix + ".summary.json")
+        side.write_text(json.dumps({**summary, "products_total": summary.get("products", 0) + summary.get("long_tail_products", 0)},
+                                   ensure_ascii=False, default=str, indent=1), encoding="utf-8")
+        print(f"خلاصهٔ ماشین‌خوان: {side}")
+    except Exception as exc:                       # a sidecar is a convenience, never a requirement
+        print(f"یادداشت: نوشتن خلاصهٔ ماشین‌خوان نشد ({exc!r})")
     print()
     print("فایل پشتیبان آماده است:")
     print(f"  {out}")

@@ -148,25 +148,46 @@ tr:hover td { background: rgba(79,140,255,.07); }
   --grad-teal: linear-gradient(135deg, #3dd6c4 0%, #4f8cff 100%);
   --grad-green: linear-gradient(135deg, #22c55e 0%, #3ddc84 100%);
   --shadow: 0 14px 40px rgba(0, 0, 0, .45);
+  /* v1.0.0 (RASA) — توکن‌های پوسته (نوار کناری/سرصفحه/نوار وضعیت/فهرست سفارش).
+     باگ مالک: در حالت روشن، نوار کناری تیره می‌ماند. ریشه‌اش این بود که رنگ این
+     عناصر «دستی» نوشته شده بود و چند قاعده حتی در حالت روشن هم گرادیان تیره
+     می‌گذاشت. از این نسخه، همهٔ رنگ‌های پوسته از همین توکن‌ها می‌آیند و پالت
+     روشن *باید* هر توکنی را که پالت تیره دارد تعریف کند
+     (آزمون: backend/tests/test_v100_theme_contract.py). */
+  --shell-bg: linear-gradient(180deg, rgba(13, 20, 38, .96), rgba(7, 11, 22, .99));
+  --shell-fg: #e8ecf8; --shell-muted: #9aa6c6; --shell-border: rgba(255, 255, 255, .09);
+  --shell-hover: rgba(255, 255, 255, .08); --shell-sec: #7d8aa3;
+  --shell-active-bg: linear-gradient(90deg, rgba(79, 140, 255, .30), rgba(124, 92, 255, .20));
+  --shell-active-fg: #ffffff; --shell-active-border: rgba(124, 92, 255, .45);
+  --topbar-bg: rgba(7, 11, 22, .55); --statusbar-bg: rgba(7, 11, 22, .72);
+  --brand-plate: linear-gradient(135deg, rgba(31, 140, 120, .28), rgba(203, 167, 90, .08));
 }
 [data-theme="light"] {
   --bg: #eef1f8; --bg2: #ffffff; --card: rgba(255,255,255,.88); --border: rgba(30, 50, 110, .12); --teal: #12a99a; --violet: #6d4cf0;
   --glow-teal: 0 6px 18px rgba(18,169,154,.25); --glow-violet: 0 6px 18px rgba(109,76,240,.25); --glow-green: 0 6px 18px rgba(20,143,75,.25);
   --glow-red: 0 6px 18px rgba(217,52,71,.25); --glow-amber: 0 6px 18px rgba(184,115,10,.25);
   --grad-teal: linear-gradient(135deg, #12a99a 0%, #2f6fed 100%); --grad-green: linear-gradient(135deg, #148f4b 0%, #22c55e 100%);
+  /* پالت روشن — همان توکن‌های پوستهٔ بالا، این بار با مقادیر روشن. */
+  --shell-bg: linear-gradient(180deg, #ffffff, #f3f6fd);
+  --shell-fg: #101c3c; --shell-muted: #546489; --shell-border: rgba(30, 50, 110, .14);
+  --shell-hover: rgba(37, 99, 235, .08); --shell-sec: #6b7a99;
+  --shell-active-bg: linear-gradient(90deg, rgba(37, 99, 235, .16), rgba(124, 77, 255, .14));
+  --shell-active-fg: #12235c; --shell-active-border: rgba(37, 99, 235, .38);
+  --topbar-bg: rgba(255, 255, 255, .72); --statusbar-bg: rgba(255, 255, 255, .78);
+  --brand-plate: linear-gradient(135deg, rgba(20, 150, 130, .14), rgba(176, 138, 60, .10));
 }
 body { background: radial-gradient(1100px 600px at 100% 0%, rgba(124,92,255,.18), transparent 60%),
                    radial-gradient(900px 600px at 0% 100%, rgba(61,214,196,.12), transparent 60%), var(--bg); }
 .card, .dcard { background: var(--card); backdrop-filter: blur(14px); border: 1px solid var(--border); }
-.sidebar { background: linear-gradient(180deg, rgba(13,20,38,.95), rgba(7,11,22,.98)); backdrop-filter: blur(14px); }
+.sidebar { background: var(--shell-bg); backdrop-filter: blur(14px); }
 .nav-item { display: flex; align-items: center; gap: 10px; }
-.nav-item.active { background: linear-gradient(90deg, rgba(79,140,255,.28), rgba(124,92,255,.18)); color: #fff; border: 1px solid rgba(124,92,255,.45); box-shadow: inset 0 0 22px rgba(79,140,255,.18), 0 0 14px rgba(79,140,255,.25); }
+.nav-item.active { background: var(--shell-active-bg); color: var(--shell-active-fg); border: 1px solid var(--shell-active-border); box-shadow: inset 0 0 22px rgba(79,140,255,.18), 0 0 14px rgba(79,140,255,.25); }
 .nav-item .ic { color: var(--teal); }
 .brand span { font-weight: 800; letter-spacing: .2px; }
-.topbar { background: rgba(7,11,22,.55); border-bottom: 1px solid var(--border); }
-[data-theme="light"] .topbar { background: rgba(255,255,255,.7); }
-.statusbar { background: rgba(7,11,22,.7); border-top: 1px solid var(--border); backdrop-filter: blur(10px); }
-[data-theme="light"] .statusbar { background: rgba(255,255,255,.75); }
+.topbar { background: var(--topbar-bg); border-bottom: 1px solid var(--border); }
+
+.statusbar { background: var(--statusbar-bg); border-top: 1px solid var(--border); backdrop-filter: blur(10px); }
+
 .btn-primary { background: var(--grad); box-shadow: var(--glow-violet); }
 .btn-danger { box-shadow: none; }
 .btn:hover { border-color: var(--teal); }
@@ -502,10 +523,10 @@ html[data-theme="light"], [data-theme="light"] {
 [data-theme="light"] .trend .dots circle { fill: #fff; }
 [data-theme="light"] .ob-alert { background: #fff; }
 [data-theme="light"] .dcard-low { background: linear-gradient(135deg, rgba(217,52,71,.10), rgba(255,255,255,.95)); border-color: rgba(217,52,71,.3); }
-[data-theme="light"] .sidebar { background: linear-gradient(180deg, #121a2e, #0d1426); }
-.sidebar, .sidebar .brand, .sidebar .brand span, .sidebar .nav-item, .sidebar .sidebar-footer { color: #e8ecf8; }
-.sidebar .muted { color: #9aa6c6; }
-[data-theme="light"] .sidebar .nav-item:not(.active):hover { background: rgba(255,255,255,.08); }
+.sidebar { background: var(--shell-bg); }
+.sidebar, .sidebar .brand, .sidebar .brand span, .sidebar .nav-item, .sidebar .sidebar-footer { color: var(--shell-fg); }
+.sidebar .muted { color: var(--shell-muted); }
+.sidebar .nav-item:not(.active):hover { background: var(--shell-hover); }
 
 /* ===== v1.6 — held invoices dock, exit overlay, mobile pairing, layout fit ===== */
 .pos-btn-hold { background: rgba(55,184,170,.10); border-color: var(--teal); color: var(--teal); }
@@ -642,9 +663,9 @@ html[data-theme="light"], [data-theme="light"] {
   --green: #1f8f5a; --red: #c8404b; --amber: #b8730a; --violet: #6d5fc0;
   --grad: linear-gradient(135deg, #1e8f7a 0%, #145e63 100%); --grad-teal: linear-gradient(135deg, #1e8f7a 0%, #b08a3c 140%); --grad-green: linear-gradient(135deg, #1f8f5a 0%, #2fa872 100%);
 }
-.sidebar { background: linear-gradient(180deg, #0f1826, #0b111c); border-inline-end: 1px solid rgba(201,162,78,.12); }
+.sidebar { background: var(--shell-bg); border-inline-end: 1px solid var(--shell-border); }
 .sidebar .nav-item.active { background: linear-gradient(90deg, rgba(31,154,131,.22), rgba(201,162,78,.10)); box-shadow: inset 3px 0 0 var(--gold); }
-[data-theme="light"] .sidebar { background: linear-gradient(180deg, #14202f, #0e1622); }
+
 .card, .dcard { border-color: var(--border); }
 .btn-primary { background: var(--grad); border: 0; }
 .btn-primary:hover { filter: brightness(1.06); }
@@ -661,13 +682,13 @@ h1, h2, h3 { letter-spacing: .1px; }
    v2.9 «Atelier» — sidebar sections, icon badges, richer surfaces.
    ===================================================================== */
 :root { --gold: #cba75a; --gold-soft: rgba(203,167,90,.16); --ink: #0c121c; }
-.sidebar { width: 248px; padding: 0 10px 10px; background: linear-gradient(180deg, #0f1826 0%, #0b111b 100%); border-left: 1px solid rgba(203,167,90,.16); }
-[data-theme="light"] .sidebar { background: linear-gradient(180deg, #131c2c, #0d1524); }
-.sidebar .brand { padding: 20px 10px 16px; margin: 0 -10px 6px; border-bottom: 1px solid rgba(255,255,255,.06); background: linear-gradient(135deg, rgba(31,140,120,.28), rgba(203,167,90,.08)); }
+.sidebar { width: 248px; padding: 0 10px 10px; background: var(--shell-bg); border-left: 1px solid var(--shell-border); }
+
+.sidebar .brand { padding: 20px 10px 16px; margin: 0 -10px 6px; border-bottom: 1px solid var(--shell-border); background: var(--brand-plate); }
 .sidebar .brand-logo { box-shadow: 0 0 0 1px rgba(203,167,90,.45), 0 6px 18px rgba(0,0,0,.35); }
-.nav-sec { font-size: 10.5px; letter-spacing: .6px; color: #7d8aa3; margin: 14px 12px 6px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.nav-sec { font-size: 10.5px; letter-spacing: .6px; color: var(--shell-sec); margin: 14px 12px 6px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
 .nav-sec::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(203,167,90,.35), transparent); }
-.sidebar .nav-item { padding: 8px 10px; margin: 1px 0; border-radius: 12px; font-size: 13px; gap: 10px; color: #cfd6e4; border: 1px solid transparent; transform: none !important; }
+.sidebar .nav-item { padding: 8px 10px; margin: 1px 0; border-radius: 12px; font-size: 13px; gap: 10px; color: var(--shell-fg); border: 1px solid transparent; transform: none !important; }
 .sidebar .nav-item .nav-ic { width: 30px; height: 30px; border-radius: 9px; display: inline-grid; place-items: center; background: rgba(255,255,255,.05); color: #9fb0c8; transition: background .15s, color .15s; flex: none; }
 .sidebar .nav-item:hover { background: rgba(255,255,255,.05); color: #fff; }
 .sidebar .nav-item:hover .nav-ic { color: var(--gold); }

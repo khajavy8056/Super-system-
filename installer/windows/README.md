@@ -18,12 +18,12 @@
 
 | فایل | مسیر | توضیح |
 |---|---|---|
-| `SupermarketSystem-Setup-0.4.0.exe` | `installer\output\` | نصب‌کنندهٔ کلاسیک (نیاز به Inno Setup) |
-| `SupermarketSystem-0.4.0-portable.exe` | `installer\output\` | تک‌فایل قابل اجرا بدون نصب — همیشه ساخته می‌شود |
-| `SupermarketSystem.exe` | `installer\windows\dist\` | همان فایل portable قبل از کپی |
+| `RasaSystem-Setup-0.4.0.exe` | `installer\output\` | نصب‌کنندهٔ کلاسیک (نیاز به Inno Setup) |
+| `RasaSystem-1.0.0-portable.exe` | `installer\output\` | تک‌فایل قابل اجرا بدون نصب — همیشه ساخته می‌شود |
+| `RasaSystem.exe` | `installer\windows\dist\` | همان فایل portable قبل از کپی |
 | `build.log` | `installer\windows\` | لاگ کامل ساخت |
 
-**داده‌های برنامه** (دیتابیس، لاگ‌ها، کلید) در `%USERPROFILE%\SupermarketSystem`
+**داده‌های برنامه** (دیتابیس، لاگ‌ها، کلید) در `%USERPROFILE%\RasaSystem`
 ساخته می‌شوند — حذف یا به‌روزرسانی برنامه آن‌ها را پاک نمی‌کند.
 
 ## ساخت پشت‌صحنهٔ BUILD-SETUP.bat چه می‌کند؟

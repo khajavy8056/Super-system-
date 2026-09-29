@@ -61,5 +61,7 @@ def test_reference_login_and_old_android_shadow_guard():
     assert "if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor" in ui
     login = (JAVA / "LoginActivity.java").read_text(encoding="utf-8")
     assert "new WelcomeBackdrop()" in login
-    assert 'Icons.draw("cart"' in login
+    # v1.0.0 (RASA) — روی صفحهٔ ورود باید *نشان محصول* باشد، نه آیکون عمومی «سبد خرید»
+    assert "R.mipmap.ic_launcher" in login
+    assert 'Icons.draw("cart"' not in login
     assert 'Prefs.get("store_name"' in login

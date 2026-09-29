@@ -19,14 +19,48 @@ import java.nio.charset.StandardCharsets;
 public final class SupportRelay {
     private SupportRelay() {}
     static final String URL_BASE = "https://botapi.rubika.ir/v3";
-    static final String TOKEN = "CDJFAE0BITPJAHSUTQNWIIZKSMPOTEYATQNHZVDZYBWMUMYISOIRVWVINHFSRXVF";
     static final String OWNER = "khajavi8056";
+
+    /**
+     * v1.0.0 — توکن کانال پشتیبانی *در کد نیست* (پیش‌تر نوشته بود و با APK منتشر
+     * می‌شد: هم رمز سوخته، هم هر کسی می‌توانست صندوق پیام‌ها را بخواند).
+     * اکنون هر نصب مقدار خودش را دارد:
+     *   ۱) `assets/relay.json` — هنگام ساخت APK با متغیر محیطی RASA_RELAY_TOKEN
+     *      نوشته می‌شود (در مخزن نیست)،
+     *   ۲) یا واردکردن توکن در همین صفحهٔ پشتیبانی (در تنظیمات گوشی ذخیره می‌شود).
+     * اگر توکنی نباشد، درخواست ذخیره می‌شود و «در انتظار ارسال مجدد» می‌ماند —
+     * هیچ‌وقت موفقیت جعلی نشان داده نمی‌شود.
+     */
+    public static String token() {
+        String t = Prefs.get("support_relay_token", "");
+        if (!t.isEmpty()) return t;
+        return asset("token");
+    }
+
+    public static String urlBase() {
+        String u = Prefs.get("support_relay_url", "");
+        if (!u.isEmpty()) return u;
+        String a = asset("url");
+        return a.isEmpty() ? URL_BASE : a;
+    }
+
+    private static String asset(String key) {
+        try (InputStream in = Ui.ctx.getAssets().open("relay.json")) {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096]; int n; while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            return new JSONObject(bo.toString("UTF-8")).optString(key, "").trim();
+        } catch (Exception e) { return ""; }
+    }
+
+    public static boolean configured() { return !token().isEmpty(); }
 
     public static String installId() { String h = Lic.hwid(); return h.startsWith("AND-") ? h.substring(4) : h; }
     public static String installCode() { return Prefs.get("store_name", "فروشگاه") + " #" + installId(); }
 
     static JSONObject post(String method, JSONObject payload) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(URL_BASE + "/" + TOKEN + "/" + method).openConnection();
+        String tok = token();
+        if (tok.isEmpty()) throw new Exception("CHANNEL_NOT_CONFIGURED: کانال پشتیبانی این نصب تنظیم نشده است");
+        HttpURLConnection c = (HttpURLConnection) new URL(urlBase() + "/" + tok + "/" + method).openConnection();
         try {
             c.setConnectTimeout(8000); c.setReadTimeout(15000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json");
             try (OutputStream os = c.getOutputStream()) { os.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }

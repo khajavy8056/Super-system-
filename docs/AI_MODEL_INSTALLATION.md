@@ -11,7 +11,7 @@
 
 ### ویندوز
 1. از صفحهٔ رسمی `ggml-org/llama.cpp` نسخهٔ `llama-server.exe` را برای ویندوز دانلود کنید (build رسمی).
-2. فایل را در `%LOCALAPPDATA%\SupermarketSystem\engine\` بگذارید (یا کنار `SupermarketSystem.exe`).
+2. فایل را در `%LOCALAPPDATA%\RasaSystem\engine\` بگذارید (یا کنار `RasaSystem.exe`).
 3. در پنل مدیر → مغز فروشگاه → مدل: اگر «موتور محلی موجود» سبز شد، همین کافی است.
 4. در صورت داشتن پردازندهٔ گرافیکی، build با پشتیبانی CUDA/Vulkan سریع‌تر است، اما لازم نیست.
 
@@ -44,7 +44,7 @@ llama-server --version
   (پیش‌فرض `--downloader auto`) و پنجرهٔ خود IDM نوار پیشرفت را نشان می‌دهد؛
   در پایان، هش sha256 به‌هر حال توسط خود ما تأیید می‌شود.
   با `--downloader builtin` همیشه از مدیر داخلی استفاده می‌شود (`--downloader idm` = فقط IDM).
-- `setup.iss` این payload را در `%USERPROFILE%\SupermarketSystem\brain\models` نصب می‌کند
+- `setup.iss` این payload را در `%USERPROFILE%\RasaSystem\brain\models` نصب می‌کند
   (پوشهٔ دادهٔ کاربر، نه پوشهٔ برنامه — حذف/به‌روزرسانی برنامه، مدل را پاک نمی‌کند).
 - در اولین اجرا، `ModelManager.adopt_preinstalled()` فایل را دوباره هش می‌کند، با manifest و رجیستری
   مطابقت می‌دهد، به‌صورت INSTALLED ثبت می‌کند و اگر مدلی فعال نباشد همان را فعال می‌کند.

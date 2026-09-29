@@ -39,14 +39,14 @@ cd installer\windows
 
 ساده‌ترین راه: دابل‌کلیک روی `installer\windows\BUILD-SETUP.bat`.
 
-خروجی: `installer\output\SupermarketSystem-Setup-0.4.0.exe` (+ نسخهٔ portable)
+خروجی: `installer\output\RasaSystem-Setup-1.0.0.exe` (+ نسخهٔ portable)
 
 اسکریپت `build.ps1` (سه مرحله — شرح کامل و وضعیت تست‌شدگی: `docs/BUILD.md`):
 1. venv و وابستگی‌های backend را نصب می‌کند.
-2. با PyInstaller یک executable واحد می‌سازد (`SupermarketSystem.exe` با icon).
+2. با PyInstaller یک executable واحد می‌سازد (`RasaSystem.exe` با icon).
 3. با Inno Setup نصب‌کننده می‌سازد که:
    - فایل‌ها را در `Program Files` نصب می‌کند (per-user، بدون نیاز به Admin)،
-   - دیتابیس و لاگ‌ها را در `%USERPROFILE%\SupermarketSystem` می‌سازد —
+   - دیتابیس و لاگ‌ها را در `%USERPROFILE%\RasaSystem` می‌سازد —
      حذف/به‌روزرسانی برنامه داده را پاک نمی‌کند،
    - میانبر دسکتاپ/منوی استارت و Uninstaller دارد.
 

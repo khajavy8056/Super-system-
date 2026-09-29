@@ -279,7 +279,7 @@ function showLogin() {
   $("#app").innerHTML = `
     <div class="screen" style="justify-content:center;max-width:420px;margin:auto;width:100%">
       <div class="card">
-        <h2 class="brand">${icon("cart", 22)} سامانه سوپرمارکت</h2>
+        <h2 class="brand">${icon("cart", 22)} رسا سیستم</h2>
         <label>نام کاربری</label><input id="l-user" autocomplete="username" />
         <label>رمز عبور</label><input id="l-pass" type="password" autocomplete="current-password" />
         <button id="l-go" class="btn btn-primary" style="margin-top:14px">ورود</button>
@@ -1280,7 +1280,7 @@ window.showProductSheet = (item) => {
         <div class="batch-info">
           <div><b>${money(b.sell_price)}</b> <span class="muted">مصرف‌کننده ${money(b.consumer_price)}</span></div>
           <div class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
+            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} <span class="exp-chip ${Number(b.days_left) < 0 ? "expired" : Number(b.days_left) <= 7 ? "soon" : Number(b.days_left) <= 30 ? "near" : ""}">⏰ ${Number(b.days_left) < 0 ? "منقضی شد" : fmtNum(b.days_left) + " روز"}</span>` : ""}</div>
         </div>`).join("") || `<p class="muted">بچ فعالی ندارد</p>`}
       ${item.price_count > 1 ? `<p class="amber">این کالا ${item.price_count} قیمت فعال دارد.</p>` : ""}
       <button class="btn" onclick="closeSheet()">بستن</button>

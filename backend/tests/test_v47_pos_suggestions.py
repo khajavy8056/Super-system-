@@ -104,7 +104,9 @@ def test_near_expiry_is_ranked_first_and_explains_itself(client, auth_headers):
         assert out[0]["product_id"] == near, "near-expiry must outrank the stronger fresh rule"
         assert out[0]["purpose"] == "sell_before_expiry"
         assert out[0]["days_left"] == 10
-        assert "تاریخ" in out[0]["reason"] and "۱۰" not in out[0]["reason"]  # reason present, latin digits fine
+        # v4.8.0 — متن پیشنهاد صندوق هم مثل بقیهٔ رابط با ارقام فارسی نوشته می‌شود
+        # («تا ۱۰ روز آینده»)، پس اینجا همان شکل فارسی انتظار می‌رود.
+        assert "تاریخ" in out[0]["reason"] and "۱۰" in out[0]["reason"]
         assert out[1]["product_id"] == fresh and out[1]["purpose"] == "sell_now"
         db.rollback()
 

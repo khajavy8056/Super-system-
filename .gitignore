@@ -71,3 +71,6 @@ demo/demo_gen.log
 installer/windows/model/
 installer/windows/runtime/
 installer/windows/model_payload.iss
+
+# Android: per-build support channel provisioning (never committed)
+mobile-android/app/src/main/assets/relay.json
