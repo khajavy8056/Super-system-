@@ -279,7 +279,7 @@ function showLogin() {
   $("#app").innerHTML = `
     <div class="screen" style="justify-content:center;max-width:420px;margin:auto;width:100%">
       <div class="card">
-        <h2 class="brand">${icon("cart", 22)} سامانه سوپرمارکت</h2>
+        <h2 class="brand">${icon("cart", 22)} رسا سیستم</h2>
         <label>نام کاربری</label><input id="l-user" autocomplete="username" />
         <label>رمز عبور</label><input id="l-pass" type="password" autocomplete="current-password" />
         <button id="l-go" class="btn btn-primary" style="margin-top:14px">ورود</button>

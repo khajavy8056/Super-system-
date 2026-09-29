@@ -1,0 +1,155 @@
+/* =====================================================================
+ * RASA SYSTEM (رسا سیستم) — v1.0.0 visual layer.
+ *
+ * این لایه *آخرین* CSS برنامه است (بعد از ui-refresh.css) و کارش «تکمیل
+ * سلسله‌مراتب بصری» است، نه رنگ‌آمیزی دوباره:
+ *   • نوار کناری حرفه‌ای (برند، بخش‌ها، نشانگر صفحهٔ فعال)؛
+ *   • سرصفحهٔ صفحه با زیرعنوان؛
+ *   • نوار بالای داشبورد: عددهای اول + ریل هشدارها + عنوان بخش‌ها؛
+ *   • جدول/فرم/وضعیت‌های خالی و بارگذاری یکدست.
+ *
+ * قانون آهنین این فایل: **هیچ رنگ دستی‌ای این‌جا نوشته نمی‌شود** مگر داخل یک
+ * گرادیان تزئینی روی `var(--…)`. همه‌چیز توکن است تا در هر دو پوسته درست باشد
+ * (باگ مالک: «در حالت روشن نوار کناری تیره می‌ماند»). آزمون‌ها:
+ *   backend/tests/test_v100_theme_contract.py
+ *   scripts/uitest/smoke-v1_0_theme.js
+ * ===================================================================== */
+
+/* ---------- پایه: مقیاس فاصله/شعاع/تایپوگرافی یکدست ---------- */
+:root {
+  --r-xs: 6px; --r-sm: 8px; --r-md: 10px; --r-lg: 14px; --r-xl: 18px; --r-pill: 999px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 22px; --sp-6: 30px;
+  --fs-caption: 11.5px; --fs-small: 12.5px; --fs-body: 13.5px; --fs-title: 15px;
+  --fs-h2: 19px; --fs-h1: 23px; --fs-kpi: 27px; --fs-kpi-xl: 33px;
+  --elev-1: 0 1px 2px rgba(8, 16, 40, .06);
+  --elev-2: 0 6px 18px rgba(8, 16, 40, .09);
+  --elev-3: 0 18px 44px rgba(8, 16, 40, .14);
+}
+
+/* ---------- نوار کناری: برند، بخش‌ها، آیتم فعال ---------- */
+.brand { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4); border-bottom: 1px solid var(--shell-border); }
+.brand-logo { width: 38px; height: 38px; border-radius: var(--r-md); flex: 0 0 auto; box-shadow: var(--elev-1); }
+.brand-meta { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.brand-meta b { font-size: var(--fs-title); font-weight: 800; letter-spacing: .2px; }
+.brand-meta span { font-size: var(--fs-caption); color: var(--shell-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+.sidebar .nav-sec { font-size: var(--fs-caption); letter-spacing: .5px; }
+.sidebar nav { padding: var(--sp-2) var(--sp-2) var(--sp-4); }
+.sidebar .nav-item { position: relative; font-size: var(--fs-body); padding: 9px 11px; }
+.sidebar .nav-item::after {                     /* نشانگر لبهٔ راست: خوانا در هر دو پوسته */
+  content: ""; position: absolute; inset-inline-start: 0; top: 22%; bottom: 22%;
+  width: 3px; border-radius: var(--r-pill); background: var(--primary); opacity: 0; transition: opacity .15s;
+}
+.sidebar .nav-item.active::after { opacity: 1; }
+.sidebar .nav-item .nav-ic { display: inline-flex; color: var(--shell-muted); transition: color .15s; }
+.sidebar .nav-item:hover .nav-ic, .sidebar .nav-item.active .nav-ic { color: var(--primary); }
+.nav-badge { min-width: 18px; height: 18px; border-radius: var(--r-pill); background: var(--red); color: #fff; font-size: 10px; line-height: 18px; text-align: center; margin-inline-start: auto; padding: 0 5px; font-weight: 700; }
+.sidebar-footer { padding: var(--sp-3); gap: var(--sp-2); }
+#whoami { font-size: var(--fs-caption); line-height: 1.5; }
+
+/* ---------- سرصفحهٔ صفحه ---------- */
+.topbar { min-height: 64px; padding: var(--sp-3) var(--sp-5); gap: var(--sp-3); }
+.topbar h2 { font-size: var(--fs-h2); font-weight: 800; margin: 0; }
+.topbar-sub { display: block; font-size: var(--fs-caption); color: var(--shell-muted); font-weight: 500; margin-top: 2px; }
+#topbar-actions { gap: var(--sp-2); }
+
+/* ---------- نوار بالای داشبورد ---------- */
+.dash-hero { display: grid; grid-template-columns: minmax(0, 2.15fr) minmax(280px, 1fr); gap: var(--sp-4); margin-bottom: var(--sp-4); }
+.hero-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: var(--sp-3); }
+.kpi-tile {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 3px;
+  padding: var(--sp-4); border-radius: var(--r-lg); border: 1px solid var(--border);
+  background: var(--card); box-shadow: var(--elev-1);
+}
+.kpi-tile::before { content: ""; position: absolute; inset-inline-start: 0; top: 0; bottom: 0; width: 3px; background: var(--border); }
+.kpi-tile.kpi-primary { grid-column: span 1; }
+.kpi-tile.kpi-primary::before { background: var(--grad); }
+.kpi-tile.kpi-primary .kpi-value { font-size: var(--fs-kpi-xl); }
+.kpi-label { font-size: var(--fs-caption); color: var(--muted); font-weight: 600; }
+.kpi-value { font-size: var(--fs-kpi); font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.2px; }
+.kpi-value small { font-size: var(--fs-small); font-weight: 600; color: var(--muted); }
+.kpi-sub { font-size: var(--fs-caption); color: var(--muted); }
+.kpi-sub .ok, .kpi-sub .err { font-weight: 700; }
+
+.alert-rail { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-3); border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--card); box-shadow: var(--elev-1); }
+.alert-rail.all-clear { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
+.rail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); font-size: var(--fs-small); font-weight: 700; margin-bottom: var(--sp-1); }
+.rail-empty { font-size: var(--fs-small); }
+.alert-row {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%; text-align: start; cursor: pointer;
+  padding: 7px 9px; border-radius: var(--r-md); border: 1px solid transparent; background: transparent;
+  color: var(--text); font-size: var(--fs-small); transition: background .15s, border-color .15s;
+}
+.alert-row:hover { background: color-mix(in srgb, var(--primary) 8%, transparent); border-color: var(--border); }
+.alert-row .alert-ic { display: inline-flex; }
+.alert-row .alert-tx { flex: 1; min-width: 0; }
+.alert-row .alert-go { font-size: 10.5px; color: var(--muted); opacity: 0; transition: opacity .15s; white-space: nowrap; }
+.alert-row:hover .alert-go { opacity: 1; }
+.alert-row.err .alert-ic { color: var(--red); }
+.alert-row.amber .alert-ic { color: var(--amber); }
+.alert-row.info .alert-ic { color: var(--primary); }
+
+.dash-band { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-4) 0 calc(-1 * var(--sp-1)); }
+.dash-band span { font-size: var(--fs-small); font-weight: 800; letter-spacing: .3px; color: var(--muted); white-space: nowrap; }
+.dash-band i { flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
+
+/* ---------- کارت‌ها و تیترها ---------- */
+.card h3, .dcard h3 { font-size: var(--fs-title); }
+.dash { gap: var(--sp-4); }
+.dcard { border-radius: var(--r-lg); }
+
+/* ---------- جدول‌ها: خوانایی و تراکم مناسب کار روزمره ---------- */
+.table-wrap { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: auto; background: var(--card); }
+table.table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-small); }
+table.table th { position: sticky; top: 0; z-index: 1; font-weight: 700; font-size: var(--fs-caption); letter-spacing: .2px; padding: 9px 10px; background: color-mix(in srgb, var(--bg2) 82%, var(--card)); border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.table td { padding: 9px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+table.table tbody tr:hover td { background: color-mix(in srgb, var(--primary) 6%, transparent); }
+table.table tbody tr:last-child td { border-bottom: 0; }
+table.table td.ltr, table.table th.ltr { font-variant-numeric: tabular-nums; }
+.recent td { padding: 8px 6px; }
+
+/* ---------- فرم‌ها ---------- */
+label { font-size: var(--fs-small); color: var(--muted); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, .nav-item:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 2px;
+}
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--sp-3); }
+.form-grid .full { grid-column: 1 / -1; }
+.btn { font-size: var(--fs-body); }
+.btn-sm { font-size: var(--fs-small); }
+
+/* ---------- وضعیت‌ها: خالی / بارگذاری / خطا ---------- */
+.state-empty, .muted.state-empty {
+  display: block; padding: var(--sp-5); text-align: center; color: var(--muted); font-size: var(--fs-small);
+  border: 1px dashed var(--border); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg2) 60%, transparent);
+}
+.state-loading { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-4); color: var(--muted); font-size: var(--fs-small); }
+.spin { width: 15px; height: 15px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent); border-top-color: var(--primary); animation: rasa-spin .8s linear infinite; }
+@keyframes rasa-spin { to { transform: rotate(360deg); } }
+.state-error { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-md); font-size: var(--fs-small); background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 34%, transparent); color: var(--text); }
+
+/* ---------- نشان‌ها و تراشه‌ها ---------- */
+.badge { border-radius: var(--r-pill); padding: 2px 9px; font-size: var(--fs-caption); font-weight: 700; }
+.exp-chip, .chip { border-radius: var(--r-pill); }
+
+/* ---------- هوش فروشگاه: چرا + اقدام‌ها ---------- */
+.ins-why { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-small); color: var(--muted); margin: 2px 0 6px; }
+.ins-why .ic { flex: 0 0 auto; color: var(--primary); margin-top: 2px; }
+.ins-card header h4 { font-size: var(--fs-body); }
+.ins-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+
+/* ---------- واکنش‌گرایی ---------- */
+@media (max-width: 1180px) {
+  .dash-hero { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 820px) {
+  .hero-kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .kpi-value { font-size: var(--fs-h2); }
+  .kpi-tile.kpi-primary .kpi-value { font-size: var(--fs-kpi); }
+  .topbar { padding: var(--sp-3) var(--sp-4); }
+}
+
+/* ---------- چاپ: گزارش و فاکتور بدون عناصر ناوبری ---------- */
+@media print {
+  .sidebar, .topbar, .dash-hero, .alert-rail, .statusbar, .dash-band i { display: none !important; }
+  .card, .dcard, .kpi-tile { box-shadow: none; border-color: #bbb; }
+}

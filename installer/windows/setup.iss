@@ -1,5 +1,5 @@
-﻿; Inno Setup script - builds SupermarketSystem-Setup-<version>.exe
-; Prerequisite: build the app first with build.ps1 (creates dist\SupermarketSystem.exe)
+﻿; Inno Setup script - builds RasaSystem-Setup-<version>.exe
+; Prerequisite: build the app first with build.ps1 (creates dist\RasaSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
 ; the Windows Setup.exe was NOT possible in the development sandbox (no
@@ -9,16 +9,16 @@
 ;   - see docs/BUILD.md for the full Windows build procedure to run locally.
 ;   - or just double-click BUILD-SETUP.bat in this folder.
 
-#define MyAppName "Supermarket System"
+#define MyAppName "RASA SYSTEM"
 ; The build scripts pass the real version with /DMyAppVersion=<x.y.z>, read from
 ; backend\app\__init__.py so the installer filename can never drift from what the
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "4.8.0"
+  #define MyAppVersion "1.0.0"
 #endif
-#define MyAppExeName "SupermarketSystem.exe"
-#define MyAppPublisher "Supermarket System"
+#define MyAppExeName "RasaSystem.exe"
+#define MyAppPublisher "RASA SYSTEM"
 #define MyAppURL "https://example.invalid/"
 
 [Setup]
@@ -33,17 +33,18 @@ AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
-DefaultDirName={autopf}\SupermarketSystem
+DefaultDirName={autopf}\RasaSystem
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; Per-user install (no admin needed): data lives in the user profile anyway.
 PrivilegesRequired=lowest
 ; Upgrading in place must never destroy the shop's database (§29). Data lives
-; in %USERPROFILE%\SupermarketSystem and is never written to {app}.
+; in %USERPROFILE%\RasaSystem (v1.0.0; the pre-1.0 folder SupermarketSystem is taken
+; over in place on first launch) and is never written to {app}.
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
 OutputDir=..\output
-OutputBaseFilename=SupermarketSystem-Setup-{#MyAppVersion}
+OutputBaseFilename=RasaSystem-Setup-{#MyAppVersion}
 SetupIconFile=icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -75,7 +76,7 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 [Files]
 ; Fail early and legibly if the app was never built.
 #if !FileExists("dist\" + MyAppExeName)
-  #error dist\SupermarketSystem.exe not found. Run BUILD-SETUP.bat (or build.ps1) first.
+  #error dist\RasaSystem.exe not found. Run BUILD-SETUP.bat (or build.ps1) first.
 #endif
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -89,11 +90,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; delete app files only - user DATA in %USERPROFILE%\SupermarketSystem (DB, logs,
+; delete app files only - user DATA in %USERPROFILE%\RasaSystem (DB, logs,
 ; secret key) is intentionally NOT touched by uninstall
 Type: filesandordirs; Name: "{app}"
 
 [Messages]
 ; Notes shown on the final page (English; Farsi.isl ships its own when present)
-FinishedLabelNoIcons=Setup has installed [name]. Your data is stored in your user profile folder (SupermarketSystem) and is kept when you update or uninstall.
-FinishedLabel=Setup has installed [name]. Your data is stored in your user profile folder (SupermarketSystem) and is kept when you update or uninstall.
+FinishedLabelNoIcons=Setup has installed [name]. Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.
+FinishedLabel=Setup has installed [name]. Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.

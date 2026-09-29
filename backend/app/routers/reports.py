@@ -74,11 +74,16 @@ def adjustments(limit: int = Query(default=200, le=1000), db: Session = Depends(
 
 
 @router.get("/profit")
-def profit(start: date | None = None, end: date | None = None, db: Session = Depends(get_db),
+def profit(start: date | None = None, end: date | None = None,
+           limit: int | None = Query(default=None, ge=1, le=5000),
+           db: Session = Depends(get_db),
            # v3.7 (§34) — this endpoint IS cost analysis; redaction would leave
            # an empty shell, so it requires the cost permission outright.
            _: User = Depends(require_permission("pricing.view_cost"))):
-    return rep.profit_by_batch(db, start, end)
+    # v1.0.0 (RASA) — ``limit`` اختیاری (مثل /inventory): روی فروشگاه یک‌ساله این
+    # گزارش ۳۲۶۴ ردیف/۲۵۵KB است و رابط، همه را در DOM می‌ساخت و صفحه را قفل می‌کرد.
+    rows = rep.profit_by_batch(db, start, end)
+    return rows[:limit] if limit else rows
 
 
 @router.get("/batches")

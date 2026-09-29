@@ -68,7 +68,7 @@ public final class InstallService extends Service {
         PendingIntent pi = PendingIntent.getActivity(this, 5, i, PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, done ? Notify.CH_SYSTEM : CH) : new Notification.Builder(this);
         b.setSmallIcon(android.R.drawable.stat_sys_download_done).setContentIntent(pi).setOngoing(!done).setOnlyAlertOnce(true).setColor(Ui.TEAL);
-        if (done) b.setContentTitle("سوپری من آماده است ✓").setContentText("نصب اولیه کامل شد — برای شروع لمس کنید").setAutoCancel(true);
+        if (done) b.setContentTitle("رسا سیستم آماده است ✓").setContentText("نصب اولیه کامل شد — برای شروع لمس کنید").setAutoCancel(true);
         else b.setContentTitle("در حال نصب و پیکربندی سامانه · " + Ui.fa(String.valueOf(pc)) + "٪").setContentText(SetupActivity.phaseAt(pc / 100.0) + " — می‌توانید برنامه را ببندید").setProgress(100, pc, false);
         return b.build();
     }

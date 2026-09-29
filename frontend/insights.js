@@ -43,12 +43,17 @@
 
   function card(i, compact) {
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
+    /* v1.0.0 (RASA) — «چرا این پیشنهاد آمد؟» — مالک باید بداند چه چیزی دیده شده و
+     * چه چیزی در خطر است، نه فقط یک تیتر. متن از دادهٔ خود بینش ساخته می‌شود
+     * (`narrative` اگر موتور نوشته باشد، وگرنه خلاصهٔ شواهد). */
+    const why = String(i.narrative || (i.evidence && (i.evidence.summary || i.evidence.reason)) || "").trim();
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
       <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}
+      ${compact || !why ? "" : `<p class="ins-why">${ico("sparkle", 14)}<span><b>چرا؟</b> ${esc(why)}</span></p>`}
       <div class="ins-foot">${gainLine(i)}<span class="muted">${faDateTime(i.created_at, false)}</span></div>
       <div class="ins-actions"></div>`;
     const act = c.querySelector(".ins-actions");
@@ -61,6 +66,8 @@
       }
     } else if (i.status === "ACCEPTED" && can("reports.view")) {
       act.append(el("button", { class: "btn btn-sm", text: "اندازه‌گیری الان", onclick: async () => { try { await api(`/insights/${i.id}/measure`, { method: "POST" }); toast("اندازه‌گیری به‌روز شد"); } catch (e) { toast(e.message, "err"); } refreshCurrent(); } }));
+      // «بررسی» — همان سیستم بررسی فروشگاه: آیا اثری که اجرا کردیم هنوز سر جایش است؟
+      act.append(el("button", { class: "btn btn-sm btn-ghost", text: "بررسی", onclick: () => healthDialog() }));
     }
     return c;
   }

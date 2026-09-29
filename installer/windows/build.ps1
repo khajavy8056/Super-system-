@@ -5,9 +5,9 @@
 #    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -NoDownload
 #
 #  Produces:
-#    installer\windows\dist\SupermarketSystem.exe            (PyInstaller)
-#    installer\output\SupermarketSystem-<ver>-portable.exe   (ALWAYS)
-#    installer\output\SupermarketSystem-Setup-<ver>.exe      (needs Inno Setup)
+#    installer\windows\dist\RasaSystem.exe            (PyInstaller)
+#    installer\output\RasaSystem-<ver>-portable.exe   (ALWAYS)
+#    installer\output\RasaSystem-Setup-<ver>.exe      (needs Inno Setup)
 #
 #  This file is a thin driver: every real step lives in builder-lib.ps1 and is
 #  shared with the graphical builder (BUILD-SETUP-GUI.bat). One implementation
@@ -72,5 +72,5 @@ Write-Host "BUILD OK / ساخت با موفقیت انجام شد" -ForegroundCo
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host " Portable : $Script:Portable"
 if ($Script:FinalSetup) { Write-Host " Installer: $Script:FinalSetup" }
-Write-Host " Data dir : %USERPROFILE%\SupermarketSystem  (created on first run)"
+Write-Host " Data dir : %USERPROFILE%\RasaSystem  (created on first run)"
 exit 0

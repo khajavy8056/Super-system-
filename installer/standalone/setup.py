@@ -12,8 +12,8 @@ because official Windows builds ship a shared libpython.
 
 Usage:
     cd installer/standalone && ../../backend/.venv/bin/python setup.py build
-Output: installer/standalone/build/SupermarketSystem-*/ (run the
-SupermarketSystem executable).
+Output: installer/standalone/build/RasaSystem-*/ (run the
+RasaSystem executable).
 """
 from __future__ import annotations
 
@@ -53,13 +53,13 @@ build_options = {
 executables = [
     Executable(
         str(HERE.parent / "windows" / "run_supermarket.py"),
-        target_name="SupermarketSystem",
+        target_name="RasaSystem",
         # console app on purpose: logs visible; installer wraps it nicely
     ),
 ]
 
 setup(
-    name="SupermarketSystem",
+    name="RasaSystem",
     version="3.6.0",
     description="Supermarket ERP / Smart Inventory / POS — standalone server",
     options={"build_exe": build_options},

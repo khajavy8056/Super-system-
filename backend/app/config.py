@@ -24,7 +24,7 @@ DEFAULT_SECRET_KEY = "change-me-in-production-9f8e7d6c5b4a"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    APP_NAME: str = "Supermarket System"
+    APP_NAME: str = "RASA SYSTEM"
     #: Single source of truth is ``app.__version__``; keeping a second literal
     #: here is how /health ends up advertising a stale version.
     APP_VERSION: str = __version__
@@ -69,7 +69,15 @@ class Settings(BaseSettings):
     # Support-request relay (v1.7). Ticket delivery channel of the vendor; the
     # UI never names the transport. Owner may override via env / system_settings.
     SUPPORT_RELAY_URL: str = "https://botapi.rubika.ir/v3"
-    SUPPORT_RELAY_TOKEN: str = "CDJFAE0BITPJAHSUTQNWIIZKSMPOTEYATQNHZVDZYBWMUMYISOIRVWVINHFSRXVF"
+    #: v1.0.0 — no default token. The vendor channel token used to be hard-coded
+    #: here, which put a live credential into the source tree, the Windows
+    #: installer and the APK (blueprint §82 forbids exactly this). It is now
+    #: provisioned per installation: ``system_settings`` key
+    #: ``support.relay_token`` (Settings → پشتیبانی, or
+    #: ``scripts/provision_relay.py``) with ``SUPPORT_RELAY_TOKEN`` as the
+    #: environment fallback. Without it, tickets are stored and queued — the UI
+    #: says «در انتظار ارسال مجدد», never a fake success.
+    SUPPORT_RELAY_TOKEN: str = ""
     SUPPORT_INBOX_ID: str = ""          # learned automatically from the relay feed
     SUPPORT_OWNER_USERNAME: str = "Khajavi8056"
 

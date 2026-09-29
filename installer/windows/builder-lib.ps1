@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..\..')
-$WorkDir   = Join-Path $env:USERPROFILE 'SupermarketSystem-build'
+$WorkDir   = Join-Path $env:USERPROFILE 'RasaSystem-build'
 $LogFile   = Join-Path $WorkDir 'build.log'
 # A second copy next to the script: users send us "the build log" and they look
 # in the folder they double-clicked, not in their profile.
@@ -606,7 +606,7 @@ $Steps = @(
         Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $ScriptDir -Report $Report `
             -Arguments @('-m', 'PyInstaller', '--clean', '--noconfirm', 'app.spec')
 
-        $exe = Join-Path $ScriptDir 'dist\SupermarketSystem.exe'
+        $exe = Join-Path $ScriptDir 'dist\RasaSystem.exe'
         if (-not (Test-Path $exe)) {
             throw "PyInstaller بدون خطا تمام شد اما فایل خروجی ساخته نشد:`n$exe"
         }
@@ -627,7 +627,7 @@ $Steps = @(
 
         # ALWAYS publish a portable copy. Even when Inno Setup is missing the
         # user walks away with something that runs (from v0.4.0).
-        $portable = Join-Path $OutputDir "SupermarketSystem-$Version-portable.exe"
+        $portable = Join-Path $OutputDir "RasaSystem-$Version-portable.exe"
         Copy-Item $exe $portable -Force
         $Script:Portable = $portable
         & $Report "نسخه قابل‌حمل (بدون نیاز به نصب): $portable"
@@ -649,7 +649,7 @@ $Steps = @(
         Invoke-Native -FilePath $Script:Iscc -WorkingDirectory $ScriptDir -Report $Report `
             -Arguments @("/DMyAppVersion=$Version", 'setup.iss')
 
-        $setup = Join-Path $OutputDir "SupermarketSystem-Setup-$Version.exe"
+        $setup = Join-Path $OutputDir "RasaSystem-Setup-$Version.exe"
         if (-not (Test-Path $setup)) {
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }

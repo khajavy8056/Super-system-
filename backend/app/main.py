@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=__version__,
-    description="Supermarket ERP / Smart Inventory / POS — batch-aware, offline-first.",
+    description="مدیریت سوپرمارکت رسا سیستم (RASA SYSTEM) — batch-aware, offline-first supermarket ERP: POS, inventory, expiry, accounting, store intelligence.",
     lifespan=lifespan,
 )
 
@@ -228,7 +228,20 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # health, the setup/licence endpoints and static assets is refused with 402 so
 # the UI can show the activation wizard. The verdict comes from the cached state
 # (no network on the request path); a background worker re-validates every 24 h.
-_LICENSE_FREE_PREFIXES = ("/api/setup/", "/health", "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
+#
+# v1.0.0 (RASA) — «پشتیبانی» پشت دروازهٔ لایسنس حبس نمی‌شود. باگ گزارش‌شدهٔ مالک:
+# «از ویندوز تیکت پشتیبانی ثبت نمی‌شود» — ریشه‌اش همین بود. فروشگاهی که لایسنسش
+# منقضی/فعال‌نشده بود، به `/api/support/types` پاسخ ۴۰۲ می‌گرفت، فهرست «نوع
+# درخواست» خالی می‌ماند و ارسال با خطای «نوع درخواست نامعتبر» رد می‌شد — یعنی
+# دقیقاً وقتی فروشگاه به پشتیبانی نیاز داشت (برای همان لایسنس!) راه تماس بسته بود.
+# روی گوشی این اتفاق نمی‌افتاد چون حالت مستقل گوشی تیکت را مستقیم به رله می‌فرستد
+# و از بک‌اند عبور نمی‌کند؛ برای همین مشکل «فقط ویندوزی» به‌نظر می‌رسید.
+#
+# تصمیم آگاهانه: پشتیبانی *قابلیت لایسنس‌دار* نیست، راهِ کمک گرفتن است. پس
+# پشتیبانی و ورود (بدون توکن، هیچ درخواستی معنا ندارد) آزاد می‌شوند؛ دادهٔ
+# فروش، انبار، حسابداری و همهٔ قابلیت‌های واقعی همچنان با ۴۰۲ بسته می‌مانند.
+_LICENSE_FREE_PREFIXES = ("/api/setup/", "/api/support/", "/api/auth/", "/health",
+                          "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
 _LICENSE_GATE_ENABLED = os.environ.get("SUPERMARKET_LICENSE_GATE", "1") not in ("0", "false", "off")
 
 
@@ -280,10 +293,14 @@ async def security_headers(request: Request, call_next):
     if not _ALLOW_EMBED:
         response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
-    # v3.7 (§34) — the shop panel needs no camera/mic/geolocation; deny the lot.
+    # v3.7 (§34) — camera/mic stay denied; **geolocation is allowed for our own
+    # origin only** (v1.0.0). The panel's support form offers «ارسال موقعیت
+    # مکانی دقیق»; sending `geolocation=()` made that feature impossible and, in
+    # the Windows WebView2 shell, left the permission request unanswered — the
+    # ticket submission then waited on a promise that could never settle.
     response.headers.setdefault(
         "Permissions-Policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
     )
     # CSP: inline handlers are used by the panel, so allow 'unsafe-inline' for
     # scripts in this phase; tighten when the frontend moves to a bundler.

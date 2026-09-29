@@ -293,6 +293,13 @@ const ICONS = {
   cheque: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h6M7 14h10"/>',
   trend: '<path d="M3 17l5-6 4 4 6-8"/><path d="M14 7h4v4"/>',
   cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.6 11h10L21 7H6"/>',
+  // v1.0.0 (RASA) — آیکون‌های ریل هشدار داشبورد (پیش‌تر فقط بعد از بارگذاری
+  // insights.js موجود می‌شدند؛ داشبورد نباید به ترتیب بارگذاری وابسته باشد).
+  bell: '<path d="M18 16H6l1.2-2.2V9.5a4.8 4.8 0 0 1 9.6 0v4.3z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  sms: '<path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.4-4.4A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>',
+  tag: '<path d="M20 12l-8 8-9-9V4h7z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -346,13 +353,38 @@ function buildNav() {
     });
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
+  // نام واقعی فروشگاه در بلوک برند (پیش‌تر فقط هنگام ذخیرهٔ پروفایل به‌روز می‌شد)
+  const bs = $("#brand-store");
+  if (bs) bs.textContent = (state.store && state.store.name) ? state.store.name : "مدیریت سوپرمارکت";
 }
 
+/* v1.0.0 (RASA) — زیرعنوان هر صفحه: کاربر تازه بفهمد این صفحه به چه کار می‌آید. */
+const VIEW_SUBS = {
+  dashboard: "تصویر امروز فروشگاه در یک نگاه",
+  pos: "فروش سریع با بارکد، مشتری و تخفیف",
+  products: "فهرست کالا، قیمت‌ها و بارکد",
+  batches: "ورود کالا، تاریخ انقضا و بهای خرید",
+  inventory: "موجودی، انبارگردانی و اصلاحات",
+  invoices: "فاکتورها، مرجوعی و وضعیت پرداخت",
+  customers: "مشتریان، بدهی و سابقهٔ خرید",
+  marketing: "جشنواره، کوپن و پیامک گروهی",
+  reports: "گزارش فروش، سود و موجودی",
+  accounting: "صندوق، اسناد، هزینه و تسویه",
+  hardware: "چاپگر، ترازو و بارکدخوان",
+  users: "کاربران، نقش‌ها و دسترسی‌ها",
+  settings: "تنظیمات فروشگاه، پیامک و پشتیبان",
+  diagnostics: "بررسی سلامت و اتصالات",
+  support: "ثبت و پیگیری درخواست پشتیبانی",
+  audit: "ردیابی کارهای انجام‌شده",
+  insights: "پیشنهاد، اجرا و سنجش نتیجه",
+  insightsPlan: "پیش‌بینی سود و برنامهٔ اقدام",
+};
 async function go(view) {
   state.view = view;
   buildNav();
   const titles = Object.fromEntries(NAV.map(([k, v]) => [k, v]));
   $("#view-title").textContent = titles[view] || view;
+  const sub = $("#view-sub"); if (sub) sub.textContent = VIEW_SUBS[view] || "";
   $("#topbar-actions").innerHTML = "";
   const viewEl = $("#view");
   viewEl.className = "view view-" + view;
@@ -377,8 +409,50 @@ RENDER.dashboard = async () => {
   const monthTarget = Math.max(d.sales.month, d.sales.today * 30, 1);
   const gaugePct = Math.min(100, Math.round(d.sales.today / (monthTarget / 30) * 100)) || 0;
   const acc = d.accounting || {};
+  /* v1.0.0 (RASA) — سلسله‌مراتب اطلاعاتی داشبورد.
+     مالک باید در چند ثانیه بفهمد «امروز چه خبر است»: اول عددهای اول، بعد هشدارها،
+     بعد تحلیل، و آخر سامانه. همهٔ این‌ها از همان پاسخ `/reports/dashboard` ساخته
+     می‌شوند (هیچ درخواست شبکه‌ای اضافه نمی‌شود) تا داشبورد سنگین نشود. */
+  const expiryBuckets = d.expiry || {};
+  const expSoon = (expiryBuckets.EXPIRING_3_DAYS || []).length + (expiryBuckets.EXPIRING_TODAY || []).length;
+  const expExpired = (expiryBuckets.EXPIRED || []).length;
+  const lowCount = d.inventory.low_stock_count || 0, zeroCount = d.inventory.no_stock_count || 0;
+  const priceConf = (d.pricing || {}).price_conflict_count || 0;
+  const sysOk = (d.system || {}).status === "ok" || (d.system || {}).ok === true;
+  const alerts = [
+    expExpired ? { sev: "err", ic: "clock", text: `${fa(expExpired)} بچ منقضی روی قفسه`, go: "insights" } : null,
+    expSoon ? { sev: "err", ic: "clock", text: `${fa(expSoon)} کالا تا ۳ روز آینده منقضی می‌شود`, go: "inventory" } : null,
+    zeroCount ? { sev: "amber", ic: "box", text: `${fa(zeroCount)} کالا بدون موجودی`, go: "inventory" } : null,
+    lowCount ? { sev: "amber", ic: "warehouse", text: `${fa(lowCount)} کالا زیر حد سفارش`, go: "inventory" } : null,
+    priceConf ? { sev: "info", ic: "tag", text: `${fa(priceConf)} کالا با چند قیمت فعال`, go: "products" } : null,
+    (d.sms || {}).failed ? { sev: "amber", ic: "sms", text: `${fa(d.sms.failed)} پیامک ناموفق در صف`, go: "settings" } : null,
+    !sysOk ? { sev: "amber", ic: "stethoscope", text: "سلامت سیستم نیاز به بررسی دارد", go: "diagnostics" } : null,
+  ].filter(Boolean);
+  const kpi = (label, value, sub, cls) => `
+      <div class="kpi-tile ${cls || ""}">
+        <span class="kpi-label">${label}</span>
+        <b class="kpi-value">${value}</b>
+        <span class="kpi-sub">${sub}</span>
+      </div>`;
   v.innerHTML = `
     <div id="dash-alarms"></div>
+    <section class="dash-hero">
+      <div class="hero-kpis">
+        ${kpi("فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`,
+              `<span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪</span> نسبت به دیروز`, "kpi-primary")}
+        ${kpi("فاکتور امروز", fa(d.sales.invoice_count_today), `میانگین هر فاکتور ${money(d.sales.avg_invoice_today)}`)}
+        ${kpi("سود امروز", can("pricing.view_cost") ? money(d.profit.today) : "—",
+              can("pricing.view_cost") ? `این ماه ${money(d.profit.month)}` : "بدون دسترسی به بهای تمام‌شده")}
+        ${kpi("ارزش موجودی", money(d.inventory.value), `${fa(d.inventory.product_count)} کالا در فهرست`)}
+      </div>
+      <aside class="alert-rail ${alerts.length ? "" : "all-clear"}">
+        <div class="rail-head"><span>${alerts.length ? `${icon("bell", 16)} ${fa(alerts.length)} مورد نیاز به توجه` : `${icon("check", 16)} همه‌چیز مرتب است`}</span>
+          <button class="btn btn-sm btn-ghost" onclick="go('insights')">هوش فروشگاه</button></div>
+        ${alerts.slice(0, 5).map((a) => `<button class="alert-row ${a.sev}" onclick="go('${a.go}')">
+            <span class="alert-ic">${icon(a.ic, 15)}</span><span class="alert-tx">${a.text}</span><span class="alert-go">بررسی</span></button>`).join("")
+          || `<div class="muted rail-empty">هشدار فعالی نیست: موجودی، انقضا و سلامت سیستم در محدودهٔ نرمال‌اند.</div>`}
+      </aside>
+    </section>
     <div class="dash">
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
@@ -401,6 +475,7 @@ RENDER.dashboard = async () => {
           </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
       </section>
 
+      <div class="dash-band"><span>عملیات فروشگاه</span><i></i></div>
       <section class="dcard dcard-low">
         <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
         <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
@@ -427,6 +502,7 @@ RENDER.dashboard = async () => {
         </div>
       </section>
 
+      <div class="dash-band"><span>مالی و تسویه</span><i></i></div>
       ${can("accounting.view") ? `
       <section class="dcard dcard-acc">
         <h3>${icon("ledger", 18)} وضعیت مالی</h3>
@@ -442,6 +518,7 @@ RENDER.dashboard = async () => {
 
       <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
       <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
+      <div class="dash-band"><span>سامانه و پیام‌رسانی</span><i></i></div>
       <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
       <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
       <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
@@ -1737,7 +1814,7 @@ RENDER.batches = async () => {
       <span id="b-status" class="muted"></span>
     </div>
   </div>
-  <div class="card"><div class="card-head"><h3>بچ‌های اخیر</h3></div><div class="table-wrap"><table id="b-table"></table></div></div>`;
+  <div class="card"><div class="card-head"><h3>بچ‌های اخیر</h3><span class="muted" id="b-more"></span></div><div class="table-wrap"><table id="b-table"></table></div></div>`;
   Jalali.attachAll(v);
 
   let picked = null;
@@ -1805,10 +1882,22 @@ RENDER.batches = async () => {
       RENDER.batches();
     } catch (e) { toast(e.message, "err"); }
   });
-  const batches = await api("/batches");
+  // v1.0.0 (RASA) — پیش‌تر *همهٔ* بچ‌ها دانلود می‌شد و بعد فقط ۵۰ ردیف نشان داده
+  // می‌شد (روی فروشگاه یک‌ساله: ۱٫۲ مگابایت و ۲۱۰ms برای ۵۰ ردیف). حالا همان ۶۰
+  // ردیف لازم می‌آید و نام کالاها هم فقط برای همین ردیف‌ها پرسیده می‌شود.
+  const BATCH_ROWS = 50;
+  const batches = await api("/batches?limit=" + (BATCH_ROWS + 10));
   const names = {};
-  try { const pr = await api("/products?limit=1000"); pr.items.forEach((p) => { names[p.id] = p; }); } catch (_) {}
-  const rows = batches.slice(0, 50).map((b) => el("tr", {},
+  try {
+    const wish = [...new Set(batches.slice(0, BATCH_ROWS).map((b) => b.product_id))].slice(0, 200);
+    if (wish.length) {
+      const pr = await api("/products?ids=" + wish.join(",") + "&limit=" + wish.length);
+      pr.items.forEach((p) => { names[p.id] = p; });
+    }
+  } catch (_) {}
+  const more = $("#b-more");
+  if (more && batches.length > BATCH_ROWS) more.textContent = "۵۰ بچ آخر نمایش داده می‌شود — برای بچ‌های قدیمی‌تر، کالا را جست‌وجو کنید";
+  const rows = batches.slice(0, BATCH_ROWS).map((b) => el("tr", {},
     el("td", {}, el("b", { text: (names[b.product_id] || {}).name || ("#" + b.product_id) }), el("div", { class: "muted", text: b.batch_number })),
     el("td", { text: (b.buy_price === null || b.buy_price === undefined) ? "—" : fmt(b.buy_price) }),
     el("td", { text: fmt(b.sell_price) }), el("td", { text: qty(b.current_qty) }),
@@ -2237,9 +2326,13 @@ async function runReport(tab) {
             el("td", { text: money(r.total_sales) }), el("td", { text: money(r.total_discount) }),
             el("td", { class: "ok", text: money(r.profit) })))))));
     } else if (tab === "profit") {
-      const rows = await api(`/reports/profit?start=${start}&end=${end}`);
+      // v1.0.0 (RASA) — سقف ۲۰۰ ردیف: پیش‌تر همهٔ بچ‌های بازه در جدول ریخته می‌شد
+      // (روی فروشگاه یک‌ساله ۳۲۶۴ ردیف) و رابط را قفل می‌کرد.
+      const PROFIT_ROWS = 200;
+      const rows = await api(`/reports/profit?start=${start}&end=${end}&limit=${PROFIT_ROWS}`);
       out.innerHTML = "";
       out.append(el("div", { class: "card" }, el("h3", { text: "سود به تفکیک Batch" }),
+        el("div", { class: "muted", text: rows.length >= PROFIT_ROWS ? `۲۰۰ ردیف اول (سودآورترین‌ها بر پایهٔ دادهٔ بچ) نمایش داده می‌شود` : "" }),
         el("table", {}, el("thead", {}, el("tr", {},
           el("th", { text: "Batch" }), el("th", { text: "کالا" }), el("th", { text: "تعداد" }),
           el("th", { text: "درآمد" }), el("th", { text: "سود" }))),
@@ -2834,7 +2927,7 @@ function applyStoreLogo(path) {
 async function renderMobilePanel(body) {
   const card = el("div", { class: "card", id: "mobile-card" });
   card.innerHTML = `<h3>اتصال گوشی اندروید</h3>
-    <p class="muted">برنامهٔ «سوپری من» را روی گوشی نصب کنید و گوشی را به همان Wi‑Fi رایانه وصل کنید. دو راه ساده دارید: اسکن کد QR، یا وارد کردن <b>کد ۶ رقمی</b> در برنامه. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ اگر آدرس رایانه در شبکه عوض شود، گوشی با «کلید اتصال» دوباره رایانه را پیدا می‌کند.</p>
+    <p class="muted">برنامهٔ «رسا سیستم» را روی گوشی نصب کنید و گوشی را به همان Wi‑Fi رایانه وصل کنید. دو راه ساده دارید: اسکن کد QR، یا وارد کردن <b>کد ۶ رقمی</b> در برنامه. ارتباط از طریق شبکهٔ داخلی است و به اینترنت نیاز ندارد؛ اگر آدرس رایانه در شبکه عوض شود، گوشی با «کلید اتصال» دوباره رایانه را پیدا می‌کند.</p>
     <div class="row" style="gap:22px;align-items:flex-start;flex-wrap:wrap;justify-content:center">
       <div id="mob-qr" class="mob-qr"><span class="muted">در حال ساخت کد…</span></div>
       <div style="flex:1;min-width:280px">
@@ -3048,7 +3141,7 @@ async function renderStoreProfile() {
       state.store = await api("/settings/store-profile",
         { method: "PUT", body: JSON.stringify(body) });
       const sb = $("#sb-store"); if (sb) sb.textContent = state.store.name || "";
-      const brand = document.querySelector(".brand span");
+      const brand = $("#brand-store");
       if (brand && state.store.name) brand.textContent = state.store.name;
       toast("پروفایل فروشگاه ذخیره شد");
     } catch (e) { toast(e.message, "err"); }
@@ -3207,16 +3300,67 @@ function startUpdate() {
  * and delivered to the support inbox in the background (retries while
  * offline). The exact location is attached ONLY when the operator allows the
  * browser prompt. */
-window.getGeo = () => new Promise((resolve) => {
-  if (!navigator.geolocation) return resolve(null);
-  navigator.geolocation.getCurrentPosition(
-    (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy }),
-    () => resolve(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+/* v1.0.0 (RASA) — موقعیت مکانی هرگز نباید مانع ثبت درخواست شود.
+ *
+ * باگ ویندوز: تیک «ارسال موقعیت مکانی دقیق» به‌طور پیش‌فرض روشن بود و کد
+ * بدون هیچ مهلتی منتظر `getCurrentPosition` می‌ماند. در پوستهٔ دسکتاپ (WebView2)
+ * پنجرهٔ اجازهٔ دسترسی را میزبان باید مدیریت کند؛ pywebview چنین رویدادی را
+ * نمی‌گیرد، پس پاسخ نه موفق می‌شد و نه ناموفق — پرامیس هرگز settle نمی‌شد، دکمه
+ * «ثبت و ارسال» تا ابد در حالت «در حال آماده‌سازی…» می‌ماند و تیکت ثبت نمی‌شد.
+ * حالا: (الف) مهلت قطعی دارد، (ب) خطای هر نوعی → null، (ج) اگر مرورگر پاسخ نداد
+ * با `Promise.race` رها می‌شود. تیکت بدون موقعیت مکانی هم کامل و معتبر است.
+ */
+window.getGeo = (deadlineMs = 1500) => new Promise((resolve) => {
+  let done = false;
+  const finish = (v) => { if (!done) { done = true; resolve(v); } };
+  try { setTimeout(() => finish(null), deadlineMs); } catch (_) { finish(null); }
+  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) return finish(null);
+  try {
+    navigator.geolocation.getCurrentPosition(
+      (p) => finish({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy_m: p.coords.accuracy }),
+      () => finish(null),
+      { enableHighAccuracy: false, timeout: Math.min(4000, deadlineMs), maximumAge: 300000 });
+  } catch (_) { finish(null); }
 });
+/* v1.0.0 (RASA) — ثبت تیکت از صفحهٔ قفل لایسنس (بدون نشست).
+ * مسیر `/support/locked-ticket` عمداً فقط نوع «لایسنس» را می‌پذیرد و سقف درخواست
+ * دارد؛ همین است که فروشگاهِ لایسنس‌نشده هم می‌تواند راه تماس داشته باشد. */
+window.pubTicket = async (fields) => {
+  const r = await fetch(API + "/support/locked-ticket", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+  let b = null; try { b = await r.json(); } catch (_) {}
+  if (!r.ok) {
+    const d = b && b.detail;
+    const err = new Error(typeof d === "object" ? (d.message || d.code) : (d || r.statusText));
+    err.code = d && d.code; err.status = r.status;
+    throw err;
+  }
+  return b;
+};
+
+/* v1.0.0 (RASA) — فهرست جایگزین: اگر `/support/types` به هر دلیلی نیامد (شبکه،
+ * لایسنس، خطای سرور)، فرم نباید با فهرست خالی «نوع درخواست نامعتبر» بدهد.
+ * مقدارها همان کلیدهایی هستند که سرور می‌شناسد. */
+const SUP_TYPES_FALLBACK = [
+  { id: "BUG", label: "ثبت خرابی / اشکال" }, { id: "FEATURE", label: "درخواست افزودن امکان ویژه" },
+  { id: "QUESTION", label: "سؤال / راهنمایی" }, { id: "HARDWARE", label: "مشکل سخت‌افزار (چاپگر، اسکنر، صندوق)" },
+  { id: "LICENSE", label: "لایسنس و فعال‌سازی" }, { id: "TRAINING", label: "آموزش / راه‌اندازی" },
+  { id: "OTHER", label: "سایر" },
+];
+const SUP_PRIOS_FALLBACK = [
+  { id: "LOW", label: "کم" }, { id: "NORMAL", label: "عادی" }, { id: "HIGH", label: "زیاد" }, { id: "URGENT", label: "فوری" },
+];
+window.supMeta = async (quiet = false) => {
+  try {
+    const m = await api("/support/types");
+    if (m && Array.isArray(m.types) && m.types.length) return { types: m.types, priorities: (m.priorities || []).length ? m.priorities : SUP_PRIOS_FALLBACK, degraded: false };
+  } catch (e) { if (!quiet) toast(e.message, "err"); }
+  return { types: SUP_TYPES_FALLBACK, priorities: SUP_PRIOS_FALLBACK, degraded: true };
+};
 RENDER.support = async () => {
   const v = $("#view");
   let meta = { types: [], priorities: [] };
-  try { meta = await api("/support/types"); } catch (e) { toast(e.message, "err"); }
+  meta = await window.supMeta();
   v.innerHTML = `<div class="grid grid-2">
     <div class="card">
       <h3>ثبت درخواست پشتیبانی</h3>
@@ -3227,7 +3371,7 @@ RENDER.support = async () => {
         <div class="full"><label>موضوع</label><input id="sup-subject" required minlength="3" maxlength="160" placeholder="مثلاً: چاپگر رسید چاپ نمی‌کند" /></div>
         <div class="full"><label>شرح</label><textarea id="sup-desc" rows="5" maxlength="4000" placeholder="چه اتفاقی افتاد؟ چه زمانی؟ چه پیامی دیدید؟"></textarea></div>
         <div><label>راه تماس (اختیاری)</label><input id="sup-contact" class="ltr" placeholder="09xxxxxxxxx" /></div>
-        <div><label class="checkbox"><input type="checkbox" id="sup-geo" checked /> ارسال موقعیت مکانی دقیق این دستگاه (برای اعزام سریع‌تر)</label></div>
+        <div><label class="checkbox"><input type="checkbox" id="sup-geo" /> ارسال موقعیت مکانی دقیق این دستگاه — اختیاری (برای اعزام سریع‌تر؛ اگر دستگاه اجازه ندهد، درخواست بدون آن ثبت می‌شود)</label></div>
         <div class="full" style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-primary" type="submit" id="sup-send">ثبت و ارسال</button>
           <span id="sup-status" class="muted"></span>
@@ -3308,10 +3452,15 @@ RENDER.support = async () => {
   $("#sup-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const btn = $("#sup-send"); btn.disabled = true; $("#sup-status").textContent = "در حال آماده‌سازی…";
-    const geo = $("#sup-geo").checked ? await window.getGeo() : null;
-    const body = { type: $("#sup-type").value, priority: $("#sup-prio").value, subject: $("#sup-subject").value.trim(),
+    const geoBox = $("#sup-geo");
+    if (geoBox && geoBox.checked) $("#sup-status").textContent = "گرفتن موقعیت مکانی (کوتاه)…";
+    const geo = geoBox && geoBox.checked ? await window.getGeo() : null;
+    const typeSel = $("#sup-type"), prioSel = $("#sup-prio");
+    const body = { type: (typeSel && typeSel.value) || "OTHER", priority: (prioSel && prioSel.value) || "NORMAL",
+      subject: $("#sup-subject").value.trim(),
       description: $("#sup-desc").value.trim() || null, contact: $("#sup-contact").value.trim() || null,
       device: window.SupermarketAndroid ? "Android" : (/Windows/i.test(navigator.userAgent) ? "Windows" : "Web"), ...(geo || {}) };
+    $("#sup-status").textContent = "در حال ثبت…";
     try {
       const t = await api("/support/tickets", { method: "POST", body: JSON.stringify(body) });
       if (window.Sfx) Sfx.play(t.status === "SENT" ? "success" : "note");
@@ -3687,7 +3836,7 @@ async function loadRuntimeConfig() {
     if (el && state.store.name) el.textContent = state.store.name;
     if (state.store.logo_path) applyStoreLogo(state.store.logo_path);
     if (state.store.name) {
-      const brand = document.querySelector(".brand span");
+      const brand = $("#brand-store");
       if (brand) brand.textContent = state.store.name;
     }
   } catch (e) { state.store = {}; }

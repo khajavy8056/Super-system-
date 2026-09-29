@@ -112,7 +112,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="SupermarketSystem",
+    name="RasaSystem",
     icon=str(ROOT / "installer" / "windows" / "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,

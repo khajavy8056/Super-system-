@@ -43,7 +43,14 @@
       <input id="ob-key" class="ob-key ltr" placeholder="KEY-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="40" />
       <p id="ob-key-err" class="error hidden"></p>
       <button id="ob-key-go" class="btn btn-primary btn-block btn-lg">بررسی و فعال‌سازی</button>
+      <p id="ob-sup-open" class="muted small ob-sup-link">کلید را ندارید یا لایسنس فعال نمی‌شود؟ <b>درخواست پشتیبانی</b></p>
       <p class="muted small">اعتبار لایسنس هر ۲۴ ساعت به‌صورت آنلاین بررسی می‌شود؛ تا ۷ روز بدون اینترنت نیز کار می‌کند.</p>
+      <div id="ob-sup" class="hidden">
+        <textarea id="ob-sup-desc" rows="3" placeholder="مشکل را بنویسید (مثلاً: کلید را وارد می‌کنم، «لایسنس فعال نیست» می‌دهد)"></textarea>
+        <input id="ob-sup-contact" class="ltr" placeholder="راه تماس: موبایل یا ایمیل" />
+        <p id="ob-sup-msg" class="muted small"></p>
+        <button id="ob-sup-send" class="btn btn-block">ثبت درخواست برای پشتیبانی</button>
+      </div>
     </div>`;
     const inp = q("#ob-key"), err = q("#ob-key-err"), btn = q("#ob-key-go");
     inp.addEventListener("input", () => { let v = inp.value.toUpperCase().replace(/[^A-Z0-9-]/g, ""); inp.value = v; });
@@ -61,6 +68,32 @@
     };
     btn.addEventListener("click", go);
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    // v1.0.0 (RASA) — راه تماس از همان صفحهٔ قفل: وقتی لایسنس فعال نمی‌شود،
+    // فروشگاه باید بتواند به پشتیبانی بگوید؛ پیش از این تنها صفحهٔ موجود همین
+    // فرم کلید بود و هیچ راه تماسی وجود نداشت (و درخواست پشتیبانی هم پشت دروازهٔ
+    // لایسنس بسته بود). این فرم با همان API عمومی پشتیبانی کار می‌کند.
+    const supToggle = q("#ob-sup-open"), supBox = q("#ob-sup"), supSend = q("#ob-sup-send"), supMsg = q("#ob-sup-msg");
+    if (supToggle && supBox) supToggle.addEventListener("click", () => { supBox.classList.toggle("hidden"); if (!supBox.classList.contains("hidden")) q("#ob-sup-desc").focus(); });
+    if (supSend) supSend.addEventListener("click", async () => {
+      const desc = (q("#ob-sup-desc").value || "").trim();
+      if (desc.length < 10) { supMsg.textContent = "کمی بیشتر توضیح بدهید (حداقل ۱۰ حرف)."; supMsg.className = "muted small error"; return; }
+      supSend.disabled = true; supMsg.className = "muted small"; supMsg.textContent = "در حال ثبت…";
+      try {
+        const t = await window.pubTicket({
+          type: "LICENSE",
+          subject: "مشکل لایسنس — فروشگاه نمی‌تواند فعال کند",
+          description: desc + (lic && lic.hwid ? "\nشناسهٔ دستگاه: " + lic.hwid : "") + (lic && lic.reason ? "\nوضعیت: " + lic.reason : ""),
+          contact: (q("#ob-sup-contact").value || "").trim() || null,
+          device: /Windows/i.test(navigator.userAgent) ? "Windows" : /Android/i.test(navigator.userAgent) ? "Android" : "Web",
+        });
+        supMsg.textContent = `ثبت شد — شمارهٔ پیگیری ${t.number}. پشتیبانی همین‌جا پاسخ می‌دهد.`;
+        supSend.disabled = false; q("#ob-sup-desc").value = "";
+      } catch (e) {
+        supMsg.className = "muted small error";
+        supMsg.textContent = e.message + (e.code === "NETWORK" ? " — اتصال اینترنت را بررسی کنید." : "");
+        supSend.disabled = false;
+      }
+    });
   }
 
   /* ---------- setup wizard ---------- */

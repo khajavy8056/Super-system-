@@ -79,6 +79,7 @@ def _out(p: Product) -> dict:
 @router.get("")
 def list_products(
     q: str | None = Query(default=None),
+    ids: str | None = Query(default=None, description="فهرست شناسه‌ها با کاما — برای نام‌بردن از بچ/فاکتور"),
     limit: int = Query(default=100, le=1000),
     offset: int = 0,
     in_stock_first: bool = Query(default=True),
@@ -105,6 +106,20 @@ def list_products(
     from ..services import product_search as search
     q = search.normalize(q)
     stmt = select(Product).where(Product.deleted_at.is_(None))
+    # v1.0.0 (RASA) — «نام این چند کالا را بده». صفحهٔ بچ‌ها/فاکتورها قبلاً برای
+    # نام‌ها ۱۰۰۰ کالای اول را دانلود می‌کرد (و روی پایگاه بزرگ، نام بعضی
+    # ردیف‌ها پیدا نمی‌شد و «#۱۲۳» چاپ می‌شد). با ids همان چند ردیف لازم می‌آید.
+    if ids:
+        wanted = []
+        for chunk in ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit():
+                wanted.append(int(chunk))
+        wanted = sorted(set(wanted))[:200]
+        if not wanted:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        stmt = stmt.where(Product.id.in_(wanted))
+        q = None  # با ids، جست‌وجوی نام معنی ندارد
     if q:
         pattern = "%" + search.literal_like(q) + "%"
         stmt = stmt.where(search.name_column(Product.name).like(pattern, escape="\\") | Product.barcode.ilike(pattern, escape="\\"))

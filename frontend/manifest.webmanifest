@@ -1,18 +1,33 @@
 {
-  "name": "سامانه سوپرمارکت — موبایل",
-  "short_name": "سوپرمارکت",
-  "description": "Supermarket Smart System — mobile POS, inventory, stocktaking with camera barcode scanning and offline queue",
+  "name": "رسا سیستم — مدیریت سوپرمارکت",
+  "short_name": "رسا سیستم",
+  "description": "RASA SYSTEM — mobile POS, inventory, stocktaking with camera barcode scanning and offline queue",
   "start_url": "/mobile/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "dir": "rtl",
   "lang": "fa",
-  "background_color": "#0f1420",
-  "theme_color": "#0f1420",
+  "background_color": "#08142E",
+  "theme_color": "#08142E",
   "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

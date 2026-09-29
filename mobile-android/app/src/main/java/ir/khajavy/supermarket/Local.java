@@ -235,7 +235,7 @@ public final class Local {
         if (inv.optDouble("discount") > 0) sb.append(kv("تخفیف فاکتور", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("discount")))), W)).append('\n'); if (inv.optDouble("tax") > 0) sb.append(kv("مالیات", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("tax")))), W)).append('\n');
         sb.append(thick).append('\n').append(kvFill("قابل پرداخت", Ui.money(inv.optDouble("total_amount")), W, '.')).append('\n').append(thick).append('\n').append(kv("روش پرداخت", Screens.Screen.label(inv.optString("payment_method"), Screens.Screen.PAY), W)).append('\n');
         if ("VOID".equals(inv.optString("status"))) sb.append(center("*** باطل شده ***")).append('\n');
-        sb.append(thin).append('\n'); String ft = setting("printer.footer", ""); if (!ft.isEmpty()) sb.append(center(ft)).append('\n'); sb.append(center(setting("store.receipt_note", "از خرید شما سپاسگزاریم"))).append('\n').append(center("منتظر دیدار دوبارهٔ شما هستیم")).append('\n').append(thin).append('\n').append(center("سوپری من · supery")).append('\n');
+        sb.append(thin).append('\n'); String ft = setting("printer.footer", ""); if (!ft.isEmpty()) sb.append(center(ft)).append('\n'); sb.append(center(setting("store.receipt_note", "از خرید شما سپاسگزاریم"))).append('\n').append(center("منتظر دیدار دوبارهٔ شما هستیم")).append('\n').append(thin).append('\n').append(center("رسا سیستم · RASA")).append('\n');
         return sb.toString();
     }
     static String rep(char ch, int n) { StringBuilder b = new StringBuilder(); for (int i = 0; i < n; i++) b.append(ch); return b.toString(); }
@@ -531,9 +531,9 @@ public final class Local {
             if (got == 2 && (h2[0] & 0xff) == 0x1f && (h2[1] & 0xff) == 0x8b) in = new java.util.zip.GZIPInputStream(in, 1 << 16);
             try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) os.write(buf, 0, n); }
             byte[] head = new byte[16]; try (java.io.InputStream t = new java.io.FileInputStream(tmp)) { t.read(head); }
-            if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست (باید فایل .db یا .db.gz خروجی «سوپری من» یا نسخهٔ ویندوز باشد)");
+            if (!new String(head, 0, 15, "US-ASCII").startsWith("SQLite format 3")) throw new Api.ApiError(400, "BAD_BACKUP", "فایل انتخاب‌شده یک پشتیبان معتبر نیست (باید فایل .db یا .db.gz خروجی «رسا سیستم» یا نسخهٔ ویندوز باشد)");
             boolean phone = PcImport.isPhoneBackup(tmp), pc = !phone && PcImport.isPcBackup(tmp);
-            if (!phone && !pc) throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «سوپری من» نیست");
+            if (!phone && !pc) throw new Api.ApiError(400, "BAD_BACKUP", "این فایل پشتیبان «رسا سیستم» نیست");
             pr.at(1, "نسخهٔ امن از داده‌های فعلی…");
             backup(c); // safety copy of the current data
             JSONObject summary;

@@ -20,7 +20,13 @@ ECJ="$TOOLS/ecj.jar"; AAPT2="$TOOLS/aapt2"; D8JAR="$TOOLS/d8.jar"; APKSIGNER="$T
 for f in "$JAVA" "$ECJ" "$AAPT2" "$D8JAR" "$APKSIGNER" "$ANDROID_JAR"; do [ -e "$f" ] || { echo "missing tool: $f (run scripts/android/fetch-tools.sh)"; exit 1; }; done
 
 VER=$(sed -nE 's/__version__\s*=\s*"([^"]+)"/\1/p' "$ROOT/backend/app/__init__.py")
-IFS=. read -r MA MI PA <<<"$VER"; CODE=$((MA*10000 + MI*100 + PA))
+# v1.0.0 (RASA) — کد نسخه از mobile-android/BUILD (بیلد ۴۸۰ = 48000)؛ باید همیشه
+# بزرگ‌تر از نسخهٔ منتشرشدهٔ قبلی باشد وگرنه اندروید به‌روزرسانی درجا را رد می‌کند.
+CODE=$(tr -dc '0-9' < "$ROOT/mobile-android/BUILD" 2>/dev/null || true)
+IFS=. read -r MA MI PA <<<"$VER"
+SEMVER_CODE=$((MA*10000 + MI*100 + PA))
+[ -n "${CODE:-}" ] || CODE=$SEMVER_CODE
+[ "$CODE" -gt "$SEMVER_CODE" ] || CODE=$SEMVER_CODE
 APP="$ROOT/mobile-android/app/src/main"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/gen" "$W/classes" "$W/dex" "$OUT"
@@ -31,6 +37,17 @@ cp "$APP"/assets/fonts/* "$ASSETS/fonts/"
 cp "$APP"/assets/default_catalog.csv "$ASSETS/"   # v3.5: bundled default catalogue (13 570 products, zero stock)
 cp "$APP"/assets/product_bank_seed.csv "$ASSETS/"  # v2.7: bundled barcode→name bank seed
 echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\",\"ui\":\"native\"}" > "$ASSETS/build.json"
+
+# v1.0.0 (RASA) — کانال پشتیبانی به‌ازای هر نصب، نه یک رمز ثابت در کد.
+# برای ساخت APK تأمین‌شده:  RASA_RELAY_TOKEN=... RASA_RELAY_URL=... scripts/android/build-apk.sh
+if [ -n "${RASA_RELAY_TOKEN:-}" ]; then
+  printf '{"token":"%s","url":"%s"}\n' "$RASA_RELAY_TOKEN" "${RASA_RELAY_URL:-https://botapi.rubika.ir/v3}" > "$ASSETS/relay.json"
+  chmod 600 "$ASSETS/relay.json"
+  echo "   کانال پشتیبانی: تأمین شد (توکن در مخزن نیست)"
+else
+  echo "   کانال پشتیبانی: تأمین نشده — بدون RASA_RELAY_TOKEN ساخته می‌شود؛"
+  echo "   گوشی‌های مستقل درخواست را ذخیره می‌کنند و در صف «ارسال مجدد» می‌مانند."
+fi
 
 echo "== 2/6 resources (aapt2)"
 "$AAPT2" compile --dir "$APP/res" -o "$W/res.zip"
@@ -74,7 +91,7 @@ if [ ! -f "$KS" ]; then
   "$KEYTOOL" -genkeypair -keystore "$KS" -storepass "$KS_PASS" -keypass "$KEY_PASS" -alias "$KS_ALIAS" \
     -dname "CN=Khajavy Supermarket, O=Khajavy, C=IR" -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
 fi
-APK="$OUT/SupermarketMobile-$VER.apk"
+APK="$OUT/RasaSystemMobile-$VER.apk"   # v1.0.0 (RASA) — نام محصول جدید
 "$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --ks-key-alias "$KS_ALIAS" --out "$APK" "$W/aligned.apk" 2>/dev/null
 "$JAVA" -jar "$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | head -3
 ( cd "$OUT" && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256" )

@@ -26,7 +26,9 @@ public class LoginActivity extends Activity {
         String url = getIntent().getStringExtra("url"); if (url == null) url = Prefs.serverUrl(this); final String base = url == null ? "" : url;
         getWindow().setStatusBarColor(Ui.BG);
         LinearLayout root = Ui.col(this); root.setBackground(new WelcomeBackdrop()); root.setPadding(Ui.dp(22), Ui.dp(64), Ui.dp(22), Ui.dp(24)); root.setGravity(Gravity.CENTER_HORIZONTAL);
-        ImageView logo = new ImageView(this); logo.setImageDrawable(Icons.draw("cart", android.graphics.Color.WHITE, 2.2f)); logo.setPadding(Ui.dp(17), Ui.dp(17), Ui.dp(17), Ui.dp(17)); logo.setBackground(Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 24)); logo.setLayoutParams(Ui.lp(Ui.dp(84), Ui.dp(84))); root.addView(logo);
+        // v1.0.0 (RASA) — نشان برند روی صفحهٔ ورود (پیش‌تر یک «سبد خرید» عمومی بود؛
+        // نشان این محصول باید همان نشان رسا سیستم باشد که لانچر هم دارد).
+        ImageView logo = new ImageView(this); logo.setImageResource(R.mipmap.ic_launcher); logo.setLayoutParams(Ui.lp(Ui.dp(84), Ui.dp(84))); root.addView(logo);
         TextView t = Ui.text(this, "ورود به " + Prefs.get("store_name", "فروشگاه"), 19, Ui.TEXT, true); t.setGravity(Gravity.CENTER); t.setPadding(0, Ui.dp(12), 0, Ui.dp(2)); root.addView(t);
         TextView u = Ui.muted(this, base.contains("standalone.invalid") ? "حالت مستقل — کاربران همین گوشی" : base); u.setGravity(Gravity.CENTER); root.addView(u); root.addView(Ui.space(this, 18));
         LinearLayout cd = Ui.col(this); cd.setLayoutParams(Ui.match()); cd.setPadding(0, Ui.dp(24), 0, Ui.dp(12)); EditText user = Ui.input(this, "نام کاربری"); EditText pass = Ui.input(this, "رمز عبور"); pass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); cd.addView(user); cd.addView(pass); TextView st = Ui.muted(this, "");

@@ -155,7 +155,8 @@ public final class Ui {
     /** big call-to-action (POS «پرداخت»). */
     public static Button cta(Context c, String s, Runnable r) { Button b = primary(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16); b.setMinHeight(dp(54)); b.setMinimumHeight(dp(54)); GradientDrawable g = gradient(PRIMARY2, PRIMARY, 0, 16); g.setStroke(dp(1), 0x889C8EFF); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), g, null)); b.setElevation(dp(3)); return b; }
     public static Button ghost(Context c, String s, Runnable r) { Button b = btn(c, s, BG2, TEXT, r); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), rounded(dark ? 0x22000000 | BG2 : BG2, BORDER, 14), null)); return b; }
-    public static Button small(Context c, String s, Runnable r) { Button b = ghost(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); b.setMinHeight(dp(34)); b.setMinimumHeight(dp(34)); b.setLayoutParams(margin(lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT), 4, 2, 0, 2)); return b; }
+    /** v1.0.0 — دکمهٔ کوچک ۴۰dp شد (۳۴dp برای انگشت روی گوشی تنگ بود). */
+    public static Button small(Context c, String s, Runnable r) { Button b = ghost(c, s, r); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f); b.setMinHeight(dp(40)); b.setMinimumHeight(dp(40)); b.setLayoutParams(margin(lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT), 4, 2, 0, 2)); return b; }
     public static Button chip(Context c, String s, boolean active, Runnable r) { Button b = small(c, s, r); b.setBackground(rounded(active ? PRIMARY : CARD2, active ? 0 : BORDER, 20)); b.setTextColor(active ? Color.WHITE : TEXT); b.setPadding(dp(14), 0, dp(14), 0); return b; }
     /** icon-less pill chip with a leading glyph (POS: مشتری / کوپن / تخفیف). */
     public static Button pill(Context c, String glyph, String s, boolean active, Runnable r) {

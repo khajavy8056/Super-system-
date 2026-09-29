@@ -1,11 +1,13 @@
-"""Package the external frontend override supported by existing Windows 3.6.x apps."""
+"""Package the external frontend override supported by existing Windows apps (v1.0.0 / RASA)."""
 from pathlib import Path
 import zipfile, hashlib
 ROOT = Path(__file__).resolve().parents[1]
-#: نسخهٔ بستهٔ رابط کاربری ویندوز (مستقل از نسخهٔ بک‌اند؛ ۳٫۷٫۰ = بازآرایی ظاهر v4.8.0)
-UI_VERSION = "3.7.0"
+#: نسخهٔ بستهٔ رابط کاربری ویندوز (مستقل از نسخهٔ بک‌اند).
+#: ۳٫۷٫۰ = بازآرایی ظاهر v4.8.0 (بتا) · ۱٫۰٫۰ = طراحی RASA
+UI_VERSION = "1.0.0"
 def build(version: str = UI_VERSION):
-    out = ROOT/f'releases/windows/SupermarketDesktopUI-{version}.zip'
+    prefix = 'Supermarket' if version.startswith('3.') else 'RasaSystem'
+    out = ROOT/f'releases/windows/{prefix}DesktopUI-{version}.zip'
     out.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
         for p in sorted((ROOT/'frontend').rglob('*')):
