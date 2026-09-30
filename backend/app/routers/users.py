@@ -18,6 +18,10 @@ class UserIn(BaseModel):
     full_name: str = ""
     email: str | None = None
     roles: list[str] = []
+    # «دسترسی فقط به صورت بومی» — default ON for non-admin users (they sign in
+    # only on the shop's local network); the admin unchecks it to let a user work
+    # outside the network too (phone standalone / relay), with sync on return.
+    local_only: bool = True
 
 
 class UserPatch(BaseModel):
@@ -26,11 +30,13 @@ class UserPatch(BaseModel):
     password: str | None = None
     is_active: bool | None = None
     roles: list[str] | None = None
+    local_only: bool | None = None
 
 
 def _out(u: User) -> dict:
     return {"id": u.id, "username": u.username, "full_name": u.full_name,
-            "email": u.email, "is_active": u.is_active, "roles": [r.name for r in u.roles]}
+            "email": u.email, "is_active": u.is_active, "roles": [r.name for r in u.roles],
+            "local_only": bool(u.local_only)}
 
 
 @router.get("")
@@ -50,7 +56,8 @@ def create_user(body: UserIn, db: Session = Depends(get_db), _: User = Depends(r
         raise HTTPException(status_code=409, detail="Username already exists")
     roles = db.execute(select(Role).where(Role.name.in_(body.roles))).scalars().all() if body.roles else []
     u = User(username=body.username, full_name=body.full_name, email=body.email,
-             password_hash=hash_password(body.password), roles=list(roles))
+             password_hash=hash_password(body.password), roles=list(roles),
+             local_only=body.local_only)
     db.add(u)
     db.commit()
     return _out(u)
@@ -64,7 +71,7 @@ def update_user(user_id: int, body: UserPatch, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
     if body.password:
         u.password_hash = hash_password(body.password)
-    for f in ("full_name", "email", "is_active"):
+    for f in ("full_name", "email", "is_active", "local_only"):
         v = getattr(body, f)
         if v is not None:
             setattr(u, f, v)

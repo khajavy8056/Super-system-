@@ -91,7 +91,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS cheques(id INTEGER PRIMARY KEY AUTOINCREMENT, direction TEXT, number TEXT, amount REAL, due_date TEXT, bank_name TEXT, party_name TEXT, status TEXT DEFAULT 'PENDING', created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY AUTOINCREMENT, number INTEGER, date TEXT, description TEXT, kind TEXT, status TEXT DEFAULT 'POSTED', total REAL, lines TEXT, ref TEXT)",
         "CREATE TABLE IF NOT EXISTS cash_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT, opened_at TEXT, closed_at TEXT, opening_float REAL DEFAULT 0, counted_cash REAL, expected_cash REAL, difference REAL, status TEXT DEFAULT 'OPEN', note TEXT)",
-        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, full_name TEXT, pass_hash TEXT, roles TEXT, is_active INTEGER DEFAULT 1, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, full_name TEXT, pass_hash TEXT, roles TEXT, is_active INTEGER DEFAULT 1, created_at TEXT, local_only INTEGER DEFAULT 1, from_pc INTEGER DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, entity_type TEXT, entity_id TEXT, reference TEXT, user TEXT, before TEXT, after TEXT, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
     };
@@ -104,12 +104,24 @@ public final class Db extends SQLiteOpenHelper {
     static void v2(SQLiteDatabase d) {
         for (String q : V2) d.execSQL(q);
         for (String q : V2_ALTER) { try { d.execSQL(q); } catch (Exception ignore) {} }
+        v6userPolicy(d);
         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM warehouses", null)) { if (c.moveToFirst() && c.getInt(0) == 0) d.execSQL("INSERT INTO warehouses(name,code,address,is_default) VALUES('انبار اصلی','MAIN','',1)"); }
         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM expense_categories", null)) { if (c.moveToFirst() && c.getInt(0) == 0) for (String n : new String[]{"اجاره", "حقوق", "آب و برق و گاز", "حمل و نقل", "تعمیرات", "متفرقه"}) d.execSQL("INSERT INTO expense_categories(name) VALUES(?)", new Object[]{n}); }
         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM units", null)) { if (c.moveToFirst() && c.getInt(0) == 0) { Object[][] us = {{"عدد", "عدد", 0, 0}, {"کیلوگرم", "kg", 1, 3}, {"گرم", "g", 1, 0}, {"لیتر", "L", 1, 2}, {"بسته", "بسته", 0, 0}, {"کارتن", "کارتن", 0, 0}, {"متر", "m", 1, 2}}; for (Object[] u : us) d.execSQL("INSERT INTO units(name,symbol,allow_decimal,decimals,is_active) VALUES(?,?,?,?,1)", u); } }
     }
 
     @Override public void onCreate(SQLiteDatabase d) { schema(d); }
+
+    /** v4.8.1 (بیلد ۴۸۲) — سیاست ورود کاربران: «دسترسی فقط به صورت بومی» + نشانِ
+     *  کاربر رسیده از رایانه. from_pc می‌گوید این ردیف از همگام‌سازی/ورود آنلاین
+     *  آمده (رمزسنج محلی فقط هنگام ورود ذخیره می‌شود و با pull پاک نمی‌شود). */
+    static final String[] V6_USER_POLICY = {
+        "ALTER TABLE users ADD COLUMN local_only INTEGER DEFAULT 1",
+        "ALTER TABLE users ADD COLUMN from_pc INTEGER DEFAULT 0",
+    };
+    static void v6userPolicy(SQLiteDatabase d) {
+        for (String q : V6_USER_POLICY) { try { d.execSQL(q); } catch (Exception ignore) {} }
+    }
     /** v3.3: full phone schema on any SQLiteDatabase (also used by {@link PcImport} to build a fresh file off-line). */
     static void schema(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, barcode TEXT, name TEXT, sku TEXT, unit_id INTEGER, category_id INTEGER, brand_id INTEGER, min_stock_alert REAL DEFAULT 0, image_url TEXT, is_active INTEGER DEFAULT 1, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
@@ -130,11 +142,12 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 5;
+    static final int VERSION = 6;
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
         if (a < 3) v2(d);
         if (a < 4) { try { rebuildJournalLines(d); } catch (Exception ignore) {} }
         if (a < 5) indexes(d);   // idempotent: IF NOT EXISTS + try-ALTER per statement
+        if (a < 6) v6userPolicy(d);   // v4.8.1 — کاربران: local_only + from_pc
     }
 
     /* ---------------- kv ---------------- */
@@ -156,6 +169,7 @@ public final class Db extends SQLiteOpenHelper {
             JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
             JSONArray cs = pull.optJSONArray("customers"); if (cs != null) for (int i = 0; i < cs.length(); i++) putCustomer(cs.optJSONObject(i), false);
             JSONArray bk = pull.optJSONArray("bank"); if (bk != null) for (int i = 0; i < bk.length(); i++) bankPut(bk.optJSONObject(i));   // v2.7
+            JSONArray us = pull.optJSONArray("users"); if (us != null) for (int i = 0; i < us.length(); i++) putUserMeta(us.optJSONObject(i));   // v4.8.1 — سیاست ورود روی گوشی هم تازه بماند
             if (full) {
                 // temp rows created offline are superseded once the PC has the real ones
                 d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode IN (SELECT barcode FROM products WHERE is_local=0)");
@@ -187,6 +201,36 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("id", c.optLong("id")); cv.put("name", c.optString("name", "")); cv.put("last_name", c.isNull("last_name") ? null : c.optString("last_name")); cv.put("phone", c.isNull("phone") ? null : c.optString("phone"));
         cv.put("credit_limit", c.optDouble("credit_limit", 0)); cv.put("is_local", local ? 1 : 0); cv.put("json", c.toString());
         w().insertWithOnConflict("customers", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    /**
+     * v4.8.1 — metadata of a PC user (roles / active / «دسترسی فقط به صورت بومی»).
+     * The password verifier is NEVER touched here: the phone writes its own
+     * local hash when the user signs in online once (see {@link Local#cacheUser});
+     * a row with an empty pass_hash simply cannot sign in offline yet.
+     */
+    public static void putUserMeta(JSONObject u) {
+        if (u == null) return;
+        String un = u.optString("username", "").trim();
+        if (un.isEmpty()) return;
+        String roles = u.optJSONArray("roles") == null ? "[]" : u.optJSONArray("roles").toString();
+        int active = u.optBoolean("is_active", true) ? 1 : 0;
+        int localOnly = u.optBoolean("local_only", true) ? 1 : 0;
+        try (Cursor c = w().rawQuery("SELECT id FROM users WHERE username=?", new String[]{un})) {
+            if (c.moveToFirst()) {
+                ContentValues up = new ContentValues();
+                up.put("full_name", u.optString("full_name", "")); up.put("roles", roles);
+                up.put("is_active", active); up.put("local_only", localOnly); up.put("from_pc", 1);
+                w().update("users", up, "id=?", new String[]{String.valueOf(c.getLong(0))});
+            } else {
+                ContentValues cv = new ContentValues();
+                cv.put("username", un); cv.put("full_name", u.optString("full_name", ""));
+                cv.put("pass_hash", ""); cv.put("roles", roles);
+                cv.put("is_active", active); cv.put("local_only", localOnly); cv.put("from_pc", 1);
+                cv.put("created_at", now());
+                w().insertWithOnConflict("users", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+        }
     }
 
     /**

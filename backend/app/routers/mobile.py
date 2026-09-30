@@ -267,7 +267,23 @@ def _port_env() -> int:
 
 
 @router.post("/pair/token")
-def pair_token(body: TokenIn, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
+def pair_token(body: TokenIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Mint (or re-mint) a device token.
+
+    v4.8.1 — pairing is PERMANENT. A phone that already paired once must be
+    able to come back with the same user/password after ANY interruption
+    (token expiry, PC reboot, IP change, app reinstall on the same device_id)
+    WITHOUT scanning a QR or typing a pairing code again. So: minting a token
+    for an ALREADY-KNOWN device needs only a successful sign-in (the password
+    proved who the user is); minting a brand-new device still requires
+    ``settings.manage`` (the admin is introducing a new phone to the shop).
+    """
+    from ..security import is_admin as _is_admin
+    did = (body.device_id or "").strip()
+    known = any(d.get("id") == did and did for d in _devices(db))
+    if not known and not has_permission(user, "settings.manage") and not _is_admin(user):
+        raise HTTPException(status_code=403, detail={
+            "code": "DEVICE_NEW_FORBIDDEN", "message": "افزودن دستگاه تازه فقط با دسترسی مدیر انجام می‌شود"})
     out = _mint(db, user, body.name, body.days, device_id=body.device_id)
     write_audit(db, action="MOBILE_PAIR_TOKEN", user_id=user.id, entity_type="Mobile", reference=out["device_id"])
     db.commit()
@@ -525,6 +541,16 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         custs = _changed_since(db, Customer, since, body.limit)
         pull["customers"] = [{"id": c.id, "name": c.name, "last_name": c.last_name, "phone": c.phone, "credit_limit": float(c.credit_limit or 0),
                               "updated_at": c.updated_at.isoformat()} for c in custs]
+        # v4.8.1 — users ride the sync so the phone's offline sign-in policy stays
+        # current (roles / is_active / «دسترسی فقط به صورت بومی»). Password hashes
+        # deliberately do NOT travel: the phone caches its own verifier when the
+        # user signs in online at least once.
+        from ..models import User as _User
+        usrs = _changed_since(db, _User, since, body.limit)
+        pull["users"] = [{"id": u.id, "username": u.username, "full_name": u.full_name,
+                          "roles": [r.name for r in u.roles], "is_active": bool(u.is_active),
+                          "local_only": bool(u.local_only),
+                          "updated_at": u.updated_at.isoformat()} for u in usrs]
     # remember the device
     if body.device_id:
         items = _devices(db)

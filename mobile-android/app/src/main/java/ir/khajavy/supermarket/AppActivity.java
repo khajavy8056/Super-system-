@@ -71,9 +71,11 @@ public class AppActivity extends Activity {
         Sync.listener = (online, applied, rejected, pending) -> {
             syncDot.setBackground(Ui.rounded(online ? Ui.GREEN : Ui.RED, 0, 5));
             syncTxt.setText(online ? (pending > 0 ? "همگام‌سازی " + Ui.fa(String.valueOf(pending)) + " مورد…" : (Relay.active ? "متصل از راه دور · همگام" : "متصل · همگام")) : (Api.standalone() ? "مستقل" : "آفلاین · صف " + Ui.fa(String.valueOf(pending))));
-            if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }
+            if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); quietRefresh(); }
             if (rejected > 0) { Ui.toast(Ui.fa(String.valueOf(rejected)) + " مورد رد شد — بخش همگام‌سازی"); Notify.syncProblem(this, rejected); }
-            if (applied == 0 && rejected == 0 && online) { Screens.Screen s = stack.peek(); if (s != null && s.autoRefresh()) s.refresh(); }
+            // v4.8.1 — ضربان قلبِ همگام‌سازی (هر ۲۰ ثانیه) دیگر صفحه را بازسازی نمی‌کند.
+            // ریشهٔ «هی صفحه ریفرش می‌شه و اصلاً نمی‌شه کار کرد» همین بود. داده‌های تازه
+            // فقط وقتی کاربر دست به گوشی نیست (پس‌زمینه) و با حفظ جای اسکرول می‌نشینند.
         };
         Screens.loadConfig(this);
         Notify.channels(this); Notify.schedule(this); Notify.askPermission(this);
@@ -83,13 +85,25 @@ public class AppActivity extends Activity {
         else { Tour.maybe(this, "home"); if (!"1".equals(Prefs.get("welcomed_" + Db.now().substring(0, 10), ""))) { Prefs.set("welcomed_" + Db.now().substring(0, 10), "1"); Sfx.play("welcome"); } }
         Api.bg(() -> Notify.checkLocal(this));
     }
+
+    /** v4.8.1 — به‌روزرسانی در پس‌زمینه: بی‌سروصدا، بدون وقفهٔ کاربر، با حفظ اسکرول. */
+    void quietRefresh() {
+        Screens.Screen s = stack.peek();
+        if (s == null || !s.autoRefresh() || Ui.interacting()) return;
+        final int y = s.scroll == null ? 0 : s.scroll.getScrollY();
+        s.refresh();
+        if (s.scroll != null) {
+            final android.widget.ScrollView sv = s.scroll;
+            for (long d : new long[]{150, 450, 1000, 1800}) sv.postDelayed(() -> sv.scrollTo(0, y), d);
+        }
+    }
     private boolean bioShowing = false;
     void bioGate() {
         if (bioShowing || !Biometric.lockDue()) return;
         bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
         Biometric.prompt(this, "باز کردن رسا سیستم", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
     }
-    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); }
+    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); Ui.touch(); }
     @Override protected void onStop() { super.onStop(); Biometric.onBackground(); }   // v4.3
     @Override protected void onResume() { super.onResume(); Ui.top = this; LockActivity.top = this; if (Session.expired()) { Session.end(); Ui.toast("نشست پس از ۳۰ دقیقه بی‌کاری بسته شد — دوباره وارد شوید"); startActivity(new Intent(this, LoginActivity.class)); finish(); return; } Session.touch(); h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> { Notify.checkPcSupport(this); SmsLocal.relayPcOutbox(); }); }
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }

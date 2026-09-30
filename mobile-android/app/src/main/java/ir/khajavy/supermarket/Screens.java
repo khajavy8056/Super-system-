@@ -87,10 +87,12 @@ public final class Screens {
     /* ---------------- base ---------------- */
     public abstract static class Screen {
         protected final AppActivity a; protected final LinearLayout body; protected final Context c;
+        /** v4.8.1 — the screen's scroller, kept so a background refresh can restore the position. */
+        public android.widget.ScrollView scroll;
         protected Screen(AppActivity a) { this.a = a; this.c = a; body = Ui.col(a); body.setPadding(Ui.dp(14), Ui.dp(14), Ui.dp(14), Ui.dp(24)); }
         public abstract String key();
         public abstract String title();
-        public View view() { return Ui.scroll(a, body); }
+        public View view() { scroll = Ui.scroll(a, body); return scroll; }
         public void load() {}
         public void refresh() { load(); }
         public boolean autoRefresh() { return false; }
@@ -103,7 +105,7 @@ public final class Screens {
         protected void post(String path, JSONObject b, Consumer<Object> cb) { Api.post(path, b, cb::accept, e -> Ui.toast(e.getMessage())); }
         protected void patch(String path, JSONObject b, Consumer<Object> cb) { Api.patch(path, b, cb::accept, e -> Ui.toast(e.getMessage())); }
         protected void put(String path, JSONObject b, Consumer<Object> cb) { Api.put(path, b, cb::accept, e -> Ui.toast(e.getMessage())); }
-        protected LinearLayout tabs(String[] labels, int active, Consumer<Integer> on) { LinearLayout r = Ui.row(c); for (int i = 0; i < labels.length; i++) { final int k = i; r.addView(Ui.chip(c, labels[i], i == active, () -> on.accept(k))); } return r; }
+        protected ViewGroup tabs(String[] labels, int active, Consumer<Integer> on) { Ui.Flow r = Ui.wrap(c); for (int i = 0; i < labels.length; i++) { final int k = i; r.addView(Ui.chip(c, labels[i], i == active, () -> on.accept(k))); } return r; }
         protected static JSONArray arr(Object r) { return r instanceof JSONArray ? (JSONArray) r : r instanceof JSONObject ? (((JSONObject) r).optJSONArray("items") != null ? ((JSONObject) r).optJSONArray("items") : new JSONArray()) : new JSONArray(); }
         protected static String s(JSONObject o, String k) { return o == null || o.isNull(k) ? "" : o.optString(k); }
         protected static String s(JSONObject o, String k, String def) { String v = s(o, k); return v.isEmpty() ? def : v; }

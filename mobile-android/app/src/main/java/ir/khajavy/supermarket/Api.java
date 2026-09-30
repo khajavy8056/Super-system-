@@ -40,6 +40,11 @@ public final class Api {
     public static volatile String base = "";
     public static volatile String token = "";
     public static volatile boolean online = false;
+    /** v4.8.1 — how the LAST successful call reached the PC: "lan" (direct on the
+     *  shop network), "relay" (online relay, i.e. from outside), or "local"
+     *  (phone's own SQLite). The sign-in policy («دسترسی فقط به صورت بومی») is
+     *  enforced against this — a local_only user may sign in over "lan" only. */
+    public static volatile String lastRoute = "lan";
 
     private Api() {}
 
@@ -80,12 +85,12 @@ public final class Api {
     /* ---------------- blocking (call from a worker thread) ---------------- */
     public static Object call(String method, String path, String body, String contentType) throws ApiError {
         // v2.4: standalone → the phone answers every endpoint itself from SQLite (Local).
-        if (standalone()) return Local.handle(method, path, body);
-        if (Relay.active && Relay.available()) return viaRelay(method, path, body, contentType);
-        try { return callPc(method, path, body, contentType); }
+        if (standalone()) { lastRoute = "local"; return Local.handle(method, path, body); }
+        if (Relay.active && Relay.available()) { Object r = viaRelay(method, path, body, contentType); lastRoute = "relay"; return r; }
+        try { Object r = callPc(method, path, body, contentType); lastRoute = "lan"; return r; }
         catch (ApiError e) {
             // paired but PC unreachable: reads are served from the phone's own data (writes keep using the sync queue)
-            if (e.offline() && "GET".equals(method)) { try { return Local.handle(method, path, body); } catch (ApiError ignore) {} }
+            if (e.offline() && "GET".equals(method)) { try { Object r = Local.handle(method, path, body); lastRoute = "local"; return r; } catch (ApiError ignore) {} }
             throw e;
         }
     }

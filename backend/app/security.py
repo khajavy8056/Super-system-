@@ -166,3 +166,10 @@ def require_permission(code: str):
 
 def has_permission(user: User, code: str) -> bool:
     return code in _user_permission_codes(user)
+
+
+def is_admin(user: User) -> bool:
+    """The main admin (role «Administrator») — always allowed to work standalone
+    (phone without the PC, outside the shop network). Everyone else is governed
+    by ``users.local_only`` («دسترسی فقط به صورت بومی»)."""
+    return any(r.name == "Administrator" for r in user.roles)

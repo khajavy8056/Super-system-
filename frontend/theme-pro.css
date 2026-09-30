@@ -299,7 +299,7 @@ table.recent tr { cursor: pointer; }
 .pos-screen { gap: 12px; }
 .pos-header { background: var(--card); border: 1px solid var(--border); border-radius: 14px; backdrop-filter: blur(12px); }
 .pos-store { display: flex; align-items: center; gap: 8px; } .pos-store .ic { color: var(--teal); }
-.pos-main { grid-template-columns: 1fr 380px; gap: 14px; }
+.pos-main { grid-template-columns: minmax(0,1fr) minmax(320px, 380px); gap: 14px; }
 .pos-cart { display: flex; flex-direction: column; border-radius: 18px; padding: 14px; background: var(--card); backdrop-filter: blur(12px); }
 .pos-cart-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
 .pos-cart-head h3 { margin: 0; font-size: 16px; font-weight: 800; }

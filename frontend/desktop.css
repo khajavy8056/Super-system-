@@ -143,3 +143,15 @@ html:not(.m-shell)[data-theme="light"] {
   --bg:#f2f4ff; --bg2:#ffffff; --card:#ffffff; --border:#c4cded;
   --text:#101c3c; --muted:#546489;
 }
+
+/* v4.8.1 (بیلد ۴۸۲) — نوار دکمه‌های دسته‌بندی/فیلتر (گروه‌های «هوش فروشگاه»، تب‌ها و
+   هر ردیف دکمه‌ای) در هر اندازه‌ای باید سالم بماند: به خط بعد می‌شکند، جمع می‌شود و
+   هرگز نیمی از صفحه را نمی‌شکند — هم ویندوز، هم پوستهٔ موبایل. */
+.ins-groups, #ins-tabs, .set-tabs, .acc-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; align-items: center;
+}
+.ins-groups .set-tab, #ins-tabs .set-tab, .set-tab {
+  flex: 0 1 auto; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: center;
+}
+html.m-shell .ins-groups, html.m-shell #ins-tabs { flex-wrap: wrap; overflow-x: visible; }
+html.m-shell .set-tabs { flex-wrap: wrap; }

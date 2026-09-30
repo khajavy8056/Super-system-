@@ -96,7 +96,25 @@ public final class Local {
         int c = h.lastIndexOf(':');
         return (c < 0 ? h : h.substring(c + 1)).equals(Integer.toHexString((username + "|" + pass).hashCode()));
     }
-    static JSONObject userOut(JSONObject u) throws Exception { JSONArray roles = new JSONArray(u.optString("roles", "[]")); JSONObject o = new JSONObject(); o.put("id", u.optLong("id")); o.put("username", u.optString("username")); o.put("full_name", u.optString("full_name")); o.put("roles", roles); o.put("permissions", permsFor(roles)); o.put("is_active", u.optInt("is_active", 1) == 1); return o; }
+    static JSONObject userOut(JSONObject u) throws Exception { JSONArray roles = new JSONArray(u.optString("roles", "[]")); JSONObject o = new JSONObject(); o.put("id", u.optLong("id")); o.put("username", u.optString("username")); o.put("full_name", u.optString("full_name")); o.put("roles", roles); o.put("permissions", permsFor(roles)); o.put("is_active", u.optInt("is_active", 1) == 1); o.put("local_only", u.optInt("local_only", 1) == 1); boolean adm = false; for (int i = 0; i < roles.length(); i++) if ("Administrator".equals(roles.optString(i))) adm = true; o.put("is_admin", adm); return o; }
+
+    /** v4.8.1 — cache a PC user at ONLINE sign-in so the SAME user/password works
+     *  standalone later (no PC, no QR): the phone keeps its own sha verifier +
+     *  the sign-in policy (roles / active / «دسترسی فقط به صورت بومی»). */
+    public static void cacheUser(String username, String fullName, String password, String rolesJson, boolean isActive, boolean localOnly) {
+        if (username == null || username.trim().isEmpty()) return;
+        String un = username.trim();
+        try {
+            JSONObject ex = one("SELECT * FROM users WHERE username=?", un);
+            if (ex == null) {
+                exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at,local_only,from_pc) VALUES(?,?,?,?,?,?,?,1)",
+                        un, fullName == null ? "" : fullName, sha(un + "|" + password), rolesJson == null ? "[]" : rolesJson, isActive ? 1 : 0, Db.now(), localOnly ? 1 : 0);
+            } else {
+                exec("UPDATE users SET full_name=?, pass_hash=?, roles=?, is_active=?, local_only=?, from_pc=1 WHERE id=?",
+                        fullName == null ? "" : fullName, sha(un + "|" + password), rolesJson == null ? "[]" : rolesJson, isActive ? 1 : 0, localOnly ? 1 : 0, ex.optLong("id"));
+            }
+        } catch (Exception ignore) {}
+    }
     static Object auth(String method, String[] seg, String body) throws Exception {
         seedUsers();
         if ("login".equals(seg[1])) {
@@ -118,12 +136,13 @@ public final class Local {
         seedUsers();
         if (seg.length > 1 && "roles".equals(seg[1])) { JSONArray a = new JSONArray(); for (String[] r : ROLES) { JSONObject o = new JSONObject(); o.put("name", r[0]); o.put("label", r[1]); o.put("permissions", permsFor(new JSONArray().put(r[0]))); a.put(o); } return a; }
         if ("GET".equals(method)) { JSONArray a = new JSONArray(); for (JSONObject u : rows("SELECT * FROM users ORDER BY id")) a.put(userOut(u)); return a; }
-        if ("POST".equals(method)) { if (one("SELECT id FROM users WHERE username=?", b.optString("username")) != null) throw new Api.ApiError(409, "DUP", "این نام کاربری قبلاً ثبت شده"); exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at) VALUES(?,?,?,?,1,?)", b.optString("username"), b.optString("full_name"), sha(b.optString("username") + "|" + b.optString("password")), String.valueOf(b.optJSONArray("roles") == null ? new JSONArray().put("Cashier") : b.optJSONArray("roles")), Db.now()); audit("USER_CREATE", "User", b.optString("username"), null, b); return userOut(one("SELECT * FROM users WHERE username=?", b.optString("username"))); }
+        if ("POST".equals(method)) { if (one("SELECT id FROM users WHERE username=?", b.optString("username")) != null) throw new Api.ApiError(409, "DUP", "این نام کاربری قبلاً ثبت شده"); exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at,local_only) VALUES(?,?,?,?,1,?,?)", b.optString("username"), b.optString("full_name"), sha(b.optString("username") + "|" + b.optString("password")), String.valueOf(b.optJSONArray("roles") == null ? new JSONArray().put("Cashier") : b.optJSONArray("roles")), Db.now(), b.optBoolean("local_only", true) ? 1 : 0); audit("USER_CREATE", "User", b.optString("username"), null, b); return userOut(one("SELECT * FROM users WHERE username=?", b.optString("username"))); }
         if (seg.length > 1) { long id = Long.parseLong(seg[1]); JSONObject u = one("SELECT * FROM users WHERE id=?", id); if (u == null) throw new Api.ApiError(404, "NOT_FOUND", "کاربر نیست");
             if (b.has("full_name")) exec("UPDATE users SET full_name=? WHERE id=?", b.optString("full_name"), id);
             if (b.has("roles")) exec("UPDATE users SET roles=? WHERE id=?", String.valueOf(b.optJSONArray("roles")), id);
             if (!b.optString("password").isEmpty()) exec("UPDATE users SET pass_hash=? WHERE id=?", sha(u.optString("username") + "|" + b.optString("password")), id);
             if (b.has("is_active")) exec("UPDATE users SET is_active=? WHERE id=?", b.optBoolean("is_active") ? 1 : 0, id);
+            if (b.has("local_only")) exec("UPDATE users SET local_only=? WHERE id=?", b.optBoolean("local_only") ? 1 : 0, id);
             audit("USER_UPDATE", "User", u.optString("username"), u, b); JSONObject nu = userOut(one("SELECT * FROM users WHERE id=?", id));
             JSONObject cur = new JSONObject(Prefs.get("user_json", "{}")); if (cur.optString("username").equals(nu.optString("username"))) Prefs.set("user_json", nu.toString());
             return nu; }

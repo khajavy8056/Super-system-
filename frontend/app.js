@@ -2608,27 +2608,44 @@ RENDER.hardware = async () => {
 RENDER.users = async () => {
   const v = $("#view");
   v.innerHTML = `<div class="grid grid-2">
-    <div class="card"><h3>کاربران</h3><table id="u-table"></table></div>
+    <div class="card"><h3>کاربران</h3>
+      <p class="muted">«دسترسی فقط به صورت بومی» یعنی کاربر فقط وقتی داخل شبکهٔ فروشگاه است (گوشی/رایانه به رایانهٔ فروشگاه وصل است) می‌تواند وارد شود. اگر تیک برداشته شود، کاربر می‌تواند بیرون از شبکه هم با گوشی کار کند و داده‌هایش هنگام بازگشت به شبکه خودکار همگام می‌شود. مدیر اصلی همیشه دسترسی مستقل دارد.</p>
+      <table id="u-table"></table></div>
     <div class="card"><h3>افزودن کاربر</h3>
       <label>نام کاربری</label><input id="u-username" />
       <label>رمز</label><input id="u-password" type="password" />
       <label>نام کامل</label><input id="u-fullname" />
       <label>نقش</label><select id="u-role"><option>Cashier</option><option>Manager</option><option>Inventory Operator</option><option>Viewer</option></select>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="u-local-only" checked /> دسترسی فقط به صورت بومی (فقط داخل شبکهٔ فروشگاه)</label>
       <button id="u-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
     </div>
   </div>`;
-  const users = await api("/users");
-  const rows = users.map((u) => el("tr", {},
-    el("td", { text: u.username }), el("td", { text: u.full_name }), el("td", { text: u.roles.join(", ") }),
-    el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" }))));
-  const t = $("#u-table");
-  t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
-    el("th", { text: "نقش‌ها" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  const draw = async () => {
+    const users = await api("/users");
+    const rows = users.map((u) => el("tr", {},
+      el("td", { text: u.username }), el("td", { text: u.full_name }), el("td", { text: u.roles.join(", ") }),
+      el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" })),
+      el("td", {}, el("button", {
+        class: "btn btn-sm " + (u.local_only ? "" : "btn-ghost"),
+        title: "تغییر دسترسی این کاربر",
+        text: u.local_only ? "فقط بومی" : "بومی و خارج از شبکه",
+        onclick: async () => {
+          try { await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ local_only: !u.local_only }) }); toast(u.local_only ? "کاربر اکنون خارج از شبکه هم می‌تواند کار کند" : "کاربر فقط داخل شبکه وارد می‌شود"); draw(); }
+          catch (e) { toast(e.message, "err"); }
+        } }))));
+    const t = $("#u-table");
+    t.innerHTML = "";
+    t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
+      el("th", { text: "نقش‌ها" }), el("th", { text: "وضعیت" }), el("th", { text: "دسترسی" }))), el("tbody", {}, ...rows));
+  };
+  await draw();
   $("#u-add").addEventListener("click", async () => {
     try {
       await api("/users", { method: "POST", body: JSON.stringify({ username: $("#u-username").value.trim(),
-        password: $("#u-password").value, full_name: $("#u-fullname").value, roles: [$("#u-role").value] }) });
-      toast("کاربر ساخته شد"); RENDER.users();
+        password: $("#u-password").value, full_name: $("#u-fullname").value, roles: [$("#u-role").value],
+        local_only: $("#u-local-only").checked }) });
+      toast("کاربر ساخته شد"); draw();
     } catch (e) { toast(e.message, "err"); }
   });
 };

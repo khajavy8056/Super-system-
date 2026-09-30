@@ -111,7 +111,12 @@ def _relay_roundtrip(c):
 def test_launcher_stable_port_and_fullscreen():
     src = (ROOT / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
     assert "def stable_port(" in src and "PREFERRED_PORT = 8765" in src and 'os.environ["PORT"] = str(port)' in src
-    assert "fullscreen=kiosk, frameless=kiosk" in src and "SUPERMARKET_KIOSK" in src
+    # v4.8.1 (بیلد ۴۸۲) — قرارداد پنجره: باز شدن «تمام صفحه» به‌طور پیش‌فرض
+    # (نصب روی سیستم فروشگاهی)؛ SUPERMARKET_KIOSK=0 حالت پنجره‌ای عیب‌یابی؛
+    # SUPERMARKET_KIOSK=kiosk تمام‌صفحهٔ بدون قاب. (پین قدیمی «fullscreen=kiosk»
+    # با این تغییر قرارداد عمداً به‌روز شد، نه حذف.)
+    assert "fullscreen=fullscreen, frameless=kiosk" in src and "SUPERMARKET_KIOSK" in src
+    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in src   # پیش‌فرض = تمام‌صفحه
     disc = (ROOT / "backend" / "app" / "services" / "discovery.py").read_text(encoding="utf-8")
     assert 'os.environ.get("PORT"' in disc
 

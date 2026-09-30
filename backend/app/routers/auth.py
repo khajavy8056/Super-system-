@@ -65,6 +65,10 @@ class UserOut(BaseModel):
     full_name: str
     roles: list[str]
     permissions: list[str] = []
+    # «دسترسی فقط به صورت بومی» + admin verdict, so a paired phone can apply the
+    # sign-in policy offline (standalone / outside the network) without guessing.
+    local_only: bool = False
+    is_admin: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -116,9 +120,11 @@ def logout(current_user: Annotated[User, Depends(get_current_user)],
 
 @router.get("/me", response_model=UserOut)
 def me(current_user: Annotated[User, Depends(get_current_user)]):
-    from ..security import _user_permission_codes
+    from ..security import _user_permission_codes, is_admin
     return UserOut(
         id=current_user.id, username=current_user.username,
         full_name=current_user.full_name, roles=[r.name for r in current_user.roles],
         permissions=sorted(_user_permission_codes(current_user)),
+        local_only=bool(current_user.local_only),
+        is_admin=is_admin(current_user),
     )

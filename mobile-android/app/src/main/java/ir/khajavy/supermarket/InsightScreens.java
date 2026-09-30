@@ -51,6 +51,12 @@ public final class InsightScreens {
         public boolean autoRefresh() { return true; }
         public void load() {
             loading();
+            fetch();
+        }
+        /** v4.8.1 — به‌روزرسانی در پس‌زمینه: محتوای فعلی تا رسیدن دادهٔ تازه سر جایش
+         *  می‌ماند (بدون «در حال بارگذاری» و بدون پرش)؛ جای اسکرول را AppActivity نگه می‌دارد. */
+        @Override public void refresh() { fetch(); }
+        void fetch() {
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
 
@@ -92,7 +98,7 @@ public final class InsightScreens {
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);
-            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
+            Ui.Flow br = Ui.wrap(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
             if (!Api.standalone()) br.addView(Ui.small(c, "مشاور AI", this::advisor));   // v3.5 — free-model advisor lives on the PC engine
             br.addView(Ui.small(c, "پیش‌بینی سود", () -> a.route("insightsPlan"))); br.addView(Ui.small(c, "مشتریان در نوبت", () -> a.route("insightsCustomers")));
             android.widget.Button rep = Ui.small(c, "گزارش هفتگی", () -> get("/insights/report", r -> { JSONObject x = (JSONObject) r; LinearLayout l = Ui.col(c); TextView tv = Ui.body(c, x.optString("narrative")); tv.setLineSpacing(0, 1.35f); l.addView(tv); Ui.sheet(c, "گزارش هوش فروشگاه", l); })); br.addView(rep);
@@ -101,9 +107,9 @@ public final class InsightScreens {
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             // v3.5 — group strip; filtering is local so switching is instant
             java.util.Map<String, Integer> cnt = new java.util.HashMap<>(); for (int i = 0; i < items.length(); i++) cnt.merge(group(items.optJSONObject(i).optString("kind")), 1, Integer::sum);
-            LinearLayout gl = Ui.row(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
+            Ui.Flow gl = Ui.wrap(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
             for (String[] g : GROUPS) { int n = cnt.getOrDefault(g[0], 0); if (n == 0) continue; gl.addView(Ui.chip(c, g[1] + " (" + Ui.num(n) + ")", g[0].equals(grp), () -> { grp = g[0]; render(all); })); }
-            body.addView(Ui.chips(c, gl));
+            body.addView(gl);   // v4.8.1 — نوار گروه‌ها در هر سایزی می‌پیچد و صفحه را نمی‌شکند
             if (!grp.isEmpty()) { JSONArray fl = new JSONArray(); for (int i = 0; i < items.length(); i++) if (grp.equals(group(items.optJSONObject(i).optString("kind")))) fl.put(items.optJSONObject(i)); items = fl; }
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
             LinearLayout list = Ui.col(c); body.addView(list); Ui.paged(list, items, 12, this::card);   // v3.5 staged (cards carry charts)

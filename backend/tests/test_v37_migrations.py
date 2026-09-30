@@ -77,7 +77,9 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # tables dropped); the intent stays: ONE head, DB stamped exactly at it.
     # build-481 note: the head moved again (campaign benefits that reach the
     # invoice + insight auto-resolution — four additive invoice columns).
-    assert heads == ["a481c2e0b7d5"]
+    # build-482 note: the head moved again (users.local_only — «دسترسی فقط به
+    # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
+    assert heads == ["b482e1f0a2c3"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -117,13 +119,14 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # build-481 note: the head step is now the campaign-benefits migration, so
-    # "-1" is it: one step down, the four benefit columns go; one step up they
-    # are back. (The v4.6 note's brain-table round trip is still covered by
-    # test_v46_brain_removal against its own revision.) Everything an earlier
-    # revision created stays put.
+    # build-482 note: the head step is now the local-only policy migration
+    # (b482e1f0a2c3), so "-1" is it: one step down, users.local_only goes; one
+    # step up it is back. (The build-481 campaign columns are older now and stay
+    # put; the v4.6 brain-table round trip is covered by test_v46_brain_removal.)
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    assert "local_only" not in user_cols
     inv_cols = {c["name"] for c in insp.get_columns("invoices")}
-    assert "campaign_id" not in inv_cols and "benefit_source" not in inv_cols
+    assert "campaign_id" in inv_cols and "benefit_source" in inv_cols
     # …and everything an earlier revision created stays put
     assert "brain_decisions" not in tables          # still removed (v4.6)
     assert "experiments" in tables

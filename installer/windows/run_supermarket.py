@@ -16,7 +16,12 @@ Desktop contract (3.6.7):
 - WebView2 is an embedded renderer in the application's own resizable window.
 - A browser is never a fallback. Missing desktop dependencies are an explicit
   startup failure with repair instructions, not a different product.
-- SUPERMARKET_KIOSK=1 explicitly requests full-screen; normal windows are default.
+
+Window contract (4.8.1 / build 482):
+- The program is installed on shop POS machines and MUST open FULL SCREEN by
+  default. SUPERMARKET_KIOSK=0 switches back to a normal resizable window
+  (repair/development); SUPERMARKET_KIOSK=kiosk requests full-screen without a
+  frame (locked-down till). Anything else (unset/1/true/yes) = full screen.
 """
 from __future__ import annotations
 
@@ -152,18 +157,24 @@ def open_native_window(url: str, base: Path, log, on_closed):
         profile = base / "webview2"
         profile.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
-        kiosk = os.environ.get("SUPERMARKET_KIOSK", "").strip().lower() in ("1", "true", "yes")
+        # v4.8.1 (بیلد ۴۸۲) — قرار است روی سیستم فروشگاهی نصب شود: پنجره باید
+        # «تمام صفحه» باز شود. SUPERMARKET_KIOSK=0 پنجرهٔ معمولی (عیب‌یابی) می‌دهد؛
+        # SUPERMARKET_KIOSK=kiosk تمام‌صفحهٔ بدون قاب (صندوق قفل‌شده) می‌ماند.
+        kiosk_env = os.environ.get("SUPERMARKET_KIOSK", "1").strip().lower()
+        windowed = kiosk_env in ("0", "false", "no", "windowed")
+        kiosk = kiosk_env == "kiosk"
+        fullscreen = not windowed
         win = webview.create_window(
             "مدیریت سوپرمارکت رسا سیستم", url,
             width=1440, height=900, min_size=(640, 480),
-            fullscreen=kiosk, frameless=kiosk, easy_drag=False,
+            fullscreen=fullscreen, frameless=kiosk, easy_drag=False,
             text_select=True, zoomable=True, confirm_close=False,
         )
         try:
             win.events.closed += on_closed
         except Exception:  # noqa: BLE001 - older pywebview
             pass
-        if kiosk:
+        if fullscreen:
             # v2.5 — belt and braces: some pywebview/WebView2 builds ignore the
             # ``fullscreen=`` constructor flag on the first frame; toggling once
             # the window exists guarantees a true full-screen, chrome-less panel.

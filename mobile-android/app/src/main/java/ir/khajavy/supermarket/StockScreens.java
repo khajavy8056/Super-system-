@@ -33,7 +33,7 @@ public final class StockScreens {
             clear(); if (units.length() == 0) loadTaxonomy();
             LinearLayout sr = Ui.row(c); q = Ui.input(c, "نام / بارکد / SKU"); q.setLayoutParams(Ui.weight(1)); sr.addView(q);
             View sc = Ui.btn(c, "اسکن", Ui.PRIMARY, 0xFFFFFFFF, () -> a.scan("اسکن کالا", code -> a.open(new ProductDetail(a, code), true))); sc.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(44)), 6, 0, 0, 6)); sr.addView(sc); body.addView(sr);
-            LinearLayout act = Ui.row(c); if (Screens.can("products.manage")) act.addView(Ui.small(c, "+ کالای جدید", () -> newProduct(a, null, p -> load()))); act.addView(Ui.small(c, "واحدها", () -> a.open(new Units(a), true))); act.addView(Ui.small(c, "دسته / برند", () -> a.open(new Taxonomy(a), true))); body.addView(act);
+            Ui.Flow act = Ui.wrap(c); if (Screens.can("products.manage")) act.addView(Ui.small(c, "+ کالای جدید", () -> newProduct(a, null, p -> load()))); act.addView(Ui.small(c, "واحدها", () -> a.open(new Units(a), true))); act.addView(Ui.small(c, "دسته / برند", () -> a.open(new Taxonomy(a), true))); body.addView(act);
             TextView cnt = Ui.muted(c, Ui.num(Db.count("products")) + " کالا روی گوشی"); body.addView(cnt);
             list = Ui.col(c); body.addView(list);
             final int[] page={0}; final int pageSize=40; final Runnable[] fill={null};

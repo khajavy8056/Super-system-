@@ -33,6 +33,12 @@ class User(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # «دسترسی فقط به صورت بومی» — the phone may sign this user in ONLY while it
+    # is on the shop's own network (the PC answers over LAN). Unchecked → the
+    # user may work standalone / from outside the network and the data syncs
+    # back when the phone rejoins the LAN. The main admin is exempt by role:
+    # standalone access is ON for the Administrator by default.
+    local_only: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users")
