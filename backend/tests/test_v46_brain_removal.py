@@ -104,7 +104,11 @@ def test_migration_drops_brain_tables_and_is_reversible():
     for t in ("brain_decisions", "brain_followups", "brain_messages",
               "brain_policies", "brain_model_installs", "brain_memory_facts"):
         assert t not in tables, f"{t} must be dropped at head"
-    command.downgrade(cfg, "-1")
+    # build-481 note: two additive migrations now sit above the brain removal
+    # (v3.7 catch-up kept moving, then the campaign-benefits step). To reverse
+    # JUST the brain removal — the intent of this test — downgrade to its parent
+    # revision instead of "-1".
+    command.downgrade(cfg, "b7e9f1a3c5d8")
     tables = set(inspect(create_engine(url)).get_table_names())
     for t in ("brain_decisions", "brain_followups"):
         assert t in tables, "downgrade recreates the brain tables (reversible)"

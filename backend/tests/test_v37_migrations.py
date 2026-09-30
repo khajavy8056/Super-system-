@@ -75,7 +75,9 @@ def test_head_revision_is_v37_catchup(migrated_url):
     heads = ScriptDirectory.from_config(cfg).get_heads()
     # v4.6.0 note: the head moved again (Business Brain REMOVED — its six
     # tables dropped); the intent stays: ONE head, DB stamped exactly at it.
-    assert heads == ["c9e1f2a4b6d8"]
+    # build-481 note: the head moved again (campaign benefits that reach the
+    # invoice + insight auto-resolution — four additive invoice columns).
+    assert heads == ["a481c2e0b7d5"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -115,9 +117,15 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # the -1 step is the brain removal: one step down, its tables are back…
-    assert "brain_decisions" in tables and "brain_followups" in tables
+    # build-481 note: the head step is now the campaign-benefits migration, so
+    # "-1" is it: one step down, the four benefit columns go; one step up they
+    # are back. (The v4.6 note's brain-table round trip is still covered by
+    # test_v46_brain_removal against its own revision.) Everything an earlier
+    # revision created stays put.
+    inv_cols = {c["name"] for c in insp.get_columns("invoices")}
+    assert "campaign_id" not in inv_cols and "benefit_source" not in inv_cols
     # …and everything an earlier revision created stays put
+    assert "brain_decisions" not in tables          # still removed (v4.6)
     assert "experiments" in tables
     assert "product_bank" in tables
     hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}

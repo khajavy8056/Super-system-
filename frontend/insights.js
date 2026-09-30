@@ -12,7 +12,9 @@
   const iconOf = (i) => KIND_ICON[i.kind] || GROUP_ICON[i.group] || "chart";
   const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
   const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"], 4: ["نکته", "badge-gray"] };
-  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
+  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده",
+                   RESOLVED: "خودکار بسته شد", SUPERSEDED: "جایگزین‌شده",
+                   DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
   const ico = (k, s) => (typeof ICONS !== "undefined" && ICONS[k]) ? icon(k, s) : icon("chart", s);
 
   // ---------------------------------------------------------------- nav registration
@@ -326,7 +328,39 @@
         const failed = (r.executed || []).filter((x) => !x.ok);
         toast(failed.length ? `اجرا شد؛ ${fa(failed.length)} اقدام ناموفق: ${failed.map((x) => x.error).join("، ")}` : "اجرا شد — اندازه‌گیری آغاز شد", failed.length ? "err" : "ok");
         if (window.Sfx) Sfx.play("success");
-        closeModal(); refreshCurrent();
+        // build-481 — «اجرا» باید نتیجهٔ واقعی بگوید، نه فقط تیک سبز: هر اقدام
+        // با وضعیت اجرا و بازبینی‌اش نمایش داده می‌شود، و اگر ادامهٔ کار در
+        // صفحه‌ای است (مثلاً ورود کالا برای محصول کم‌موجودی) همان‌جا می‌رود.
+        const nav = (r.executed || []).map((x) => (x.result && x.result.navigate) || null).find(Boolean);
+        const done = (r.executed || []).filter((x) => x.ok && x.status !== "SKIPPED");
+        if (done.length && done.every((x) => x.verify || x.status === "EXECUTED_UNVERIFIED")) {
+          const rows = (r.executed || []).map((x) => `<tr>
+            <td>${esc(x.type)}</td>
+            <td><span class="badge ${x.ok ? (x.status === "SKIPPED" ? "badge-amber" : "badge-green") : "badge-red"}">${esc(x.status)}</span></td>
+            <td class="muted">${esc(x.verify || x.error || "")}</td></tr>`).join("");
+          openModal(`<h3>نتیجهٔ اجرا</h3>
+            <div class="table-wrap"><table><thead><tr><th>اقدام</th><th>وضعیت</th><th>بازبینی</th></tr></thead>
+            <tbody>${rows}</tbody></table></div>
+            ${nav ? `<p class="muted" style="margin-top:10px">ادامهٔ کار: فرم ${nav.screen === "inventory_receive" ? "ورود کالا" : esc(nav.screen)} با کالاهای موردنظر از پیش انتخاب می‌شود.</p>` : ""}
+            <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+              ${nav && nav.screen === "inventory_receive" ? `<button class="btn btn-primary" id="ins-nav-go">رفتن به ورود کالا</button>` : ""}
+              <button class="btn" onclick="closeModal()">بستن</button></div>`);
+          const nb = $("#ins-nav-go");
+          if (nb) nb.onclick = () => {
+            closeModal();
+            // مسیر واقعیِ «تدارک کالا»: انبار ← ورود کالا، با محصول از پیش انتخاب‌شده
+            if (window.go) { window.go("inventory"); }
+            setTimeout(() => {
+              if (typeof window.showGoodsReceive === "function") {
+                window.showGoodsReceive((nav.product_ids || []).slice(0, 5));
+              } else {
+                window.__pendingReceiveProducts = (nav.product_ids || []).slice(0, 5);
+              }
+            }, 250);
+          };
+        } else {
+          closeModal(); refreshCurrent();
+        }
       } catch (e) { toast(e.message, "err"); $("#ins-go").disabled = false; }
     };
   }

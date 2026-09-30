@@ -1010,6 +1010,42 @@ def _dq_audit_transition(db: Session, verdict: str, summary: dict) -> None:
                                  description="last data-quality verdict seen by insights.run"))
 
 
+#: build-481 (steps 14–15/41–42) — «کمتر پیشنهاد بده، اما درست‌تر».  Before a
+#: draft is allowed to become a NEW card it must clear these gates.  A draft the
+#: manager cannot act on, or one whose impact cannot justify a minute of their
+#: attention, is noise — and noise is what makes people ignore the whole screen.
+#: ``insights.min_gain`` (SystemSetting) adds a store-specific money floor.
+def _quality_gate(db: Session, d: Draft, gain: float, confidence: str) -> str | None:
+    """Return a skip-reason (never shown as a card) or None to publish."""
+    # Informational cards (dashboard facts like «امروز می‌دانستید؟») ship by design:
+    # they ask the shop for nothing and have no measurable gain — the suggestion
+    # quality rules do not govern content. Everything else is a suggestion and
+    # must pass every rule below.
+    if d.kind in ("SURPRISE",):
+        return None
+    if not d.actions:
+        return "no_action"          # advice without an executable next step
+    if not (d.evidence or {}).get("rows") and not [k for k in (d.evidence or {})
+                                                   if k not in ("forecast", "dq", "expected_gain_raw")]:
+        return "no_evidence"        # a claim the manager cannot check
+    try:
+        min_gain = float(_setting(db, "insights.min_gain", "0") or 0)
+    except (TypeError, ValueError):
+        min_gain = 0.0
+    if min_gain and gain < min_gain:
+        return "below_min_gain"
+    # a nice-to-have with zero measurable impact is chatter, not advice
+    if d.priority >= 4 and gain <= 0:
+        return "zero_impact_low_priority"
+    return None
+
+
+def _setting(db: Session, key: str, default: str = "") -> str:
+    from ..models import SystemSetting
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    return row.value if row else default
+
+
 def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     from . import data_quality as dq
     dq_report = dq.run_all(db)
@@ -1028,6 +1064,8 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     created = refreshed = 0
     errors: dict[str, str] = {}
     seen: set[tuple[str, str]] = set()
+    ran_ok: set[str] = set()      # kinds that completed this run (auto-resolve safety)
+    suppressed: dict[str, int] = {}
     from . import forecast   # v3.1 — learned per-kind calibration of the expected gain
     cal = forecast._load_cal(db)
     for kind, fn in ANALYZERS.items():
@@ -1075,8 +1113,16 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
                                        .order_by(Insight.id)).scalars().all()
                     row = dupes[0] if dupes else None
                     for extra in dupes[1:]:
-                        extra.status = "EXPIRED"
+                        # build-481 — a twin row is not «expired», it is absorbed
+                        # by the surviving card: SUPERSEDED says exactly that.
+                        extra.status = "SUPERSEDED"
+                        extra.resolved_at = ctx.now_utc
+                        extra.resolution = json.dumps({"reason": "superseded_by", "detail": row.id if row else None,
+                                                       "at": ctx.now_utc.isoformat()}, ensure_ascii=False, default=str)
                     if row:
+                        # An existing open card is never killed by the quality
+                        # gate (it was good enough when created) and the feed
+                        # hygiene above runs regardless of the gate.
                         if row.status == "NEW":
                             row.title, row.body, row.priority = d.title, d.body, d.priority
                             row.evidence, row.actions = json.dumps(d.evidence, ensure_ascii=False, default=str), json.dumps(d.actions, ensure_ascii=False)
@@ -1084,21 +1130,48 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
                         row.last_seen_at = ctx.now_utc
                         refreshed += 1
                     else:
+                        # build-481 (step 15) — quality gate for BRAND-NEW cards:
+                        # publish-or-drop. «کمتر پیشنهاد بده، اما درست‌تر».
+                        skip = _quality_gate(db, d, float(c["gain"]), c.get("confidence", ""))
+                        if skip:
+                            suppressed[skip] = suppressed.get(skip, 0) + 1
+                            continue
                         db.add(Insight(kind=d.kind, dedupe_key=d.dedupe_key, title=d.title, body=d.body, priority=d.priority,
                                        evidence=json.dumps(d.evidence, ensure_ascii=False, default=str), actions=json.dumps(d.actions, ensure_ascii=False),
                                        expected_gain=Decimal(str(round(d.expected_gain))), metric=json.dumps(d.metric, ensure_ascii=False),
                                        status="NEW", last_seen_at=ctx.now_utc))
                         created += 1
+                ran_ok.add(kind)   # the whole loop finished ⇒ this kind may resolve cards
 
         except Exception as exc:
             log.exception("analyzer %s failed", kind)
             errors[kind] = str(exc)
             continue
-    # auto-close stale NEW insights that no analyzer re-confirmed
+    # build-481 (steps 6–9) — AUTO-RESOLVE: the analyzer for this card ran to
+    # completion in THIS run and did not re-confirm it ⇒ the underlying condition
+    # no longer exists.  The manager stocked the shelf in Inventory without ever
+    # opening the card; the product sold; the customer became eligible again —
+    # the card leaves the active list *now*, not three days later, with a
+    # machine-readable reason.  A kind that did not run (filtered run, crashed
+    # analyzer) must NEVER resolve its cards — silence is not evidence.
+    for row in db.execute(select(Insight).where(Insight.status.in_(["NEW", "SNOOZED"]))).scalars():
+        if (row.kind, row.dedupe_key) in seen or (kinds and row.kind not in kinds):
+            continue
+        if row.kind in ran_ok:
+            row.status = "RESOLVED"
+            row.resolved_at = ctx.now_utc
+            row.resolution = json.dumps(
+                {"reason": "condition_cleared",
+                 "detail": "analyzer re-ran and the problem this card described no longer holds",
+                 "at": ctx.now_utc.isoformat()}, ensure_ascii=False, default=str)
+    # stale fallback: cards whose kind never ran again (filtered runs, old rows)
     stale_before = ctx.now_utc - timedelta(days=STALE_DAYS)
     for row in db.execute(select(Insight).where(Insight.status == "NEW", Insight.last_seen_at < stale_before)).scalars():
-        if (row.kind, row.dedupe_key) not in seen and (not kinds or row.kind in kinds):
+        if (row.kind, row.dedupe_key) not in seen and (not kinds or row.kind in kinds) and row.kind not in ran_ok:
             row.status = "EXPIRED"
+            row.resolved_at = ctx.now_utc
+            row.resolution = json.dumps({"reason": "stale", "at": ctx.now_utc.isoformat()},
+                                        ensure_ascii=False, default=str)
     # wake snoozed
     for row in db.execute(select(Insight).where(Insight.status == "SNOOZED", Insight.snoozed_until <= ctx.now_utc)).scalars():
         row.status = "NEW"
@@ -1109,7 +1182,7 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     except Exception:  # pragma: no cover - defensive
         log.exception("measure_all failed after a successful run")
     return {"created": created, "refreshed": refreshed, "errors": errors, "invoices_analyzed": len(ctx.invoices), "window_days": days,
-            "status": "DEGRADED" if dq_degraded else "OK", "dq": dq_summary}
+            "suppressed": suppressed, "status": "DEGRADED" if dq_degraded else "OK", "dq": dq_summary}
 
 
 # ----------------------------------------------------------------------------- metrics / A-B
@@ -1523,6 +1596,8 @@ def to_dict(r: Insight) -> dict:
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,
         "result": json.loads(r.result) if r.result else None, "measured_gain": _f(r.measured_gain) if r.measured_gain is not None else None,
         "narrative": r.narrative, "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        "resolved_at": r.resolved_at.isoformat() if getattr(r, "resolved_at", None) else None,
+        "resolution": json.loads(r.resolution) if getattr(r, "resolution", None) else None,
     }
 
 

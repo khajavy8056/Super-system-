@@ -1,4 +1,39 @@
-# Release Audit — RASA SYSTEM v1.0.0 (build 480)
+# Release Audit — RASA SYSTEM v1.0.0 (build 480/481)
+
+> **بیلد ۴۸۱ (۲۰۲۶-۰۹-۲۹):** این سند با بازرسی «اقدام‌های واقعی» به‌روزرسانی شد — جدول کامل
+> زیر. متن اصلیِ گزارش ۱۷ بندی بیلد ۴۸۰ در ادامه دست‌نخورده مانده است.
+
+## بازرسی اقدام‌ها — بیلد ۴۸۱ («کلیک ← عملیات واقعی ← نتیجه ← سنجش»)
+
+هیچ «اقدام ساختگی» (کلیک ← تغییر وضعیت ← توست) باقی نماند. الگوهای جعلی در سراسر مخزن
+جست‌وجو شد (execute/accept/apply/action/suggestion/insight/campaign/coupon/…) — موارد باقی‌مانده
+«کارتهای اطلاعاتی بدون اقدام» (مثل «امروز می‌دانستید؟») هستند که اساساً اقدامی ادعا نمی‌کنند.
+
+| اقدام (UI) | هدف | عملیات واقعی کسب‌وکار | سرویس/API | مجوز | حسابرسی | نتیجه/سنجش | شرط حل خودکار |
+|---|---|---|---|---|---|---|---|
+| «افزودن به لیست سفارش» | محصول کم‌موجودی | `act_reorder_note` — فهرست سفارش واقعی + بازکردن «ورود کالا» با کالای انتخاب‌شده | `POST /batches/receive` (از صفحه) | `insights.accept` | ACT_ACCEPTED/EXECUTED | ردیف `reorder_list` + `navigate` | دریافت کالا ← موجودی بالا ← VELOCITY تأیید نمی‌کند ← RESOLVED |
+| «تنظیم حداقل موجودی هوشمند» | محصول | `act_set_min_stock` — به‌روزرسانی واقعی `Product.min_stock` | `services/insight_actions` | `insights.accept` | ACT_EXECUTED | مقدار جدید در result | رفع کسری |
+| «تخفیف پله‌ای انقضا» | بچ نزدیک انقضا | `act_markdown_ladder` — فروش واقعیِ بچ با تخفیف‌های تاریخ‌دار | `pos.checkout` (Batch مشخص) | `insights.accept` | ACT_EXECUTED/VERIFIED | فاکتورهای واقعی | فروش/حذف بچ ← EXPIRY_LADDER بسته |
+| «جشنواره فروش فوری» | کالا | `act_flash_sale` — ساخت کمپین قابل انتخاب صندوق | `services/coupons._campaign` | `insights.accept` | ACT_EXECUTED | campaign_id (اجرای دوم = no-op ایدمپوتنت) | اتمام/مصرف کمپین |
+| «جشنواره سبد» | چند کالا | `act_bundle_campaign` — کمپین هدف‌مند PRODUCTS | `services/coupons` | `insights.accept` | ACT_EXECUTED | campaign_id | — |
+| «جشنواره آستانه‌ای» | سبد خرید | `act_threshold_campaign` — کمپین auto_apply با حداقل/حداکثر خرید | `services/coupons` | `insights.accept` | ACT_EXECUTED | campaign_id | — |
+| «اعمال جشنواره» در صندوق (F10) | فاکتور | Select → Validate → Apply → Invoice → Audit | `POST /pos/campaigns/eligible`، `POST /pos/checkout` | `pos.sell` | CAMPAIGN_APPLIED + `campaign_redemptions` | `campaign_id/name/benefit_source/benefit_amount` روی فاکتور (اسنپ‌شات) | — |
+| کوپن خرید بعدی | مشتری | صدور خودکار هنگام عبور از آستانه + پیامک | `services/coupons.issue_next_purchase_coupon` | خودکار | COUPON_ISSUED + SmsMessage | کد + شرط + مهلت در «مزیت‌های مشتری» | مصرف ← USED |
+| «رد پیشنهاد» | کارت | ثبت علت واقعی در `resolution` | `POST /insights/{id}/dismiss` | `insights.accept` | INSIGHT_DISMISSED | status=DISMISSED + resolved_at | — |
+| «اجرا» (accept) | کارت | VALIDATE → SAVEPOINT → EXECUTE → VERIFY | `POST /insights/{id}/accept` | `insights.accept` | ACT_ACCEPTED/EXECUTED/FAILED | جدول نتیجهٔ اقدام‌ها در دیالوگ | اجرا + رفع شرط ← بعداً RESOLVED |
+| «یادآوری بدهی» | مشتری بدهکار | صف پیامک با متن رندرشده (ردیف PENDING) | `POST /customers/{id}/debt-reminder` | `customers.settle` | SmsMessage + sync | وضعیت Pending/Sent/Failed | تسویهٔ بدهی |
+| جست‌وجوی محصول (بارکد/نام/نیمه/فارسی) | محصول | موتور جست‌وجوی مشترک + نرمال‌سازی فارسی | `product_search` / `query_engine` | `products.view` | — | یافتن محصول | — |
+| صدور/مصرف کوپن | مشتری | `consume` اتمیک (قفل سقف) | `services/coupons.consume` | `pos.sell` | COUPON_REDEEMED | ردیف redemption | — |
+
+**ایدمپوتانس:** اجرای دوبارهٔ «اجرا» کمپین/کوپن تکراری نمی‌سازد؛ «اجرا» روی کارت اجراشده ۴۰۹؛
+پرداخت‌ها در checkout راستی‌آزمایی می‌شوند (`PAYMENT_MISMATCH`).
+
+**حل خودکار (همهٔ تحلیل‌گرها):** در هر بازبینی، کارتِ بازِ تأییدنشده که تحلیل‌گرش دیگر شرایطش
+را تأیید نکند، خودکار RESOLVED می‌شود (`resolution.reason=condition_cleared`)؛ ردیف‌های تکراری
+SUPERSEDED می‌شوند؛ کارتهای مشتری با کلید `cohort` ادغام/به‌روزرسانی می‌شوند (D به کارت A/B/C
+اضافه می‌شود، نه کارت جدید).
+
+---
 
 **تاریخ:** ۲۰۲۶-۰۹-۲۹ · **نسخه:** `1.0.0` (بیلد `480`) · **نام محصول:** مدیریت سوپرمارکت رسا سیستم / RASA SYSTEM
 **نسخهٔ قبلی (۴٫۸٫۰) بتا اعلام شد.** این سند همان گزارش نهایی ۱۷ بندی است که خواسته شده بود: چه چیزی

@@ -8,7 +8,7 @@ from .enums import *  # noqa: F401,F403
 from .external import BankItem, ExternalSource, ImageAsset, MarketPrice, ProductResolverResult
 from .inventory import (ProductBatch, StockMovement, Stocktake, StocktakeItem,
                         StorageLocation, Warehouse)
-from .marketing import Campaign, Coupon, CouponRedemption
+from .marketing import Campaign, CampaignRedemption, Coupon, CouponRedemption
 from .insights import Experiment, Insight
 from .sync import DiagnosticRun, SyncJob
 from .pricing import PriceVersion
@@ -59,7 +59,7 @@ __all__ = [
     "SupportMessage",
     "Campaign",
     "Coupon",
-    "CouponRedemption",
+    "CouponRedemption", "CampaignRedemption",
     "SyncJob",
     "DiagnosticRun",
 ]

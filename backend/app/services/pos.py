@@ -425,12 +425,26 @@ def checkout(
     tax_rate: Decimal | None = None,
     coupon_code: str | None = None,
     invoice_discount: Decimal | None = None,
+    campaign_id: int | None = None,
 ) -> Invoice:
     """Atomic checkout (blueprint §18–21). Caller wraps in try/except + commit/rollback.
 
     Money math (BUG-001): gross = Σ(price×qty); discount = Σ(line discounts);
     taxable = gross − discount; tax = taxable × rate; total = taxable + tax.
-    Each discount is counted exactly once."""
+    Each discount is counted exactly once.
+
+    build-481 (§21–26): a *campaign* benefit can be granted here too.  Three
+    honest paths, all server-validated:
+
+    * ``campaign_id`` given → the cashier picked a festival; every condition is
+      re-checked inside this transaction (the POS list is a convenience, not a
+      trust boundary).
+    * no ``campaign_id`` → eligible ``auto_apply`` festivals (threshold ones)
+      grant their benefit automatically — the best one wins by priority.
+    * the applied campaign is snapshotted on the invoice (id + name + benefit)
+      so later edits never rewrite the receipt, and a ``campaign_redemptions``
+      row records who consumed which slot.
+    """
     if not items:
         raise PosError("EMPTY_CART", "Cart is empty")
 
@@ -470,9 +484,60 @@ def checkout(
             )
         except coupon_svc.CouponError as exc:
             raise PosError(exc.code, exc.message)
+
+    # ---- build-481: campaign benefit (§21) --------------------------------
+    # Line totals per product (post line-discount) — the honest base for
+    # product-targeted festivals.
+    line_amounts: dict[int, Decimal] = {}
+    product_ids: list[int] = []
+    for i in resolved:
+        product_ids.append(i.product_id)
+        line_amounts[i.product_id] = line_amounts.get(i.product_id, ZERO) + (
+            (i.unit_sell_price or ZERO) * i.quantity - i.discount
+        )
+    base_amount = gross - discount   # after manual discounts, before coupon/campaign
+
+    from . import coupons as campaign_svc   # one module owns both benefit engines
+    campaign_info = None
+    chosen_campaign_id = campaign_id
+    if chosen_campaign_id is None:
+        # Auto path: a threshold festival whose conditions hold applies itself
+        # (§21).  Several may hold → priority (then larger benefit) wins.
+        try:
+            options = campaign_svc.eligible_campaigns(
+                db, amount=base_amount, product_ids=product_ids,
+                line_amounts=line_amounts, customer_id=customer_id,
+                include_auto_apply=True,
+            )
+        except campaign_svc.CampaignError as exc:   # pragma: no cover — defensive
+            raise PosError(exc.code, exc.message)
+        auto = [o for o in options if o.get("auto_apply")]
+        if auto:
+            auto.sort(key=lambda o: (o.get("priority", 3), -float(o["discount"])))
+            chosen_campaign_id = int(auto[0]["campaign_id"])
+
+    if chosen_campaign_id is not None:
+        try:
+            campaign_info = campaign_svc.evaluate_campaign(
+                db, campaign_id=chosen_campaign_id, amount=base_amount,
+                product_ids=product_ids, line_amounts=line_amounts,
+                customer_id=customer_id,
+            )
+        except campaign_svc.CampaignError as exc:
+            raise PosError(exc.code, exc.message)
+        if coupon_info is not None and not campaign_info["stackable"]:
+            raise PosError(
+                "CAMPAIGN_NOT_STACKABLE",
+                f"جشنواره «{campaign_info['name']}» با کوپن قابل ترکیب نیست؛ "
+                "یکی از دو مورد را انتخاب کنید",
+            )
+
+    if coupon_info is not None:
         discount += coupon_info["discount"]
-        if discount > gross:
-            discount = gross
+    if campaign_info is not None:
+        discount += campaign_info["discount"]
+    if discount > gross:
+        discount = gross
 
     taxable = gross - discount
     rate = tax_rate if tax_rate is not None else Decimal(get_setting(db, "pos.tax_rate", "0"))
@@ -496,6 +561,16 @@ def checkout(
             "فروش نسیه فقط برای مشتری ثبت‌شده ممکن است؛ مشتری آزاد حساب دفتری ندارد",
         )
 
+    # build-481 (§26) — benefit provenance snapshotted on the invoice row.
+    benefit_source = "NONE"
+    benefit_amount = ZERO
+    if coupon_info is not None:
+        benefit_source, benefit_amount = "COUPON", coupon_info["discount"]
+    if campaign_info is not None:
+        # a stacking campaign shares the source label with its coupon partner
+        benefit_source = "CAMPAIGN+COUPON" if benefit_source == "COUPON" else "CAMPAIGN"
+        benefit_amount += campaign_info["discount"]
+
     invoice = Invoice(
         invoice_number=_next_invoice_number(db),
         customer_id=customer_id,
@@ -511,6 +586,11 @@ def checkout(
         print_status="PENDING",
         paid_at=None if on_account >= total else datetime.utcnow(),
         created_by=user.id if user else None,
+        campaign_id=(campaign_info["campaign_id"] if campaign_info else None),
+        campaign_name=(campaign_info["name"] if campaign_info else None),
+        benefit_source=benefit_source,
+        benefit_amount=benefit_amount,
+        applied_coupon_code=(coupon_info["code"] if coupon_info else None),
     )
     db.add(invoice)
     db.flush()
@@ -554,6 +634,20 @@ def checkout(
         except coupon_svc.CouponError as exc:
             raise PosError(exc.code, exc.message)
 
+    # build-481 (§25–26) — campaign benefit is consumed in the SAME transaction,
+    # so a failed sale can never burn a usage slot, and every grant has an audit
+    # row naming the cashier and the invoice.
+    if campaign_info is not None:
+        from . import coupons as coupon_svc
+
+        try:
+            coupon_svc.consume_campaign(
+                db, campaign_id=campaign_info["campaign_id"], amount=campaign_info["discount"],
+                invoice_id=invoice.id, customer_id=customer_id, user=user,
+            )
+        except coupon_svc.CampaignError as exc:
+            raise PosError(exc.code, exc.message)
+
     for p in payments:
         db.add(Payment(invoice_id=invoice.id, method=p.get("method", "CASH"), amount=Decimal(p["amount"])))
 
@@ -576,9 +670,12 @@ def checkout(
         db, action="SALE_CREATED", user_id=user.id if user else None,
         entity_type="Invoice", entity_id=invoice.id,
         after={"invoice_number": invoice.invoice_number, "total": str(total),
-               "coupon": coupon_info["code"] if coupon_info else None},
+               "coupon": coupon_info["code"] if coupon_info else None,
+               "campaign": campaign_info["name"] if campaign_info else None,
+               "campaign_id": campaign_info["campaign_id"] if campaign_info else None,
+               "benefit_amount": str(benefit_amount) if benefit_amount else None,
+               "benefit_source": benefit_source},
     )
-    invoice.applied_coupon_code = coupon_info["code"] if coupon_info else None  # transient
     # v1.4 — double-entry posting in the SAME transaction (rolls back with the sale)
     from . import accounting as acc_svc
     db.flush()

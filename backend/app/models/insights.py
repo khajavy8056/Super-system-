@@ -6,7 +6,11 @@ markdown ladders, dead-stock bundles, stock-out forecasts, churn/VIP
 customers, cash-flow shortfalls, loss-prevention anomalies, …
 
 Life-cycle:  NEW → ACCEPTED (actions applied, baseline frozen) → MEASURED
-                 ↘ DISMISSED / SNOOZED
+                 ↘ RESOLVED (the underlying condition cleared — even without
+                   pressing any button: stock was received elsewhere, the
+                   product sold, the customer became eligible again …)
+                 ↘ DISMISSED / SNOOZED → NEW · EXPIRED (went stale unseen)
+                 · SUPERSEDED (a twin row absorbed by the dedupe upsert)
 
 The before/after measurement (NOT a randomized A/B experiment) is intentionally simple: the metric the insight
 promises to move is sampled over a *baseline window* before acceptance and the
@@ -61,6 +65,13 @@ class Insight(TimestampMixin, Base):
     measured_gain: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     #: last time the analyzer re-confirmed this insight (stale ones are auto-closed)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: build-481 — auto-resolution: when the underlying condition no longer holds
+    #: (the manager stocked up in Inventory without ever opening the card, the
+    #: product sold out, the discount was created elsewhere …) the engine closes
+    #: the card here instead of leaving it active forever.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: JSON {reason, detail, at} — why/when the card left the active list
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: optional LLM-written narrative (cached)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -654,7 +654,7 @@ function systemCard(title, sys) {
   );
 }
 
-const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null };
+const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null, campaign: null, campaignInfo: null };
 window.posState = posState;   // v3.0: shared with insights.js (POS whisper-suggestions)
 
 /* ---------------------------------------------------------------------------
@@ -668,11 +668,13 @@ function heldInvoices() { try { return JSON.parse(localStorage.getItem("sm.held"
 function saveHeld(list) { localStorage.setItem("sm.held", JSON.stringify(list.slice(0, HELD_MAX))); renderHeldDock(); }
 function posSnapshot() {
   return { cart: JSON.parse(JSON.stringify(posState.cart)), customer: posState.customer, coupon: posState.coupon,
-           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount };
+           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount,
+           campaign: posState.campaign, campaignInfo: posState.campaignInfo };
 }
 function posRestore(snap) {
   posState.cart = snap.cart || []; posState.customer = snap.customer || null; posState.coupon = snap.coupon || null;
   posState.couponInfo = snap.couponInfo || null; posState.invoiceDiscount = snap.invoiceDiscount || 0;
+  posState.campaign = snap.campaign || null; posState.campaignInfo = snap.campaignInfo || null;
 }
 function posHold(label) {
   if (!posState.cart.length) { toast("سبد خالی است؛ چیزی برای نگه‌داشتن نیست", "err"); return false; }
@@ -685,6 +687,7 @@ function posHold(label) {
   const idx = list.findIndex((h) => h.id === entry.id);
   if (idx >= 0) list[idx] = entry; else list.unshift(entry);
   posState.cart = []; posState.customer = null; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; posState.heldId = null;
+  posState.campaign = null; posState.campaignInfo = null;
   saveHeld(list);
   renderPosCart(); if (window.Sfx) Sfx.play("hold");
   toast(`فاکتور «${entry.label}» نگه داشته شد`);
@@ -749,7 +752,9 @@ function renderPosCart() {
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const count = posState.cart.reduce((a, it) => a + Number(it.quantity), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
-  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon));
+  // build-481: a selected festival grants a real benefit in the total (validated at checkout)
+  const camp = posState.campaignInfo && posState.campaignInfo.ok ? posState.campaignInfo.discount : 0;
+  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon - camp));
   // v1.7.1: the register never shows profit/cost (management figures live in reports)
   $("#pos-totals").innerHTML = `
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
@@ -757,7 +762,8 @@ function renderPosCart() {
     ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
     ${invDisc ? `<div class="row"><span class="muted">تخفیف فاکتور <a href="#" onclick="posState.invoiceDiscount=0;renderPosCart();return false;" class="muted">✕</a></span><span class="err">−${money(invDisc)}</span></div>` : ""}
     ${coupon ? `<div class="row"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
-    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>`;
+    ${camp ? `<div class="row"><span class="muted">جشنواره ${esc(posState.campaignInfo.name)} <a href="#" onclick="posClearCampaign();return false;" class="muted">✕</a></span><span class="err">−${money(camp)}</span></div>` : ""}
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon - camp)}</span></div>`;
   const cpEl = $("#pos-coupon-state");
   if (cpEl) {
     cpEl.innerHTML = posState.couponInfo
@@ -767,6 +773,16 @@ function renderPosCart() {
           : `<span class="badge badge-red">${esc(posState.couponInfo.message || "کوپن نامعتبر")}</span>
              <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`)
       : `<span class="muted">بدون کوپن (F9)</span>`;
+  }
+  const cmEl = $("#pos-campaign-state");
+  if (cmEl) {
+    cmEl.innerHTML = posState.campaignInfo
+      ? (posState.campaignInfo.ok
+          ? `<span class="badge badge-green">${icon("gift", 14)} جشنواره ${esc(posState.campaignInfo.name)} — ${money(posState.campaignInfo.discount)}</span>
+             <button class="btn btn-sm" onclick="posClearCampaign()">✕</button>`
+          : `<span class="badge badge-red">${esc(posState.campaignInfo.message || "جشنواره نامعتبر")}</span>
+             <button class="btn btn-sm" onclick="posClearCampaign()">✕</button>`)
+      : `<span class="muted">بدون جشنواره (F10)</span>`;
   }
   if (window.PosNudges) PosNudges.refresh();   // v3.0 whisper-suggestions (only when enabled in settings)
   $("#pos-customer").innerHTML = posState.customer
@@ -851,15 +867,17 @@ RENDER.pos = async () => {
         <div class="pos-side">
           <div class="scan-field pos-scan-wrap">${icon("barcode", 22)}<input id="pos-scan" class="pos-scan scan-input" placeholder="اسکن بارکد یا جستجوی نام کالا…" autocomplete="off" autofocus /><span class="scan-state" id="pos-scan-state" title="بارکدخوان">${icon("scanner", 18)}</span></div>
           <div id="pos-suggest" class="pos-suggest hidden"></div>
-          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
+          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">F10</span> جشنواره · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
           <div id="pos-customer" class="pos-customer"></div>
           <div id="pos-nudge" class="pos-nudge hidden"></div>
           <div id="pos-coupon-state" class="pos-customer"></div>
+          <div id="pos-campaign-state" class="pos-customer"></div>
           <div id="pos-totals" class="pos-totals"></div>
           <div class="pos-actions">
             <button class="pos-btn pos-btn-pay" id="pos-pay">${icon("cash", 22)} پرداخت <span class="kbd">F2</span></button>
             <button class="pos-btn pos-btn-blue" id="pos-customer-btn">${icon("user", 18)} مشتری <span class="kbd">F8</span></button>
             <button class="pos-btn pos-btn-violet" id="pos-coupon-btn">${icon("gift", 18)} کوپن <span class="kbd">F9</span></button>
+            <button class="pos-btn pos-btn-violet" id="pos-campaign-btn">${icon("gift", 18)} جشنواره <span class="kbd">F10</span></button>
             <button class="pos-btn pos-btn-amber" id="pos-discount-btn">تخفیف <span class="kbd">F4</span></button>
             <button class="pos-btn pos-btn-hold" id="pos-hold-btn">نگه‌داشتن فاکتور <span class="kbd">F6</span></button>
             <button class="pos-btn pos-btn-danger" id="pos-clear-btn">لغو کردن <span class="kbd">Esc</span></button>
@@ -898,8 +916,10 @@ RENDER.pos = async () => {
   $("#pos-discount-btn").addEventListener("click", () => posDiscountModal());
   $("#pos-customer-btn").addEventListener("click", () => posCustomerModal());
   $("#pos-coupon-btn").addEventListener("click", () => posCouponModal());
+  $("#pos-campaign-btn").addEventListener("click", () => posCampaignModal());
   $("#pos-clear-btn").addEventListener("click", () => {
-    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; renderPosCart();
+    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0;
+    posState.campaign = null; posState.campaignInfo = null; renderPosCart();
   });
   $("#pos-kiosk-btn").addEventListener("click", () => (state.kiosk ? exitKioskPrompt() : enterKiosk()));
   posClock();
@@ -1095,6 +1115,58 @@ async function posRevalidateCoupon(announce) {
   renderPosCart();
 }
 
+/* ---------- POS campaigns (build-481, §21–26) ----------
+ * جشنواره‌های فعال که شرایطشان برای همین سبد برقرار است، با دادهٔ ساختاریافته از
+ * سرور می‌آیند؛ صندوق‌دار فقط انتخاب می‌کند و سرور هنگام ثبت، همهٔ شرایط را دوباره
+ * اعتبارسنجی می‌کند (دور زدن شرایط ممکن نیست). */
+window.posClearCampaign = () => { posState.campaign = null; posState.campaignInfo = null; renderPosCart(); };
+
+async function posCampaignModal() {
+  if (!posState.cart.length) { toast("سبد خالی است؛ ابتدا کالا اضافه کنید", "err"); return; }
+  const gross = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+  let rows = [];
+  try {
+    const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+      amount: gross,
+      product_ids: posState.cart.map((i) => i.product_id),
+      customer_id: posState.customer ? posState.customer.id : null,
+      include_auto_apply: true }) });
+    rows = r.campaigns || [];
+  } catch (e) { toast(e.message, "err"); return; }
+  const list = rows.map((c) => `
+    <label class="row" style="gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--shell-border, #333)">
+      <input type="radio" name="camp-pick" value="${c.campaign_id}" ${posState.campaign === c.campaign_id ? "checked" : ""} />
+      <span style="flex:1">
+        <b>${esc(c.name)}</b> ${c.auto_apply ? '<span class="badge badge-green">خودکار</span>' : ""}
+        <div class="muted">${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)} تخفیف
+          ${c.min_purchase ? ` · حداقل خرید ${money(c.min_purchase)}` : ""}</div>
+      </span>
+      <b class="err">−${money(c.discount)}</b>
+    </label>`).join("") || `<p class="muted">فعلاً جشنوارهٔ واجد شرایطی برای این سبد فعال نیست.</p>`;
+  openModal(`<h3>جشنواره‌های قابل اعمال</h3>
+    <p class="muted">فقط جشنواره‌هایی که شرایطشان برای همین سبد برقرار است نمایش داده می‌شوند؛
+      سرور هنگام ثبت فروش دوباره بررسی می‌کند.</p>
+    <div id="camp-list">${list}</div>
+    <button id="camp-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال جشنواره</button>
+    ${posState.campaign ? `<button id="camp-clear" class="btn btn-block" style="margin-top:8px">حذف جشنوارهٔ انتخابی</button>` : ""}`);
+  const apply = () => {
+    const pick = document.querySelector('input[name="camp-pick"]:checked');
+    if (!pick) { toast("جشنواره‌ای انتخاب نشده", "err"); return; }
+    const c = rows.find((x) => x.campaign_id === Number(pick.value));
+    if (!c) return;
+    posState.campaign = c.campaign_id;
+    posState.campaignInfo = { ok: true, name: c.name, discount: c.discount, stackable: c.stackable };
+    closeModal();
+    if (c.stackable === false && posState.couponInfo && posState.couponInfo.ok) {
+      toast("این جشنواره با کوپن قابل ترکیب نیست — کوپن هنگام ثبت فروش رد می‌شود", "err");
+    }
+    renderPosCart();
+  };
+  $("#camp-apply").addEventListener("click", apply);
+  const cl = $("#camp-clear");
+  if (cl) cl.addEventListener("click", () => { posClearCampaign(); closeModal(); });
+}
+
 /* POS: discount (line or whole cart, split proportionally) */
 function posDiscountModal() {
   if (!posState.cart.length) { toast("سبد خالی است", "err"); return; }
@@ -1162,9 +1234,11 @@ function posCheckoutModal() {
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
-  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon;
+  const camp = posState.campaignInfo && posState.campaignInfo.ok ? posState.campaignInfo.discount : 0;
+  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon - camp;
   openModal(`<h3>پرداخت</h3>
     ${coupon ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
+    ${camp ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">جشنواره ${esc(posState.campaignInfo.name)}</span><span class="err">−${money(camp)}</span></div>` : ""}
     <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
     <label>روش پرداخت</label>
     <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option>${
@@ -1228,10 +1302,12 @@ async function doCheckout(total) {
         // v3.1: a phone typed only for the SMS is enough — the backend files it in the customer book
         customer_phone: !posState.customer && $("#pay-phone") && $("#pay-phone").value.trim() ? $("#pay-phone").value.trim() : null,
         invoice_discount: posState.invoiceDiscount || 0,
-        coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
+        coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null,
+        campaign_id: posState.campaignInfo && posState.campaignInfo.ok ? posState.campaign : null }),
     });
     posState.cart = []; posState.customer = null; posState.invoiceDiscount = 0;
-    posState.coupon = null; posState.couponInfo = null; posState.heldId = null; renderHeldDock();
+    posState.coupon = null; posState.couponInfo = null; posState.heldId = null;
+    posState.campaign = null; posState.campaignInfo = null; renderHeldDock();
     if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
       toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
@@ -1239,6 +1315,9 @@ async function doCheckout(total) {
     toast(inv.payment_status === "ON_ACCOUNT"
       ? `ثبت شد (نسیه): ${inv.invoice_number}`
       : `فروش ثبت شد: ${inv.invoice_number}`);
+    if (inv.campaign_name) {
+      toast(`جشنواره «${inv.campaign_name}» روی فاکتور اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
+    }
     if (inv.issued_coupon) {
       openModal(`<h3>🎁 کوپن خرید بعدی</h3>
         <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
@@ -1322,6 +1401,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "F4") { e.preventDefault(); if (!modalOpen) posDiscountModal(); }
   else if (e.key === "F8") { e.preventDefault(); if (!modalOpen) posCustomerModal(); }
   else if (e.key === "F9") { e.preventDefault(); if (!modalOpen) posCouponModal(); }
+  else if (e.key === "F10") { e.preventDefault(); if (!modalOpen) posCampaignModal(); }
   else if (e.key === "F6") { e.preventDefault(); if (!modalOpen) posHold(); }
   else if (e.key === "Delete" && !modalOpen) { posState.cart.pop(); renderPosCart(); }
   else if (e.key === "Escape" && !modalOpen) {
@@ -1781,7 +1861,16 @@ window.showProductDetail = async function showProductDetail(productId) {
   } catch (e) { toast(e.message, "err"); }
 };
 
-/* ---------- batches (receiving) ---------- */
+/* ---------- batches (receiving) ----------
+ * build-481 (step 1) — مسیر واقعی «اجرا کن» برای کمبود موجودی: پیشنهاد ← فرم
+ * ورود کالا با محصول از پیش انتخاب‌شده ← ثبت Batch واقعی ← افزایش موجودی ←
+ * بازبینی بعدی، پیشنهاد را خودکار می‌بندد. */
+window.showGoodsReceive = (productIds) => {
+  window.__pendingReceiveProducts = (productIds || []).map(Number).filter(Boolean);
+  if (window.go) window.go("batches");
+  else RENDER.batches();
+};
+
 /* v1.3: one purchase price + one consumer price + sell price. The separate
  * "supplier price" box was a duplicate of the purchase price and is gone from
  * the UI (the column stays nullable in the DB for old rows). The barcode box
@@ -1861,6 +1950,38 @@ RENDER.batches = async () => {
       try { const r = await api(`/pos/search?q=${encodeURIComponent(term)}&limit=8`); const ex = r.items.find((i) => i.exact) || (r.items.length === 1 ? r.items[0] : null); if (ex) pick(ex); else search(); } catch (_) {}
     }
   });
+
+  // build-481 — اگر از «اجرا کن»ِ پیشنهاد آمده‌ایم، محصول هدف از پیش انتخاب می‌شود
+  const pending = window.__pendingReceiveProducts || [];
+  if (pending.length) {
+    window.__pendingReceiveProducts = [];
+    try {
+      const r = await api(`/products?ids=${pending.join(",")}&limit=${pending.length}`);
+      const items = r.items || [];
+      const map = (o) => ({ product_id: o.id, name: o.name, barcode: o.barcode, image_url: o.image_url,
+                            unit: o.unit, available_qty: o.stock_qty ?? o.available_qty ?? 0, batches: [] });
+      const first = items.find((o) => o.id === pending[0]) || items[0];
+      if (first) {
+        pick(map(first));
+        toast("کالای پیشنهاد انتخاب شد — مقدار ورود را وارد و ثبت کنید");
+      }
+      const rest = items.filter((o) => !first || o.id !== first.id);
+      if (rest.length) {
+        const box = document.createElement("div");
+        box.className = "card";
+        box.style.margin = "10px 0";
+        box.innerHTML = `<div class="card-head"><h3>کالاهای دیگر همین پیشنهاد</h3></div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">${rest.map((o) =>
+            `<button class="btn btn-sm rq-item" data-id="${o.id}">${esc(o.name)}</button>`).join("")}</div>`;
+        const grid = document.querySelector(".recv-grid");
+        if (grid && grid.parentElement) grid.parentElement.insertBefore(box, grid.nextSibling);
+        box.querySelectorAll(".rq-item").forEach((n) => n.addEventListener("click", () => {
+          const o = items.find((x) => String(x.id) === n.dataset.id);
+          if (o) { pick(map(o)); }
+        }));
+      }
+    } catch (e) { toast("انتخاب خودکار کالا انجام نشد: " + e.message, "err"); }
+  }
 
   if (can("accounting.view")) api("/accounting/suppliers").then((sups) => {
     const sel = $("#b-supplier"); if (sel) sups.forEach((x) => sel.insertAdjacentHTML("beforeend", `<option value="${x.id}">${esc(x.name)}</option>`));
@@ -3619,14 +3740,26 @@ function campaignModal() {
       <div><label>مقدار</label><input id="cm-value" type="number" value="10" /></div>
     </div>
     <div class="form-row">
-      <div><label>حداقل خرید بعدی</label><input id="cm-min" type="number" value="400000" /></div>
+      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="400000" /></div>
+      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" placeholder="بدون سقف" /></div>
+    </div>
+    <div class="form-row">
       <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="1000000" /></div>
+      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" placeholder="نامحدود" /></div>
     </div>
     <div class="form-row">
       <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="1000000" /></div>
       <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="30" /></div>
     </div>
-    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.</p>
+    <div class="form-row">
+      <div><label>نوع اعمال در صندوق</label><select id="cm-apply">
+        <option value="SELECT">انتخاب توسط صندوق‌دار (F10)</option>
+        <option value="AUTO">اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
+      <div><label>ترکیب با کوپن</label><select id="cm-stack">
+        <option value="0">خیر</option><option value="1">بله</option></select></div>
+    </div>
+    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.
+      جشنواره‌های «اعمال خودکار» هنگام ثبت فروش، به‌شرط برقراری شرایط، روی فاکتور اعمال و ثبت می‌شوند.</p>
     <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کمپین</button>`);
   $("#cm-save").addEventListener("click", async () => {
     try {
@@ -3636,6 +3769,10 @@ function campaignModal() {
         discount_value: Number($("#cm-value").value || 0),
         min_purchase: Number($("#cm-min").value || 0),
         max_discount: Number($("#cm-max").value || 0) || null,
+        max_purchase: Number($("#cm-maxpurchase").value || 0) || null,
+        usage_limit: Number($("#cm-usage").value || 0) || null,
+        auto_apply: $("#cm-apply") ? $("#cm-apply").value === "AUTO" : false,
+        stackable: $("#cm-stack") ? $("#cm-stack").value === "1" : false,
         auto_issue_threshold: Number($("#cm-thr").value || 0) || null,
         auto_issue_validity_days: Number($("#cm-days").value || 30),
       }) });
@@ -3959,6 +4096,24 @@ window.showCustomerLedger = async (id) => {
     </tr>`;
   }).join("");
 
+  // build-481 (§27–28) — future-purchase benefits on the customer's profile:
+  // condition, discount, deadline and lifecycle state, straight from the rows
+  // the POS redeems (never a copy). A broken fetch must not hide the ledger.
+  let benefits = { benefits: [] };
+  try { benefits = await api(`/customers/${id}/benefits`); } catch (_) {}
+  const BEN_L = { ACTIVE: ["فعال", "badge-green"], USED: ["استفاده‌شده", "badge-gray"],
+                  EXPIRED: ["منقضی", "badge-red"], BLOCKED: ["مسدود", "badge-red"] };
+  const benRows = (benefits.benefits || []).map((b) => {
+    const st = BEN_L[b.status] || [b.status, "badge-gray"];
+    return `<tr>
+      <td>${esc(b.benefit)} ${b.discount_type === "PERCENT" ? "" : ""}</td>
+      <td class="muted">${esc(b.condition)}</td>
+      <td class="muted">${b.valid_until ? esc(String(b.valid_until).slice(0, 10)) : "—"}</td>
+      <td><span class="badge ${st[1]}">${st[0]}</span>${b.eligible_now ? ' <span class="badge badge-green">قابل استفاده</span>' : ""}</td>
+      <td class="muted">${esc(b.campaign || (b.source === "NEXT_PURCHASE" ? "مزیت خرید بعدی" : "پیشنهاد شخصی"))}</td>
+    </tr>`;
+  }).join("");
+
   openModal(`<h3>حساب دفتری — ${esc(c.name)} ${esc(c.last_name || "")}</h3>
     <div class="balance-hero ${bal > 0 ? "debt" : "clear"}">
       <span class="muted">مانده حساب</span>
@@ -3975,7 +4130,12 @@ window.showCustomerLedger = async (id) => {
       <button class="btn btn-sm" onclick="doSettle(${id}, true)">تسویه کامل (${money(bal)})</button>
       <button class="btn btn-ghost btn-sm" onclick="smsDebtReminder(${id})">پیامک یادآوری</button>
     </div>` : ""}
+    <h4 style="margin-top:14px">مزیت‌های خرید (کوپن‌ها و جشنواره‌ها)</h4>
     <div class="table-wrap"><table>
+      <thead><tr><th>مزیت</th><th>شرط</th><th>مهلت</th><th>وضعیت</th><th>منبع</th></tr></thead>
+      <tbody>${benRows || `<tr><td colspan="5" class="empty">مزیت فعالی ثبت نشده است</td></tr>`}</tbody>
+    </table></div>
+    <div class="table-wrap" style="margin-top:14px"><table>
       <thead><tr><th>تاریخ</th><th>نوع</th><th>مبلغ</th><th>مانده</th><th>توضیح</th></tr></thead>
       <tbody>${rows || `<tr><td colspan="5" class="empty">تراکنشی ثبت نشده است</td></tr>`}</tbody>
     </table></div>

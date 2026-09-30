@@ -1,6 +1,7 @@
 """Campaigns & coupons API (§31–38)."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 
@@ -31,6 +32,17 @@ class CampaignIn(BaseModel):
     auto_issue_validity_days: int = Field(default=30, ge=1, le=3650)
     auto_issue_sms: bool = True
     status: str = Field(default="ACTIVE", pattern="^(ACTIVE|PAUSED|ENDED)$")
+    # build-481 — executable benefit rules (§23): only the capabilities that fit
+    # this business model and architecture are modelled; everything else stays out.
+    max_purchase: Decimal | None = Field(default=None, ge=0)
+    target_type: str = Field(default="ALL", pattern="^(ALL|PRODUCTS)$")
+    target_ids: list[int] | None = None
+    first_purchase_only: bool = False
+    usage_limit: int | None = Field(default=None, ge=1)
+    per_customer_limit: int | None = Field(default=None, ge=1)
+    stackable: bool = False
+    auto_apply: bool = False
+    priority: int = Field(default=3, ge=1, le=5)
 
 
 class CouponIn(BaseModel):
@@ -67,6 +79,17 @@ def _campaign_out(c: Campaign) -> dict:
         "auto_issue_validity_days": c.auto_issue_validity_days,
         "auto_issue_sms": c.auto_issue_sms,
         "status": c.status,
+        "max_purchase": float(c.max_purchase) if c.max_purchase is not None else None,
+        "target_type": c.target_type,
+        "target_ids": json.loads(c.target_ids) if c.target_ids else None,
+        "first_purchase_only": bool(c.first_purchase_only),
+        "usage_limit": c.usage_limit,
+        "per_customer_limit": c.per_customer_limit,
+        "stackable": bool(c.stackable),
+        "auto_apply": bool(c.auto_apply),
+        "priority": c.priority,
+        "used_count": c.used_count or 0,
+        "source_insight_id": c.source_insight_id,
     }
 
 
@@ -94,10 +117,17 @@ def list_campaigns(db: Session = Depends(get_db),
     return [_campaign_out(c) for c in rows]
 
 
+def _campaign_values(body: CampaignIn) -> dict:
+    data = body.model_dump()
+    targets = data.pop("target_ids", None)
+    data["target_ids"] = json.dumps([int(x) for x in targets], ensure_ascii=False) if targets else None
+    return data
+
+
 @router.post("/campaigns", status_code=201)
 def create_campaign(body: CampaignIn, db: Session = Depends(get_db),
                     user: User = Depends(require_permission("settings.manage"))):
-    c = Campaign(**body.model_dump(), created_by=user.id)
+    c = Campaign(**_campaign_values(body), created_by=user.id)
     db.add(c)
     db.flush()
     write_audit(db, action="CAMPAIGN_CREATED", user_id=user.id, entity_type="Campaign",
@@ -112,10 +142,14 @@ def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(ge
     c = db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="CAMPAIGN_NOT_FOUND")
-    for k, v in body.model_dump().items():
+    # §22 — editing an ACTIVE campaign changes FUTURE behaviour only: invoices
+    # already granted keep their immutable snapshot (campaign_name/benefit on the
+    # invoice row + campaign_redemptions), never re-derived from this row.
+    before = {k: _campaign_out(c).get(k) for k in ("name", "status", "discount_value", "valid_until")}
+    for k, v in _campaign_values(body).items():
         setattr(c, k, v)
     write_audit(db, action="CAMPAIGN_UPDATED", user_id=user.id, entity_type="Campaign",
-                entity_id=c.id, after={"name": c.name, "status": c.status})
+                entity_id=c.id, before=before, after={"name": c.name, "status": c.status})
     db.commit()
     return _campaign_out(c)
 

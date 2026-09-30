@@ -23,7 +23,14 @@ from .pricing import MONEY
 
 
 class Campaign(TimestampMixin, Base):
-    """A marketing campaign (festival) that coupons can belong to."""
+    """A marketing campaign (festival) that coupons can belong to.
+
+    v1.0.0 build 481 — a campaign is no longer just a *label* for coupons: it is
+    an executable benefit the POS can apply at checkout (steps 21–26 of the
+    campaign audit).  Every rule below is enforced server-side inside the
+    checkout transaction — the cashier may only *select* among campaigns whose
+    conditions already hold, never bend them.
+    """
 
     __tablename__ = "campaigns"
 
@@ -34,6 +41,8 @@ class Campaign(TimestampMixin, Base):
     discount_type: Mapped[str] = mapped_column(String(16), default="PERCENT")  # PERCENT | FIXED
     discount_value: Mapped[Decimal] = mapped_column(MONEY, default=0)
     min_purchase: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: upper bound of the purchase amount the campaign applies to (سقف خرید)
+    max_purchase: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     max_discount: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
 
     valid_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -44,10 +53,33 @@ class Campaign(TimestampMixin, Base):
     auto_issue_validity_days: Mapped[int] = mapped_column(Integer, default=30)
     auto_issue_sms: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    #: build-481 benefit targeting & limits
+    #: ALL = whole basket · PRODUCTS = only the listed product ids (JSON list)
+    target_type: Mapped[str] = mapped_column(String(16), default="ALL")
+    target_ids: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of product ids
+    #: the benefit applies only to a customer's very first invoice (اولین خرید)
+    first_purchase_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: total number of redemptions allowed (NULL = unlimited)
+    usage_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: redemptions allowed per customer (NULL = unlimited)
+    per_customer_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: may this campaign's benefit stack with a coupon on the same invoice?
+    stackable: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: auto-apply at checkout whenever its conditions hold (threshold festivals)
+    auto_apply: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: lower number = applied first when several campaigns hold (اولویت)
+    priority: Mapped[int] = mapped_column(Integer, default=3)
+    #: total benefit money granted so far / redemption count (audited per row below)
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    #: provenance: which store-intelligence suggestion created this campaign (audit)
+    source_insight_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     status: Mapped[str] = mapped_column(String(16), default="ACTIVE")  # ACTIVE | PAUSED | ENDED
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     coupons: Mapped[list["Coupon"]] = relationship(back_populates="campaign")
+    redemptions: Mapped[list["CampaignRedemption"]] = relationship(back_populates="campaign")
 
 
 class Coupon(TimestampMixin, Base):
@@ -92,3 +124,27 @@ class CouponRedemption(Base):
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     coupon: Mapped["Coupon"] = relationship(back_populates="redemptions")
+
+
+class CampaignRedemption(Base):
+    """build-481 — every campaign benefit applied to an invoice (§26 audit trail).
+
+    One row per (campaign, invoice): who applied it, how much benefit money it
+    granted, and which customer consumed a per-customer slot.  The invoice keeps
+    an immutable *snapshot* of the campaign name/benefit (see ``Invoice``), so
+    later edits to the campaign can never rewrite history.
+    """
+
+    __tablename__ = "campaign_redemptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: CAMPAIGN = cashier/auto applied a festival · AUTO_ISSUE = future-benefit issuance marker
+    source: Mapped[str] = mapped_column(String(16), default="CAMPAIGN")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    campaign: Mapped["Campaign"] = relationship(back_populates="redemptions")

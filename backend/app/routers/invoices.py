@@ -33,6 +33,15 @@ def _out(inv: Invoice) -> dict:
         "total_amount": float(inv.total_amount), "payment_method": inv.payment_method,
         "payment_status": inv.payment_status, "status": inv.status, "print_status": inv.print_status,
         "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "customer_id": inv.customer_id,
+        "invoice_discount": float(getattr(inv, "invoice_discount", 0) or 0),
+        # build-481 (§26) — benefit provenance, frozen at sale time: editing the
+        # festival later must never rewrite what this receipt says.
+        "campaign_id": getattr(inv, "campaign_id", None),
+        "campaign_name": getattr(inv, "campaign_name", None),
+        "benefit_source": getattr(inv, "benefit_source", "NONE"),
+        "benefit_amount": float(getattr(inv, "benefit_amount", 0) or 0),
+        "applied_coupon_code": getattr(inv, "applied_coupon_code", None),
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": it.qty,
              "unit_buy_price": float(it.unit_buy_price), "unit_consumer_price": float(it.unit_consumer_price),

@@ -605,8 +605,17 @@ window.mQty = (idx, d) => {
 };
 window.mRemove = (idx) => { state.cart.splice(idx, 1); showPos(); };
 
-window.mCheckout = () => {
+window.mCheckout = async () => {
   const total = state.cart.reduce((a, i) => a + i.sell * i.qty, 0);
+  // build-481 (§24/§49) — same structured campaign list as the desktop till
+  let camps = [];
+  try {
+    const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+      amount: total, product_ids: state.cart.map((i) => i.product_id), include_auto_apply: true }) });
+    camps = r.campaigns || [];
+  } catch (_) { /* offline: coupon-less sale is still possible */ }
+  const campOpts = camps.map((c) =>
+    `<option value="${c.campaign_id}" data-disc="${c.discount}">${esc(c.name)} — ${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)}</option>`).join("");
   $("#app").insertAdjacentHTML("beforeend", `
     <div class="sheet" id="m-sheet"><div class="sheet-body">
       <h2>پرداخت</h2>
@@ -615,6 +624,8 @@ window.mCheckout = () => {
       <input id="m-phone" inputmode="numeric" placeholder="0912…" />
       <label>کد تخفیف (اختیاری)</label>
       <input id="m-coupon" placeholder="مثلاً WELCOME10" />
+      <label>جشنواره (اختیاری)</label>
+      <select id="m-campaign"><option value="">بدون جشنواره</option>${campOpts}</select>
       <label>روش پرداخت</label>
       <select id="m-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option></select>
       <button class="btn btn-green" onclick="mDoCheckout(${total})">ثبت فروش</button>
@@ -626,6 +637,7 @@ window.mDoCheckout = async (total) => {
   const phone = $("#m-phone").value.trim();
   const coupon = $("#m-coupon").value.trim();
   const method = $("#m-method").value;
+  const campId = $("#m-campaign") ? Number($("#m-campaign").value || 0) || null : null;
   let payable = total;
   if (coupon) {
     try {
@@ -634,16 +646,27 @@ window.mDoCheckout = async (total) => {
       payable = total - ev.discount;
     } catch (e) { toast(e.message, "err"); return; }
   }
+  if (campId) {
+    // preview the festival benefit the server will grant (it re-validates at checkout)
+    try {
+      const ev = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+        amount: payable, product_ids: state.cart.map((i) => i.product_id), include_auto_apply: true }) });
+      const mine = (ev.campaigns || []).find((c) => c.campaign_id === campId);
+      if (mine) payable = Math.max(0, payable - mine.discount);
+    } catch (e) { toast(e.message, "err"); return; }
+  }
   const payload = {
       items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.qty, barcode: i.barcode || undefined })),
       payments: [{ method, amount: payable }],
       customer_phone: phone || null,
-      coupon_code: coupon || null };
+      coupon_code: coupon || null,
+      campaign_id: campId };
   try {
     const inv = await api("/pos/checkout", { method: "POST", body: JSON.stringify(payload) });
     closeSheet();
     state.cart = [];
     toast(`ثبت شد: ${inv.invoice_number}`);
+    if (inv.campaign_name) toast(`جشنواره «${inv.campaign_name}» اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
     if (inv.issued_coupon) toast(`کوپن خرید بعدی: ${inv.issued_coupon.code}`);
     showPos();
   } catch (e) {

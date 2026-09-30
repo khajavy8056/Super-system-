@@ -333,7 +333,7 @@ def a_pay_cycle(ctx: Ctx) -> list[Draft]:
     total = sum(r["balance"] for r in rows)
     ex = rows[0]
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، مانده حساب شما {_money(r['balance'])} است؛ طبق روال همیشگی منتظر تسویهٔ {_fa(r['pay_day'])}ام هستیم. سپاس از همراهی‌تان."} for r in rows if r["phone"]]
-    return [Draft(kind="PAY_CYCLE", dedupe_key=f"day:{today.isoformat()}", priority=2,
+    return [Draft(kind="PAY_CYCLE", dedupe_key="cohort", priority=2,
                   title=f"{_fa(len(rows))} مشتری نسیه‌ای طی ۳ روز آینده روز تسویه‌شان است",
                   body=(f"از تاریخ پرداخت‌های قبلی، هر مشتری یک «روز حقوق» دارد؛ مثلاً «{ex['name']}» معمولاً {_fa(ex['pay_day'])}ام هر ماه تسویه می‌کند "
                         f"(انحراف ±{_fa(ex['spread_days'])} روز). یادآوری یک روز قبل از همان روز، بدون این‌که مزاحم باشد، وصول را چند روز جلو می‌اندازد. "
@@ -377,7 +377,7 @@ def a_cust_favorite(ctx: Ctx) -> list[Draft]:
     rows = rows[:40]
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، «{r['product']}» که همیشه می‌برید این هفته با هدیهٔ ویژه برای شماست. منتظرتان هستیم."} for r in rows if r["phone"]]
     gain = sum(r["spent"] for r in rows) * (30 / ctx.days) * 0.08
-    return [Draft(kind="CUST_FAVORITE", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=3,
+    return [Draft(kind="CUST_FAVORITE", dedupe_key="cohort", priority=3,
                   title=f"چیزی که هر مشتری را جذب می‌کند: {_fa(len(rows))} مشتری با «کالای عشق»",
                   body=(f"هر یک از این مشتریان یک کالا دارد که سهمش در سبد او {_fa(rows[0]['lift'],1)}× بیشتر از میانگین فروشگاه است "
                         f"(مثلاً «{rows[0]['name']}» ← «{rows[0]['product']}»، {_fa(rows[0]['share'])}٪ خریدش). پیام شخصی دربارهٔ همان کالا "
@@ -416,7 +416,7 @@ def a_cust_item_due(ctx: Ctx) -> list[Draft]:
     rows.sort(key=lambda r: (-r["buys"], r["due_in"]))
     rows = rows[:40]
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، «{r['product']}» شما احتمالاً رو به اتمام است؛ تازه‌اش رسیده و برایتان کنار گذاشته‌ایم."} for r in rows if r["phone"]]
-    return [Draft(kind="CUST_ITEM_DUE", dedupe_key=f"day:{ctx.today.isoformat()}", priority=2,
+    return [Draft(kind="CUST_ITEM_DUE", dedupe_key="cohort", priority=2,
                   title=f"{_fa(len(rows))} کالای همیشگی مشتریان همین روزها تمام می‌شود",
                   body=(f"چرخهٔ خرید هر مشتری برای هر کالا محاسبه شد؛ مثلاً «{rows[0]['name']}» هر {_fa(rows[0]['cycle_days'])} روز «{rows[0]['product']}» می‌برد و نوبت بعدی {_fa(abs(rows[0]['due_in']))} روز {'دیگر' if rows[0]['due_in'] >= 0 else 'پیش'} است. "
                         f"پیام «کالای شما دارد تمام می‌شود» دقیقاً همان لحظه‌ای می‌رسد که به فکرش می‌افتد — و جلوی خرید از رقیب را می‌گیرد."),
@@ -445,7 +445,7 @@ def a_ticket_drop(ctx: Ctx) -> list[Draft]:
     rows = rows[:30]
     loss = sum(r["monthly_loss"] for r in rows)
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، نظرتان برای ما مهم است؛ اگر چیزی کم داریم یا قیمتی مناسب نبود همین‌جا پاسخ دهید. با کد VIP۵ این هفته ۵٪ تخفیف دارید."} for r in rows if r["phone"]]
-    return [Draft(kind="TICKET_DROP", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=2,
+    return [Draft(kind="TICKET_DROP", dedupe_key="cohort", priority=2,
                   title=f"سبد {_fa(len(rows))} مشتری ثابت کوچک شده — بخشی از خریدشان جای دیگر می‌رود",
                   body=(f"این مشتریان هنوز می‌آیند اما میانگین فاکتورشان {_fa(rows[0]['drop_pct'])}٪ (و بیشتر) افت کرده؛ نشانهٔ کلاسیک «تقسیم سبد» با رقیب، قبل از ریزش کامل. "
                         f"فروش ماهانهٔ ازدست‌رفته: {_money(loss)}. یک پیام نظرخواهی + کوپن کوچک معمولاً دلیل را رو می‌کند (قیمت، موجودی، یا برخورد)."),
@@ -476,7 +476,7 @@ def a_freq_drop(ctx: Ctx) -> list[Draft]:
     rows = rows[:30]
     at_risk = sum(r["monthly_sales"] for r in rows)
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، مدتی است کمتر می‌بینیمتان؛ کالاهای تازه رسیده و با کد BACK۱۰ این هفته ۱۰٪ تخفیف دارید."} for r in rows if r["phone"]]
-    return [Draft(kind="FREQ_DROP", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=3,
+    return [Draft(kind="FREQ_DROP", dedupe_key="cohort", priority=3,
                   title=f"{_fa(len(rows))} مشتری دارند کم‌کم فاصله می‌گیرند (قبل از ریزش)",
                   body=(f"فاصلهٔ خریدهای اخیر این مشتریان تقریباً دو برابر روال خودشان شده (مثلاً «{rows[0]['name']}»: هر {_fa(rows[0]['gap_before'])} روز → هر {_fa(rows[0]['gap_now'],1)} روز). "
                         f"در این مرحله برگرداندنشان بسیار ارزان‌تر از بعد از قطع کامل است. فروش ماهانهٔ در خطر: {_money(at_risk)}."),
@@ -506,7 +506,7 @@ def a_new_cust_2nd(ctx: Ctx) -> list[Draft]:
     rows = rows[:40]
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، از اولین خریدتان سپاسگزاریم! برای دومین خرید ۱۰٪ تخفیف با کد WELCOME۱۰ تا ۷ روز آینده مهمان ما باشید."} for r in rows]
     avg = sum(r["ticket"] for r in rows) / len(rows)
-    return [Draft(kind="NEW_CUST_2ND", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=2,
+    return [Draft(kind="NEW_CUST_2ND", dedupe_key="cohort", priority=2,
                   title=f"{_fa(len(rows))} مشتری جدید فقط یک بار آمده‌اند — خرید دوم را بسازید",
                   body=(f"مشتری‌ای که بار دوم برگردد، با احتمال چند برابر مشتری ثابت می‌شود. این {_fa(len(rows))} نفر در ۳۰ روز اخیر اولین خریدشان را کرده‌اند "
                         f"(میانگین فاکتور {_money(avg)}) و هنوز برنگشته‌اند؛ همه شماره داده‌اند. یک خوش‌آمد + کوپن یک‌هفته‌ای ارزان‌ترین جذب مشتری ثابت است."),
@@ -533,7 +533,7 @@ def a_offer_sensitive(ctx: Ctx) -> list[Draft]:
         return []
     rows_r = _cust_rows(e, resp[:40], lambda c: {"issued": issued[c], "used": used[c]})
     rows_d = _cust_rows(e, deaf[:40], lambda c: {"issued": issued[c], "used": 0, "visits": len(e.by_cust.get(c, []))})
-    return [Draft(kind="OFFER_SENSITIVE", dedupe_key=f"month:{ctx.today.strftime('%Y-%m')}", priority=3,
+    return [Draft(kind="OFFER_SENSITIVE", dedupe_key="cohort", priority=3,
                   title=f"{_fa(len(resp))} مشتری به تخفیف واکنش نشان می‌دهند، {_fa(len(deaf))} نفر بدون تخفیف هم می‌خرند",
                   body=(f"از روی کوپن‌های صادرشده و استفاده‌شده: گروه اول ≥۵۰٪ کوپن‌ها را استفاده کرده‌اند (پیام تخفیف برایشان کار می‌کند)؛ گروه دوم با وجود ≥۳ کوپن هیچ‌کدام را استفاده نکرده و همچنان خرید می‌کنند "
                         f"— برای این‌ها تخفیف یعنی سود دورریخته؛ به‌جایش خبر کالای تازه یا تشکر شخصی بفرستید."),
@@ -611,7 +611,7 @@ def a_credit_risk(ctx: Ctx) -> list[Draft]:
     rows.sort(key=lambda r: -r["balance"])
     rows = rows[:25]
     total = sum(r["balance"] for r in rows)
-    return [Draft(kind="CREDIT_RISK", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=1 if total > 20_000_000 else 2,
+    return [Draft(kind="CREDIT_RISK", dedupe_key="cohort", priority=1 if total > 20_000_000 else 2,
                   title=f"{_money(total)} نسیه در معرض سوخت‌شدن ({_fa(len(rows))} حساب)",
                   body=(f"این حساب‌ها یا بیش از ۴۵ روز است پرداختی نداشته‌اند یا از سقف اعتبارشان گذشته‌اند و همچنان نسیه می‌برند. «{rows[0]['name']}»: {_money(rows[0]['balance'])}، آخرین پرداخت {_fa(rows[0]['days_since_payment'])} روز پیش. "
                         f"پیشنهاد: سقف اعتبار را روی ۸۰٪ ماندهٔ فعلی ببندید تا بدهی رشد نکند، و پیامک محترمانهٔ تسویه بفرستید."),
@@ -640,7 +640,7 @@ def a_anniversary(ctx: Ctx) -> list[Draft]:
     if len(rows) < 2:
         return []
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، {_fa(r['years'])} سال از اولین خریدتان از ما می‌گذرد. سپاس که هستید؛ این هفته یک هدیهٔ کوچک پای صندوق منتظرتان است."} for r in rows]
-    return [Draft(kind="ANNIVERSARY", dedupe_key=f"week:{ctx.today.isocalendar()[1]}", priority=4,
+    return [Draft(kind="ANNIVERSARY", dedupe_key="cohort", priority=4,
                   title=f"سالگرد اولین خرید {_fa(len(rows))} مشتری در این هفته است",
                   body=(f"کاری که هیچ رقیبی نمی‌کند: «{rows[0]['name']}» {_fa(rows[0]['years'])} سال پیش در همین هفته اولین بار از شما خرید کرد. یک پیام تشکر و یک هدیهٔ کوچک، "
                         f"وفاداری می‌سازد و هزینه‌اش تقریباً صفر است."),
@@ -672,7 +672,7 @@ def a_bulk_buyer(ctx: Ctx) -> list[Draft]:
     rows = rows[:25]
     texts = [{"customer_id": r["customer_id"], "text": f"{r['name']} عزیز، برای خرید عمدهٔ «{r['product']}» قیمت ویژه برایتان در نظر گرفته‌ایم؛ قبل از خرید بعدی به ما خبر دهید تا آماده باشد."} for r in rows if r["phone"]]
     gain = sum(r["avg_qty"] * r["margin"] * r["times"] for r in rows) * (30 / ctx.days) * 0.3
-    return [Draft(kind="BULK_BUYER", dedupe_key=f"month:{ctx.today.strftime('%Y-%m')}", priority=3,
+    return [Draft(kind="BULK_BUYER", dedupe_key="cohort", priority=3,
                   title=f"{_fa(len(rows))} خریدار عمده در میان مشتریان شما پنهان است",
                   body=(f"«{rows[0]['name']}» {_fa(rows[0]['times'])} بار «{rows[0]['product']}» را به‌طور میانگین {_fa(rows[0]['avg_qty'],1)} عدد برده (معمول: {_fa(rows[0]['typical_qty'])}). "
                         f"این‌ها احتمالاً مغازه‌دار یا خانوادهٔ پرجمعیت‌اند؛ یک قرار «قیمت عمده + رزرو» آن‌ها را از بنکدار جدا می‌کند و حجم را چند برابر."),
@@ -731,7 +731,7 @@ def a_reorder_point(ctx: Ctx) -> list[Draft]:
     rows = rows[:40]
     ups = [r for r in rows if r["direction"] == "up"]
     gain = sum(r["velocity_per_day"] * r["margin"] for r in ups) * 3   # ≈3 avoided empty days / month each
-    return [Draft(kind="REORDER_POINT", dedupe_key=f"month:{ctx.today.strftime('%Y-%m')}", priority=2,
+    return [Draft(kind="REORDER_POINT", dedupe_key="cohort", priority=2,
                   title=f"نقطهٔ سفارش {_fa(len(rows))} کالا با سرعت فروش واقعی‌شان نمی‌خواند",
                   body=(f"حداقل موجودی باید ≈ ۵ روز فروش باشد (۳ روز تا رسیدن جنس + ۲ روز ایمنی). {_fa(len(ups))} کالا هشدارشان خیلی دیر می‌آید (یا اصلاً تنظیم نشده) و {_fa(len(rows)-len(ups))} کالا سرمایه را بی‌دلیل قفل کرده‌اند. "
                         f"مثلاً «{rows[0]['name']}» روزی {_fa(rows[0]['velocity_per_day'],1)} عدد می‌فروشد؛ حداقل فعلی {_fa(rows[0]['current_min'])} ← پیشنهادی {_fa(rows[0]['suggested_min'])}."),

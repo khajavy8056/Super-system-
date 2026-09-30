@@ -1,6 +1,7 @@
 """v3.0 — Store Intelligence API («هوش فروشگاه»)."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -202,6 +203,10 @@ def accept(insight_id: int, body: AcceptIn | None = None, db: Session = Depends(
 def dismiss(insight_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("settings.manage"))):
     row = _get(db, insight_id)
     row.status = "DISMISSED"
+    # build-481 — the lifecycle must say WHY a card left the active list.
+    row.resolved_at = datetime.utcnow()
+    row.resolution = json.dumps({"reason": "dismissed", "by": user.id if user else None,
+                                 "at": row.resolved_at.isoformat()}, ensure_ascii=False)
     db.commit()
     return {"ok": True}
 
