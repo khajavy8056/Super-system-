@@ -19,6 +19,12 @@ installer/ci/release-windows.yml
 > git push
 > ```
 >
+> **بیلد ۴۸۱:** مرحلهٔ کهنهٔ «fetch + embed the AI model» (که به `scripts/model/`
+> حذف‌شدهٔ v4.6 اشاره می‌کرد و هر ساخت ویندوزی را در همان گام می‌شکست) از
+> `release-windows.yml` حذف شد؛ اکنون با فعال‌سازی، ساختِ نصبی بدون مانع است.
+> (تلاش برای فعال‌سازی با توکن مخزن با پیام `without workflows permission`
+> رد شد — همین که همین README می‌گفت.)
+>
 > پس از این جابه‌جایی، هر push روی تگ `v*` به‌صورت خودکار Setup.exe ویندوز و
 > بستهٔ لینوکس را می‌سازد و به Release پیوست می‌کند. تا پیش از آن، وضعیت این
 > بخش **NOT VERIFIED on real hardware** است (سند صداقت).

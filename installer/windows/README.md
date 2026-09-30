@@ -18,7 +18,7 @@
 
 | فایل | مسیر | توضیح |
 |---|---|---|
-| `RasaSystem-Setup-0.4.0.exe` | `installer\output\` | نصب‌کنندهٔ کلاسیک (نیاز به Inno Setup) |
+| `RasaSystem-Setup-1.0.0.exe` | `installer\output\` | نصب‌کنندهٔ کلاسیک (نیاز به Inno Setup) — شماره از `backend/app/__init__.py` |
 | `RasaSystem-1.0.0-portable.exe` | `installer\output\` | تک‌فایل قابل اجرا بدون نصب — همیشه ساخته می‌شود |
 | `RasaSystem.exe` | `installer\windows\dist\` | همان فایل portable قبل از کپی |
 | `build.log` | `installer\windows\` | لاگ کامل ساخت |
