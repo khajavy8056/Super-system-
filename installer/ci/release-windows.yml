@@ -81,15 +81,11 @@ jobs:
           }
           Write-Host "frozen executable booted and served the panel"
 
-      - name: Fetch + verify the local AI model (embedded in the installer)
-        shell: pwsh
-        run: |
-          # The owner's requirement: the produced Setup.exe carries the verified
-          # local model inside it, so the shop PC works offline on first launch.
-          # A checksum failure here fails the release - never bundle unverified.
-          # --downloader builtin: no IDM on a CI runner; the built-in download
-          # manager does progress/resume/fallback sources on its own.
-          python scripts/model/prepare_windows_installer.py --engine --downloader builtin
+      # v4.6.0 (round 14) — the local Business-BRAIN model pipeline was removed
+      # from the product (scripts/model/ is deleted; test_v46_brain_removal pins
+      # this). The old "fetch + embed the AI model" step called the deleted
+      # script and failed EVERY Windows release build after v4.6. The installer
+      # no longer bundles a model payload, so there is nothing to fetch here.
 
       - name: Build the installer (Inno Setup)
         shell: pwsh
