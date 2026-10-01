@@ -303,10 +303,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-486 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-487 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 486;
+const UI_BUILD = 487;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -381,8 +381,14 @@ function bindGlobalBar() {
   }
   const bell = $("#tb-bell"); if (bell) bell.addEventListener("click", () => go("insights"));
   const cal = $("#tb-cal"); if (cal) cal.addEventListener("click", () => go("reports"));
-  const th = $("#tb-theme"); if (th) th.addEventListener("click", () => { const t = $("#theme-toggle"); if (t) t.click(); });
-  const us = $("#tb-user"); if (us) us.addEventListener("click", () => go("settings"));
+  // build-487 — دکمهٔ پوسته باید واقعاً روشن/تیره را عوض کند (باگ مالک: کلیک بی‌اثر).
+  // cycleTheme خودش auto→light→dark را می‌چرخاند و روی سرور هم ذخیره می‌کند.
+  const th = $("#tb-theme"); if (th) th.addEventListener("click", () => {
+    if (window.cycleTheme) window.cycleTheme();
+    else { const t2 = $("#sb-theme"); if (t2) t2.click(); }
+  });
+  // build-487 — کارت کاربر «پروفایل کاربر» را باز می‌کند، نه پروفایل فروشگاه
+  const us = $("#tb-user"); if (us) us.addEventListener("click", () => go("profile"));
 }
 
 /* v1.0.0 (RASA) — زیرعنوان هر صفحه: کاربر تازه بفهمد این صفحه به چه کار می‌آید. */
@@ -405,11 +411,13 @@ const VIEW_SUBS = {
   audit: "ردیابی کارهای انجام‌شده",
   insights: "پیشنهاد، اجرا و سنجش نتیجه",
   insightsPlan: "پیش‌بینی سود و برنامهٔ اقدام",
+  profile: "پروفایل کاربری — مشخصات حساب شما",
 };
 async function go(view) {
   state.view = view;
   buildNav();
   const titles = Object.fromEntries(NAV.map(([k, v]) => [k, v]));
+  titles.profile = "پروفایل من";
   $("#view-title").textContent = titles[view] || view;
   const sub = $("#view-sub"); if (sub) sub.textContent = VIEW_SUBS[view] || "";
   $("#topbar-actions").innerHTML = "";
@@ -427,6 +435,44 @@ async function go(view) {
 
 /* ---------- views ---------- */
 const RENDER = {};
+
+/* build-487 — «پروفایل من»: مشخصات همین کاربرِ واردشده (نه پروفایل فروشگاه).
+   همه از state.user — بدون فراخوانی جدید؛ خروج از حساب هم همین‌جا. */
+RENDER.profile = async () => {
+  const u = state.user || {};
+  const perms = u.permissions || [];
+  const name = (u.full_name || u.username || "؟").trim();
+  $("#view").innerHTML = `
+    <div class="og-profile">
+      <section class="dcard prof-head">
+        <span class="prof-av">${esc(name.slice(0, 1))}</span>
+        <div class="prof-id">
+          <h2>${esc(u.full_name || "")}</h2>
+          <p class="muted">@${esc(u.username || "")} · ${esc((u.roles || []).join("، ") || "—")}</p>
+        </div>
+        <div class="prof-actions">
+          ${can("users.manage") ? `<button class="btn" onclick="go('users')">مدیریت کاربران</button>` : ""}
+          <button class="btn btn-ghost" id="prof-logout">خروج از حساب</button>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>اطلاعات حساب</h3>
+        <div class="acc-mini">
+          <div><span class="muted">نام کامل</span><b>${esc(u.full_name || "—")}</b></div>
+          <div><span class="muted">نام کاربری</span><b>${esc(u.username || "—")}</b></div>
+          <div><span class="muted">نقش‌ها</span><b>${esc((u.roles || []).join("، ") || "—")}</b></div>
+          <div><span class="muted">تعداد دسترسی‌ها</span><b>${fa(perms.length)}</b></div>
+          <div class="span2"><span class="muted">فروشگاه</span><b>${esc((state.store && state.store.name) || "—")}</b></div>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>دسترسی‌های این حساب</h3>
+        <div class="prof-perms">${perms.map((x) => `<span class="badge badge-blue">${esc(x)}</span>`).join("") || '<span class="muted">—</span>'}</div>
+      </section>
+    </div>`;
+  const lo = $("#prof-logout");
+  if (lo) lo.addEventListener("click", () => { if (window.doLogout) window.doLogout(); });
+};
 
 RENDER.dashboard = async () => {
   const d = await api("/reports/dashboard");
@@ -463,7 +509,6 @@ RENDER.dashboard = async () => {
   const greetTxt = hh < 12 ? "صبح بخیر" : hh < 17 ? "ظهر بخیر" : hh < 20 ? "عصر بخیر" : "شب بخیر";
   const nowClock = `${fa(String(new Date().getHours()).padStart(2, "0"))}:${fa(String(new Date().getMinutes()).padStart(2, "0"))}`;
   v.innerHTML = `
-    <div id="dash-alarms"></div>
     <!-- build-485 — چیدمان دقیق تصویر مرجع: ستون اصلی (سلام، KPI، نمودارها، جدول‌ها) + ریل کناری -->
     <div class="og-grid">
       <div class="og-main">
@@ -575,7 +620,6 @@ RENDER.dashboard = async () => {
         </section>
       </aside>
     </div>
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.0")} · بیلد ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     <div class="dash">
       <div class="dash-band"><span>جزئیات عملیاتی</span><i></i></div>
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
@@ -599,7 +643,6 @@ RENDER.dashboard = async () => {
           </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
       </section>
 
-      <div class="dash-band"><span>عملیات فروشگاه</span><i></i></div>
       <section class="dcard dcard-low">
         <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
         <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
@@ -613,7 +656,6 @@ RENDER.dashboard = async () => {
       </section>
 
 
-      <div class="dash-band"><span>مالی و تسویه</span><i></i></div>
       ${can("accounting.view") ? `
       <section class="dcard dcard-acc">
         <h3>${icon("ledger", 18)} وضعیت مالی</h3>
@@ -629,16 +671,20 @@ RENDER.dashboard = async () => {
 
       <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
       <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
-      <div class="dash-band"><span>سامانه و پیام‌رسانی</span><i></i></div>
       <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
       <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
       <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
     </div>
+    <div class="ai-line">
+      <span class="ai-line-ic">${icon("star", 17)}</span>
+      <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
+      <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
+    </div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.0")} · بیلد ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     <button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
     </button>`;
-  renderStocktakeAlarms("#dash-alarms");
   if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
   mountDashWidgets(d);   // build-484 — ویجت‌های زندهٔ چیدمان مرجع (پیشنهاد، فعالیت، بازه، جدول)
 };
