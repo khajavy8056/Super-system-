@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    Category,
     Invoice,
     InvoiceItem,
     Product,
@@ -176,6 +177,8 @@ def dashboard(db: Session) -> dict:
         # v1.4 — visual dashboard blocks
         "trend": _sales_trend(db, days=7),
         "top_products": _top_products(db, t0 - timedelta(days=29), t1, limit=5),
+        # build-484 — donut «توزیع فروش بر اساس دسته‌بندی» (۳۰ روز اخیر)
+        "sales_by_category": _sales_by_category(db, t0 - timedelta(days=29), t1, limit=6),
         "recent_invoices": _recent_invoices(db, limit=6),
         "accounting": _accounting_block(db),
     }
@@ -213,6 +216,27 @@ def _top_products(db: Session, start: datetime, end: datetime, limit: int = 5) -
     return [{"product_id": r[0], "name": r[1], "image_url": r[2], "qty": float(r[3]),
              "revenue": float(Decimal(r[4])), "profit": float(Decimal(r[5])),
              "share_pct": float((Decimal(r[4]) / total * 100).quantize(Decimal("0.1")))} for r in rows]
+
+
+def _sales_by_category(db: Session, start: datetime, end: datetime, limit: int = 6) -> list[dict]:
+    """build-484 — donut «توزیع فروش بر اساس دسته‌بندی»: گروه‌بندی واقعی فروش ۳۰ روز
+    از روی `products.category_id` (بدون دسته ← «سایر»). فقط خواندنی؛ قیمت/مالیات/سود
+    دست‌نخورده است."""
+    rows = db.execute(
+        select(Category.name,
+               func.coalesce(func.sum(InvoiceItem.subtotal), 0))
+        .select_from(InvoiceItem)
+        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+        .join(Product, InvoiceItem.product_id == Product.id)
+        .outerjoin(Category, Product.category_id == Category.id)
+        .where(_paid_filter(start, end))
+        .group_by(Category.name)
+        .order_by(func.sum(InvoiceItem.subtotal).desc()).limit(limit)).all()
+    total = sum((Decimal(r[1]) for r in rows), ZERO) or Decimal(1)
+    out = [{"name": r[0] if r[0] else "سایر",
+            "sales": float(Decimal(r[1])),
+            "share_pct": float((Decimal(r[1]) / total * 100).quantize(Decimal("0.1")))} for r in rows]
+    return out
 
 
 def _recent_invoices(db: Session, limit: int = 6) -> list[dict]:

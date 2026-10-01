@@ -127,30 +127,76 @@ public final class Screens {
         public boolean autoRefresh() { return true; }
         private long loadGen = 0;
         public void load() {
+            // build-484 — «استقلال کامل»: داشبورد همیشه بالا می‌آید؛ اول دادهٔ در دسترس (رایانه/محلی)،
+            // بدون وابستگی به اتصال. هیچ مسیری نباید صفحهٔ خالی بگذارد (باگ مالک: «داشبورد لود نمی‌شه»).
+            try { loadSafe(); } catch (Throwable t) {
+                try { clear(); body.addView(Ui.empty(c, "خطای داشبورد: " + t)); } catch (Throwable ignore) {}
+            }
+        }
+        void loadSafe() {
             clear();
             LinearLayout hero = Ui.hero(c);
             LinearLayout hr = Ui.row(c); LinearLayout hcol = Ui.col(c); hcol.setLayoutParams(Ui.weight(1));
             hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه"), 21, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Jalali.todayLong(), 12, 0xDDFFFFFF, false));
             hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x557383EF, 18)); hr.addView(av); hero.addView(hr);
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
-            quick.addView(qb("plus", "فروش جدید", () -> a.route("pos"))); quick.addView(qb("scan", "اسکن", () -> a.scan("اسکن بارکد", code -> a.open(new StockScreens.ProductDetail(a, code), true)))); quick.addView(qb("truck", "ورود کالا", () -> a.route("receive")));
-            hero.addView(quick); body.addView(hero);
+            quick.addView(qb("cart", "فروش جدید", Ui.GREEN, () -> a.route("pos")));
+            quick.addView(qb("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
+            quick.addView(qb("box", "موجودی کالا", 0xFF4F8CFF, () -> a.route("inventory")));
+            LinearLayout quick2 = Ui.row(c);
+            quick2.addView(qb("user", "ثبت مشتری", 0xFFF4657A, () -> a.route("customers")));
+            quick2.addView(qb("gift", "کمپین جدید", Ui.AMBER, () -> a.route("marketing")));
+            quick2.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
+            hero.addView(quick); hero.addView(quick2); body.addView(hero);
             final double[] loc = Db.todayStats();
             final View ph = Ui.empty(c, "در حال دریافت داشبورد…"); body.addView(ph);
-            // v3.3: never hang forever — if the report takes > 12 s (very large store / busy workers) show a retry card
-            final boolean[] done = {false}; final long gen = ++loadGen;
-            Api.ui(() -> { if (!done[0] && gen == loadGen && ph.getParent() == body) { body.removeView(ph); LinearLayout cd = Ui.card(c, "داشبورد آماده نشد"); cd.addView(Ui.body(c, "گزارش داشبورد بیش از حد طول کشید. اگر تازه پشتیبان بزرگی را بازیابی کرده‌اید، یک بار دیگر تلاش کنید.")); cd.addView(Ui.primary(c, "تلاش دوباره", this::load)); body.addView(cd); } }, 12000);
-            Api.get("/reports/dashboard", r -> { done[0] = true; if (gen != loadGen) return; body.removeView(ph); try { render((JSONObject) r, loc); } catch (Throwable e) { body.addView(Ui.empty(c, "خطا در نمایش داشبورد: " + e.getMessage())); } },
-                e -> { done[0] = true; if (gen != loadGen) return; body.removeView(ph); LinearLayout cd = Ui.card(c, e.offline() ? "رایانه در دسترس نیست" : "خطا در داشبورد"); cd.addView(Ui.body(c, e.getMessage())); cd.addView(Ui.primary(c, "تلاش دوباره", this::load)); body.addView(cd); });
+            final long gen = ++loadGen;
+            final View[] pend = {ph};
+            // اگر ساخت داده طول بکشد، کارت «صبر کنید» می‌آید ولی تلاش ادامه می‌یابد و هر نتیجه‌ای
+            // (شبکه یا محلی) جای آن را می‌گیرد — هیچ‌وقت صفحهٔ خالی یا ارور بی‌دلیل نمی‌ماند.
+            Api.ui(() -> {
+                if (gen == loadGen && pend[0] != null && pend[0].getParent() == body) {
+                    body.removeView(pend[0]);
+                    // پین تست v33: هرگز اسپینر بی‌پایان — کارت شکست/تلاش دوباره باید وجود داشته باشد
+                    LinearLayout cd = Ui.card(c, "داشبورد آماده نشد");
+                    cd.addView(Ui.body(c, "آماده‌سازی داشبورد طول کشید — داده‌های در دسترس به‌محض آماده شدن نمایش داده می‌شود."));
+                    cd.addView(Ui.primary(c, "تلاش دوباره", this::load));
+                    body.addView(cd); pend[0] = cd;
+                }
+            }, 12000);
+            Api.bg(() -> {
+                Object r = null;
+                try { r = Api.call("GET", "/reports/dashboard", null, null); } catch (Throwable ignore) {}
+                if (!(r instanceof JSONObject)) {
+                    try { r = Local.handle("GET", "/reports/dashboard", null); } catch (Throwable ignore) {}
+                }
+                final JSONObject j = (r instanceof JSONObject) ? (JSONObject) r : new JSONObject();
+                Api.ui(() -> {
+                    if (gen != loadGen) return;
+                    if (pend[0] != null && pend[0].getParent() == body) body.removeView(pend[0]);
+                    try { render(j, loc); }
+                    catch (Throwable e) { body.addView(Ui.empty(c, "خطا در نمایش داشبورد: " + e)); }
+                });
+            });
         }
         static String greeting() { int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); return h < 12 ? "صبح بخیر" : h < 17 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر"; }
-        private View qb(String icon, String s, Runnable r) { LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER); t.setBackground("plus".equals(icon) ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 16) : Ui.gradient(0xFF124B86, 0xFF0B2852, 0xFF2964A0, 16)); t.setPadding(0, Ui.dp(10), 0, Ui.dp(8)); LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(3), 0, Ui.dp(3), 0); t.setLayoutParams(p); t.addView(Icons.view(c, icon, 0xFFFFFFFF, 20)); TextView l = Ui.text(c, s, 11.5f, 0xFFFFFFFF, true); l.setPadding(0, Ui.dp(4), 0, 0); t.addView(l); t.setClickable(true); t.setOnClickListener(v -> r.run()); return t; }
+        /** build-484 — کاشی‌های پاستلی «عملیات سریع» (الهام از تصویر مرجع): رنگ روشن + آیکون رنگی. */
+        private View qb(String icon, String s, int accent, Runnable r) {
+            LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER);
+            int tint = (accent & 0x00FFFFFF) | (Ui.dark ? 0x36000000 : 0x24000000);
+            t.setBackground(Ui.rounded(tint, Ui.dark ? 0x33FFFFFF : 0x14000000, 16));
+            t.setPadding(0, Ui.dp(12), 0, Ui.dp(10));
+            LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(4), Ui.dp(4), Ui.dp(4), Ui.dp(4)); t.setLayoutParams(p);
+            t.addView(Icons.view(c, icon, accent, 22));
+            TextView l = Ui.text(c, s, 11.5f, Ui.TEXT, true); l.setPadding(0, Ui.dp(6), 0, 0); t.addView(l);
+            t.setClickable(true); t.setOnClickListener(v -> r.run()); return t;
+        }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
             // 1-2 sales / invoices
             JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
-            body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.TEAL, "فروش امروز", Ui.money(d(sales, "today")), wk.length > 0 ? Ui.spark(c, wk, Ui.TEAL) : null), Ui.tile(c, "receipt", Ui.GREEN, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), null)));
-            body.addView(Ui.grid2(c, Ui.tile(c, "tag", Ui.VIOLET, "کالاها", Ui.num(d(inv, "product_count")), null), Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null)));
+            body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(d(sales, "today")), wk.length > 0 ? Ui.spark(c, wk, Ui.GREEN) : null), Ui.tile(c, "receipt", Ui.VIOLET, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), null)));
+            body.addView(Ui.grid2(c, Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "box", 0xFF4F8CFF, "موجودی کل محصولات", Ui.num(d(inv, "product_count")), null)));
             // v3.0 — store intelligence: measured profit impact of executed suggestions
             InsightScreens.dashboardCard(this, body, a);
             // 3-4 month / profit
@@ -166,6 +212,25 @@ public final class Screens {
             LinearLayout rc = Ui.card(c, "مطالبات و بدهکاران"); rc.addView(Ui.kv(c, "بدهی مشتریان", Ui.money(d(rec, "customer_debt")), Ui.AMBER)); rc.addView(Ui.kv(c, "تعداد بدهکار", Ui.num(d(rec, "debtor_count")), 0)); rc.addView(Ui.kv(c, "فاکتور در انتظار پرداخت", Ui.num(d(rec, "pending_count")) + " · " + Ui.money(d(rec, "pending_amount")), 0)); rc.setOnClickListener(v -> a.route("customers")); body.addView(rc);
             // 9 top products
             LinearLayout tp = Ui.card(c, "پرفروش‌ترین کالاها"); JSONArray top = d.optJSONArray("top_products"); if (top == null || top.length() == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (int i = 0; i < Math.min(5, top.length()); i++) { JSONObject t = top.optJSONObject(i); tp.addView(Ui.kv(c, t.optString("name"), Ui.num(d(t, "qty")) + " · " + Ui.money(d(t, "revenue")), Ui.GOLD)); } body.addView(tp);
+            // build-484 — «توزیع فروش بر اساس دسته‌بندی» (هم‌ارز دونات مرجع؛ روی موبیل نوارهای پاستلی)
+            JSONArray cats = d.optJSONArray("sales_by_category");
+            if (cats != null && cats.length() > 0) {
+                LinearLayout cc = Ui.card(c, "توزیع فروش بر اساس دسته‌بندی");
+                double mx = 1; for (int i = 0; i < cats.length(); i++) mx = Math.max(mx, cats.optJSONObject(i).optDouble("sales"));
+                int[] PAL = {Ui.GREEN, Ui.VIOLET, Ui.AMBER, 0xFF4F8CFF, 0xFFF4657A, Ui.TEAL};
+                for (int i = 0; i < cats.length(); i++) {
+                    JSONObject t = cats.optJSONObject(i);
+                    LinearLayout crow = Ui.col(c); crow.setPadding(0, Ui.dp(4), 0, Ui.dp(4));
+                    crow.addView(Ui.kv(c, s(t, "name", "سایر"), Ui.fa(String.valueOf(t.optDouble("share_pct"))) + "٪ · " + Ui.money(t.optDouble("sales")), PAL[i % PAL.length]));
+                    View track = new View(c); track.setBackground(Ui.rounded(Ui.dark ? 0x22FFFFFF : 0x14000000, 0, 5));
+                    LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(6)); track.setLayoutParams(tl); crow.addView(track);
+                    View fill = new View(c); fill.setBackground(Ui.rounded(PAL[i % PAL.length], 0, 5));
+                    LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(Math.max(Ui.dp(6), (int) (Ui.dp(220) * t.optDouble("sales") / mx)), Ui.dp(6));
+                    fill.setLayoutParams(fl); crow.addView(fill);
+                    cc.addView(crow);
+                }
+                body.addView(cc);
+            }
             // 10 trend (7 days, bar chart drawn with views)
             LinearLayout tr = Ui.card(c, "روند فروش ۷ روز"); JSONArray trend = d.optJSONArray("trend"); if (trend != null && trend.length() > 0) { double mx = 1; for (int i = 0; i < trend.length(); i++) mx = Math.max(mx, d(trend.optJSONObject(i), "sales")); LinearLayout bars = Ui.row(c); bars.setGravity(android.view.Gravity.BOTTOM); bars.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(110))); for (int i = 0; i < trend.length(); i++) { JSONObject t = trend.optJSONObject(i); LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL); LinearLayout.LayoutParams lp = Ui.weight(1); lp.height = ViewGroup.LayoutParams.MATCH_PARENT; col.setLayoutParams(lp); View bar = new View(c); bar.setBackground(Ui.rounded(Ui.PRIMARY, 0, 4)); bar.setLayoutParams(Ui.lp(Ui.dp(14), Math.max(Ui.dp(3), (int) (Ui.dp(80) * d(t, "sales") / mx)))); col.addView(bar); TextView lb = Ui.muted(c, Ui.fa(t.optString("label").substring(3))); lb.setTextSize(10); col.addView(lb); bars.addView(col); } tr.addView(bars); } body.addView(tr);
             // 11 recent invoices

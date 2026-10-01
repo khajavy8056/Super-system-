@@ -24,7 +24,7 @@
   const GROUPS = [
     ["فروش و مشتری", ["pos", "invoices", "customers", "marketing"]],
     ["کالا و انبار", ["products", "batches", "inventory"]],
-    ["مدیریت", ["dashboard", "reports", "accounting", "users", "audit"]],
+    ["مدیریت", ["dashboard", "reports", "insights", "accounting", "users", "audit"]],
     ["سیستم", ["settings", "hardware", "diagnostics", "support"]],
   ];
   const ICON_MORE = '<path d="M4 6h16M4 12h16M4 18h16"/>';

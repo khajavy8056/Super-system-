@@ -113,7 +113,14 @@ public final class Ui {
     public static GradientDrawable luxe(float radius) { GradientDrawable g = gradient(dark ? 0xFF142857 : 0xFF263D7B, dark ? 0xFF07152F : 0xFF142954, 0, radius); g.setStroke(dp(1), GOLD_LINE | 0x66000000); return g; }
     public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(16), dp(15), dp(16), dp(15)); l.setElevation(dark ? 0 : dp(2.5f)); if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor(0x33000000); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** hero card (dashboard welcome): teal gradient, white text. */
-    public static LinearLayout hero(Context c) { LinearLayout l = col(c); GradientDrawable g = gradient(0xFF214EC0, dark ? 0xFF101D4E : 0xFF343D8D, BORDER, 22); g.setStroke(dp(1), dark ? 0x66FFC65A : 0x667383EF); l.setBackground(g); l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout hero(Context c) {
+        // build-484 — بنر سلام (الهام از تصویر مرجع): گرادیان بنفش/آبی ملایم، گوشه‌های گرد.
+        LinearLayout l = col(c);
+        GradientDrawable g = gradient(dark ? 0xFF2749C9 : 0xFF7C8CFF, dark ? 0xFF101D4E : 0xFF9BA9FF, BORDER, 22);
+        g.setStroke(dp(1), dark ? 0x66FFC65A : 0x667383EF); l.setBackground(g);
+        l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18));
+        l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l;
+    }
     /** dashboard tile: rounded icon badge + label + big value (+ optional custom view below). */
     public static LinearLayout tile(Context c, String icon, int accent, String label, String value, View extra) {
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14)); l.setMinimumHeight(dp(118));
