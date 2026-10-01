@@ -33,6 +33,7 @@ public class AppActivity extends Activity {
     static final int REQ_SCAN = 31, REQ_PICK = 32;
     Consumer<android.net.Uri> pickCb;
     private FrameLayout content; private LinearLayout tabs; private TextView title; private View syncDot; private TextView syncTxt;
+    private View aiFab;   // build-483 — دکمهٔ شناور «هوش فروشگاه» (فقط داشبورد)
     private FrameLayout drawerLayer; private LinearLayout drawer;
     private final Deque<Screens.Screen> stack = new ArrayDeque<>();
     private Consumer<String> scanCb;
@@ -134,11 +135,29 @@ public class AppActivity extends Activity {
         drawer = Ui.col(this); drawer.setBackgroundColor(Ui.BG2); drawer.setElevation(Ui.dp(16)); drawer.setClickable(true);
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(Ui.dp(304), ViewGroup.LayoutParams.MATCH_PARENT); dlp.gravity = Gravity.END; drawer.setLayoutParams(dlp);
         drawerLayer.addView(drawer); outer.addView(drawerLayer);
+        // build-483 — دکمهٔ شناور «هوش فروشگاه» (FAB): گرادیان برند، بالای نوار تب‌ها،
+        // با فاصلهٔ امن از لبه‌ها؛ فقط روی داشبورد نمایش داده می‌شود (بی‌صدا و کنترل‌شده).
+        LinearLayout fab = Ui.row(this);
+        fab.setBackground(Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.PRIMARY2, 24));
+        fab.setPadding(Ui.dp(16), Ui.dp(12), Ui.dp(16), Ui.dp(12));
+        fab.setElevation(Ui.dp(18));
+        fab.addView(Icons.view(this, "star", 0xFFFFFFFF, 20));
+        TextView fabTx = Ui.text(this, "هوش فروشگاه", 13, 0xFFFFFFFF, true);
+        fabTx.setPadding(Ui.dp(8), 0, 0, 0);
+        fab.addView(fabTx);
+        fab.setOnClickListener(v -> route("insights"));
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        flp.gravity = Gravity.BOTTOM | Gravity.START;
+        flp.setMargins(Ui.dp(16), 0, 0, Ui.dp(78));   // بالای نوار تب‌ها، بدون پوشاندن محتوا
+        fab.setLayoutParams(flp);
+        fab.setVisibility(View.GONE);
+        aiFab = fab;
+        outer.addView(fab);
         setContentView(outer);
     }
     private View iconBtn(String icon, Runnable r) { android.widget.ImageView t = Icons.view(this, icon, Ui.TEXT, 40); int p = Ui.dp(10); t.setPadding(p, p, p, p); t.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22FFFFFF), Ui.rounded(Ui.CARD2, Ui.BORDER, 13), null)); t.setOnClickListener(v -> r.run()); return t; }
 
-    private static final String[][] TABS = {{"home", "خانه", "home"}, {"pos", "فروش", "cart"}, {"products", "کالاها", "tag"}, {"inventory", "انبار", "box"}, {"more", "بیشتر", "grid"}};
+    private static final String[][] TABS = {{"home", "داشبورد", "home"}, {"pos", "فروش", "cart"}, {"inventory", "موجودی", "box"}, {"receive", "دریافت", "truck"}, {"more", "بیشتر", "grid"}};
     private void buildTabs(String active) {
         tabs.removeAllViews();
         for (String[] t : TABS) {
@@ -225,7 +244,10 @@ public class AppActivity extends Activity {
     private void show(Screens.Screen s) {
         content.removeAllViews(); title.setText(s.title());
         View v = s.view(); content.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        buildTabs(s.key()); s.load();
+        buildTabs(s.key());
+        // build-483 — دکمهٔ شناور «هوش فروشگاه» فقط روی داشبورد (پایین صفحه، بالای نوار تب‌ها).
+        if (aiFab != null) aiFab.setVisibility("home".equals(s.key()) && Screens.allowed("insights") ? View.VISIBLE : View.GONE);
+        s.load();
     }
     public Screens.Screen current() { return stack.peek(); }
     public void refreshCurrent() { Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }

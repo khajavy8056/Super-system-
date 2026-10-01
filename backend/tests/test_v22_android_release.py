@@ -48,8 +48,12 @@ def test_redesigned_shell_matches_reference_mockups():
     for grp in ("فروش و مشتری", "فاکتورها", "کالا و موجودی", "جشنواره و کوپن"):
         assert grp in app, grp
     assert "خروج از حساب" in app
-    for tab in ("خانه", "فروش", "کالاها", "انبار", "بیشتر"):
+    for tab in ("داشبورد", "فروش", "موجودی", "دریافت", "بیشتر"):
         assert f'"{tab}"' in app
+    # build-483 — نوار پایین طبق درخواست مالک تغییر کرد: «داشبورد، فروش/صندوق،
+    # موجودی، خرید/دریافت، بیشتر» (کالاها و بقیه در کشوی «بیشتر»). قرارداد قبلی
+    # (خانه/کالاها/انبار) عمداً جایگزین شد؛ مسیرها همان کلیدهای ثابت‌اند.
+    assert '{"home", "داشبورد", "home"}' in app and '{"receive", "دریافت", "truck"}' in app
     home = (JAVA / "Screens.java").read_text(encoding="utf-8")
     assert "Ui.hero(c)" in home and "Ui.tile(c" in home and "حالت مستقل" in home
     pos = (JAVA / "SalesScreens.java").read_text(encoding="utf-8")

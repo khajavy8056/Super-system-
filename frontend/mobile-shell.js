@@ -18,7 +18,9 @@
   document.documentElement.classList.add("m-shell");
 
   const $ = (s) => document.querySelector(s);
-  const TABS = [["dashboard", "خانه"], ["pos", "فروش"], ["products", "کالاها"], ["inventory", "انبار"], ["__more", "بیشتر"]];
+  /* build-483 — نوار پایین موبایل مطابق درخواست مالک: داشبورد، فروش/صندوق، موجودی،
+     خرید/دریافت، بیشتر (بقیهٔ بخش‌ها داخل کشوی «بیشتر»). */
+  const TABS = [["dashboard", "داشبورد"], ["pos", "فروش"], ["inventory", "موجودی"], ["batches", "دریافت"], ["__more", "بیشتر"]];
   const GROUPS = [
     ["فروش و مشتری", ["pos", "invoices", "customers", "marketing"]],
     ["کالا و انبار", ["products", "batches", "inventory"]],

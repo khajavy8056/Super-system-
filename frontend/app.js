@@ -428,22 +428,41 @@ RENDER.dashboard = async () => {
     (d.sms || {}).failed ? { sev: "amber", ic: "sms", text: `${fa(d.sms.failed)} پیامک ناموفق در صف`, go: "settings" } : null,
     !sysOk ? { sev: "amber", ic: "stethoscope", text: "سلامت سیستم نیاز به بررسی دارد", go: "diagnostics" } : null,
   ].filter(Boolean);
-  const kpi = (label, value, sub, cls) => `
-      <div class="kpi-tile ${cls || ""}">
-        <span class="kpi-label">${label}</span>
+  const kpi = (ico, tone, label, value, sub) => `
+      <div class="kpi-tile">
+        <div class="kpi-head"><span class="kpi-ic ${tone}">${icon(ico, 19)}</span><span class="kpi-label">${label}</span></div>
         <b class="kpi-value">${value}</b>
         <span class="kpi-sub">${sub}</span>
       </div>`;
+  /* build-483 — نوار سلام داشبورد (زبان طراحی «نور»): سلام + تاریخ/ساعت + خلاصهٔ امروز. */
+  const greetName = esc((state.user && (state.user.full_name || state.user.username)) || "");
+  const hh = new Date().getHours();
+  const greetTxt = hh < 12 ? "صبح بخیر" : hh < 17 ? "ظهر بخیر" : hh < 20 ? "عصر بخیر" : "شب بخیر";
+  const nowClock = `${fa(String(new Date().getHours()).padStart(2, "0"))}:${fa(String(new Date().getMinutes()).padStart(2, "0"))}`;
+  const trendChip = `<span class="trend-chip ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪</span> نسبت به دیروز`;
   v.innerHTML = `
     <div id="dash-alarms"></div>
+    <section class="dash-greet">
+      <div class="greet-orb"></div>
+      <div class="greet-sun">${hh >= 6 && hh < 18 ? "☀️" : "🌙"}</div>
+      <div class="greet-col">
+        <h2>${greetTxt}، ${greetName}</h2>
+        <span class="greet-sub">امروز هم یک روز عالی برای رشد فروشگاه است — ${fa(d.sales.invoice_count_today)} فاکتور تا این ساعت ثبت شده.</span>
+        <div class="greet-when">
+          <span class="chip">${icon("clock", 13)} ${Jalali.fromIso(new Date().toISOString())}</span>
+          <span class="chip">${icon("clock", 13)} ${nowClock}</span>
+          <span class="chip">${icon("warehouse", 13)} ${esc((state.store && state.store.name) || "فروشگاه")}</span>
+          <button class="chip" style="cursor:pointer" onclick="openQuickPalette && openQuickPalette()" title="جست‌وجوی سریع">${icon("barcode", 13)} جست‌وجوی سریع · <span class="kbd">Ctrl+K</span></button>
+        </div>
+      </div>
+    </section>
     <section class="dash-hero">
       <div class="hero-kpis">
-        ${kpi("فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`,
-              `<span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪</span> نسبت به دیروز`, "kpi-primary")}
-        ${kpi("فاکتور امروز", fa(d.sales.invoice_count_today), `میانگین هر فاکتور ${money(d.sales.avg_invoice_today)}`)}
-        ${kpi("سود امروز", can("pricing.view_cost") ? money(d.profit.today) : "—",
+        ${kpi("cash", "i-green", "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendChip)}
+        ${kpi("invoice", "i-violet", "فاکتور امروز", fa(d.sales.invoice_count_today), `میانگین هر فاکتور ${money(d.sales.avg_invoice_today)}`)}
+        ${kpi("trend", "i-blue", "سود امروز", can("pricing.view_cost") ? money(d.profit.today) : "—",
               can("pricing.view_cost") ? `این ماه ${money(d.profit.month)}` : "بدون دسترسی به بهای تمام‌شده")}
-        ${kpi("ارزش موجودی", money(d.inventory.value), `${fa(d.inventory.product_count)} کالا در فهرست`)}
+        ${kpi("box", "i-amber", "ارزش موجودی", money(d.inventory.value), `${fa(d.inventory.product_count)} کالا در فهرست`)}
       </div>
       <aside class="alert-rail ${alerts.length ? "" : "all-clear"}">
         <div class="rail-head"><span>${alerts.length ? `${icon("bell", 16)} ${fa(alerts.length)} مورد نیاز به توجه` : `${icon("check", 16)} همه‌چیز مرتب است`}</span>
@@ -495,10 +514,12 @@ RENDER.dashboard = async () => {
       <section class="dcard dcard-quick">
         <h3>${icon("gear", 18)} اقدام سریع</h3>
         <div class="quick-grid">
-          ${can("products.manage") ? `<button class="qa qa-green" onclick="go('products')">${icon("box", 20)}<span>افزودن کالای جدید</span></button>` : ""}
-          ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("inbox", 20)}<span>ورود کالا</span></button>` : ""}
+          ${can("pos.sell") ? `<button class="qa qa-green" onclick="go('pos')">${icon("cart", 20)}<span>فاکتور جدید</span></button>` : ""}
+          ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("inbox", 20)}<span>دریافت کالا</span></button>` : ""}
+          ${can("inventory.view") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("warehouse", 20)}<span>موجودی کالا</span></button>` : ""}
           ${can("accounting.post") ? `<button class="qa qa-violet" onclick="AccountingUI.expenseModal()">${icon("cash", 20)}<span>ثبت هزینه</span></button>` : ""}
-          ${can("pos.sell") ? `<button class="qa qa-amber" onclick="go('pos')">${icon("pos", 20)}<span>صندوق فروش</span></button>` : ""}
+          ${can("pos.sell") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>مشتریان</span></button>` : ""}
+          ${can("reports.view") ? `<button class="qa qa-amber" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
         </div>
       </section>
 
@@ -522,7 +543,11 @@ RENDER.dashboard = async () => {
       <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
       <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
       <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
-    </div>`;
+    </div>
+    <button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
+      <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
+      <span>هوش فروشگاه</span>
+    </button>`;
   renderStocktakeAlarms("#dash-alarms");
   if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
 };
@@ -4207,3 +4232,81 @@ async function boot() {
   }
 }
 if (!window.__NO_AUTOBOOT) boot();
+
+/* build-483 — جعبهٔ فرمان سراسری (Ctrl+K): جابه‌جایی سریع بین بخش‌ها و اقدام‌های
+   پرتکرار، بدون گشتن در منو. فقط لایهٔ UX است؛ هیچ منطق کسب‌وکاری اجرا نمی‌کند
+   جز همان مسیرهای موجود (`go(...)`) و دکمه‌های امروز. */
+(function () {
+  let bg = null, inputEl = null, listEl = null, selIdx = 0, visible = [];
+
+  function paletteItems() {
+    const acts = [
+      can("pos.sell") ? { ico: "cart", label: "فاکتور جدید (صندوق)", hint: "اقدام", run: () => go("pos") } : null,
+      can("batches.manage") ? { ico: "inbox", label: "دریافت کالا", hint: "اقدام", run: () => go("batches") } : null,
+      can("accounting.post") ? { ico: "cash", label: "ثبت هزینه", hint: "اقدام", run: () => window.AccountingUI && AccountingUI.expenseModal() } : null,
+      can("reports.view") ? { ico: "chart", label: "هوش فروشگاه", hint: "اقدام", run: () => go("insights") } : null,
+      { ico: "gear", label: "تغییر پوسته (روشن/تیره)", hint: "تنظیم", run: () => { const b = document.getElementById("sb-theme"); if (b) b.click(); } },
+    ].filter(Boolean);
+    const navs = NAV.filter((n) => can(n[2])).map(([key, label, perm, ico]) => ({
+      ico, label, hint: "بخش", run: () => go(key),
+    }));
+    return [...acts, ...navs];
+  }
+
+  function draw(q) {
+    const items = paletteItems();
+    const qq = (q || "").trim();
+    visible = qq ? items.filter((it) => it.label.includes(qq)) : items;
+    selIdx = 0;
+    listEl.innerHTML = visible.map((it, i) => `
+      <button class="cmdk-item ${i === 0 ? "sel" : ""}" data-i="${i}">
+        <span class="cmdk-ic">${icon(it.ico, 16)}</span><span>${esc(it.label)}</span><small>${it.hint}</small>
+      </button>`).join("") || `<div class="state-empty">چیزی پیدا نشد</div>`;
+    listEl.querySelectorAll(".cmdk-item").forEach((b) => {
+      b.addEventListener("click", () => { close(); visible[+b.dataset.i].run(); });
+    });
+  }
+
+  function move(dir) {
+    if (!visible.length) return;
+    selIdx = (selIdx + dir + visible.length) % visible.length;
+    listEl.querySelectorAll(".cmdk-item").forEach((b, i) => b.classList.toggle("sel", i === selIdx));
+    const el = listEl.querySelector(`.cmdk-item[data-i="${selIdx}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }
+
+  function open() {
+    if (bg || !state.user) return;
+    bg = document.createElement("div");
+    bg.className = "cmdk-bg";
+    bg.innerHTML = `
+      <div class="cmdk" role="dialog" aria-label="جست‌وجوی سریع">
+        <input class="cmdk-input" placeholder="جست‌وجو در بخش‌ها و اقدام‌ها… (Enter)" aria-label="جست‌وجوی سریع" />
+        <div class="cmdk-list"></div>
+        <div class="cmdk-foot"><span><span class="kbd">↑↓</span> حرکت</span><span><span class="kbd">Enter</span> اجرا</span><span><span class="kbd">Esc</span> بستن</span></div>
+      </div>`;
+    document.body.appendChild(bg);
+    inputEl = bg.querySelector(".cmdk-input");
+    listEl = bg.querySelector(".cmdk-list");
+    draw("");
+    inputEl.focus();
+    bg.addEventListener("mousedown", (e) => { if (e.target === bg) close(); });
+    inputEl.addEventListener("input", () => draw(inputEl.value));
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+      else if (e.key === "Enter") { e.preventDefault(); const it = visible[selIdx]; if (it) { close(); it.run(); } }
+      else if (e.key === "Escape") { e.preventDefault(); close(); }
+    });
+  }
+
+  function close() { if (bg) { bg.remove(); bg = null; } }
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (bg) close(); else open();
+    }
+  });
+  window.openQuickPalette = open;
+})();
