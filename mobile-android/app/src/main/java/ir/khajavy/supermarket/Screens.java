@@ -137,7 +137,7 @@ public final class Screens {
             clear();
             LinearLayout hero = Ui.hero(c);
             LinearLayout hr = Ui.row(c); LinearLayout hcol = Ui.col(c); hcol.setLayoutParams(Ui.weight(1));
-            hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه"), 21, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Jalali.todayLong(), 12, 0xDDFFFFFF, false));
+            hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, "امروز یک روز عالی برای رشد فروشگاه است", 13, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه") + " · " + Jalali.todayLong(), 12, 0xDDFFFFFF, false));
             hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x557383EF, 18)); hr.addView(av); hero.addView(hr);
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
             quick.addView(qb("cart", "فروش جدید", Ui.GREEN, () -> a.route("pos")));
@@ -195,7 +195,10 @@ public final class Screens {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
             // 1-2 sales / invoices
             JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
-            body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(d(sales, "today")), wk.length > 0 ? Ui.spark(c, wk, Ui.GREEN) : null), Ui.tile(c, "receipt", Ui.VIOLET, "فاکتورهای امروز", Ui.num(d(sales, "invoice_count_today")), null)));
+            double sToday = d(sales, "today"), sYest = d(sales, "yesterday"); int iToday = (int) d(sales, "invoice_count_today"), iYest = (int) d(sales, "invoice_count_yesterday");
+            TextView sTr = Ui.muted(c, sYest > 0 ? (sToday >= sYest ? "▲ " : "▼ ") + Ui.fa(String.valueOf(Math.round(Math.abs(sToday - sYest) * 100 / sYest))) + "٪ نسبت به دیروز" : "ثبت امروز");
+            TextView iTr = Ui.muted(c, iYest > 0 ? (iToday >= iYest ? "▲ " : "▼ ") + Ui.fa(String.valueOf(Math.round(Math.abs(iToday - iYest) * 100.0 / iYest))) + "٪ نسبت به دیروز" : "ثبت امروز");
+            body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(sToday), sTr), Ui.tile(c, "receipt", Ui.VIOLET, "تعداد فاکتورها", Ui.num(iToday), iTr)));
             body.addView(Ui.grid2(c, Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "box", 0xFF4F8CFF, "موجودی کل محصولات", Ui.num(d(inv, "product_count")), null)));
             // v3.0 — store intelligence: measured profit impact of executed suggestions
             InsightScreens.dashboardCard(this, body, a);
@@ -235,6 +238,18 @@ public final class Screens {
             LinearLayout tr = Ui.card(c, "روند فروش ۷ روز"); JSONArray trend = d.optJSONArray("trend"); if (trend != null && trend.length() > 0) { double mx = 1; for (int i = 0; i < trend.length(); i++) mx = Math.max(mx, d(trend.optJSONObject(i), "sales")); LinearLayout bars = Ui.row(c); bars.setGravity(android.view.Gravity.BOTTOM); bars.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(110))); for (int i = 0; i < trend.length(); i++) { JSONObject t = trend.optJSONObject(i); LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL); LinearLayout.LayoutParams lp = Ui.weight(1); lp.height = ViewGroup.LayoutParams.MATCH_PARENT; col.setLayoutParams(lp); View bar = new View(c); bar.setBackground(Ui.rounded(Ui.PRIMARY, 0, 4)); bar.setLayoutParams(Ui.lp(Ui.dp(14), Math.max(Ui.dp(3), (int) (Ui.dp(80) * d(t, "sales") / mx)))); col.addView(bar); TextView lb = Ui.muted(c, Ui.fa(t.optString("label").substring(3))); lb.setTextSize(10); col.addView(lb); bars.addView(col); } tr.addView(bars); } body.addView(tr);
             // 11 recent invoices
             LinearLayout ri = Ui.card(c, "آخرین فاکتورها"); JSONArray rinv = d.optJSONArray("recent_invoices"); if (rinv == null || rinv.length() == 0) ri.addView(Ui.muted(c, "—")); else for (int i = 0; i < Math.min(5, rinv.length()); i++) { JSONObject t = rinv.optJSONObject(i); ri.addView(Ui.kv(c, Ui.fa(t.optString("invoice_number")) + " · " + Ui.jdate(t.optString("created_at")).substring(11), Ui.money(d(t, "total")), stColor(t.optString("status")))); } ri.setOnClickListener(v -> a.route("invoices")); body.addView(ri);
+            // build-485 — «گزارش فروش روزانه» (همان جدول تصویر مرجع؛ روی گوشی از دادهٔ محلی)
+            JSONArray byPay = d.optJSONArray("today_by_payment");
+            if (byPay != null && byPay.length() > 0) {
+                LinearLayout dp = Ui.card(c, "گزارش فروش روزانه");
+                double tot = 0;
+                for (int i = 0; i < byPay.length(); i++) {
+                    JSONObject t = byPay.optJSONObject(i); tot += t.optDouble("sales");
+                    dp.addView(Ui.kv(c, s(t, "name", "نقدی"), Ui.num(t.optInt("invoice_count")) + " فاکتور · " + Ui.money(t.optDouble("sales")), 0));
+                }
+                dp.addView(Ui.kv(c, "جمع کل", Ui.money(tot), Ui.GOLD));
+                body.addView(dp);
+            }
             // 12 system + sms + accounting + pricing conflicts
             LinearLayout sy = Ui.card(c, "وضعیت سامانه"); sy.addView(Ui.kv(c, "نسخهٔ رایانه", Ui.fa(s(sys, "version")), 0)); sy.addView(Ui.kv(c, "وضعیت", s(sys, "status", "OK"), stColor(s(sys, "status", "OK")))); sy.addView(Ui.kv(c, "فضای آزاد دیسک", Ui.fa(String.valueOf(d(sys, "disk_free_gb"))) + " GB", 0)); sy.addView(Ui.kv(c, "صف همگام‌سازی رایانه", Ui.num(d(sys, "sync_queued")) + " · خطا " + Ui.num(d(sys, "sync_failed")), 0)); sy.addView(Ui.kv(c, "پیامک", (sms != null && sms.optBoolean("configured") ? "فعال" : "پیکربندی‌نشده") + " · در صف " + Ui.num(d(sms, "pending")), 0)); sy.addView(Ui.kv(c, "تعارض قیمت", Ui.num(d(pr, "price_conflict_count")), d(pr, "price_conflict_count") > 0 ? Ui.AMBER : 0)); sy.addView(Ui.kv(c, "صندوق / بانک", Ui.money(d(acc, "cash")) + " / " + Ui.money(d(acc, "bank")), 0)); sy.addView(Ui.kv(c, "بدهی به تأمین‌کننده", Ui.money(d(acc, "payables")), 0)); sy.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور · " + (loc[2] > 0 ? Ui.num(loc[2]) + " در صف" : "همگام"), loc[2] > 0 ? Ui.AMBER : Ui.GREEN)); body.addView(sy);
         }

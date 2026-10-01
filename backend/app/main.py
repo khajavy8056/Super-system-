@@ -313,6 +313,19 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """build-485 — جلوگیری از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
+    جدید، ظاهر قدیمی»). WebView2/Edge فایل‌های JS/CSS را با کش تهاجمی نگه می‌داشت؛
+    حالا همهٔ پاسخ‌های متنی با `no-cache` فقط مشروط بازبینی می‌شوند (تصاویر کالا
+    در /media طبق معمول کش می‌شوند)."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/media/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 # Serve the web panel (frontend/) from the same origin when present.
 def _find_frontend_dir() -> Path | None:
     candidates = [

@@ -29,22 +29,22 @@ def _sha_matches(path: Path) -> bool:
 
 
 def test_version_is_the_single_source_of_truth_everywhere():
-    """v1.0.0 build 484 — همهٔ کانال‌ها (بک‌اند، نصب‌کننده، اندروید) یک نسخه می‌گویند.
+    """v1.0.0 build 485 — همهٔ کانال‌ها (بک‌اند، نصب‌کننده، اندروید) یک نسخه می‌گویند.
 
     build-484 note: the pin follows the release, exactly like the migration-head
-    pin does — «بیلد ۴۸۴» = 48400. The contract is unchanged: one explicit BUILD
+    pin does — «بیلد ۴۸۵» = 48500. The contract is unchanged: one explicit BUILD
     file, never smaller than the semantic version's weighted code.
     """
     assert VERSION == "1.0.0", VERSION
     setup = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8")
     assert f'#define MyAppVersion "{VERSION}"' in setup, "نسخهٔ نصب‌کنندهٔ ویندوز با بک‌اند یکی نیست"
     assert "RASA SYSTEM" in setup and "RasaSystem" in setup, "نام برند در نصب‌کننده نیست"
-    # بیلد ۴۸۴ = 48400 است و کد نسخهٔ اندروید هرگز نباید از نسخهٔ معنایی عقب بماند
+    # بیلد ۴۸۵ = 48500 است و کد نسخهٔ اندروید هرگز نباید از نسخهٔ معنایی عقب بماند
     build = (ROOT / "mobile-android" / "BUILD").read_text(encoding="utf-8").strip()
-    assert build.isdigit() and int(build) == 48400, build
+    assert build.isdigit() and int(build) == 48500, build
     major, minor, patch = (int(x) for x in VERSION.split("."))
     semver_code = major * 10000 + minor * 100 + patch
-    assert max(int(build), semver_code) == 48400
+    assert max(int(build), semver_code) == 48500
     strings = (ROOT / "mobile-android" / "app" / "src" / "main" / "res" / "values"
                / "strings.xml").read_text(encoding="utf-8")
     assert 'name="app_name">رسا سیستم<' in strings, "نام برند اندروید به‌روز نیست"

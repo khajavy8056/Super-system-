@@ -844,16 +844,21 @@ html.m-shell .ai-fab .ai-spark { animation: none; }
 }
 
 /* ── سایدبار: حالت فعال قرصی + کاشی آیکون + کارت پایینی ── */
-.nav-btn {
+.nav-item {
   display: flex; align-items: center; gap: 10px; border: 0; cursor: pointer;
   border-radius: 12px; padding: 9px 10px; font-family: inherit; font-size: 13px;
 }
 .nav-ic {
   width: 30px; height: 30px; border-radius: 9px; display: inline-flex;
   align-items: center; justify-content: center; background: var(--bg-soft);
-  color: var(--muted); transition: background .15s, color .15s;
+  color: var(--muted); transition: background .15s, color .15s; flex: 0 0 30px;
 }
-.nav-btn.on .nav-ic { background: var(--primary); color: #fff; }
+.nav-item.active .nav-ic { background: var(--primary); color: #fff; }
+.nav-new {
+  margin-inline-start: auto; font-size: 9.5px; font-style: normal; font-weight: 700;
+  color: #16a34a; background: rgba(34, 197, 94, .16); border-radius: 999px; padding: 2px 8px;
+}
+.nav-item.active .nav-new { color: #fff; background: rgba(255, 255, 255, .22); }
 .ai-assist {
   display: flex; align-items: center; gap: 10px; width: 100%; cursor: pointer;
   border: 1px solid var(--border); border-radius: 16px; padding: 10px 12px;
@@ -995,4 +1000,120 @@ html.m-shell .ai-fab .ai-spark { animation: none; }
   .dash-row, .dash-row-3 { grid-template-columns: 1fr; }
   .greet-art { display: none; }
   .global-search { display: none; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   build-485 — چیدمان دقیق «تصویر مرجع»: ستون اصلی + ریل کناری
+   (سلام + تصویر فروشگاه، KPI×۴، روند فروش + دونات، جدول‌ها، ریل)
+   ═══════════════════════════════════════════════════════════════ */
+.og-grid {
+  display: grid; grid-template-columns: minmax(0, 1fr) 336px;
+  gap: 16px; align-items: start;
+}
+.og-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.og-rail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.og-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ── کارت سلام مرجع ── */
+.og-hero {
+  display: flex; align-items: center; gap: 18px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 22px; padding: 22px 24px;
+  background: linear-gradient(115deg, var(--primary) 0%, #7c5cff 55%, #9ba9ff 100%);
+  color: #fff;
+}
+.og-hero-txt { flex: 1; min-width: 0; }
+.og-hero-head { display: flex; align-items: center; gap: 12px; }
+.og-sun {
+  width: 46px; height: 46px; border-radius: 14px; flex: 0 0 46px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, .2); font-size: 23px;
+}
+.og-hero h2 { margin: 0; font-size: 22px; }
+.og-hero p { margin: 8px 0 12px; font-size: 13px; opacity: .92; }
+.og-hero .greet-when .chip {
+  background: rgba(255, 255, 255, .16); color: #fff; border-color: rgba(255, 255, 255, .28);
+}
+.og-hero .greet-when .chip .kbd { background: rgba(255, 255, 255, .2); color: #fff; }
+.greet-art { flex: 0 0 230px; }
+.greet-art svg { width: 100%; height: auto; display: block; }
+
+/* ── KPIهای مرجع (کاشی بزرگ، مقدار درشت، روند رنگی) ── */
+.og-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
+.og-kpis .kpi-tile {
+  border: 1px solid var(--border); border-radius: 18px; padding: 15px 16px;
+  background: var(--surface); min-width: 0;
+}
+.og-kpis .kpi-value { font-size: 21px; display: block; margin-top: 10px; }
+.og-kpis .kpi-sub { display: block; margin-top: 7px; font-size: 11px; }
+.og-kpis .kpi-ic { width: 42px; height: 42px; border-radius: 13px; }
+
+/* ── تیتر جایگزین بر اساس پوسته (دقیقاً مثل دو تصویر مرجع) ── */
+.og-title-dark { display: none; }
+html[data-theme="dark"] .og-title-dark { display: flex; align-items: center; gap: 7px; }
+html[data-theme="dark"] .og-title-light { display: none; }
+
+.static-chip { cursor: default; }
+
+/* ── ردیف‌های پیشنهاد/هشدار + فعالیت ── */
+.og-sug-list, .og-act-list { display: flex; flex-direction: column; gap: 8px; margin-top: 11px; }
+.og-sug-row, .og-act-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: start;
+  border: 1px solid var(--border); border-radius: 14px; padding: 9px 11px;
+  background: var(--bg-soft); cursor: pointer; font-family: inherit;
+}
+.og-act-row { cursor: default; }
+.og-sug-ic {
+  width: 32px; height: 32px; border-radius: 10px; flex: 0 0 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.og-sug-ic.amber  { background: rgba(245, 158, 11, .16); color: #d97706; }
+.og-sug-ic.red    { background: rgba(244, 101, 122, .15); color: #e11d48; }
+.og-sug-ic.blue   { background: rgba(79, 140, 255, .15); color: #2563eb; }
+.og-sug-ic.violet { background: rgba(124, 92, 255, .16); color: #7c5cff; }
+.og-sug-ic.green  { background: rgba(34, 197, 94, .15); color: #16a34a; }
+.og-sug-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.og-sug-tx b { font-size: 12px; line-height: 1.6; }
+.og-sug-tx small { color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.og-act-tx { flex: 1; min-width: 0; font-size: 12px; color: var(--text); }
+.og-chev { color: var(--muted); font-size: 18px; }
+
+/* ── وضعیت فروشگاه ── */
+.og-online {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  color: #16a34a; background: rgba(34, 197, 94, .13); border-radius: 999px; padding: 4px 10px;
+}
+.og-online i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+.og-status-foot {
+  display: flex; justify-content: space-between; gap: 8px; margin-top: 12px;
+  padding-top: 10px; border-top: 1px dashed var(--border); font-size: 10.5px;
+}
+
+/* ── جدول‌های مرجع ── */
+.og-table { width: 100%; border-collapse: collapse; }
+.og-table th {
+  text-align: start; font-size: 11px; color: var(--muted); font-weight: 600;
+  padding: 8px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.og-table td { padding: 9px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.og-table tbody tr:hover { background: var(--bg-soft); }
+.og-thumb {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 27px; height: 27px; border-radius: 50%; font-size: 11px; font-weight: 700;
+  background: rgba(124, 92, 255, .16); color: #7c5cff; margin-inline-end: 6px; vertical-align: middle;
+}
+.og-table .og-total td {
+  border-bottom: 0; font-weight: 700;
+  background: rgba(245, 158, 11, .12); color: var(--text);
+}
+
+@media (max-width: 1280px) {
+  .og-grid { grid-template-columns: 1fr; }
+  .og-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 980px) {
+  .og-row { grid-template-columns: 1fr; }
+  .og-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .og-rail { grid-template-columns: 1fr; }
+  .greet-art { display: none; }
 }

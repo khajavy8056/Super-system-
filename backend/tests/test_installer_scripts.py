@@ -62,3 +62,31 @@ def test_builder_lib_has_no_model_step():
     assert "prepare_windows_installer" not in text and "verify_setup" not in text
     assert "آماده‌سازی مدل هوش محلی" not in text, "the model step is removed"
     assert "PYTHONUTF8" in text, "Python output must be forced to UTF-8 on Windows"
+
+
+# ---------------------------------------------------------------------------
+# build-485 — «نصبی جدید، ظاهر قدیمی»: قرارداد تازگی رابط کاربری در زنجیرهٔ ساخت.
+# ---------------------------------------------------------------------------
+def test_ui_build_marker_matches_build_file():
+    """تک‌منبع بودن شمارهٔ بیلد: نشان ui-build در app.js باید از mobile-android/BUILD
+    مشتق شده باشد (صدم بیلد) و سازندهٔ ویندوز همان را راستی‌آزمایی کند."""
+    build = (REPO / "mobile-android" / "BUILD").read_text(encoding="utf-8").strip()
+    assert build.isdigit(), build
+    ui = int(build) // 100
+    app_js = (REPO / "frontend" / "app.js").read_text(encoding="utf-8")
+    assert f"ui-build-{ui}" in app_js, "نشان ساخت UI در app.js نیست یا کهنه است"
+    assert f"const UI_BUILD = {ui};" in app_js
+    lib = (REPO / "installer" / "windows" / "builder-lib.ps1").read_text(encoding="utf-8-sig")
+    assert "ui-build-" in lib, "سازنده باید نشان UI را راستی‌آزمایی کند"
+    assert "نسخهٔ رابط کاربری کهنه است" in lib, "پیام خطای نسخهٔ کهنه باید وجود داشته باشد"
+    assert "/DMyAppBuild=" in lib, "شمارهٔ بیلد باید به Inno Setup برود"
+
+
+def test_setup_shows_build_number_and_ui_is_never_stale_cached():
+    """setup.iss باید بیلد را نشان دهد و سرور پاسخ‌های UI را کش طولانی نکند
+    ( WebView2 پیش از این فایل‌های JS قدیمی را نگه می‌داشت)."""
+    setup = (REPO / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8-sig")
+    assert "MyAppBuild" in setup
+    assert "build {#MyAppBuild}" in setup
+    main_py = (REPO / "backend" / "app" / "main.py").read_text(encoding="utf-8")
+    assert "ui_no_cache" in main_py and "Cache-Control" in main_py

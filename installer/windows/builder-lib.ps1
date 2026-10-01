@@ -71,8 +71,18 @@ try {
     $m = Select-String -Path $initPy -Pattern '__version__\s*=\s*"([^"]+)"'
     if ($m) { $Version = $m.Matches[0].Groups[1].Value }
 } catch { Write-Log "Could not read version, defaulting to $Version : $_" 'WARN' }
+
+# build-485 — شمارهٔ بیلد از فایل واحد BUILD (همان منبعی که تست v48 می‌خواند).
+$UIBuild = 0
+try {
+    $buildFile = Join-Path $RepoRoot 'mobile-android\BUILD'
+    if (Test-Path $buildFile) {
+        $btxt = (Get-Content -Path $buildFile -Raw).Trim()
+        if ($btxt -match '^\d+$') { $UIBuild = [int]$btxt / 100 }
+    }
+} catch { Write-Log "Could not read BUILD, defaulting to 0 : $_" 'WARN' }
 Write-Log "Repository: $RepoRoot"
-Write-Log "Version:    $Version"
+Write-Log "Version:    $Version (UI build $UIBuild)"
 Write-Log "AllowDownloads: $Script:AllowDownloads   RequireSetup: $Script:RequireSetup"
 
 # ---------------------------------------------------------------------------
@@ -493,6 +503,25 @@ $Steps = @(
                    "`n`nکل مخزن را دانلود کنید و BUILD-SETUP.bat را داخل installer\windows\ نگه دارید.")
         }
         & $Report 'ساختار پروژه سالم است (۱۱ فایل حیاتی بررسی شد).'
+
+        # build-485 — راستی‌آزمایی تازگی رابط کاربری. باگ مالک: «فایل نصبی را از
+        # نسخهٔ قدیمی پروژه ساختم و ظاهر قدیمی نصب شد». حالا سازنده قبل از هر کاری
+        # نشان ساخت UI را در frontend\app.js می‌خواند و با mobile-android\BUILD
+        # می‌سنجد؛ پروژهٔ کهنه همان اول کار با پیام روشن متوقف می‌شود.
+        $appJs = Join-Path $RepoRoot 'frontend\app.js'
+        $marker = $null
+        foreach ($line in [System.IO.File]::ReadAllLines($appJs)) {
+            if ($line -match 'ui-build-(\d+)') { $marker = [int]$Matches[1]; break }
+        }
+        if ($null -eq $marker) {
+            throw ("نشان ساخت رابط کاربری (ui-build-NNN) در frontend\app.js پیدا نشد.`n" +
+                   "این پوشهٔ پروژه کامل یا به‌روز نیست. آخرین نسخهٔ مخزن را دانلود کنید.")
+        }
+        if ($UIBuild -gt 0 -and $marker -ne $UIBuild) {
+            throw ("نسخهٔ رابط کاربری کهنه است: app.js می‌گوید بیلد $marker ولی BUILD می‌گوید $UIBuild.`n" +
+                   "پروژهٔ شما قدیمی است؛ آخرین نسخه را از گیت‌هاب دانلود و دوباره اجرا کنید.")
+        }
+        & $Report "تازگی رابط کاربری تأیید شد: بیلد $marker."
     }}
 
     @{ Name = 'یافتن یا نصب پایتون ۳٫۱۱+'; Action = {
@@ -625,6 +654,16 @@ $Steps = @(
         }
         & $Report "فایل اجرایی خودکفا ساخته شد ($mb مگابایت)."
 
+        # build-485 — اثبات اینکه UI جدید واقعاً داخل فایل اجرایی است (نه نسخهٔ کهنه).
+        $needle = 'ui-build-' + [int]$UIBuild
+        $bytes = [System.IO.File]::ReadAllBytes($exe)
+        $hay = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if ($hay.IndexOf($needle) -lt 0) {
+            throw ("فایل اجرایی ساخته شد ولی رابط کاربری جدید داخل آن نیست ($needle).`n" +
+                   "این یعنی PyInstaller از پوشهٔ قدیمی خوانده است؛ پروژه را به‌روز کنید و دوباره بسازید.")
+        }
+        & $Report "رابط کاربری جدید داخل فایل اجرایی تأیید شد ($needle)."
+
         # ALWAYS publish a portable copy. Even when Inno Setup is missing the
         # user walks away with something that runs (from v0.4.0).
         $portable = Join-Path $OutputDir "RasaSystem-$Version-portable.exe"
@@ -647,7 +686,7 @@ $Steps = @(
         }
         & $Report 'اجرای Inno Setup ...'
         Invoke-Native -FilePath $Script:Iscc -WorkingDirectory $ScriptDir -Report $Report `
-            -Arguments @("/DMyAppVersion=$Version", 'setup.iss')
+            -Arguments @("/DMyAppVersion=$Version", "/DMyAppBuild=$UIBuild", 'setup.iss')
 
         $setup = Join-Path $OutputDir "RasaSystem-Setup-$Version.exe"
         if (-not (Test-Path $setup)) {

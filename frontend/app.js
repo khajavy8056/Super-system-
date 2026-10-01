@@ -303,21 +303,28 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
+/* ui-build-485 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+   راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
+   واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
+const UI_BUILD = 485;
+
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
      stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 
+/* build-485 — ترتیب و نام‌ها دقیقاً مطابق تصویر مرجع؛ بخش‌های اضافهٔ محصول
+   (فاکتورها، هوش مصنوعی، حسابداری، …) بدون حذف بعد از فهرست مرجع می‌آیند. */
 const NAV = [
   ["dashboard", "داشبورد", "reports.view", "dashboard"],
-  ["pos", "صندوق (POS)", "pos.sell", "pos"],
-  ["products", "کالاها", "products.view", "box"],
-  ["batches", "ورود کالا", "batches.manage", "inbox"],
-  ["inventory", "انبار و انبارگردانی", "inventory.view", "warehouse"],
-  ["invoices", "فاکتورها", "reports.view", "invoice"],
+  ["pos", "فروش و صندوق", "pos.sell", "pos"],
+  ["batches", "خرید و دریافت", "batches.manage", "inbox"],
+  ["inventory", "موجودی و انبار", "inventory.view", "warehouse"],
+  ["products", "محصولات", "products.view", "box"],
   ["customers", "مشتریان", "pos.sell", "user"],
-  ["marketing", "جشنواره و کوپن", "reports.view", "gift"],
+  ["marketing", "تخفیف‌ها و کمپین‌ها", "reports.view", "gift"],
   ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["invoices", "فاکتورها", "reports.view", "invoice"],
   ["insights", "هوش مصنوعی", "reports.view", "star"],
   ["accounting", "حسابداری", "accounting.view", "ledger"],
   ["hardware", "سخت‌افزار", "settings.manage", "printer"],
@@ -341,18 +348,14 @@ const NAV_GROUPS = [
   ["سامانه", ["hardware", "users", "settings", "diagnostics", "support", "audit"]],
 ];
 function buildNav() {
+  // build-485 — سایدبار تخت مطابق تصویر مرجع (بدون سرفصل گروهی)
   const nav = $("#nav");
   nav.innerHTML = "";
-  const byKey = Object.fromEntries(NAV.map((n) => [n[0], n]));
-  NAV_GROUPS.forEach(([title, keys]) => {
-    const items = keys.map((k) => byKey[k]).filter((n) => n && can(n[2]));
-    if (!items.length) return;
-    const h = el("div", { class: "nav-sec" }); h.textContent = title; nav.append(h);
-    items.forEach(([key, label, perm, ico]) => {
-      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
-      btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
-      nav.append(btn);
-    });
+  NAV.forEach(([key, label, perm, ico]) => {
+    if (!can(perm)) return;
+    const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
+    btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "insights" ? `<i class="nav-new">جدید</i>` : ""}${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
+    nav.append(btn);
   });
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
   // نام واقعی فروشگاه در بلوک برند (پیش‌تر فقط هنگام ذخیرهٔ پروفایل به‌روز می‌شد)
@@ -443,131 +446,136 @@ RENDER.dashboard = async () => {
   const lowCount = d.inventory.low_stock_count || 0, zeroCount = d.inventory.no_stock_count || 0;
   const priceConf = (d.pricing || {}).price_conflict_count || 0;
   const sysOk = (d.system || {}).status === "ok" || (d.system || {}).ok === true;
-  const alerts = [
-    expExpired ? { sev: "err", ic: "clock", text: `${fa(expExpired)} بچ منقضی روی قفسه`, go: "insights" } : null,
-    expSoon ? { sev: "err", ic: "clock", text: `${fa(expSoon)} کالا تا ۳ روز آینده منقضی می‌شود`, go: "inventory" } : null,
-    zeroCount ? { sev: "amber", ic: "box", text: `${fa(zeroCount)} کالا بدون موجودی`, go: "inventory" } : null,
-    lowCount ? { sev: "amber", ic: "warehouse", text: `${fa(lowCount)} کالا زیر حد سفارش`, go: "inventory" } : null,
-    priceConf ? { sev: "info", ic: "tag", text: `${fa(priceConf)} کالا با چند قیمت فعال`, go: "products" } : null,
-    (d.sms || {}).failed ? { sev: "amber", ic: "sms", text: `${fa(d.sms.failed)} پیامک ناموفق در صف`, go: "settings" } : null,
-    !sysOk ? { sev: "amber", ic: "stethoscope", text: "سلامت سیستم نیاز به بررسی دارد", go: "diagnostics" } : null,
-  ].filter(Boolean);
-  const kpi = (ico, tone, label, value, sub) => `
+  const kpi = (ico, tone, label, value, trendHtml) => `
       <div class="kpi-tile">
         <div class="kpi-head"><span class="kpi-ic ${tone}">${icon(ico, 19)}</span><span class="kpi-label">${label}</span></div>
         <b class="kpi-value">${value}</b>
-        <span class="kpi-sub">${sub}</span>
+        <span class="kpi-sub">${trendHtml}</span>
       </div>`;
-  /* build-483 — نوار سلام داشبورد (زبان طراحی «نور»): سلام + تاریخ/ساعت + خلاصهٔ امروز. */
+  /* build-485 — روند واقعی نسبت به دیروز (هرگز عدد ساختگی) */
+  const pct = (cur, prev) => prev > 0 ? Math.round((cur - prev) / prev * 100) : null;
+  const trendHtml = (p, label = "نسبت به دیروز") => p === null
+      ? `<span class="muted">ثبت امروز</span>`
+      : `<span class="trend-chip ${p >= 0 ? "up" : "down"}">${p >= 0 ? "▲" : "▼"} ${fa(Math.abs(p))}٪</span> ${label}`;
+  /* build-485 — نوار سلام (الهام از تصویر مرجع) */
   const greetName = esc((state.user && (state.user.full_name || state.user.username)) || "");
   const hh = new Date().getHours();
   const greetTxt = hh < 12 ? "صبح بخیر" : hh < 17 ? "ظهر بخیر" : hh < 20 ? "عصر بخیر" : "شب بخیر";
   const nowClock = `${fa(String(new Date().getHours()).padStart(2, "0"))}:${fa(String(new Date().getMinutes()).padStart(2, "0"))}`;
-  const trendChip = `<span class="trend-chip ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪</span> نسبت به دیروز`;
   v.innerHTML = `
     <div id="dash-alarms"></div>
-    <section class="dash-greet">
-      <div class="greet-orb"></div>
-      <div class="greet-sun">${hh >= 6 && hh < 18 ? "☀️" : "🌙"}</div>
-      <div class="greet-col">
-        <h2>${greetTxt}، ${greetName}</h2>
-        <span class="greet-sub">امروز هم یک روز عالی برای رشد فروشگاه است — ${fa(d.sales.invoice_count_today)} فاکتور تا این ساعت ثبت شده.</span>
-        <div class="greet-when">
-          <span class="chip">${icon("clock", 13)} ${Jalali.fromIso(new Date().toISOString())}</span>
-          <span class="chip">${icon("clock", 13)} ${nowClock}</span>
-          <span class="chip">${icon("warehouse", 13)} ${esc((state.store && state.store.name) || "فروشگاه")}</span>
-          <button class="chip" style="cursor:pointer" onclick="openQuickPalette && openQuickPalette()" title="جست‌وجوی سریع">${icon("barcode", 13)} جست‌وجوی سریع · <span class="kbd">Ctrl+K</span></button>
-        </div>
-      </div>
-      <div class="greet-art" aria-hidden="true">${SHOP_ART}</div>
-    </section>
-    <section class="dash-hero">
-      <div class="hero-kpis">
-        ${kpi("cash", "i-green", "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendChip)}
-        ${kpi("invoice", "i-violet", "فاکتور امروز", fa(d.sales.invoice_count_today), `میانگین هر فاکتور ${money(d.sales.avg_invoice_today)}`)}
-        ${kpi("trend", "i-blue", "سود امروز", can("pricing.view_cost") ? money(d.profit.today) : "—",
-              can("pricing.view_cost") ? `این ماه ${money(d.profit.month)}` : "بدون دسترسی به بهای تمام‌شده")}
-        ${kpi("box", "i-amber", "ارزش موجودی", money(d.inventory.value), `${fa(d.inventory.product_count)} کالا در فهرست`)}
-      </div>
-      <aside class="alert-rail ${alerts.length ? "" : "all-clear"}">
-        <div class="rail-head"><span>${alerts.length ? `${icon("bell", 16)} ${fa(alerts.length)} مورد نیاز به توجه` : `${icon("check", 16)} همه‌چیز مرتب است`}</span>
-          <button class="btn btn-sm btn-ghost" onclick="go('insights')">هوش فروشگاه</button></div>
-        ${alerts.slice(0, 5).map((a) => `<button class="alert-row ${a.sev}" onclick="go('${a.go}')">
-            <span class="alert-ic">${icon(a.ic, 15)}</span><span class="alert-tx">${a.text}</span><span class="alert-go">بررسی</span></button>`).join("")
-          || `<div class="muted rail-empty">هشدار فعالی نیست: موجودی، انقضا و سلامت سیستم در محدودهٔ نرمال‌اند.</div>`}
-      </aside>
-    </section>
-    <div class="dash">
-      <!-- build-484 — چیدمان مرجع: روند فروش + توزیع دسته‌بندی | پیشنهادها + دسترسی سریع + وضعیت | فعالیت‌ها + جدول -->
-      <div class="dash-row">
-        <section class="dcard dcard-trend">
-          <div class="dcard-head">
-            <h3>${icon("chart", 18)} روند فروش</h3>
-            <div class="range-chips" id="dash-range">
-              <button class="chip on" data-r="30">۳۰ روز گذشته</button>
-              <button class="chip" data-r="7">۷ روز گذشته</button>
-              <button class="chip" data-r="1">امروز</button>
+    <!-- build-485 — چیدمان دقیق تصویر مرجع: ستون اصلی (سلام، KPI، نمودارها، جدول‌ها) + ریل کناری -->
+    <div class="og-grid">
+      <div class="og-main">
+        <section class="og-hero">
+          <div class="og-hero-txt">
+            <div class="og-hero-head">
+              <span class="og-sun">${hh >= 6 && hh < 18 ? "☀️" : "🌙"}</span>
+              <h2>${greetTxt}، ${greetName}</h2>
+            </div>
+            <p>امروز یک روز عالی برای رشد فروشگاه است</p>
+            <div class="greet-when">
+              <span class="chip">${icon("clock", 13)} ${Jalali.fromIso(new Date().toISOString())}</span>
+              <span class="chip">${icon("clock", 13)} ${nowClock}</span>
+              <button class="chip" style="cursor:pointer" onclick="openQuickPalette && openQuickPalette()" title="جست‌وجوی سریع">${icon("barcode", 13)} جست‌وجوی سریع · <span class="kbd">Ctrl+K</span></button>
             </div>
           </div>
-          <div id="dash-trend-body">${trendChart(d.trend || [])}</div>
+          <div class="greet-art" aria-hidden="true">${SHOP_ART}</div>
         </section>
-        <section class="dcard dcard-donut">
-          <h3>${icon("chart", 18)} توزیع فروش بر اساس دسته‌بندی</h3>
-          <div class="donut-wrap">${dashDonut(d.sales_by_category || [])}</div>
-        </section>
+        <div class="og-kpis">
+          ${kpi("cart", "i-green", "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
+          ${kpi("invoice", "i-violet", "تعداد فاکتورها", fa(d.sales.invoice_count_today), trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday)))}
+          ${kpi("users", "i-amber", "مشتریان امروز", fa((d.customers_new || {}).today || 0), trendHtml(pct((d.customers_new || {}).today || 0, (d.customers_new || {}).yesterday || 0)))}
+          ${kpi("box", "i-blue", "موجودی کل محصولات", fa(d.inventory.product_count), `<span class="muted">در حال حاضر</span>`)}
+        </div>
+        <div class="og-row">
+          <section class="dcard og-trend">
+            <div class="dcard-head">
+              <h3>${icon("chart", 18)} روند فروش</h3>
+              <div class="range-chips" id="dash-range">
+                <button class="chip on" data-r="30">۳۰ روز اخیر</button>
+                <button class="chip" data-r="7">۷ روز اخیر</button>
+                <button class="chip" data-r="1">امروز</button>
+              </div>
+            </div>
+            <div id="dash-trend-body">${trendChart(d.trend || [])}</div>
+          </section>
+          <section class="dcard og-donut">
+            <h3>${icon("chart", 18)} توزیع فروش بر اساس دسته‌بندی</h3>
+            <div class="donut-wrap">${dashDonut(d.sales_by_category || [])}</div>
+          </section>
+        </div>
+        <div class="og-row">
+          <section class="dcard og-inv">
+            <div class="dcard-head">
+              <h3>${icon("invoice", 18)} فاکتورهای اخیر</h3>
+              <button class="btn btn-sm btn-ghost" onclick="go('invoices')">مشاهده همه</button>
+            </div>
+            <div class="table-scroll">${dashInvoicesTable(d.recent_invoices || [])}</div>
+          </section>
+          <section class="dcard og-daily">
+            <div class="dcard-head">
+              <h3>${icon("chart", 18)} گزارش فروش روزانه</h3>
+              <span class="chip on static-chip">امروز</span>
+            </div>
+            <div class="table-scroll">${dashStaffTable(d.today_by_staff || [], d.sales.today)}</div>
+          </section>
+        </div>
       </div>
-      <div class="dash-row dash-row-3">
-        <section class="dcard dcard-sug">
-          <div class="dcard-head"><h3>${icon("star", 18)} پیشنهادات هوشمند</h3><button class="btn btn-sm btn-ghost" onclick="go('insights')">همه</button></div>
-          <div id="dash-sug" class="sug-list"><div class="muted">در حال تحلیل…</div></div>
+      <aside class="og-rail">
+        <section class="dcard og-sug">
+          <div class="dcard-head">
+            <h3 class="og-title-dark">${icon("bell", 17)} اطلاعیه‌ها و هشدارها</h3>
+            <h3 class="og-title-light">${icon("star", 17)} پیشنهادات هوشمند</h3>
+            <button class="btn btn-sm btn-ghost" onclick="go('insights')" title="هوش فروشگاه">${icon("star", 14)}</button>
+          </div>
+          <div id="dash-sug" class="og-sug-list">
+            ${(() => {
+              const rows = [];
+              if (lowCount + zeroCount) rows.push({ ic: "box", tone: "amber", t: `موجودی ${fa(lowCount + zeroCount)} محصول در حال اتمام است`, s: (d.inventory.low_stock || []).slice(0, 3).map((x) => x.name).join("، ") || "بررسی قفسه‌ها", go: "inventory" });
+              if (expExpired + expSoon) rows.push({ ic: "clock", tone: "red", t: `${fa(expExpired + expSoon)} بچ نزدیک انقضا یا منقضی`, s: expExpired ? `${fa(expExpired)} بچ منقضی روی قفسه است` : "پیش از ضرر بررسی کنید", go: "inventory" });
+              if ((d.customers_new || {}).week) rows.push({ ic: "user", tone: "blue", t: `مشتری وفادار جدید: ${fa(d.customers_new.week)} نفر در ۷ روز اخیر`, s: d.customers_new.latest_name ? `آخرین: ${esc(d.customers_new.latest_name)}` : "ثبت‌نام‌های تازه", go: "customers" });
+              if (priceConf) rows.push({ ic: "tag", tone: "violet", t: `پیشنهاد قیمت‌گذاری: ${fa(priceConf)} کالا با چند قیمت فعال`, s: "یکسان‌سازی قیمت پیش از فروش", go: "products" });
+              return rows.map((r) => `<button class="og-sug-row" onclick="go('${r.go}')">
+                <span class="og-sug-ic ${r.tone}">${icon(r.ic, 15)}</span>
+                <span class="og-sug-tx"><b>${r.t}</b><small>${r.s}</small></span>
+                <span class="og-chev">‹</span></button>`).join("") || `<div class="muted rail-empty">هشدار فعالی نیست؛ موجودی، انقضا و قیمت‌ها در محدودهٔ نرمال‌اند.</div>`;
+            })()}
+          </div>
         </section>
-        <section class="dcard dcard-quick">
-          <h3>${icon("gear", 18)} دسترسی سریع</h3>
+        <section class="dcard og-quick">
+          <h3>${icon("gear", 18)} عملیات سریع</h3>
           <div class="quick-grid">
             ${can("pos.sell") ? `<button class="qa qa-green" onclick="go('pos')">${icon("cart", 20)}<span>فاکتور جدید</span></button>` : ""}
-            ${can("batches.manage") ? `<button class="qa qa-violet" onclick="go('batches')">${icon("inbox", 20)}<span>دریافت کالا</span></button>` : ""}
-            ${can("inventory.view") ? `<button class="qa qa-blue" onclick="go('inventory')">${icon("warehouse", 20)}<span>موجودی کالا</span></button>` : ""}
+            ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("truck", 20)}<span>دریافت کالا</span></button>` : ""}
+            ${can("inventory.view") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("box", 20)}<span>موجودی کالا</span></button>` : ""}
             ${can("pos.sell") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>ثبت مشتری</span></button>` : ""}
             ${can("reports.view") ? `<button class="qa qa-amber" onclick="go('marketing')">${icon("gift", 20)}<span>کمپین جدید</span></button>` : ""}
-            ${can("reports.view") ? `<button class="qa qa-teal" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
+            ${can("reports.view") ? `<button class="qa qa-violet" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
           </div>
         </section>
-        <section class="dcard dcard-status">
-          <h3>${icon("stethoscope", 18)} وضعیت فروشگاه</h3>
-          <div class="status-gauges">
-            <div class="sg"><div class="sg-ring" style="--p:${sysOk ? 96 : 42};--c:#22c55e"><span>${sysOk ? "سالم" : "بررسی"}</span></div><b>سلامت سیستم</b><span class="muted">${sysOk ? "همهٔ سرویس‌ها فعال" : "نیاز به بررسی"}</span></div>
-            <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#7c5cff"><span>${fa(gaugePct)}٪</span></div><b>هدف فروش امروز</b><span class="muted">از ${money(monthTarget / 30)} روزانه</span></div>
-            <div class="sg"><div class="sg-ring" style="--p:${(d.sms && d.sms.queued) ? Math.min(100, Math.round(((d.sms.sent || 0) / Math.max(1, (d.sms.sent || 0) + d.sms.queued)) * 100)) : 100};--c:#f59e0b"><span>${fa((d.sms && d.sms.sent) || 0)}</span></div><b>پیامک امروز</b><span class="muted">${fa((d.sms && d.sms.failed) || 0)} ناموفق</span></div>
-          </div>
-        </section>
-      </div>
-      <div class="dash-row">
-        <section class="dcard dcard-acts">
-          <div class="dcard-head"><h3>${icon("clock", 18)} فعالیت‌های اخیر</h3><button class="btn btn-sm btn-ghost" onclick="go('audit')">همه</button></div>
-          <div id="dash-acts" class="act-list"><div class="muted">در حال بارگذاری…</div></div>
-        </section>
-        <section class="dcard dcard-table">
+        <section class="dcard og-status">
           <div class="dcard-head">
-            <h3>${icon("invoice", 18)} گزارش فروش روزانه</h3>
-            <div class="range-chips" id="dash-tabs">
-              <button class="chip on" data-t="daily">فروش روزانه</button>
-              <button class="chip" data-t="top">پرفروش‌ترین محصولات</button>
-            </div>
+            <h3>${icon("stethoscope", 17)} وضعیت فروشگاه</h3>
+            <span class="og-online"><i></i> آنلاین</span>
           </div>
-          <div id="dash-table-body" class="table-scroll">${dashDailyTable(d.trend || [])}</div>
-          <div class="table-foot"><span>جمع کل (۳۰ روز)</span><b>${money(d.sales.month)}</b></div>
+          <div class="status-gauges">
+            <div class="sg"><div class="sg-ring" style="--p:${sysOk ? 96 : 42};--c:#22c55e"><span>${sysOk ? "سالم" : "بررسی"}</span></div><b>وضعیت سامانه</b></div>
+            <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
+            <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
+          </div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۰ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>
-      </div>
-      <div class="ai-strip">
-        <div class="ai-strip-ic">${icon("star", 22)}</div>
-        <div class="ai-strip-main">
-          <h3>دستیار هوشمند فروشگاه</h3>
-          <p>در تحلیل روند فروش، مدیریت موجودی و قیمت‌گذاری کمک می‌کنم.</p>
-        </div>
-        <input class="ai-input" id="dash-ai-input" placeholder="در تحلیل روند فروش، مدیریت موجودی و قیمت‌گذاری کمک می‌کنم…" />
-        <button class="btn btn-primary" onclick="go('insights')">گفت‌وگو</button>
-      </div>
-      <div class="dash-foot">سیستم جامع مدیریت فروشگاه رسا · نسخهٔ ۱٫۰٫۰ · ${esc((state.store && state.store.name) || "فروشگاه")}</div>
+        <section class="dcard og-acts">
+          <div class="dcard-head">
+            <h3>${icon("clock", 17)} فعالیت‌های اخیر</h3>
+            <button class="btn btn-sm btn-ghost" onclick="go('audit')">مشاهده همه</button>
+          </div>
+          <div id="dash-acts" class="og-act-list"><div class="muted">در حال بارگذاری…</div></div>
+        </section>
+      </aside>
+    </div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.0")} · بیلد ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
       <div class="dash-band"><span>جزئیات عملیاتی</span><i></i></div>
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
@@ -685,21 +693,39 @@ function dashDonut(cats) {
     </div>`;
 }
 
-/* build-484 — جدول «گزارش فروش روزانه» + تب «پرفروش‌ترین محصولات». */
-function dashDailyTable(rows) {
-  if (!rows.length) return `<div class="muted">داده‌ای نیست</div>`;
-  return `<table class="recent dtable"><thead><tr><th>تاریخ</th><th>تعداد فاکتور</th><th>مبلغ فروش</th><th>روند</th></tr></thead><tbody>
-    ${rows.map((r) => `<tr><td>${esc(r.label || r.date || "")}</td><td>${fa(r.invoices != null ? r.invoices : (r.invoice_count || 0))}</td>
-      <td><b>${money(r.sales != null ? r.sales : (r.total || 0))}</b></td>
-      <td>${(r.sales != null ? r.sales : (r.total || 0)) > 0 ? `<span class="trend-chip up">▲</span>` : `<span class="muted">—</span>`}</td></tr>`).join("")}
+/* build-485 — جدول «فاکتورهای اخیر» (ستون‌های دقیق تصویر مرجع، دادهٔ واقعی). */
+function dashInvoicesTable(items) {
+  if (!items || !items.length) return `<div class="muted">هنوز فاکتوری ثبت نشده است</div>`;
+  const stMap = { PAID: ["تسویه شده", "badge-green"], PENDING: ["در انتظار پرداخت", "badge-amber"],
+    VOID: ["لغو شده", "badge-red"], PARTIAL: ["پرداخت بخشی", "badge-amber"],
+    REFUNDED: ["مرجوع شده", "badge-gray"], PARTIALLY_REFUNDED: ["مرجوع جزئی", "badge-gray"] };
+  return `<table class="recent dtable og-table"><thead><tr>
+      <th>نام محصول</th><th>تعداد</th><th>مبلغ فاکتور</th><th>مشتری</th><th>تاریخ</th><th>وضعیت</th></tr></thead><tbody>
+    ${items.map((i) => {
+      const [stLabel, stCls] = stMap[i.status] || [i.status, "badge-gray"];
+      const prod = i.top_product || i.invoice_number || "—";
+      const thumb = `<span class="og-thumb">${esc(String(prod).trim().slice(0, 1))}</span>`;
+      return `<tr onclick="go('invoices')" style="cursor:pointer">
+        <td>${thumb} ${esc(prod)}</td>
+        <td>${fa(i.item_count || 0)}</td>
+        <td><b>${money(i.total)}</b></td>
+        <td>${esc(i.customer_name || "مشتری آزاد")}</td>
+        <td class="muted">${i.created_at ? faDateTime(i.created_at) : "—"}</td>
+        <td><span class="badge ${stCls}">${stLabel}</span></td></tr>`;
+    }).join("")}
   </tbody></table>`;
 }
-function dashTopTable(items) {
-  if (!items || !items.length) return `<div class="muted">هنوز فروشی ثبت نشده است</div>`;
-  return `<table class="recent dtable"><thead><tr><th>#</th><th>محصول</th><th>تعداد</th><th>فروش</th><th>سهم</th></tr></thead><tbody>
-    ${items.map((t, i) => `<tr><td>${fa(i + 1)}</td><td>${esc(t.name)}</td><td>${qty(t.qty)}</td>
-      <td><b>${money(t.revenue)}</b></td><td>${fa(Math.round(t.share_pct || 0))}٪</td></tr>`).join("")}
-  </tbody></table>`;
+
+/* build-485 — جدول «گزارش فروش روزانه»: فروش امروز به تفکیک صندوق‌دار + ردیف «جمع کل». */
+function dashStaffTable(rows, total) {
+  const body = rows.length ? rows.map((r) => `<tr>
+      <td>${esc(r.name)}</td><td>${fa(r.invoice_count)}</td><td><b>${money(r.sales)}</b></td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">امروز هنوز فروشی ثبت نشده است</td></tr>`;
+  return `<table class="recent dtable og-table"><thead><tr>
+      <th>نام صندوق‌دار</th><th>تعداد فاکتور</th><th>مبلغ فروش</th></tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr class="og-total"><td>جمع کل</td><td>${fa(rows.reduce((s, r) => s + (r.invoice_count || 0), 0))}</td><td><b>${money(total)}</b></td></tr></tfoot>
+  </table>`;
 }
 
 /* build-484 — چیپ‌های بازهٔ واقعی: /reports/sales با گروه روزانه (هرگز دادهٔ جعلی). */
@@ -719,50 +745,44 @@ function dashLoadRange(r) {
   }).catch((e) => { body.innerHTML = `<div class="muted">خطا در دریافت: ${esc(e.message)}</div>`; });
 }
 
-/* build-484 — ویجت‌های زندهٔ داشبورد: پیشنهادهای هوشمند، فعالیت‌های اخیر، چیپ‌های بازه و جدول. */
+/* build-485 — ویجت‌های زنده: پیشنهادهای هوش (به ردیف‌های واقعی افزوده می‌شوند)،
+   فعالیت‌های اخیر از تاریخچه، و چیپ‌های بازهٔ نمودار. */
 function mountDashWidgets(d) {
-  // پیشنهادهای هوشمند (API واقعی insights) + نشان اعلان نوار بالا
   const sug = $("#dash-sug");
   if (sug && window.api) {
-    api("/insights?status=OPEN&limit=4").then((res) => {
-      const items = ((res && res.items) || []).slice(0, 4);
-      sug.innerHTML = items.length ? items.map((x) => `
-        <button class="sug-row" onclick="go('insights')">
-          <span class="sug-ic">${icon("star", 15)}</span>
-          <span class="sug-tx"><b>${esc(x.title || x.group || "پیشنهاد")}</b><small>${esc((x.recommended_action || x.evidence || "").toString().slice(0, 90))}</small></span>
-          <span class="sug-gain">${x.estimated_gain != null ? "+" + money(x.estimated_gain) : ""}</span>
-        </button>`).join("") : `<div class="muted">در حال حاضر پیشنهاد تازه‌ای نیست — همه‌چیز مرتب است.</div>`;
+    api("/insights?status=OPEN&limit=3").then((res) => {
+      const items = ((res && res.items) || []).slice(0, 3);
+      if (!items.length) return;
+      const extra = items.map((x) => `
+        <button class="og-sug-row" onclick="go('insights')">
+          <span class="og-sug-ic violet">${icon("star", 15)}</span>
+          <span class="og-sug-tx"><b>${esc(x.title || x.group || "پیشنهاد هوشمند")}</b><small>${esc((x.recommended_action || x.evidence || "").toString().slice(0, 90))}</small></span>
+          <span class="og-chev">‹</span></button>`).join("");
+      sug.insertAdjacentHTML("beforeend", extra);
       const badge = $("#tb-bell-badge");
-      if (badge) { badge.textContent = fa((res && res.total != null ? res.total : items.length)); badge.classList.remove("hidden"); }
-    }).catch(() => { if (sug) sug.innerHTML = `<div class="muted">هوش فروشگاه در دسترس نیست.</div>`; });
+      if (badge) {
+        const n = (res && res.total != null ? res.total : items.length);
+        if (n > 0) { badge.textContent = fa(n); badge.classList.remove("hidden"); }
+      }
+    }).catch(() => {});
   }
-  // فعالیت‌های اخیر (API واقعی audit)
   const acts = $("#dash-acts");
   if (acts && window.api) {
     api("/audit?limit=5").then((res) => {
       const items = ((res && res.items) || []).slice(0, 5);
       acts.innerHTML = items.length ? items.map((x) => `
-        <div class="act-row">
-          <span class="act-ic">${icon("clock", 14)}</span>
-          <span class="act-tx">${esc((x.action || "activity") + (x.entity ? " · " + x.entity : ""))}</span>
+        <div class="og-act-row">
+          <span class="og-sug-ic blue">${icon("clock", 13)}</span>
+          <span class="og-act-tx">${esc((x.action || "activity") + (x.entity ? " · " + x.entity : ""))}</span>
           <span class="act-when muted">${x.created_at ? faDateTime(x.created_at) : ""}</span>
         </div>`).join("") : `<div class="muted">هنوز فعالیتی ثبت نشده است.</div>`;
-    }).catch(() => { if (acts) acts.innerHTML = `<div class="muted">تاریخچه در دسترس نیست.</div>`; });
+    }).catch(() => { acts.innerHTML = `<div class="muted">تاریخچه در دسترس نیست.</div>`; });
   }
-  // چیپ‌های بازه
   const range = $("#dash-range");
   if (range) range.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => {
     range.querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
     dashLoadRange(b.dataset.r);
-  }));
-  // تب‌های جدول
-  const tabs = $("#dash-tabs");
-  if (tabs) tabs.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => {
-    tabs.querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
-    b.classList.add("on");
-    const body = $("#dash-table-body");
-    if (body) body.innerHTML = b.dataset.t === "top" ? dashTopTable(d.top_products) : dashDailyTable(d.trend || []);
   }));
 }
 

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Category,
+    Customer,
     Invoice,
     InvoiceItem,
     Product,
@@ -155,7 +156,7 @@ def dashboard(db: Session) -> dict:
     return {
         "sales": {
             "today": float(sum_t), "yesterday": float(sum_y), "month": float(sum_m),
-            "invoice_count_today": cnt_t,
+            "invoice_count_today": cnt_t, "invoice_count_yesterday": cnt_y,
             "avg_invoice_today": float(sum_t / cnt_t) if cnt_t else 0.0,
         },
         "profit": {"today": float(profit_t), "month": float(profit_m)},
@@ -180,6 +181,9 @@ def dashboard(db: Session) -> dict:
         # build-484 — donut «توزیع فروش بر اساس دسته‌بندی» (۳۰ روز اخیر)
         "sales_by_category": _sales_by_category(db, t0 - timedelta(days=29), t1, limit=6),
         "recent_invoices": _recent_invoices(db, limit=6),
+        # build-485 — داده‌های واقعی چیدمان تصویر مرجع
+        "customers_new": _customers_new(db, today),
+        "today_by_staff": _today_by_staff(db, t0, t1),
         "accounting": _accounting_block(db),
     }
 
@@ -241,9 +245,60 @@ def _sales_by_category(db: Session, start: datetime, end: datetime, limit: int =
 
 def _recent_invoices(db: Session, limit: int = 6) -> list[dict]:
     rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit)).scalars().all()
-    return [{"invoice_id": i.id, "invoice_number": i.invoice_number, "total": float(i.total_amount),
-             "status": i.status, "payment_method": i.payment_method,
-             "created_at": i.created_at.isoformat() if i.created_at else None} for i in rows]
+    out = []
+    for i in rows:
+        # build-485 — ستون‌های جدول «فاکتورهای اخیر» در تصویر مرجع: نام محصول، تعداد،
+        # مبلغ، مشتری، تاریخ، وضعیت. همه از دادهٔ واقعی همان فاکتور.
+        items = sorted(i.items or [], key=lambda x: (x.subtotal or 0), reverse=True)
+        top = items[0] if items else None
+        top_name = None
+        if top is not None:
+            prod = db.get(Product, top.product_id) if top.product_id else None
+            top_name = prod.name if prod is not None else None
+        cust = i.customer
+        cust_name = None
+        if cust is not None:
+            cust_name = (cust.name + (" " + cust.last_name if cust.last_name else "")).strip() or None
+        out.append({
+            "invoice_id": i.id, "invoice_number": i.invoice_number, "total": float(i.total_amount),
+            "status": i.status, "payment_method": i.payment_method,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+            "customer_name": cust_name, "item_count": len(items),
+            "top_product": top_name,
+        })
+    return out
+
+
+def _customers_new(db: Session, today) -> dict:
+    """build-485 — «مشتریان امروز» و کارت «مشتری وفادار جدید»: شمارش واقعی ثبت‌نام‌ها."""
+    t0, t1 = _day_range(today)
+    y0, y1 = _day_range(today - timedelta(days=1))
+    w0, _ = _day_range(today - timedelta(days=6))
+
+    def cnt(a, b):
+        return int(db.execute(select(func.count(Customer.id))
+                              .where(Customer.created_at >= a, Customer.created_at < b)).scalar_one())
+
+    latest = db.execute(select(Customer.name, Customer.last_name)
+                        .order_by(Customer.created_at.desc()).limit(1)).first()
+    latest_name = None
+    if latest is not None:
+        latest_name = (latest[0] + (" " + latest[1] if latest[1] else "")).strip() or None
+    return {"today": cnt(t0, t1), "yesterday": cnt(y0, y1), "week": cnt(w0, t1),
+            "latest_name": latest_name}
+
+
+def _today_by_staff(db: Session, s0, e1) -> list[dict]:
+    """build-485 — جدول «گزارش فروش روزانه» (فروش امروز به تفکیک صندوق‌دار)."""
+    rows = db.execute(
+        select(User.full_name, func.count(Invoice.id),
+               func.coalesce(func.sum(Invoice.total_amount), 0))
+        .join(Invoice, Invoice.created_by == User.id)
+        .where(_paid_filter(s0, e1))
+        .group_by(User.full_name)
+        .order_by(func.sum(Invoice.total_amount).desc()).limit(6)).all()
+    return [{"name": r[0] or "نامشخص", "invoice_count": int(r[1]),
+             "sales": float(Decimal(r[2]))} for r in rows]
 
 
 def _accounting_block(db: Session) -> dict:
