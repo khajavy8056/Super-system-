@@ -901,9 +901,9 @@ html.m-shell .ai-fab .ai-spark { animation: none; }
 /* ── دونات دسته‌بندی ── */
 .donut-wrap { margin-top: 10px; }
 .donut { display: flex; align-items: center; gap: 16px; }
-.donut-svg { width: 150px; height: 150px; flex: 0 0 150px; transform: rotate(-90deg); }
-.donut-num { transform: rotate(90deg); transform-origin: center; font-size: 15px; font-weight: 700; fill: var(--text); }
-.donut-cap { transform: rotate(90deg); transform-origin: center; font-size: 9px; fill: var(--muted); }
+.donut-svg { width: 150px; height: 150px; flex: 0 0 150px; }
+.donut-num { font-size: 15px; font-weight: 700; fill: var(--text); }
+.donut-cap { font-size: 9px; fill: var(--muted); }
 .donut-legend { flex: 1; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .dl { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .dl i { width: 11px; height: 11px; border-radius: 4px; flex: 0 0 11px; }
@@ -1013,7 +1013,13 @@ html.m-shell .ai-fab .ai-spark { animation: none; }
 }
 .og-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .og-rail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.og-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* build-486 — minmax(0,1fr): جدول‌های عریض دیگر نمی‌توانند ستون‌ها را هل بدهند
+   و کارت‌ها «توی هم نروند» (باگ مالک: به‌هم‌ریختگی وسط داشبورد). */
+.og-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.og-row > *, .og-main > *, .og-rail > *, .og-kpis > * { min-width: 0; }
+.og-table { table-layout: auto; }
+.og-table th, .og-table td { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.og-table th:first-child, .og-table td:first-child { max-width: 260px; }
 
 /* ── کارت سلام مرجع ── */
 .og-hero {
@@ -1107,13 +1113,17 @@ html[data-theme="dark"] .og-title-light { display: none; }
   background: rgba(245, 158, 11, .12); color: var(--text);
 }
 
-@media (max-width: 1280px) {
+/* build-486 — قرص‌شکن‌ها دوباره تنظیم شدند تا لپ‌تاپ‌های معمولی (حتی با مقیاس
+   ۱۲۵٪/۱۵۰٪ ویندوز) همیشه همان چیدمان سه‌ستونهٔ تصویر مرجع را ببینند؛ موارد
+   موبایلی فقط زیر ۱۰۲۴ فعال می‌شوند (درخواست مالک: موبایل فقط برای موبایل). */
+@media (max-width: 1024px) {
   .og-grid { grid-template-columns: 1fr; }
   .og-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 980px) {
+@media (max-width: 760px) {
   .og-row { grid-template-columns: 1fr; }
   .og-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .og-rail { grid-template-columns: 1fr; }
   .greet-art { display: none; }
+  .global-search { display: none; }
 }

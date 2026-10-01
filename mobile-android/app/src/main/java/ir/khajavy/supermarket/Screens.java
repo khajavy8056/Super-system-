@@ -191,6 +191,23 @@ public final class Screens {
             TextView l = Ui.text(c, s, 11.5f, Ui.TEXT, true); l.setPadding(0, Ui.dp(6), 0, 0); t.addView(l);
             t.setClickable(true); t.setOnClickListener(v -> r.run()); return t;
         }
+        /** build-486 — ردیف پیشنهاد/هشدار (زبان طراحی کارت‌های ریل مرجع). */
+        private View SugRow(String icon, int accent, String title, String sub, Runnable r) {
+            LinearLayout row = Ui.row(c); row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(0, Ui.dp(6), 0, Ui.dp(6));
+            android.widget.ImageView ib = Icons.view(c, icon, accent, 16); int pd = Ui.dp(8);
+            ib.setPadding(pd, pd, pd, pd);
+            ib.setBackground(Ui.rounded((accent & 0x00FFFFFF) | (Ui.dark ? 0x33000000 : 0x22000000), 0, 10));
+            ib.setLayoutParams(Ui.lp(Ui.dp(32), Ui.dp(32))); row.addView(ib);
+            LinearLayout tx = Ui.col(c); tx.setPadding(Ui.dp(8), 0, 0, 0); tx.setLayoutParams(Ui.weight(1));
+            tx.addView(Ui.text(c, title, 12f, Ui.TEXT, true)); tx.addView(Ui.muted(c, sub)); row.addView(tx);
+            row.setClickable(true); row.setOnClickListener(v -> r.run()); return row;
+        }
+        /** build-486 — ستون شاخص «وضعیت فروشگاه». */
+        private View StatCol(String label, String value, int color) {
+            LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1));
+            col.addView(Ui.text(c, value, 17, color, true)); col.addView(Ui.muted(c, label)); return col;
+        }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
             // 1-2 sales / invoices
@@ -200,6 +217,28 @@ public final class Screens {
             TextView iTr = Ui.muted(c, iYest > 0 ? (iToday >= iYest ? "▲ " : "▼ ") + Ui.fa(String.valueOf(Math.round(Math.abs(iToday - iYest) * 100.0 / iYest))) + "٪ نسبت به دیروز" : "ثبت امروز");
             body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(sToday), sTr), Ui.tile(c, "receipt", Ui.VIOLET, "تعداد فاکتورها", Ui.num(iToday), iTr)));
             body.addView(Ui.grid2(c, Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "box", 0xFF4F8CFF, "موجودی کل محصولات", Ui.num(d(inv, "product_count")), null)));
+            // build-486 — «پیشنهادات هوشمند» (همان ردیف‌های ریل تصویر مرجع، دادهٔ واقعی محلی)
+            {
+                LinearLayout sg = Ui.card(c, null);
+                LinearLayout sh = Ui.row(c); sh.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                sh.addView(Icons.view(c, "star", Ui.VIOLET, 20));
+                TextView stx = Ui.h2(c, "پیشنهادات هوشمند"); stx.setPadding(Ui.dp(8), 0, 0, 0); stx.setLayoutParams(Ui.weight(1)); sh.addView(stx);
+                sh.addView(Ui.small(c, "همه", () -> a.route("insights"))); sg.addView(sh);
+                int added = 0;
+                int lowAll = (inv == null ? 0 : inv.optInt("low_stock_count")) + (inv == null ? 0 : inv.optInt("no_stock_count"));
+                if (lowAll > 0) {
+                    JSONArray lows = inv == null ? null : inv.optJSONArray("low_stock");
+                    StringBuilder names = new StringBuilder();
+                    if (lows != null) for (int i = 0; i < Math.min(3, lows.length()); i++) { if (i > 0) names.append("، "); names.append(lows.optJSONObject(i).optString("name")); }
+                    sg.addView(SugRow("box", Ui.AMBER, "موجودی " + Ui.fa(String.valueOf(lowAll)) + " محصول در حال اتمام است", names.length() > 0 ? names.toString() : "بررسی قفسه‌ها", () -> a.route("inventory"))); added++;
+                }
+                int expAll = 0; if (exp != null) for (String ek : new String[]{"EXPIRED", "EXPIRING_TODAY", "EXPIRING_3_DAYS", "EXPIRING_7_DAYS", "EXPIRING_30_DAYS"}) expAll += exp.optJSONArray(ek) == null ? 0 : Math.max(exp.optInt("total_" + ek), exp.optJSONArray(ek).length());
+                if (expAll > 0) { sg.addView(SugRow("clock", Ui.RED, expAll + " بچ نزدیک انقضا یا منقضی", "پیش از ضرر بررسی کنید", () -> a.open(new AdminScreens.Reports(a, 3), true))); added++; }
+                if (d(pr, "price_conflict_count") > 0) { sg.addView(SugRow("tag", Ui.VIOLET, "پیشنهاد قیمت‌گذاری: " + Ui.fa(String.valueOf((int) d(pr, "price_conflict_count"))) + " کالا با چند قیمت فعال", "یکسان‌سازی قیمت پیش از فروش", () -> a.route("products"))); added++; }
+                if (d(rec, "debtor_count") > 0) { sg.addView(SugRow("user", 0xFF4F8CFF, "مطالبات مشتریان: " + Ui.num(d(rec, "debtor_count")) + " بدهکار", "پیگیری وصول از مشتریان", () -> a.route("customers"))); added++; }
+                if (added == 0) sg.addView(Ui.muted(c, "هشدار فعالی نیست؛ همه‌چیز مرتب است."));
+                body.addView(sg);
+            }
             // v3.0 — store intelligence: measured profit impact of executed suggestions
             InsightScreens.dashboardCard(this, body, a);
             // 3-4 month / profit
@@ -249,6 +288,20 @@ public final class Screens {
                 }
                 dp.addView(Ui.kv(c, "جمع کل", Ui.money(tot), Ui.GOLD));
                 body.addView(dp);
+            }
+            // build-486 — «وضعیت فروشگاه» (همان کارت حلقه‌های مرجع؛ سه شاخص واقعی)
+            {
+                LinearLayout sc2 = Ui.card(c, "وضعیت فروشگاه");
+                double targetDay = d(sales, "month") / 30.0; int goal = targetDay > 0 ? (int) Math.min(100, Math.round(d(sales, "today") * 100 / targetDay)) : 0;
+                int stockPct = d(inv, "product_count") > 0 ? (int) Math.round((d(inv, "product_count") - d(inv, "no_stock_count")) * 100 / d(inv, "product_count")) : 100;
+                String sysS = s(sys, "status", "OK");
+                LinearLayout gr = Ui.row(c);
+                gr.addView(StatCol("فروش امروز", Ui.fa(String.valueOf(goal)) + "٪", goal >= 50 ? Ui.GREEN : Ui.AMBER));
+                gr.addView(StatCol("موجودی در قفسه", Ui.fa(String.valueOf(stockPct)) + "٪", stockPct >= 70 ? Ui.GREEN : Ui.RED));
+                gr.addView(StatCol("سلامت سامانه", sysS, stColor(sysS)));
+                sc2.addView(gr);
+                sc2.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور", loc[2] > 0 ? Ui.AMBER : Ui.GREEN));
+                body.addView(sc2);
             }
             // 12 system + sms + accounting + pricing conflicts
             LinearLayout sy = Ui.card(c, "وضعیت سامانه"); sy.addView(Ui.kv(c, "نسخهٔ رایانه", Ui.fa(s(sys, "version")), 0)); sy.addView(Ui.kv(c, "وضعیت", s(sys, "status", "OK"), stColor(s(sys, "status", "OK")))); sy.addView(Ui.kv(c, "فضای آزاد دیسک", Ui.fa(String.valueOf(d(sys, "disk_free_gb"))) + " GB", 0)); sy.addView(Ui.kv(c, "صف همگام‌سازی رایانه", Ui.num(d(sys, "sync_queued")) + " · خطا " + Ui.num(d(sys, "sync_failed")), 0)); sy.addView(Ui.kv(c, "پیامک", (sms != null && sms.optBoolean("configured") ? "فعال" : "پیکربندی‌نشده") + " · در صف " + Ui.num(d(sms, "pending")), 0)); sy.addView(Ui.kv(c, "تعارض قیمت", Ui.num(d(pr, "price_conflict_count")), d(pr, "price_conflict_count") > 0 ? Ui.AMBER : 0)); sy.addView(Ui.kv(c, "صندوق / بانک", Ui.money(d(acc, "cash")) + " / " + Ui.money(d(acc, "bank")), 0)); sy.addView(Ui.kv(c, "بدهی به تأمین‌کننده", Ui.money(d(acc, "payables")), 0)); sy.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور · " + (loc[2] > 0 ? Ui.num(loc[2]) + " در صف" : "همگام"), loc[2] > 0 ? Ui.AMBER : Ui.GREEN)); body.addView(sy);

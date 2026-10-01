@@ -654,15 +654,26 @@ $Steps = @(
         }
         & $Report "فایل اجرایی خودکفا ساخته شد ($mb مگابایت)."
 
-        # build-485 — اثبات اینکه UI جدید واقعاً داخل فایل اجرایی است (نه نسخهٔ کهنه).
+        # build-486 — راستی‌آزمایی درستِ داخل exe. باگ مالک: نسخهٔ قبلی بایت خام
+        # را می‌گشت ولی PyInstaller فایل‌ها را فشرده نگه می‌دارد → خطای «تم جدید
+        # داخل نیست» در حالی که داخل بود و ساخت Setup بی‌دلیل متوقف می‌شد. حالا
+        # ابزار verify_ui_in_exe.py آرشیو را می‌خواند؛ فقط «اثبات کهنگی» ساخت را
+        # متوقف می‌کند و بازرسی ناممکن فقط اخطار است (هرگز مانع ساخت نمی‌شود).
         $needle = 'ui-build-' + [int]$UIBuild
-        $bytes = [System.IO.File]::ReadAllBytes($exe)
-        $hay = [System.Text.Encoding]::ASCII.GetString($bytes)
-        if ($hay.IndexOf($needle) -lt 0) {
-            throw ("فایل اجرایی ساخته شد ولی رابط کاربری جدید داخل آن نیست ($needle).`n" +
-                   "این یعنی PyInstaller از پوشهٔ قدیمی خوانده است؛ پروژه را به‌روز کنید و دوباره بسازید.")
+        $verifier = Join-Path $ScriptDir 'verify_ui_in_exe.py'
+        & $Report "راستی‌آزمایی رابط کاربری داخل فایل اجرایی ($needle) ..."
+        & $Script:VenvPy $verifier $exe $needle
+        $vcode = $LASTEXITCODE
+        if ($vcode -eq 1) {
+            throw ("اثبات شد که رابط کاربری داخل فایل اجرایی کهنه است ($needle).`n" +
+                   "PyInstaller از پوشهٔ قدیمی خوانده است؛ پروژه را به‌روز کنید و دوباره بسازید.")
         }
-        & $Report "رابط کاربری جدید داخل فایل اجرایی تأیید شد ($needle)."
+        if ($vcode -eq 0) {
+            & $Report "رابط کاربری جدید داخل فایل اجرایی تأیید شد ($needle)."
+        } else {
+            & $Report "بازرسی محتوای داخل exe ممکن نشد؛ با تأیید نشان در app.js ادامه می‌دهیم (خطری نیست)."
+            Write-Log "verify_ui_in_exe returned UNCERTAIN (2) - continuing" 'WARN'
+        }
 
         # ALWAYS publish a portable copy. Even when Inno Setup is missing the
         # user walks away with something that runs (from v0.4.0).

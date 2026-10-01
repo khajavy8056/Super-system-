@@ -303,10 +303,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-485 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-486 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 485;
+const UI_BUILD = 486;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -576,6 +576,7 @@ RENDER.dashboard = async () => {
       </aside>
     </div>
     <div class="dash-foot">Rasa System v${esc(state.version || "1.0.0")} · بیلد ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    <div class="dash">
       <div class="dash-band"><span>جزئیات عملیاتی</span><i></i></div>
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
@@ -675,6 +676,7 @@ function dashDonut(cats) {
   const segs = cats.map((c, i) => {
     const p = (c.sales || 0) / total * 100;
     const seg = `<circle cx="60" cy="60" r="44" fill="none" stroke="${COLORS[i % COLORS.length]}" stroke-width="17"
+      transform="rotate(-90 60 60)"
       stroke-dasharray="${Math.max(0.4, p * 2.764)} ${Math.max(0.4, (100 - p) * 2.764)}" stroke-dashoffset="${-accP * 2.764}" />`;
     accP += p;
     return seg;

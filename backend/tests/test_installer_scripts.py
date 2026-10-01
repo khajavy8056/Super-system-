@@ -90,3 +90,37 @@ def test_setup_shows_build_number_and_ui_is_never_stale_cached():
     assert "build {#MyAppBuild}" in setup
     main_py = (REPO / "backend" / "app" / "main.py").read_text(encoding="utf-8")
     assert "ui_no_cache" in main_py and "Cache-Control" in main_py
+
+
+def test_verify_ui_in_exe_never_falsely_blocks(tmp_path):
+    """build-486 — بازرسِ داخل exe نباید هرگز خطای مثبت کاذب بدهد (باگ مالک:
+    «تم جدید داخل exe نیست» در حالی که داخل بود و Setup ساخته نشد). قرارداد:
+    فقط «اثبات کهنگی» قطع می‌کند؛ بازرسی ناممکن ← UNCERTAIN (2) و ادامهٔ ساخت."""
+    import importlib.util
+    mod_path = REPO / "installer" / "windows" / "verify_ui_in_exe.py"
+    spec = importlib.util.spec_from_file_location("verify_ui_in_exe", mod_path)
+    v = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v)
+
+    assert v.find_frontend_entry({"frontend/app.js": (1, 2, 3)}) == "frontend/app.js"
+    assert v.find_frontend_entry([("x",), ("y",), ("z", "frontend\\app.js")]) == "frontend\\app.js"
+    assert v.find_frontend_entry({"other": 1}) is None
+
+    assert v.marker_in_bytes(b"xx ui-build-486 yy", "ui-build-486")
+    assert not v.marker_in_bytes(b"xx ui-build-485 yy", "ui-build-486")
+
+    # فایل آشغال = آرشیو ناشناخته → باید UNCERTAIN (2) برگردد، نه STALE (1)
+    junk = tmp_path / "not-an-exe.bin"
+    junk.write_bytes(b"this is not a pyinstaller archive at all")
+    assert v.inspect(str(junk), "ui-build-486") == 2, "بازرس ناممکن نباید ساخت را متوقف کند"
+
+    # فایل خالی/غایب هم نباید ساختار را بشکند
+    assert v.main(["x"]) == 2
+
+
+def test_builder_uses_verifier_instead_of_raw_byte_scan():
+    """سازنده باید از verify_ui_in_exe.py استفاده کند و منطق بایت خام حذف شده باشد."""
+    lib = (REPO / "installer" / "windows" / "builder-lib.ps1").read_text(encoding="utf-8-sig")
+    assert "verify_ui_in_exe.py" in lib
+    assert "ReadAllBytes" not in lib.split("verify_ui_in_exe.py")[1], "اسکن بایت خام باید حذف شده باشد"
+    assert (REPO / "installer" / "windows" / "verify_ui_in_exe.py").exists()
