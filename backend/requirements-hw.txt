@@ -1,0 +1,7 @@
+# اختیاری — چاپگر رسید و سخت‌افزار فروشگاه (build-488)
+# نصب:  pip install -r requirements-hw.txt
+# بدون این بسته‌ها، سرویس چاپ با پیام «DRIVER_UNAVAILABLE» کنترل‌شده کار می‌کند
+# و چاپ روی فایل/شبکه بی‌نیاز از اینهاست (قرارداد test_phase3).
+python-escpos>=3.0,<4.0        # from escpos.printer import Usb/Network
+pyserial>=3.5,<4.0             # presence-check در سرویس‌های hw
+pyusb>=1.2,<2.0                # detection چاپگر USB (بدون بک‌اند سیستمی: NoBackendError)

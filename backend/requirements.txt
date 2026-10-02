@@ -15,3 +15,12 @@ qrcode>=7.4,<9.0
 pillow>=10.0,<13.0
 openpyxl>=3.1,<4.0   # v3.4: read the shop's product-bank Excel folders (MIT)
 tzdata>=2024.1
+# build-488 (§6) — PDF گزارش‌های فارسی: reportlab سخت‌افزاریِ ویژگی PDF است؛
+# arabic-reshaper/python-bidi برای شکل‌دهی حروف و ترتیب راست‌به‌چپ (اختیاری در زمان اجرا).
+reportlab>=4.0,<5.0
+arabic-reshaper>=2.1,<4.0
+python-bidi>=0.4,<0.6          # from bidi.algorithm import get_display
+# build-488 — فونت‌سازی دارایی‌های برند (scripts/make_logo.py؛ تست test_v100_theme_contract آن را اجرا می‌کند)
+fonttools[woff]>=4.40,<5.0     # + brotli برای رمزگشایی WOFF2 وزیرمتن
+# چاپگر/سخت‌افزار اختیاری است و به‌صورت پیش‌فرض نصب نمی‌شود — requirements-hw.txt
+# (تست قرارداد «درایور نبود» در test_phase3 بر همین نصب پیش‌فرض حساب می‌کند).

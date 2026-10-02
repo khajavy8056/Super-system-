@@ -264,8 +264,9 @@ public final class Screens {
                     JSONObject r = (JSONObject) o;
                     JSONObject latestObj = r == null ? null : r.optJSONObject("latest");
                     String latest = latestObj == null ? "" : latestObj.optString("version");
+                    final String link = latestObj == null ? "" : latestObj.optString("html_url", "");
                     if (r != null && r.optBoolean("update_available")) {
-                        up.addView(SugRow("star", Ui.AMBER, "نسخهٔ جدید در دسترس است", latest.length() > 0 ? "نسخهٔ " + Ui.fa(latest) : "دریافت از مخزن انتشار", () -> {}));
+                        up.addView(SugRow("star", Ui.AMBER, "نسخهٔ جدید در دسترس است", latest.length() > 0 ? "نسخهٔ " + Ui.fa(latest) : "دریافت از مخزن انتشار", () -> { try { a.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(link.length() > 0 ? link : "https://github.com/khajavy8056/Rasasys/releases"))); } catch (Exception ex) { Ui.toast("مرورگر در دسترس نیست"); } }));
                         up.addView(Ui.muted(c, "نسخهٔ فعلی: " + Ui.fa(r.optString("current_version", ""))));
                     } else {
                         up.addView(Ui.kv(c, "وضعیت", "برنامه به‌روز است", Ui.GREEN));
