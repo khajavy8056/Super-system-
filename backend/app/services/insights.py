@@ -1246,13 +1246,20 @@ MEASUREMENT_SPECS: dict[str, dict] = {
 }
 
 
-def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None) -> str:
-    """Terminal, honest verdict for one measurement.
+def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None,
+                        realized_cost: float = 0.0) -> str:
+    """Terminal, honest verdict for one measurement (§۳۶–۳۷ — build-488).
 
     NOT_MEASURABLE — no contract for this metric (never invent a gain).
     INSUFFICIENT_DATA — window too short to say anything yet.
-    NEGATIVE_OUTCOME / POSITIVE_OUTCOME / NEUTRAL_OUTCOME — decided by the
-    sign of the adjusted gain once the data is sufficient.
+    POSITIVE_OUTCOME — measurable, evidenced positive result.
+    NO_IMPACT — nothing moved either way; NOT a negative score (§۳۷ Neutral).
+    MISSED_OPPORTUNITY — سودی که می‌توانست اتفاق بیفتد ولی نیفتاد (پیش‌بینی
+        مشتری محقق نشد، اقدام اجرا نشد …). طبق دستور صریح مالک **ضرر نیست** و
+        هیچ امتیاز منفی برای مدل ثبت نمی‌شود (§۳۷).
+    NEGATIVE_OUTCOME — فقط ضرر واقعی، قابل اندازه‌گیری و قابل انتساب به تصمیم
+        AI: یعنی در پنجرهٔ اندازه‌گیری واقعاً تخفیف/هزینه‌ای داده شده باشد
+        (realized_cost > 0) و نتیجهٔ خالص منفی باشد — با Evidence.
     """
     if spec is None:
         return "NOT_MEASURABLE"
@@ -1262,9 +1269,46 @@ def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None) 
         return "NOT_MEASURABLE"
     if gain > 0:
         return "POSITIVE_OUTCOME"
-    if gain < 0:
-        return "NEGATIVE_OUTCOME"
-    return "NEUTRAL_OUTCOME"
+    if gain == 0:
+        return "NO_IMPACT"
+    # gain < 0: فقط وقتی «ضرر واقعی» است که هزینه/تخفیف واقعی پرداخت شده باشد؛
+    # وگرنه «فرصت ازدست‌رفته» است، نه ضرر (مثال مالک: مشتری پیش‌بینی‌شده نیامد).
+    return "NEGATIVE_OUTCOME" if realized_cost > 0 else "MISSED_OPPORTUNITY"
+
+
+def _realized_action_cost(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
+    """تخفیف/هزینهٔ واقعاً داده‌شده در پنجرهٔ اندازه‌گیری روی دامنهٔ اقدام (§۳۷).
+
+    منبع: تخفیف ردیف فاکتور + استفاده از کوپن/کمپین — همه از دادهٔ واقعی (§۵۲).
+    خروجی: {items, coupons, campaigns, total} — برای Evidence ضرر.
+    """
+    from ..models import CampaignRedemption, CouponRedemption
+    paid = and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
+    pids = spec.get("product_ids") or ([spec["product_id"]] if spec.get("product_id") else None)
+    cids = spec.get("customer_ids")
+    item_q = select(func.coalesce(func.sum(InvoiceItem.discount), 0)).join(
+        Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid)
+    if pids:
+        item_q = item_q.where(InvoiceItem.product_id.in_(pids))
+    if cids:
+        item_q = item_q.where(Invoice.customer_id.in_(cids))
+    items = _f(db.execute(item_q).scalar_one())
+    # «قابل انتساب» (§۳۷): هزینه/تخفیف فقط در دامنهٔ همین اقدام شمرده می‌شود،
+    # نه کل فروشگاه. برای دامنهٔ محصول: تخفیف همان محصول؛ برای دامنهٔ مشتری:
+    # تخفیف/کوپن/کمپین همان مشتری‌ها؛ برای دامنهٔ فروشگاه: همه.
+    coupons = campaigns = 0.0
+    if not pids:
+        coup_q = select(func.coalesce(func.sum(CouponRedemption.amount), 0)).where(
+            CouponRedemption.created_at >= start, CouponRedemption.created_at < end)
+        camp_q = select(func.coalesce(func.sum(CampaignRedemption.amount), 0)).where(
+            CampaignRedemption.created_at >= start, CampaignRedemption.created_at < end)
+        if cids:
+            coup_q = coup_q.where(CouponRedemption.customer_id.in_(cids))
+            camp_q = camp_q.where(CampaignRedemption.customer_id.in_(cids))
+        coupons = _f(db.execute(coup_q).scalar_one())
+        campaigns = _f(db.execute(camp_q).scalar_one())
+    return {"items": round(items), "coupons": round(coupons),
+            "campaigns": round(campaigns), "total": round(items + coupons + campaigns)}
 
 
 def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
@@ -1487,14 +1531,25 @@ def measure(db: Session, insight: Insight) -> dict | None:
             verdict = "INSUFFICIENT_DATA"
         elif improvement > 0:
             verdict = "POSITIVE_OUTCOME"
-        elif improvement < 0:
-            verdict = "NEGATIVE_OUTCOME"
+        elif improvement == 0:
+            verdict = "NO_IMPACT"
         else:
-            verdict = "NEUTRAL_OUTCOME"
+            # §۳۷ — نرخ بدتر شده ولی ضرر مالی قابل اندازه‌گیری نیست؛ این
+            # «فرصت ازدست‌رفته» است و امتیاز منفی ثبت نمی‌شود.
+            verdict = "MISSED_OPPORTUNITY"
         money_gain = None
     else:
         money_gain = adj_gain if enough else None
-        verdict = measurement_verdict(adj_gain, enough=enough, spec=mspec)
+        cost_info = _realized_action_cost(db, spec, start, end)
+        realized_cost = cost_info["total"] if enough else 0.0
+        verdict = measurement_verdict(adj_gain, enough=enough, spec=mspec,
+                                      realized_cost=realized_cost)
+        if verdict == "MISSED_OPPORTUNITY":
+            # نه ضرر است نه سود: measured_gain عمداً NULL می‌ماند تا هیچ‌جا
+            # (کالیبراسیون، امتیاز مدل، گزارش) به‌عنوان ضرر دیده نشود (§۳۷).
+            money_gain = None
+        elif verdict == "NO_IMPACT":
+            money_gain = 0.0 if enough else None
     gain = money_gain if money_gain is not None else 0.0
     # v3.2 — growth in percent (what managers actually quote): profit rate after vs. before,
     # and the same after removing the store-wide trend (the honest number).
@@ -1507,6 +1562,10 @@ def measure(db: Session, insight: Insight) -> dict | None:
                                  "base_profit_per_day": round(base_rate), "post_profit_per_day": round(post_rate),
                                  "daily": _daily_series(db, spec, start, end, base),
                                  "raw_gain": round(raw_gain), "adjusted_gain": round(adj_gain),
+                                 "outcome_class": verdict,
+                                 "realized_action_cost": (cost_info if mspec.get("gain_source") != "none" else {"items": 0, "coupons": 0, "campaigns": 0, "total": 0}),
+                                 "missed_gain": (round(abs(adj_gain)) if verdict == "MISSED_OPPORTUNITY" and enough else None),
+                                 "loss_evidence": ({"realized_cost": cost_info, "adjusted_gain": round(adj_gain)} if verdict == "NEGATIVE_OUTCOME" else None),
                                  "verdict": verdict, "gain_basis": mspec.get("gain_basis", "measured"),
                                  "projected_month": round(adj_gain / elapsed * 30) if enough else None,
                                  "base_rate_per_day": round(base_rate, 2), "post_rate_per_day": round(post_rate, 2), **post}, ensure_ascii=False)

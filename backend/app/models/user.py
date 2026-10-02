@@ -9,6 +9,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ..database import Base
 from .base import TimestampMixin
 
+user_permissions = Table(
+    "user_permissions",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+)
+
 user_roles = Table(
     "user_roles",
     Base.metadata,
@@ -40,8 +47,19 @@ class User(TimestampMixin, Base):
     # standalone access is ON for the Administrator by default.
     local_only: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # build-488 — تکمیل پروفایل کاربر (بخش ۱ دستور): شماره تماس، عنوان شغلی،
+    # تصویر پروفایل، تاریخ استخدام. فیلدها افزودنی‌اند و منطق موجود را نمی‌شکنند.
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    job_title: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hire_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: فروشگاه محل خدمت (برای مخاطب‌گیری اطلاعیه و گزارش‌ها؛ خالی = همهٔ فروشگاه‌ها)
+    store: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users")
+    #: build-488 — دسترسی مستقیم (مستقل از Role): User → Permissions
+    direct_permissions: Mapped[list["Permission"]] = relationship(
+        secondary=user_permissions, back_populates="users")
 
 
 class Role(TimestampMixin, Base):
@@ -64,3 +82,4 @@ class Permission(Base):
     description: Mapped[str] = mapped_column(String(255), default="")
 
     roles: Mapped[list["Role"]] = relationship(secondary=role_permissions, back_populates="permissions")
+    users: Mapped[list["User"]] = relationship(secondary=user_permissions, back_populates="direct_permissions")

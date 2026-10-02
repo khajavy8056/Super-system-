@@ -239,6 +239,40 @@ public final class Screens {
                 if (added == 0) sg.addView(Ui.muted(c, "هشدار فعالی نیست؛ همه‌چیز مرتب است."));
                 body.addView(sg);
             }
+            // build-488 — اطلاعیه‌های داخلی (§۱۴–۱۷): آخرین اطلاعیه‌های مجاز کاربر؛ آفلاین بی‌صدا مخفی
+            {
+                final LinearLayout an = Ui.card(c, "اطلاعیه‌های فروشگاه");
+                an.addView(Ui.muted(c, "در حال دریافت…"));
+                Api.get("/hr/announcements", o -> {
+                    an.removeAllViews();
+                    JSONArray arr = (JSONArray) o;
+                    if (arr == null || arr.length() == 0) { an.addView(Ui.muted(c, "اطلاعیه‌ای نیست")); return; }
+                    int n = Math.min(3, arr.length());
+                    for (int i = 0; i < n; i++) {
+                        JSONObject r = arr.optJSONObject(i);
+                        an.addView(SugRow("bell", Ui.VIOLET, r.optString("title"), r.optString("body"), () -> {}));
+                    }
+                }, e -> { an.removeAllViews(); an.addView(Ui.muted(c, "در دسترس نیست (آفلاین)")); });
+                body.addView(an);
+            }
+            // build-488 — به‌روزرسانی (§۴۳–۴۴): فقط نسخهٔ اندروید، بدون وابستگی به لایسنس؛ اعلان هر نسخه یک بار
+            {
+                final LinearLayout up = Ui.card(c, "به‌روزرسانی");
+                up.addView(Ui.muted(c, "در حال بررسی نسخه…"));
+                Api.get("/system/update/check?platform=android", o -> {
+                    up.removeAllViews();
+                    JSONObject r = (JSONObject) o;
+                    JSONObject latestObj = r == null ? null : r.optJSONObject("latest");
+                    String latest = latestObj == null ? "" : latestObj.optString("version");
+                    if (r != null && r.optBoolean("update_available")) {
+                        up.addView(SugRow("star", Ui.AMBER, "نسخهٔ جدید در دسترس است", latest.length() > 0 ? "نسخهٔ " + Ui.fa(latest) : "دریافت از مخزن انتشار", () -> {}));
+                        up.addView(Ui.muted(c, "نسخهٔ فعلی: " + Ui.fa(r.optString("current_version", ""))));
+                    } else {
+                        up.addView(Ui.kv(c, "وضعیت", "برنامه به‌روز است", Ui.GREEN));
+                    }
+                }, e -> { up.removeAllViews(); up.addView(Ui.muted(c, "بررسی به‌روزرسانی ممکن نشد (آفلاین)")); });
+                body.addView(up);
+            }
             // v3.0 — store intelligence: measured profit impact of executed suggestions
             InsightScreens.dashboardCard(this, body, a);
             // 3-4 month / profit

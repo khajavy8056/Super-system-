@@ -303,10 +303,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-487 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-488 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 487;
+const UI_BUILD = 488;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -333,6 +333,7 @@ const NAV = [
   ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
   ["support", "درخواست پشتیبانی", "pos.sell", "lifebuoy"],
   ["audit", "لاگ‌ها", "audit.view", "shield"],
+  ["staff", "کارکنان و سازمان", "staff.view", "users"],
 ];
 
 function can(perm) {
@@ -346,13 +347,19 @@ const NAV_GROUPS = [
   ["کالا و انبار", ["products", "batches", "inventory"]],
   ["رشد و تحلیل", ["dashboard", "marketing", "reports", "insights", "accounting"]],
   ["سامانه", ["hardware", "users", "settings", "diagnostics", "support", "audit"]],
+  ["کارکنان و سازمان", ["staff"]],
 ];
 function buildNav() {
   // build-485 — سایدبار تخت مطابق تصویر مرجع (بدون سرفصل گروهی)
   const nav = $("#nav");
   nav.innerHTML = "";
   NAV.forEach(([key, label, perm, ico]) => {
-    if (!can(perm)) return;
+    if (key === "staff") {
+      // build-488 — «کارکنان و سازمان»: دیده‌شدن = اجتماع دسترسی‌های این بخش (§۳/§۷)
+      const staffOk = can("performance.view") || can("shifts.view") ||
+        can("announcements.publish") || can("payroll.view") || can("users.manage");
+      if (!staffOk) return;
+    } else if (perm && !can(perm)) return;
     const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
     btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "insights" ? `<i class="nav-new">جدید</i>` : ""}${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
     nav.append(btn);
@@ -389,7 +396,110 @@ function bindGlobalBar() {
   });
   // build-487 — کارت کاربر «پروفایل کاربر» را باز می‌کند، نه پروفایل فروشگاه
   const us = $("#tb-user"); if (us) us.addEventListener("click", () => go("profile"));
+  if (window.checkUpdateOnce) checkUpdateOnce();
 }
+
+/* build-488 — داشبورد پویا (§۴–۱۳): Widgetهای مجاز هر کاربر از /hr/widgets می‌آید؛
+   مخفی/ترتیب/Pin/اندازه روی همان کارت‌های فعلی اعمال می‌شود (ظاهر تغییر نمی‌کند).
+   فعال‌کردن Widget غیرمجاز در backend رد می‌شود (§۸). */
+window.applyDashboardWidgets = async function () {
+  let data = null;
+  try { data = await api("/hr/widgets"); } catch (e) { return; }  // بدون دسترسی/آفلاین: همان چیدمان فعلی
+  window._widgetLayout = data;
+  const hidden = new Set((data.all_allowed || []).filter((w) => w.hidden).map((w) => w.id));
+  (data.all_allowed || []).forEach((w, i) => {
+    if (!w.card) return;
+    const el = document.querySelector(w.card);
+    if (!el) return;
+    el.dataset.w = w.id;
+    if (hidden.has(w.id)) { el.style.display = "none"; return; }
+    el.style.display = "";
+    el.style.order = String(w.pinned ? -100 + i : i);
+    el.classList.remove("w-sm", "w-md", "w-lg");
+    el.classList.add("w-" + (w.size || "md"));
+    if (w.pinned) el.classList.add("w-pinned"); else el.classList.remove("w-pinned");
+  });
+  const btn = $("#dash-layout-btn");
+  if (btn) btn.addEventListener("click", () => openDashLayout());
+};
+window.openDashLayout = function () {
+  const data = window._widgetLayout;
+  if (!data) return;
+  const items = [...(data.all_allowed || [])];
+  const overlay = el("div", { class: "modal-overlay" });
+  const render = () => {
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="dcard-head"><h3>چیدمان داشبورد من</h3>
+          <button class="btn btn-sm btn-ghost" id="mdl-close">بستن</button></div>
+        <p class="muted">Widgetها را جابه‌جا، مخفی یا ثابت (Pin) کنید — فقط در محدودهٔ دسترسی شما.</p>
+        <div class="wd-list">
+          ${items.map((w, i) => `
+            <div class="wd-row">
+              <b>${esc(w.title)}</b>
+              <span class="muted">${esc(w.group_title || "")}</span>
+              <span class="wd-acts">
+                <button class="btn btn-sm btn-ghost" data-up="${w.id}">▲</button>
+                <button class="btn btn-sm btn-ghost" data-down="${w.id}">▼</button>
+                <button class="btn btn-sm ${w.pinned ? "btn-primary" : "btn-ghost"}" data-pin="${w.id}">${w.pinned ? "پین شده" : "پین"}</button>
+                <button class="btn btn-sm ${w.hidden ? "btn-primary" : "btn-ghost"}" data-hide="${w.id}">${w.hidden ? "مخفی" : "نمایش"}</button>
+              </span>
+            </div>`).join("")}
+        </div>
+        <div class="prof-actions" style="margin-top:12px">
+          <button class="btn btn-primary" id="wd-save">ذخیرهٔ چیدمان</button>
+          <button class="btn btn-ghost" id="wd-reset">بازنشانی</button>
+        </div>
+      </div>`;
+    overlay.querySelectorAll("[data-up]").forEach((b) => b.addEventListener("click", () => {
+      const i = items.findIndex((x) => x.id === b.dataset.up);
+      if (i > 0) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; render(); }
+    }));
+    overlay.querySelectorAll("[data-down]").forEach((b) => b.addEventListener("click", () => {
+      const i = items.findIndex((x) => x.id === b.dataset.down);
+      if (i >= 0 && i < items.length - 1) { [items[i + 1], items[i]] = [items[i], items[i + 1]]; render(); }
+    }));
+    overlay.querySelectorAll("[data-pin]").forEach((b) => b.addEventListener("click", () => {
+      const w = items.find((x) => x.id === b.dataset.pin); w.pinned = !w.pinned; render();
+    }));
+    overlay.querySelectorAll("[data-hide]").forEach((b) => b.addEventListener("click", () => {
+      const w = items.find((x) => x.id === b.dataset.hide); w.hidden = !w.hidden; render();
+    }));
+    const close = () => overlay.remove();
+    overlay.querySelector("#mdl-close").addEventListener("click", close);
+    overlay.querySelector("#wd-reset").addEventListener("click", async () => {
+      try { await api("/hr/widgets/layout", { method: "PUT", body: JSON.stringify({ order: [], pinned: [], hidden: [], sizes: {} }) }); } catch (e) {}
+      close(); applyDashboardWidgets();
+    });
+    overlay.querySelector("#wd-save").addEventListener("click", async () => {
+      try {
+        await api("/hr/widgets/layout", { method: "PUT", body: JSON.stringify({
+          order: items.map((x) => x.id), pinned: items.filter((x) => x.pinned).map((x) => x.id),
+          hidden: items.filter((x) => x.hidden).map((x) => x.id), sizes: {} }) });
+        toast("چیدمان ذخیره شد", "ok");
+        close(); applyDashboardWidgets();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  };
+  render();
+  document.body.append(overlay);
+};
+
+/* build-488 (§۴۱–۴۴) — بررسی به‌روزرسانی: یک بار در ورود؛ اعلان تکرار نمی‌شود؛
+   خطا/آفلاین بودن هرگز UI را مختل نمی‌کند. */
+window.checkUpdateOnce = async function () {
+  if (window._updateChecked) return;
+  window._updateChecked = true;
+  try {
+    const r = await api("/system/update/check?platform=windows");
+    window._updateInfo = r;
+    if (r && r.notify && r.latest) {
+      const v = esc(r.latest.version || "");
+      toast(`نسخهٔ جدید ${v} در دسترس است — از تنظیمات «به‌روزرسانی» ببینید`, "info");
+      await api("/system/update/ack", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+    }
+  } catch (e) { /* آفلاین یا مخزن خالی — بی‌صدا */ }
+};
 
 /* v1.0.0 (RASA) — زیرعنوان هر صفحه: کاربر تازه بفهمد این صفحه به چه کار می‌آید. */
 const VIEW_SUBS = {
@@ -412,12 +522,14 @@ const VIEW_SUBS = {
   insights: "پیشنهاد، اجرا و سنجش نتیجه",
   insightsPlan: "پیش‌بینی سود و برنامهٔ اقدام",
   profile: "پروفایل کاربری — مشخصات حساب شما",
+  staff: "عملکرد، شیفت‌ها، اطلاعیه‌ها و حقوق کارکنان",
 };
 async function go(view) {
   state.view = view;
   buildNav();
   const titles = Object.fromEntries(NAV.map(([k, v]) => [k, v]));
   titles.profile = "پروفایل من";
+  titles.staff = "کارکنان و سازمان";
   $("#view-title").textContent = titles[view] || view;
   const sub = $("#view-sub"); if (sub) sub.textContent = VIEW_SUBS[view] || "";
   $("#topbar-actions").innerHTML = "";
@@ -426,6 +538,7 @@ async function go(view) {
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
     await RENDER[view]();
+    if (view === "dashboard" && window.applyDashboardWidgets) applyDashboardWidgets();
     Jalali.attachAll(viewEl);
     if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
@@ -438,40 +551,259 @@ const RENDER = {};
 
 /* build-487 — «پروفایل من»: مشخصات همین کاربرِ واردشده (نه پروفایل فروشگاه).
    همه از state.user — بدون فراخوانی جدید؛ خروج از حساب هم همین‌جا. */
+/* build-488 — «کارکنان و سازمان» (§۱۴–۲۷): عملکرد/شیفت/اطلاعیه/حقوق در یک
+   فضای کاری با زبانه؛ هر زبانه فقط با Permission مربوطه دیده می‌شود (§۵۰) و
+   همهٔ اعداد از API واقعی می‌آیند (§۵۲). */
+RENDER.staff = async () => {
+  const tabs = [];
+  if (can("performance.view") || can("performance.view_all")) tabs.push(["perf", "عملکرد"]);
+  if (can("shifts.view")) tabs.push(["shifts", "شیفت‌ها"]);
+  if (can("announcements.publish") || true) tabs.push(["ann", "اطلاعیه‌ها"]);
+  if (can("payroll.view")) tabs.push(["payroll", "حقوق"]);
+  if (!tabs.length) { $("#view").innerHTML = '<div class="card"><p class="muted">دسترسی‌ای در این بخش ندارید</p></div>'; return; }
+  const moneyFa = (n) => fa((Number(n) || 0).toLocaleString("en-US"));
+  $("#view").innerHTML = `
+    <div class="og-profile" style="max-width:1100px">
+      <div class="range-chips" id="staff-tabs">
+        ${tabs.map(([k, lb], i) => `<button class="chip ${i === 0 ? "on" : ""}" data-t="${k}">${lb}</button>`).join("")}
+      </div>
+      <section class="dcard" id="staff-body"><span class="muted">در حال بارگذاری…</span></section>
+    </div>`;
+  const body = $("#staff-body");
+  const renderTab = async (key) => {
+    if (key === "perf") {
+      let rows = [];
+      try { rows = await api("/hr/performance/team"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("trend", 15)} عملکرد کارکنان (۳۰ روز اخیر)</h3>
+          ${can("reports.export") ? `<button class="btn btn-sm" id="staff-pdf">خروجی PDF</button>` : ""}</div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>نام</th><th>عنوان شغلی</th><th>فروش</th><th>فاکتور</th><th>میانگین فاکتور</th>
+          <th>داخل شیفت</th><th>خارج از شیفت</th><th>تأخیر (دقیقه)</th><th>امتیاز</th></tr></thead><tbody>
+        ${rows.map((r) => `<tr>
+          <td><b>${esc(r.full_name)}</b></td><td class="muted">${esc(r.job_title || "—")}</td>
+          <td><b>${moneyFa(r.sales_total)}</b></td><td>${fa(r.invoice_count)}</td>
+          <td>${moneyFa(r.avg_invoice)}</td><td>${moneyFa(r.sales_in_shift)}</td>
+          <td class="muted">${moneyFa(r.sales_out_of_shift)}</td>
+          <td class="${r.late_minutes_total ? "err" : ""}">${fa(r.late_minutes_total)}</td>
+          <td>${fa(r.score_total)}</td></tr>`).join("") || '<tr><td colspan="9" class="muted">داده‌ای نیست</td></tr>'}
+        </tbody></table></div>`;
+      const pdf = $("#staff-pdf");
+      if (pdf) pdf.addEventListener("click", () => {
+        const u = rows[0];
+        if (u) window.open(API + `/hr/performance/pdf/${u.user_id}`, "_blank");
+      });
+      return;
+    }
+    if (key === "shifts") {
+      let shifts = [];
+      try { shifts = await api("/hr/shifts"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("clock", 15)} شیفت‌های کاری</h3>
+          ${can("shifts.manage") ? `<button class="btn btn-sm btn-primary" id="shf-new">شیفت جدید</button>` : ""}</div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>نام شیفت</th><th>ساعت</th><th>روزها</th><th>بخش</th><th>تیم</th><th>وضعیت</th></tr></thead><tbody>
+        ${shifts.map((s) => `<tr>
+          <td><b>${esc(s.name)}</b></td>
+          <td>${fa(s.start_time)} تا ${fa(s.end_time)}</td>
+          <td class="muted">${(s.workdays || []).length ? s.workdays.map((d) => ["ش", "ی", "د", "س", "چ", "پ", "ج"][d]).join(" ") : "هر روز"}</td>
+          <td>${esc(s.department || "—")}</td>
+          <td>${(s.roster || []).map((r) => esc(r.full_name)).join("، ") || "—"}</td>
+          <td><span class="badge ${s.status === "ACTIVE" ? "ok" : ""}">${s.status === "ACTIVE" ? "فعال" : "بایگانی"}</span></td></tr>`).join("") || '<tr><td colspan="6" class="muted">شیفتی تعریف نشده</td></tr>'}
+        </tbody></table></div>`;
+      const shn = $("#shf-new");
+      if (shn) shn.addEventListener("click", async () => {
+        const name = prompt("نام شیفت (مثلاً «صبح»):");
+        if (!name) return;
+        const start = prompt("ساعت شروع (HH:MM):", "08:00");
+        if (!start) return;
+        const end = prompt("ساعت پایان (HH:MM):", "14:00");
+        if (!end) return;
+        try {
+          await api("/hr/shifts", { method: "POST", body: JSON.stringify({ name, start_time: start, end_time: end }) });
+          toast("شیفت ساخته شد", "ok");
+          renderTab("shifts");
+        } catch (e) { toast(e.message, "err"); }
+      });
+      return;
+    }
+    if (key === "ann") {
+      let anns = [];
+      try { anns = await api("/hr/announcements"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("megaphone", 15)} اطلاعیه‌های داخلی</h3>
+          ${can("announcements.publish") ? `<button class="btn btn-sm btn-primary" id="ann-new">اطلاعیه جدید</button>` : ""}</div>
+        ${anns.map((a) => `
+          <div class="ann-row ${a.is_read ? "" : "ann-unread"}" data-id="${a.id}">
+            <div class="ann-top">
+              <b>${esc(a.title)}</b>
+              <span class="badge ${a.priority <= 2 ? "err" : ""}">${["", "فوری", "مهم", "عادی", "اطلاعی", "خبری"][a.priority] || "عادی"}</span>
+              <span class="muted">${a.created_at ? faDateTime(a.created_at) : ""} — ${esc(a.created_by_name || "")}</span>
+            </div>
+            <p class="muted">${esc(a.body || "")}</p>
+            <div class="ann-foot muted">مخاطب: ${a.target_kind === "ALL" ? "همهٔ کارکنان" : a.target_kind === "ROLES" ? (a.target_roles_titles || []).join("، ") : a.target_kind === "USERS" ? "کاربران مشخص‌شده" : esc(a.target_store || "فروشگاه")}
+              ${!a.is_read ? `<button class="btn btn-sm btn-ghost ann-read">خواندم</button>` : `<span class="ok">✓ خوانده‌شده</span>`}</div>
+          </div>`).join("") || '<p class="muted">اطلاعیه‌ای نیست</p>'}`;
+      body.querySelectorAll(".ann-read").forEach((b) => b.addEventListener("click", async () => {
+        const id = b.closest(".ann-row").dataset.id;
+        await api(`/hr/announcements/${id}/read`, { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+        renderTab("ann");
+      }));
+      const annn = $("#ann-new");
+      if (annn) annn.addEventListener("click", async () => {
+        const title = prompt("عنوان اطلاعیه:");
+        if (!title) return;
+        const text = prompt("متن اطلاعیه:") || "";
+        const kind = prompt("مخاطب: ALL=همه / ROLES=نقش‌ها / USERS=کاربران", "ALL") || "ALL";
+        let roles = [], users = [];
+        if (kind.toUpperCase() === "ROLES") {
+          const rl = prompt("نام نقش‌ها با ویرگول (مثلاً Salesperson,Cashier):") || "";
+          roles = rl.split(",").map((x) => x.trim()).filter(Boolean);
+        }
+        try {
+          await api("/hr/announcements", { method: "POST", body: JSON.stringify({
+            title, body: text, target_kind: kind.toUpperCase(), target_roles: roles, target_users: users, priority: 3 }) });
+          toast("اطلاعیه منتشر شد", "ok");
+          renderTab("ann");
+        } catch (e) { toast(e.message, "err"); }
+      });
+      return;
+    }
+    if (key === "payroll") {
+      let rows = [];
+      try { rows = await api("/hr/payroll"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("cash", 15)} حقوق و دستمزد</h3></div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>دوره</th><th>کاربر</th><th>خالص پرداختی</th><th>وضعیت</th><th>سند مالی</th></tr></thead><tbody>
+        ${rows.map((r) => `<tr>
+          <td>${esc(r.period)}</td><td>${fa(r.user_id)}</td>
+          <td><b>${moneyFa(r.total)}</b></td>
+          <td><span class="badge ${r.status === "PAID" ? "ok" : ""}">${r.status === "PAID" ? "پرداخت‌شده" : r.status === "APPROVED" ? "تأییدشده" : "پیش‌نویس"}</span></td>
+          <td class="muted">${esc(r.payment_ref || "—")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">ردیفی ثبت نشده</td></tr>'}
+        </tbody></table></div>`;
+    }
+  };
+  $("#staff-tabs").querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
+    $("#staff-tabs").querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
+    c.classList.add("on");
+    renderTab(c.dataset.t);
+  }));
+  await renderTab(tabs[0][0]);
+};
+
 RENDER.profile = async () => {
-  const u = state.user || {};
-  const perms = u.permissions || [];
-  const name = (u.full_name || u.username || "؟").trim();
+  /* build-488 (§۱) — پروفایل کامل کاربر: تصویر (انتخاب/تغییر/حذف)، شماره تماس،
+     عنوان شغلی، نقش‌ها، دسترسی‌ها، وضعیت حساب، تاریخ‌ها، دستاوردها/مدال/نشان،
+     شیفت امروز، و حقوق فقط با Permission لازم (§۵۰). */
+  let me = state.user || {};
+  try { me = await api("/users/me"); state.user = { ...(state.user || {}), ...me }; } catch (e) { /* آفلاین: همان state */ }
+  const perms = me.permissions || [];
+  const name = (me.full_name || me.username || "؟").trim();
+  const av = me.avatar_url
+    ? `<img class="prof-av-img" src="${esc(me.avatar_url)}" alt="">`
+    : `<span class="prof-av">${esc(name.slice(0, 1))}</span>`;
+  const ach = (me.achievements && me.achievements.achievements) || [];
+  const medal = (lvl) => ["", "🥉", "🥈", "🥇"][lvl] || "🏅";
+  const moneyFa = (n) => fa((Number(n) || 0).toLocaleString("en-US"));
   $("#view").innerHTML = `
     <div class="og-profile">
       <section class="dcard prof-head">
-        <span class="prof-av">${esc(name.slice(0, 1))}</span>
+        <label class="prof-av-wrap" title="تغییر تصویر پروفایل">
+          ${av}
+          <input type="file" id="prof-file" accept="image/png,image/jpeg,image/webp" hidden>
+          <span class="prof-av-edit">${icon("edit", 13)}</span>
+        </label>
         <div class="prof-id">
-          <h2>${esc(u.full_name || "")}</h2>
-          <p class="muted">@${esc(u.username || "")} · ${esc((u.roles || []).join("، ") || "—")}</p>
+          <h2>${esc(me.full_name || "")}</h2>
+          <p class="muted">@${esc(me.username || "")} · ${esc((me.roles_titles || me.roles || []).join("، ") || "—")}${me.job_title ? " · " + esc(me.job_title) : ""}</p>
         </div>
         <div class="prof-actions">
-          ${can("users.manage") ? `<button class="btn" onclick="go('users')">مدیریت کاربران</button>` : ""}
+          <button class="btn" id="prof-edit">ویرایش مشخصات</button>
+          ${can("users.manage") ? `<button class="btn btn-ghost" onclick="go('users')">مدیریت کاربران</button>` : ""}
           <button class="btn btn-ghost" id="prof-logout">خروج از حساب</button>
         </div>
       </section>
       <section class="dcard">
         <h3>اطلاعات حساب</h3>
         <div class="acc-mini">
-          <div><span class="muted">نام کامل</span><b>${esc(u.full_name || "—")}</b></div>
-          <div><span class="muted">نام کاربری</span><b>${esc(u.username || "—")}</b></div>
-          <div><span class="muted">نقش‌ها</span><b>${esc((u.roles || []).join("، ") || "—")}</b></div>
-          <div><span class="muted">تعداد دسترسی‌ها</span><b>${fa(perms.length)}</b></div>
-          <div class="span2"><span class="muted">فروشگاه</span><b>${esc((state.store && state.store.name) || "—")}</b></div>
+          <div><span class="muted">نام کامل</span><b>${esc(me.full_name || "—")}</b></div>
+          <div><span class="muted">نام کاربری</span><b>${esc(me.username || "—")}</b></div>
+          <div><span class="muted">شماره تماس</span><b>${esc(me.phone || "—")}</b></div>
+          <div><span class="muted">عنوان شغلی</span><b>${esc(me.job_title || "—")}</b></div>
+          <div><span class="muted">نقش‌ها</span><b>${esc((me.roles_titles || me.roles || []).join("، ") || "—")}</b></div>
+          <div><span class="muted">وضعیت</span><b class="${me.is_active ? "ok" : "err"}">${me.is_active ? "فعال" : "غیرفعال"}</b></div>
+          <div><span class="muted">تاریخ ایجاد حساب</span><b>${me.created_at ? faDateTime(me.created_at) : "—"}</b></div>
+          <div><span class="muted">آخرین ورود</span><b>${me.last_login_at ? faDateTime(me.last_login_at) : "—"}</b></div>
+          <div class="span2"><span class="muted">فروشگاه</span><b>${esc(me.store || (state.store && state.store.name) || "—")}</b></div>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>${icon("star", 15)} دستاوردها، مدال و نشان‌ها</h3>
+        ${ach.length ? `<div class="prof-perms">${ach.map((a) => `<span class="badge badge-gold" title="${esc(a.description || "")}">${medal(a.level)} ${esc(a.title)}</span>`).join("")}</div>` : '<span class="muted">هنوز نشانی ثبت نشده — نشان‌ها با فعالیت واقعی اعطا می‌شوند</span>'}
+        <div class="acc-mini" style="margin-top:10px">
+          <div><span class="muted">امتیاز کل</span><b>${moneyFa((me.achievements && me.achievements.score_total) || 0)}</b></div>
+          <div><span class="muted">رویدادهای امتیاز</span><b>${fa(((me.achievements && me.achievements.recent_events) || []).length)}</b></div>
         </div>
       </section>
       <section class="dcard">
         <h3>دسترسی‌های این حساب</h3>
         <div class="prof-perms">${perms.map((x) => `<span class="badge badge-blue">${esc(x)}</span>`).join("") || '<span class="muted">—</span>'}</div>
       </section>
+      ${can("payroll.view") ? `
+      <section class="dcard">
+        <h3>${icon("cash", 15)} حقوق و مزایا</h3>
+        ${(me.payroll || []).length ? `<table class="dtable"><thead><tr><th>دوره</th><th>خالص پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+          ${me.payroll.map((r) => `<tr><td>${esc(r.period)}</td><td><b>${moneyFa(r.total)}</b></td><td><span class="badge">${esc(r.status)}</span></td></tr>`).join("")}
+        </tbody></table>` : '<span class="muted">ردیف حقوقی ثبت نشده است</span>'}
+      </section>` : ""}
+      ${can("shifts.view") ? `
+      <section class="dcard">
+        <h3>${icon("clock", 15)} شیفت امروز</h3>
+        <div id="prof-shift"><span class="muted">در حال بارگذاری…</span></div>
+      </section>` : ""}
     </div>`;
   const lo = $("#prof-logout");
   if (lo) lo.addEventListener("click", () => { if (window.doLogout) window.doLogout(); });
+  const pf = $("#prof-file");
+  if (pf) pf.addEventListener("change", async () => {
+    const f = pf.files && pf.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const r = await fetch(API + "/users/me/avatar", { method: "POST",
+        headers: { "Authorization": "Bearer " + state.token }, body: fd });
+      if (!r.ok) throw new Error("بارگذاری تصویر ناموفق بود");
+      await RENDER.profile();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  const pe = $("#prof-edit");
+  if (pe) pe.addEventListener("click", async () => {
+    const nn = prompt("نام کامل:", me.full_name || "");
+    if (nn === null) return;
+    const ph = prompt("شماره تماس:", me.phone || "");
+    if (ph === null) return;
+    try {
+      await api("/users/me", { method: "PATCH", body: JSON.stringify({ full_name: nn, phone: ph }) });
+      toast("پروفایل ذخیره شد", "ok");
+      await RENDER.profile();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  const ps = $("#prof-shift");
+  if (ps) {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const perf = await api(`/hr/shifts/performance/${me.id}/${today}`);
+      const windows = (perf.shift_windows || []).map(([a, b]) => `${fa(new Date(a).toTimeString().slice(0, 5))} تا ${fa(new Date(b).toTimeString().slice(0, 5))}`).join("، ");
+      ps.innerHTML = `<div class="acc-mini">
+        <div><span class="muted">برنامهٔ امروز</span><b>${windows || "شیفتی ثبت نشده"}</b></div>
+        <div><span class="muted">فروش داخل شیفت</span><b>${moneyFa(perf.sales_in_shift)}</b></div>
+        <div><span class="muted">فروش خارج از شیفت</span><b>${moneyFa(perf.sales_out_of_shift)}</b></div>
+        <div><span class="muted">مجموع امروز</span><b>${moneyFa(perf.sales_total)}</b></div>
+      </div>`;
+    } catch (e) { ps.innerHTML = '<span class="muted">در دسترس نیست</span>'; }
+  }
 };
 
 RENDER.dashboard = async () => {
@@ -621,7 +953,9 @@ RENDER.dashboard = async () => {
       </aside>
     </div>
     <div class="dash">
-      <div class="dash-band"><span>جزئیات عملیاتی</span><i></i></div>
+      <div class="dash-band"><span>جزئیات عملیاتی</span><i></i>
+        <button class="btn btn-sm btn-ghost" id="dash-layout-btn" title="شخصی‌سازی چیدمان داشبورد">${icon("edit", 13)} چیدمان</button>
+      </div>
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
         <h3>${icon("trend", 18)} فروش امروز</h3>
@@ -2913,49 +3247,121 @@ RENDER.hardware = async () => {
 
 /* ---------- users ---------- */
 RENDER.users = async () => {
+  /* build-488 (§۱–۳) — چندنقشی + دسترسی مستقیم + عناوین استاندارد فروشگاه.
+     Role فقط مجموعهٔ Permission می‌سازد؛ UI از Permission تصمیم می‌گیرد. */
   const v = $("#view");
+  let roles = [], allPerms = [];
+  try {
+    roles = await api("/users/roles");
+    allPerms = await api("/users/permissions");
+    window._rolesCache = roles; window._permsCache = allPerms;
+  } catch (e) { /* کاربر بدون users.manage */ }
+  const roleBoxes = (selected = []) => roles.map((r) => `
+    <label class="check" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+      <input type="checkbox" class="u-role-cb" value="${esc(r.name)}" ${selected.includes(r.name) ? "checked" : ""}>
+      <span>${esc(r.title_fa || r.name)}</span>
+    </label>`).join("");
+  const permChips = (selected = []) => allPerms.map((p) => `
+    <label class="check" style="display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin:2px">
+      <input type="checkbox" class="u-perm-cb" value="${esc(p.code)}" ${selected.includes(p.code) ? "checked" : ""}>
+      <span class="badge badge-blue">${esc(p.code)}</span>
+    </label>`).join("");
   v.innerHTML = `<div class="grid grid-2">
     <div class="card"><h3>کاربران</h3>
-      <p class="muted">«دسترسی فقط به صورت بومی» یعنی کاربر فقط وقتی داخل شبکهٔ فروشگاه است (گوشی/رایانه به رایانهٔ فروشگاه وصل است) می‌تواند وارد شود. اگر تیک برداشته شود، کاربر می‌تواند بیرون از شبکه هم با گوشی کار کند و داده‌هایش هنگام بازگشت به شبکه خودکار همگام می‌شود. مدیر اصلی همیشه دسترسی مستقل دارد.</p>
+      <p class="muted">«دسترسی فقط به صورت بومی» یعنی کاربر فقط وقتی داخل شبکهٔ فروشگاه است می‌تواند وارد شود. مدیر اصلی همیشه دسترسی مستقل دارد. هر کاربر می‌تواند چند نقش داشته باشد و دسترسی مستقیم هم بگیرد (§۲).</p>
       <table id="u-table"></table></div>
     <div class="card"><h3>افزودن کاربر</h3>
       <label>نام کاربری</label><input id="u-username" />
       <label>رمز</label><input id="u-password" type="password" />
       <label>نام کامل</label><input id="u-fullname" />
-      <label>نقش</label><select id="u-role"><option>Cashier</option><option>Manager</option><option>Inventory Operator</option><option>Viewer</option></select>
+      <label>شماره تماس</label><input id="u-phone" />
+      <label>عنوان شغلی</label><input id="u-job" placeholder="مثلاً فروشندهٔ ارشد" />
+      <label>نقش‌ها (یک یا چند)</label>
+      <div id="u-roles" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">${roleBoxes([])}</div>
+      <label>دسترسی مستقیم (اختیاری — مستقل از نقش)</label>
+      <div id="u-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">${permChips([])}</div>
       <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:10px;cursor:pointer">
         <input type="checkbox" id="u-local-only" checked /> دسترسی فقط به صورت بومی (فقط داخل شبکهٔ فروشگاه)</label>
       <button id="u-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
     </div>
   </div>`;
+  const checkedVals = (cls, scope) => [...document.querySelectorAll(`#${scope} .${cls}:checked`)].map((x) => x.value);
   const draw = async () => {
     const users = await api("/users");
     const rows = users.map((u) => el("tr", {},
-      el("td", { text: u.username }), el("td", { text: u.full_name }), el("td", { text: u.roles.join(", ") }),
+      el("td", { text: u.username }), el("td", { text: u.full_name }),
+      el("td", { text: (u.roles_titles && u.roles_titles.length ? u.roles_titles : u.roles).join("، ") }),
+      el("td", { text: u.job_title || "—" }),
       el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" })),
-      el("td", {}, el("button", {
-        class: "btn btn-sm " + (u.local_only ? "" : "btn-ghost"),
-        title: "تغییر دسترسی این کاربر",
-        text: u.local_only ? "فقط بومی" : "بومی و خارج از شبکه",
-        onclick: async () => {
-          try { await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ local_only: !u.local_only }) }); toast(u.local_only ? "کاربر اکنون خارج از شبکه هم می‌تواند کار کند" : "کاربر فقط داخل شبکه وارد می‌شود"); draw(); }
-          catch (e) { toast(e.message, "err"); }
-        } }))));
+      el("td", {}, el("button", { class: "btn btn-sm", text: "ویرایش", onclick: () => openUserEdit(u, draw) }))));
     const t = $("#u-table");
     t.innerHTML = "";
     t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
-      el("th", { text: "نقش‌ها" }), el("th", { text: "وضعیت" }), el("th", { text: "دسترسی" }))), el("tbody", {}, ...rows));
+      el("th", { text: "نقش‌ها" }), el("th", { text: "عنوان شغلی" }), el("th", { text: "وضعیت" }), el("th", { text: "عملیات" }))),
+      el("tbody", {}, ...rows));
   };
   await draw();
   $("#u-add").addEventListener("click", async () => {
     try {
-      await api("/users", { method: "POST", body: JSON.stringify({ username: $("#u-username").value.trim(),
-        password: $("#u-password").value, full_name: $("#u-fullname").value, roles: [$("#u-role").value],
+      await api("/users", { method: "POST", body: JSON.stringify({
+        username: $("#u-username").value.trim(), password: $("#u-password").value,
+        full_name: $("#u-fullname").value, phone: $("#u-phone").value || null,
+        job_title: $("#u-job").value || null,
+        roles: checkedVals("u-role-cb", "u-roles"), permissions: checkedVals("u-perm-cb", "u-perms"),
         local_only: $("#u-local-only").checked }) });
       toast("کاربر ساخته شد"); draw();
     } catch (e) { toast(e.message, "err"); }
   });
 };
+
+function openUserEdit(u, refresh) {
+  const overlay = el("div", { class: "modal-overlay" });
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <div class="dcard-head"><h3>ویرایش ${esc(u.full_name || u.username)}</h3>
+        <button class="btn btn-sm btn-ghost" id="ue-close">بستن</button></div>
+      <label>نام کامل</label><input id="ue-name" value="${esc(u.full_name || "")}">
+      <label>شماره تماس</label><input id="ue-phone" value="${esc(u.phone || "")}">
+      <label>عنوان شغلی</label><input id="ue-job" value="${esc(u.job_title || "")}">
+      <label>نقش‌ها (چند انتخابی — §۲)</label>
+      <div id="ue-roles" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">
+        ${window._rolesCache ? "" : ""}${(window._rolesCache || []).map((r) => `
+        <label class="check" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+          <input type="checkbox" class="ue-role-cb" value="${esc(r.name)}" ${(u.roles || []).includes(r.name) ? "checked" : ""}>
+          <span>${esc(r.title_fa || r.name)}</span></label>`).join("")}
+      </div>
+      <label>دسترسی مستقیم (§۲)</label>
+      <div id="ue-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">
+        ${(window._permsCache || []).map((p) => `
+        <label class="check" style="display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin:2px">
+          <input type="checkbox" class="ue-perm-cb" value="${esc(p.code)}" ${(u.direct_permissions || []).includes(p.code) ? "checked" : ""}>
+          <span class="badge badge-blue">${esc(p.code)}</span></label>`).join("")}
+      </div>
+      <div class="prof-actions" style="margin-top:12px">
+        <button class="btn btn-primary" id="ue-save">ذخیره</button>
+        <button class="btn btn-ghost" id="ue-toggle">${u.is_active ? "غیرفعال کردن" : "فعال کردن"}</button>
+      </div>
+    </div>`;
+  document.body.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector("#ue-close").addEventListener("click", close);
+  overlay.querySelector("#ue-save").addEventListener("click", async () => {
+    const roles = [...overlay.querySelectorAll(".ue-role-cb:checked")].map((x) => x.value);
+    const permissions = [...overlay.querySelectorAll(".ue-perm-cb:checked")].map((x) => x.value);
+    try {
+      await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({
+        full_name: overlay.querySelector("#ue-name").value, phone: overlay.querySelector("#ue-phone").value || null,
+        job_title: overlay.querySelector("#ue-job").value || null, roles, permissions }) });
+      toast("ذخیره شد", "ok"); close(); refresh();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  overlay.querySelector("#ue-toggle").addEventListener("click", async () => {
+    try {
+      await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ is_active: !u.is_active }) });
+      toast("وضعیت تغییر کرد", "ok"); close(); refresh();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
 
 /* ---------- settings ---------- */
 /* §36 — the settings page used to be one undifferentiated key/value dump.
@@ -3077,6 +3483,7 @@ const SET_CATEGORIES = [
   { id: "cloud",    label: "همگام‌سازی ابری (اینترنت)", prefixes: ["cloud."], panel: "cloud" },
   { id: "ai",       label: "هوش فروشگاه",     prefixes: ["insights.", "ai."], panel: "ai" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
+  { id: "dev",      label: "حالت توسعه‌دهنده", prefixes: [], panel: "dev" },
 ];
 
 RENDER.settings = async () => {
@@ -3086,6 +3493,7 @@ RENDER.settings = async () => {
   v.innerHTML = `<div class="set-tabs" id="set-tabs"></div><div id="set-body"></div>`;
   const tabsEl = $("#set-tabs");
   SET_CATEGORIES.forEach((cat, i) => {
+    if (cat.id === "dev" && !can("dev.mode")) return;  // §۳۸ — از UI معمولی پنهان
     const b = el("button", { class: "set-tab" + (i === 0 ? " active" : ""), text: cat.label, "data-cat": cat.id,
       onclick: () => {
         tabsEl.querySelectorAll(".set-tab").forEach((x) => x.classList.remove("active"));
@@ -3268,6 +3676,14 @@ async function renderSettingsPanel(cat, allRows) {
   if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
   if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
   if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
+  if (cat.panel === "dev") {
+    // build-488 (§۳۸) — Developer Mode: فقط با دسترسی dev.mode؛ برای کاربران عادی نامرئی
+    const card = el("div", { class: "card", id: "dev-card" });
+    card.innerHTML = `<h3>حالت توسعه‌دهنده</h3><div id="dev-box" class="muted">در حال بارگذاری…</div>`;
+    body.append(card);
+    await renderDevBox();
+    return;
+  }
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });
     card.innerHTML = `<h3>درباره سامانه</h3><div id="about-box" class="muted">…</div>`;
@@ -3673,12 +4089,45 @@ async function renderAbout() {
     <div class="muted">طراحی و توسعه توسط <strong>${esc(a.developer)}</strong></div>`;
 }
 
+/* build-488 (§۳۸–۴۰) — Developer Mode: لاگ‌های ساختاریافته، API/DB، شبکه و Sync */
+async function renderDevBox() {
+  const box = $("#dev-box");
+  if (!box) return;
+  if (!can("dev.mode")) { box.innerHTML = '<span class="err">دسترسی dev.mode ندارید</span>'; return; }
+  try {
+    const [ov, logs, net, dbs] = await Promise.all([
+      api("/dev/overview"), api("/dev/logs?limit=25"), api("/dev/network"), api("/dev/db/tables"),
+    ]);
+    box.innerHTML = `
+      <div class="acc-mini">
+        <div><span class="muted">نسخه / بیلد</span><b>${esc(ov.version)} · ${fa(ov.build)}</b></div>
+        <div><span class="muted">زمان اجرا</span><b>${fa(Math.round(ov.uptime_seconds / 60))} دقیقه</b></div>
+        <div><span class="muted">جداول دیتابیس</span><b>${fa(ov.db_tables)} جدول · ~${fa(ov.db_rows_estimate)} ردیف</b></div>
+        <div><span class="muted">مخزن به‌روزرسانی</span><b dir="ltr">${esc(ov.version ? net.update_repo : "")}</b></div>
+        <div><span class="muted">اتصال GitHub</span><b class="${net.github_reachable ? "ok" : "err"}">${net.github_reachable ? "متصل" : "در دسترس نیست"}</b></div>
+        <div><span class="muted">Python</span><b dir="ltr">${esc(ov.python || "")}</b></div>
+      </div>
+      <h3 style="margin-top:14px">لاگ‌های اخیر (ساختاریافته)</h3>
+      <div class="table-scroll"><table class="dtable"><thead><tr><th>دسته</th><th>عملیات</th><th>کاربر</th><th>زمان</th></tr></thead><tbody>
+        ${(logs.items || []).map((l) => `<tr><td><span class="badge">${esc(l.category)}</span></td><td>${esc(l.action)}</td><td>${fa(l.user_id || "—")}</td><td class="muted">${l.created_at ? faDateTime(l.created_at) : "—"}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">لاگی نیست</td></tr>'}
+      </tbody></table></div>
+      <h3 style="margin-top:14px">جداول پایگاه‌داده</h3>
+      <div class="muted" style="max-height:160px;overflow:auto">${(dbs || []).map((t2) => `<code dir="ltr">${esc(t2.table)}</code> (${fa(t2.rows ?? 0)})`).join(" · ")}</div>`;
+  } catch (e) {
+    box.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
 async function renderUpdateBox() {
   const box = $("#upd-box");
+  const checkBtn = el("button", { class: "btn btn-sm btn-ghost", text: "بررسی به‌روزرسانی", onclick: () => renderUpdateBox() });
   try {
-    const r = await api("/system/update/check");
+    // build-488 (§۴۱–۴۴): منبع = مخزن عمومی Rasasys (فقط بستهٔ نصبی)؛ هر Client
+    // پلتفرم خودش را می‌بیند؛ بررسی وابسته به لایسنس نیست؛ اعلان تکرار نمی‌شود.
+    const r = await api("/system/update/check?platform=windows");
     const chan = r.channel === "updateserver" || r.channel === "server"
-      ? "سرور به‌روزرسانی داخلی" : "GitHub Releases";
+      ? "سرور به‌روزرسانی داخلی" : "مخزن انتشار Rasasys (GitHub)";
+    if (r.update_available) api("/system/update/ack", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
     const chanLine = `<div class="muted" style="margin-top:6px">کانال: ${chan} — در تنظیمات همین بخش
       (<code>update.channel</code> = github | server، <code>update.server_url</code>) قابل تغییر است.
       بستهٔ دریافتی همیشه با SHA-256 اعلام‌شده تطبیق داده می‌شود.</div>`;
@@ -3694,12 +4143,14 @@ async function renderUpdateBox() {
     if (!r.update_available) {
       box.innerHTML = `<span class="badge badge-green">به‌روز</span>
         نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.${chanLine}`;
+      box.append(checkBtn);
       return;
     }
     box.innerHTML = `<span class="badge badge-amber">نسخهٔ جدید</span>
       نسخهٔ <strong>${esc(r.latest.version)}</strong> منتشر شده است
       <span class="muted">(فعلی: ${esc(r.current_version)})</span>
       <p class="muted" style="margin:8px 0">${esc((r.latest.notes || "").slice(0, 400))}</p>
+      ${r.latest.html_url ? `<a class="btn btn-sm btn-ghost" href="${esc(r.latest.html_url)}" target="_blank" rel="noopener">مشاهدهٔ نسخهٔ جدید</a> ` : ""}
       ${r.installable ? `<button class="btn btn-primary" id="upd-go">دریافت و آماده‌سازی نصب</button>`
         : `<span class="muted">فایل نصب ویندوز برای این نسخه منتشر نشده است.</span>`}
       <p class="muted" style="margin-top:8px">پیش از هر به‌روزرسانی، به‌صورت خودکار از

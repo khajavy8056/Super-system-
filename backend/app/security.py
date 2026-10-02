@@ -55,6 +55,18 @@ PERMISSIONS: dict[str, str] = {
     "settings.manage": "Manage system settings",
     "users.manage": "Manage users & roles",
     "audit.view": "View audit logs",
+    # ── build-488 — دسترسی‌های ریزدانهٔ بخش‌های جدید (§۲)؛ فقط افزودنی ──
+    "profile.view_all": "View employee profiles (phone, job title, hire date)",
+    "announcements.publish": "Create & publish announcements",
+    "announcements.manage": "Edit / cancel / delete any announcement",
+    "shifts.view": "View shift schedules",
+    "shifts.manage": "Define shifts, assign staff, manage attendance",
+    "performance.view": "View own / team performance reports",
+    "performance.view_all": "View every employee's performance + export",
+    "payroll.view": "View payroll rows",
+    "payroll.manage": "Create / edit / approve payroll and post payments",
+    "reports.export": "Export reports (PDF / CSV)",
+    "dev.mode": "Developer Mode (diagnostics, logs, hardware, API/DB tools)",
 }
 
 ROLE_PRESETS: dict[str, list[str]] = {
@@ -77,7 +89,81 @@ ROLE_PRESETS: dict[str, list[str]] = {
         "inventory.view", "pricing.view_cost", "reports.view",
     ],
     "Viewer": ["products.view", "inventory.view", "reports.view"],
+    # ── build-488 — عناوین استاندارد فروشگاه (§۳)؛ Role فقط مجموعهٔ Permission می‌سازد ──
+    "Supervisor": [
+        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid", "pos.return",
+        "customers.manage", "customers.ledger",
+        "reports.view", "announcements.publish", "shifts.view", "shifts.manage",
+        "performance.view", "audit.view",
+    ],
+    "Inspector": ["products.view", "inventory.view", "reports.view", "audit.view"],
+    "Storekeeper": [
+        "products.view", "batches.manage", "batches.delete", "inventory.adjust",
+        "inventory.stocktake", "inventory.view", "reports.view", "shifts.view",
+    ],
+    "Stocktake Lead": [
+        "products.view", "inventory.view", "inventory.stocktake",
+        "inventory.approve_stocktake", "inventory.adjust", "reports.view", "shifts.view",
+    ],
+    "Salesperson": [
+        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
+        "customers.manage", "reports.view", "shifts.view", "performance.view",
+    ],
+    "General Manager": [
+        "products.manage", "products.view", "batches.manage", "inventory.adjust",
+        "inventory.stocktake", "inventory.approve_stocktake", "inventory.view",
+        "pricing.manage", "pricing.view_cost",
+        "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
+        "customers.manage", "customers.ledger", "customers.settle",
+        "reports.view", "reports.export", "settings.manage", "audit.view",
+        "accounting.view", "accounting.post", "accounting.close",
+        "users.manage", "profile.view_all",
+        "announcements.publish", "announcements.manage",
+        "shifts.view", "shifts.manage", "performance.view", "performance.view_all",
+        "payroll.view", "payroll.manage",
+    ],
 }
+
+#: عنوان نمایشی فارسی هر Role (§۳) — فقط برای نمایش؛ UI هرگز از Role تصمیم نمی‌گیرد
+#: و همیشه از Permission استفاده می‌کند.
+ROLE_TITLES_FA: dict[str, str] = {
+    "Administrator": "مدیر کل",
+    "General Manager": "مدیر کل",
+    "Manager": "مدیر فروشگاه",
+    "Supervisor": "سوپروایزر",
+    "Inspector": "بازرس",
+    "Salesperson": "فروشنده",
+    "Cashier": "صندوقدار",
+    "Storekeeper": "مسئول انبار",
+    "Stocktake Lead": "مسئول انبارگردانی",
+    "Inventory Operator": "انباردار",
+    "Accountant": "حسابدار",
+    "Viewer": "ناظر",
+}
+
+
+def role_title_fa(name: str) -> str:
+    return ROLE_TITLES_FA.get(name, name)
+
+
+def ensure_standard_roles(db) -> list:
+    """نقش‌های استاندارد فروشگاه را در صورت نبود می‌سازد (idempotent)."""
+    from .models import Permission, Role
+    created = []
+    for name, codes in ROLE_PRESETS.items():
+        role = db.query(Role).filter(Role.name == name).one_or_none()
+        if role is None:
+            role = Role(name=name, description=role_title_fa(name), is_system=True)
+            db.add(role)
+            created.append(role)
+        perms = db.query(Permission).filter(Permission.code.in_(codes)).all()
+        have = {p.code for p in role.permissions}
+        for p in perms:
+            if p.code not in have:
+                role.permissions.append(p)
+    if created:
+        db.commit()
+    return created
 
 
 def hash_password(plain: str) -> str:
@@ -140,6 +226,8 @@ def _user_permission_codes(user: User) -> set[str]:
     codes: set[str] = set()
     for role in user.roles:
         codes.update(p.code for p in role.permissions)
+    # build-488 — دسترسی مستقیم مستقل از Role (§۲): User → Permissions
+    codes.update(p.code for p in user.direct_permissions)
     return codes
 
 

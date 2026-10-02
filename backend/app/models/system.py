@@ -91,6 +91,11 @@ class Notification(Base):
     reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_read: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # build-488 (§۱۷) — اعلان شخصی: user_id خالی = عمومی (سازگار با گذشته)؛
+    # seen_at = دیده شده در فهرست، read_at = باز شدن/خوانده شدن
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SystemSetting(TimestampMixin, Base):

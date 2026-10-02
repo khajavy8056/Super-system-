@@ -254,7 +254,13 @@
       <div class="ins-kpi"><span class="muted">سود ماهانهٔ پایه (روند فعلی)</span><b>${money(b.profit_month)}</b><span class="muted">روند ${m.trend_pct_per_week >= 0 ? "+" : ""}${fa(m.trend_pct_per_week)}٪ در هفته · ${fa(m.weeks_of_history)} هفته سابقه</span></div>
       <div class="ins-kpi"><span class="muted">با اجرای ${fa(pl.open)} پیشنهاد باز</span><b class="ok">${money(pl.profit_month)}</b><span class="muted">+${money(pl.gain_month)} (${pl.growth_pct != null ? fa(pl.growth_pct) + "٪" : "—"}) در ماه</span></div>
       <div class="ins-kpi"><span class="muted">بازهٔ اطمینان ماهانه</span><b>${money(pl.low_month)} – ${money(pl.high_month)}</b><span class="muted">۹۰ روز: +${money(pl.gain_horizon)}</span></div>
-      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>`;
+      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>
+      ${m.outcomes ? `<div class="outcome-strip" title="ارزیابی صادقانهٔ مدل (§۳۶–۳۷): فرصت ازدست‌رفته ضرر نیست">
+        <span class="oc oc-pos">سود واقعی <b>${fa(m.outcomes.positive || 0)}</b></span>
+        <span class="oc oc-neu">بدون اثر <b>${fa(m.outcomes.neutral || 0)}</b></span>
+        <span class="oc oc-miss">فرصت ازدست‌رفته <b>${fa(m.outcomes.missed || 0)}</b></span>
+        <span class="oc oc-neg">ضرر واقعی <b>${fa(m.outcomes.negative || 0)}</b></span>
+      </div>` : ""}`;
     const wk = p.history_weeks.slice(-14), fc = p.forecast;
     const labels = [...wk.map((w, i) => (i % 2 ? "" : faMonthDay(w.week_start))), ...fc.map((f, i) => (i % 2 ? "" : faMonthDay(f.day)))];
     const hist = [...wk.map((w) => w.profit), ...fc.map(() => null)], base = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_baseline)], plan = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_plan)];

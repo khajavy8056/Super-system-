@@ -79,7 +79,9 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # invoice + insight auto-resolution — four additive invoice columns).
     # build-482 note: the head moved again (users.local_only — «دسترسی فقط به
     # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
-    assert heads == ["b482e1f0a2c3"]
+    # build-488 note: the head moved again (HR layer: shifts/payroll/announcements/
+    # achievements/widget layouts + user profile fields — دستور جامع مالک).
+    assert heads == ["c488e1a0b7d5"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -119,12 +121,18 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # build-482 note: the head step is now the local-only policy migration
-    # (b482e1f0a2c3), so "-1" is it: one step down, users.local_only goes; one
-    # step up it is back. (The build-481 campaign columns are older now and stay
-    # put; the v4.6 brain-table round trip is covered by test_v46_brain_removal.)
+    # build-488 note: the head step is now the HR-layer migration
+    # (c488e1a0b7d5), so "-1" is it: one step down, the HR tables and the new
+    # profile columns go; one step up they are back. Older additive columns
+    # (users.local_only, invoices.campaign_id …) stay put at every step.
     user_cols = {c["name"] for c in insp.get_columns("users")}
-    assert "local_only" not in user_cols
+    assert "local_only" in user_cols               # older step — survives
+    for col in ("phone", "job_title", "avatar_path", "hire_date", "store"):
+        assert col not in user_cols, col
+    for tbl in ("hr_shifts", "hr_payroll", "announcements", "announcement_reads",
+                "hr_achievements", "hr_score_events", "user_widget_layouts",
+                "user_permissions"):
+        assert tbl not in tables, tbl
     inv_cols = {c["name"] for c in insp.get_columns("invoices")}
     assert "campaign_id" in inv_cols and "benefit_source" in inv_cols
     # …and everything an earlier revision created stays put

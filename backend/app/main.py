@@ -21,6 +21,8 @@ from .routers import (
     accounting,
     audit,
     auth,
+    dev,
+    hr,
     batches,
     customers,
     diagnostics,
@@ -154,6 +156,7 @@ for r in (
     hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
+    hr.router, dev.router,
 ):
     app.include_router(r, prefix=API)
 
