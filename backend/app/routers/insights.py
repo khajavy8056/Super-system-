@@ -39,8 +39,11 @@ def _get(db: Session, insight_id: int) -> Insight:
 
 @router.get("")
 def list_insights(status: str = Query("NEW"), kind: str | None = None, limit: int = 50, group: str | None = None,
-                  db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
-    q = select(Insight)
+                  db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
+    # build-489 (§۳۰) — فیلتر شغلی: پیشنهادهای مالی/قیمت/پرسنلی فقط برای دارندگان دسترسی
+    from ..security import _user_permission_codes
+    codes = _user_permission_codes(user)
+    q = select(Insight).where(Insight.kind.in_([k for k in svc.KIND_LABELS if svc.kind_visible(k, codes)]))
     if status and status != "ALL":
         q = q.where(Insight.status.in_(status.split(",")))
     if kind:
@@ -66,9 +69,11 @@ def run_now(kinds: str | None = None, days: int = 90, db: Session = Depends(get_
 
 
 @router.get("/report")
-def report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def report(db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     s = svc.impact_summary(db)
-    open_rows = [svc.to_dict(r) for r in db.execute(select(Insight).where(Insight.status == "NEW").order_by(Insight.priority, Insight.expected_gain.desc()).limit(10)).scalars()]
+    from ..security import _user_permission_codes
+    codes = _user_permission_codes(user)
+    open_rows = [svc.to_dict(r) for r in db.execute(select(Insight).where(Insight.status == "NEW").order_by(Insight.priority, Insight.expected_gain.desc()).limit(10)).scalars() if svc.kind_visible(r.kind, codes)]
     return {"summary": s, "open": open_rows, "narrative": ai_narrator.weekly_report(db, s, open_rows), "generated_at": datetime.utcnow().isoformat()}
 
 

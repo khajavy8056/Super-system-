@@ -53,6 +53,9 @@ PERMISSIONS: dict[str, str] = {
     "accounting.post": "Post manual journal entries, expenses, cheques",
     "accounting.close": "Close fiscal periods / cash sessions",
     "settings.manage": "Manage system settings",
+    # build-489 — تخفیف‌ها و کمپین‌ها بخش مستقل‌اند (§۳): صندوق‌دار نباید ببیند
+    "marketing.view": "مشاهدهٔ تخفیف‌ها و کمپین‌ها",
+    "marketing.manage": "ساخت و ادارهٔ تخفیف‌ها و کمپین‌ها",
     "users.manage": "Manage users & roles",
     "audit.view": "View audit logs",
     # ── build-488 — دسترسی‌های ریزدانهٔ بخش‌های جدید (§۲)؛ فقط افزودنی ──
@@ -78,6 +81,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
         "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
         "customers.manage", "customers.ledger", "customers.settle",
         "reports.view", "settings.manage", "audit.view",
+        "marketing.view", "marketing.manage",
         "accounting.view", "accounting.post", "accounting.close",
     ],
     "Cashier": [
@@ -121,7 +125,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
         "announcements.publish", "announcements.manage",
         "shifts.view", "shifts.manage", "performance.view", "performance.view_all",
         "payroll.view", "payroll.manage",
-    ],
+        "marketing.view", "marketing.manage"],
 }
 
 #: عنوان نمایشی فارسی هر Role (§۳) — فقط برای نمایش؛ UI هرگز از Role تصمیم نمی‌گیرد

@@ -185,15 +185,27 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     # (دسترسی‌های تازه مثل dev.mode، نقش‌های استاندارد، ادمین). درست مثل اولین اجرای
     # برنامه بعد از بازیابی، پایه را افزودنی-محور دوباره می‌نشانیم؛ هیچ دادهٔ بازیابی‌شده‌ای
     # پاک نمی‌شود. (این الگویی است که هر بازیابیِ نسخهٔ قدیمی روی نسخهٔ جدید به آن نیاز دارد.)
+    # build-489 — فایل DB زیر پای برنامه عوض شده؛ session درخواست ممکن است تراکنشی از
+    # «پیش از تعویض» را نگه داشته باشد و دو نمای ناسازگار ببیند (خطای UNIQUE در bootstrap).
+    # الگوی درست: اتصال‌های قدیمی بسته و engine بازنشسته می‌شود؛ بقیهٔ کار با session تازه.
+    from ..database import SessionLocal as _FreshSession, engine as _engine
     from ..bootstrap import bootstrap
-    bootstrap(db)
-    db.commit()
-
-    write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
-                reference=getattr(file, "filename", None),
-                after={"columns_added": len(heal["columns_added"]),
-                       "indexes_ensured": len(heal["indexes_ensured"])})
-    db.commit()
+    try:
+        db.close()
+    except Exception:
+        pass
+    _engine.dispose()
+    fresh = _FreshSession()
+    try:
+        bootstrap(fresh)
+        fresh.commit()
+        write_audit(fresh, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
+                    reference=getattr(file, "filename", None),
+                    after={"columns_added": len(heal["columns_added"]),
+                           "indexes_ensured": len(heal["indexes_ensured"])})
+        fresh.commit()
+    finally:
+        fresh.close()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
             "safety_backup": str(safety),
             "columns_added": heal["columns_added"], "indexes_ensured": len(heal["indexes_ensured"])}

@@ -701,9 +701,16 @@ public final class Insights {
         res.put("profit_pct", baseRate != 0 ? Math.round((postRate - baseRate) / Math.abs(baseRate) * 1000) / 10.0 : JSONObject.NULL); res.put("profit_pct_adj", baseRate != 0 ? Math.round((postRate - baseRate * ctrl) / Math.abs(baseRate * ctrl) * 1000) / 10.0 : JSONObject.NULL);
         res.put("base_value", base.opt("value")); res.put("post_value", post.opt("value")); res.put("base_profit_per_day", Math.round(baseRate)); res.put("post_profit_per_day", Math.round(postRate)); res.put("daily", dailySeries(spec, start, end, base));
         String st = elapsed >= wd - 0.01 ? "MEASURED" : "ACCEPTED";
-        if (enough) Local.exec("UPDATE ai_insights SET result=?, measured_gain=?, measured_at=?, status=? WHERE id=?", res.toString(), Math.round(adj), now, st, row.optLong("id")); else Local.exec("UPDATE ai_insights SET result=?, measured_gain=NULL, measured_at=?, status=? WHERE id=?", res.toString(), now, st, row.optLong("id"));
+        // build-489 (§۳۶–۳۷) — حکم صادقانه: فرصت ازدست‌رفته هرگز ضرر/منفی نیست. موتور آفلاین
+        // شواهد «هزینهٔ تحقق‌یافته» ندارد؛ پس نتیجهٔ منفیِ بدون شواهد = MISSED_OPPORTUNITY و
+        // measured_gain=NULL می‌ماند تا هیچ‌جا (امتیاز مدل، خلاصه، گزارش) به‌عنوان ضرر دیده نشود.
+        String verdict = !enough ? "INSUFFICIENT_DATA" : adj > 0 ? "POSITIVE_OUTCOME" : adj == 0 ? "NO_IMPACT" : "MISSED_OPPORTUNITY";
+        res.put("outcome_class", verdict); res.put("verdict", verdict);
+        if ("MISSED_OPPORTUNITY".equals(verdict)) res.put("missed_gain", Math.round(Math.abs(adj)));
+        boolean storeGain = enough && !"MISSED_OPPORTUNITY".equals(verdict);
+        if (storeGain) Local.exec("UPDATE ai_insights SET result=?, measured_gain=?, measured_at=?, status=? WHERE id=?", res.toString(), Math.round(adj), now, st, row.optLong("id")); else Local.exec("UPDATE ai_insights SET result=?, measured_gain=NULL, measured_at=?, status=? WHERE id=?", res.toString(), now, st, row.optLong("id"));
         if ("MEASURED".equals(st) && !"MEASURED".equals(row.optString("status"))) { try { Forecast.learn(); } catch (Exception ignore) {} }   // v3.1: the engine learns from every completed measurement
-        return Local.obj("baseline", base, "post", post, "gain", enough ? Math.round(adj) : 0, "complete", "MEASURED".equals(st));
+        return Local.obj("baseline", base, "post", post, "gain", storeGain ? Math.round(adj) : 0, "verdict", verdict, "complete", "MEASURED".equals(st));
     }
     static int measureAll() { int n = 0; for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status='ACCEPTED'")) { try { if (measure(r) != null) n++; } catch (Exception ignore) {} } return n; }
 

@@ -112,7 +112,7 @@ def _coupon_out(c: Coupon) -> dict:
 
 @router.get("/campaigns")
 def list_campaigns(db: Session = Depends(get_db),
-                   _: User = Depends(require_permission("reports.view"))):
+                   _: User = Depends(require_permission("marketing.view"))):
     rows = db.execute(select(Campaign).order_by(Campaign.id.desc())).scalars()
     return [_campaign_out(c) for c in rows]
 
@@ -126,7 +126,7 @@ def _campaign_values(body: CampaignIn) -> dict:
 
 @router.post("/campaigns", status_code=201)
 def create_campaign(body: CampaignIn, db: Session = Depends(get_db),
-                    user: User = Depends(require_permission("settings.manage"))):
+                    user: User = Depends(require_permission("marketing.manage"))):
     c = Campaign(**_campaign_values(body), created_by=user.id)
     db.add(c)
     db.flush()
@@ -138,7 +138,7 @@ def create_campaign(body: CampaignIn, db: Session = Depends(get_db),
 
 @router.patch("/campaigns/{campaign_id}")
 def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(get_db),
-                    user: User = Depends(require_permission("settings.manage"))):
+                    user: User = Depends(require_permission("marketing.manage"))):
     c = db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="CAMPAIGN_NOT_FOUND")
@@ -160,7 +160,7 @@ def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(ge
 def list_coupons(q: str | None = None, status: str | None = None,
                  customer_id: int | None = None, limit: int = Query(100, le=1000),
                  db: Session = Depends(get_db),
-                 _: User = Depends(require_permission("reports.view"))):
+                 _: User = Depends(require_permission("marketing.view"))):
     stmt = select(Coupon).order_by(Coupon.id.desc())
     if q:
         stmt = stmt.where(Coupon.code.ilike(f"%{q.strip().upper()}%") |
@@ -174,7 +174,7 @@ def list_coupons(q: str | None = None, status: str | None = None,
 
 @router.post("/coupons", status_code=201)
 def create_coupon(body: CouponIn, db: Session = Depends(get_db),
-                  user: User = Depends(require_permission("settings.manage"))):
+                  user: User = Depends(require_permission("marketing.manage"))):
     code = (body.code or svc.generate_code()).strip().upper()
     if svc.get_by_code(db, code):
         raise HTTPException(status_code=409, detail="COUPON_CODE_EXISTS")
@@ -195,7 +195,7 @@ def create_coupon(body: CouponIn, db: Session = Depends(get_db),
 
 @router.post("/coupons/{coupon_id}/block")
 def block_coupon(coupon_id: int, db: Session = Depends(get_db),
-                 user: User = Depends(require_permission("settings.manage"))):
+                 user: User = Depends(require_permission("marketing.manage"))):
     c = db.get(Coupon, coupon_id)
     if not c:
         raise HTTPException(status_code=404, detail="COUPON_NOT_FOUND")
@@ -223,7 +223,7 @@ def validate_coupon(body: ValidateIn, db: Session = Depends(get_db),
 
 @router.get("/coupons/{coupon_id}/redemptions")
 def coupon_redemptions(coupon_id: int, db: Session = Depends(get_db),
-                       _: User = Depends(require_permission("reports.view"))):
+                       _: User = Depends(require_permission("marketing.view"))):
     rows = db.execute(
         select(CouponRedemption).where(CouponRedemption.coupon_id == coupon_id)
         .order_by(CouponRedemption.id.desc())
@@ -234,7 +234,7 @@ def coupon_redemptions(coupon_id: int, db: Session = Depends(get_db),
 
 @router.get("/stats")
 def marketing_stats(db: Session = Depends(get_db),
-                    _: User = Depends(require_permission("reports.view"))):
+                    _: User = Depends(require_permission("marketing.view"))):
     total = int(db.execute(select(func.count()).select_from(Coupon)).scalar_one())
     by_status = dict(db.execute(
         select(Coupon.status, func.count()).group_by(Coupon.status)

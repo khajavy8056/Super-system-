@@ -967,6 +967,32 @@ ANALYZERS.update(_pro.ANALYZERS_PRO)
 KIND_LABELS.update(_pro.KIND_LABELS_PRO)
 GROUPS = _pro.GROUPS
 
+# build-489 — دیدن هر پیشنهاد به دسترسی شغلی کاربر گره می‌خورد (§۳۰ «هوش در‌خور عنوان»):
+# صندوق‌دار/فروشنده نباید پیشنهادهای مالی، قیمت‌گذاری و عملکرد پرسنلی را ببیند.
+# پیش‌فرض باز است؛ فقط kindهای زیر محدودند (هر کدام یکی از دسترسی‌ها کافی است).
+KIND_PERMS: dict[str, tuple[str, ...]] = {
+    "CASHFLOW": ("accounting.view",),
+    "EXPENSE_SPIKE": ("accounting.view",),
+    "LOSS_PREV": ("accounting.view",),
+    "RECEIVABLES_AGING": ("accounting.view", "customers.ledger"),
+    "PRICE_GAP": ("pricing.manage", "pricing.view_cost"),
+    "PROFIT_PARETO": ("pricing.manage", "pricing.view_cost"),
+    "NEGATIVE_MARGIN": ("pricing.manage", "pricing.view_cost"),
+    "DISCOUNT_LEAK": ("pricing.manage", "marketing.manage"),
+    "PRICE_ROUNDING": ("pricing.manage",),
+    "ELASTICITY": ("pricing.manage", "pricing.view_cost"),
+    "CATEGORY_MARGIN": ("pricing.manage", "pricing.view_cost"),
+    "CASHIER_PERF": ("performance.view_all",),
+    "CASH_DIFF": ("performance.view_all", "pos.void_paid"),
+}
+
+
+def kind_visible(kind: str, codes: set[str]) -> bool:
+    """آیا این kind برای کاربری با این مجموعه دسترسی‌ها دیدنی است؟"""
+    need = KIND_PERMS.get(kind)
+    return (not need) or any(p in codes for p in need)
+
+
 
 # ----------------------------------------------------------------------------- run / upsert
 def _safe_gain(value) -> tuple[float, str | None]:

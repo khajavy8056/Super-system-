@@ -34,9 +34,25 @@
 
   // ---------------------------------------------------------------- shared card
   function gainLine(i) {
+    const r = i.result || {};
+    const verdict = r.verdict || r.outcome_class || "";
+    // build-489 (§۳۶–۳۷) — «تاثیر» باید صادقانه برچسب بخورد: فرصت ازدست‌رفته هرگز
+    // ضرر/منفی نشان داده نمی‌شود؛ «منفی» فقط برای ضرر واقعیِ مستند (NEGATIVE_OUTCOME).
+    if (verdict === "MISSED_OPPORTUNITY" || (r.missed_gain != null && i.measured_gain == null)) {
+      return `<span class="ins-gain muted" title="فرصت ازدست‌رفته ضرر نیست و امتیاز منفی ندارد (§۳۷)">◇ فرصت ازدست‌رفته${r.missed_gain != null ? ` — سود ممکن: ${money(r.missed_gain)}` : ""} (ضرر نیست)</span>`;
+    }
     if (i.status === "MEASURED" || (i.status === "ACCEPTED" && i.measured_gain != null)) {
-      const g = Number(i.measured_gain || 0), r = i.result || {}, gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
-      return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}اثر واقعی: ${money(Math.abs(g))}</span>`;
+      const g = Number(i.measured_gain || 0), gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
+      if (g < 0 && verdict !== "NEGATIVE_OUTCOME") {
+        return `<span class="ins-gain muted">◇ بدون نتیجهٔ منفی قابل انتساب — در انتظار شواهد ضرر</span>`;
+      }
+      if (g < 0) {
+        return `<span class="ins-gain err" title="ضرر واقعی، قابل اندازه‌گیری و قابل انتساب — با شواهد (§۳۷)">▼ ضرر واقعی (مستند): ${money(Math.abs(g))}${gr != null ? ` · رشد سود ${pctTxt(gr)}` : ""}</span>`;
+      }
+      return `<span class="ins-gain ok">▲ ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}سود واقعی: ${money(g)}</span>`;
+    }
+    if (verdict === "NEGATIVE_OUTCOME") {
+      return `<span class="ins-gain err">▼ ضرر واقعی (مستند): ${money(Math.abs(r.adjusted_gain || 0))}</span>`;
     }
     const fc = (i.evidence || {}).forecast;
     if (fc && Number(fc.gain_month) > 0) return `<span class="ins-gain muted">پیش‌بینی سود ماهانه: <b>${money(fc.gain_month)}</b> <span class="ins-band">(${money(fc.low_month)} تا ${money(fc.high_month)}) · اطمینان ${CONF[fc.confidence] || "—"}</span>`;
@@ -103,10 +119,13 @@
       { name: "سود روزانه — قبل", color: "#8a94a6", points: [...bef, ...aft.map(() => null)], area: true },
       { name: "سود روزانه — بعد از اجرا", color: g >= 0 ? "#2f9e6b" : "#e5484d", points: [...bef.map(() => null), ...aft], area: true, width: 2.6 },
     ], { labels: [...bef.map((_, k) => (k === 0 ? "قبل" : null)), ...aft.map((_, k) => (k === 0 ? "اجرا ▶" : k === aft.length - 1 ? "امروز" : null))], height: 150 }) : "";
-    return `<div class="ab2 ${pending ? "" : g >= 0 ? "ok" : "err"}">
+    const vdict = r.verdict || r.outcome_class || "";
+    const missed = vdict === "MISSED_OPPORTUNITY" || (pending && r.missed_gain != null);
+    const realLoss = vdict === "NEGATIVE_OUTCOME";
+    return `<div class="ab2 ${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">
       <div class="ab2-kpis">
         <div><span class="muted">رشد سود</span><b class="${growth == null ? "" : growth >= 0 ? "ok" : "err"}">${pending ? "…" : pctTxt(growth)}</b><span class="muted">${r.control_ratio && r.control_ratio !== 1 ? `پس از حذف روند فروشگاه (${fa(Math.round((r.control_ratio - 1) * 100))}٪)` : "نسبت به قبل از اجرا"}</span></div>
-        <div><span class="muted">اثر بر سود</span><b class="${pending ? "" : g >= 0 ? "ok" : "err"}">${pending ? "در حال سنجش" : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
+        <div><span class="muted">اثر بر سود</span><b class="${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">${missed ? "فرصت ازدست‌رفته (ضرر نیست)" : pending ? "در حال سنجش" : (realLoss && g < 0) ? "−" + money(Math.abs(g)) : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — قبل</span><b>${f(b.value)}</b><span class="muted">${fa(b.window_days || b.days || 28)} روز · ${money(Math.round(r.base_profit_per_day || 0))}/روز</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — بعد</span><b>${f(r.value)}</b><span class="muted">${fa(r.elapsed_days || 0)} روز · ${money(Math.round(r.post_profit_per_day || 0))}/روز${r.change_pct != null ? ` · ${pctTxt(r.change_pct)}` : ""}</span></div>
       </div>

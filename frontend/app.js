@@ -5,7 +5,7 @@ const $ = (sel) => document.querySelector(sel);
 const API = (window.SM_SERVER || "") + "/api";
 
 const state = {
-  token: localStorage.getItem("token") || localStorage.getItem("m_token") || "",   // m_token = phone pairing token
+  token: localStorage.getItem("token") || "",   // build-489: m_token (جفت‌سازی گوشی) هرگز نشست دسکتاپ نمی‌سازد
   user: null,
   view: "dashboard",
   kiosk: localStorage.getItem("kiosk") === "1",
@@ -190,6 +190,10 @@ $("#login-form").addEventListener("submit", async (e) => {
 function doLogout() {
   localStorage.removeItem("token");
   state.token = ""; state.user = null;
+  // build-489 — کش‌های نشست باید همراه کاربر پاک شوند (نشت بین حساب‌ها ممنوع)
+  ["_rolesCache", "_permsCache", "_widgetLayout", "_updateInfo", "_updateChecked",
+   "_mineLoaded"].forEach((k) => { try { delete window[k]; } catch (_) {} });
+  try { sessionStorage.clear(); } catch (_) {}
   showLogin();
 }
 $("#logout").addEventListener("click", () => exitPrompt());
@@ -303,10 +307,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-488 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-489 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 488;
+const UI_BUILD = 489;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -322,7 +326,7 @@ const NAV = [
   ["inventory", "موجودی و انبار", "inventory.view", "warehouse"],
   ["products", "محصولات", "products.view", "box"],
   ["customers", "مشتریان", "pos.sell", "user"],
-  ["marketing", "تخفیف‌ها و کمپین‌ها", "reports.view", "gift"],
+  ["marketing", "تخفیف‌ها و کمپین‌ها", "marketing.view", "gift"],
   ["reports", "گزارش‌ها", "reports.view", "chart"],
   ["invoices", "فاکتورها", "reports.view", "invoice"],
   ["insights", "هوش مصنوعی", "reports.view", "star"],
@@ -356,8 +360,10 @@ function buildNav() {
   NAV.forEach(([key, label, perm, ico]) => {
     if (key === "staff") {
       // build-488 — «کارکنان و سازمان»: دیده‌شدن = اجتماع دسترسی‌های این بخش (§۳/§۷)
-      const staffOk = can("performance.view") || can("shifts.view") ||
-        can("announcements.publish") || can("payroll.view") || can("users.manage");
+      // build-489 — دیدن «کارکنان و سازمان» = مسئولیت سازمانی؛ نه صرفاً shifts.view/performance.view
+      // (باگ مالک: فروشنده/صندوق‌دار بخش کارکنان و کاربران را می‌دید). فقط مدیریت پرسنل/حقوق/شیفت‌ها/اطلاعیه‌ها.
+      const staffOk = can("users.manage") || can("payroll.view") || can("payroll.manage") ||
+        can("shifts.manage") || can("performance.view_all") || can("announcements.manage");
       if (!staffOk) return;
     } else if (perm && !can(perm)) return;
     const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
@@ -399,6 +405,37 @@ function bindGlobalBar() {
   if (window.checkUpdateOnce) checkUpdateOnce();
 }
 
+/* build-489 — «داشبورد من» (§۳۰ نقش داشبوردها): فروش/شیفت/عملکرد خودِ کاربر از
+   داده‌های واقعی (today_by_staff + /hr/performance/me) — نه دادهٔ ساختگی. */
+window.loadMineCard = async function (dashData) {
+  const host = $("#og-mine"), body = $("#mine-body"), sub = $("#mine-sub");
+  if (!host || !body) return;
+  const parts = [];
+  // ۱) فروش امروز من — از payload داشبورد (همان ردیف «گزارش فروش روزانه»)
+  const meName = (state.user && state.user.full_name) || "";
+  const staff = (dashData && dashData.today_by_staff) || [];
+  const myRow = staff.find((s) => (s.name && meName && s.name.includes(meName)) || s.user_id === (state.user || {}).id);
+  if (myRow) parts.push(`<div class="mine-kpi"><span>فروش امروز من</span><b>${money(myRow.sales != null ? myRow.sales : myRow.total || 0)}</b><small>${fa(myRow.invoice_count != null ? myRow.invoice_count : 0)} فاکتور</small></div>`);
+  // ۲) عملکرد من — هر کاربر خودش (performance/me عمومی است)
+  try {
+    const pr = await api("/hr/performance/me");
+    const sc = pr && (pr.score != null ? pr.score : (pr.summary && pr.summary.score));
+    if (sc != null) parts.push(`<div class="mine-kpi"><span>امتیاز عملکرد من</span><b>${fa(sc)}</b><small>${pr.period_label ? esc(pr.period_label) : "دورهٔ اخیر"}</small></div>`);
+  } catch (_) {}
+  // ۳) شیفت — فقط با shifts.view
+  if (can("shifts.view")) {
+    try {
+      const sh = await api("/hr/shifts/day/" + new Date().toISOString().slice(0, 10));
+      const mine = ((sh && sh.assignments) || sh || []).filter ? ((sh.assignments || sh).filter((a) => a.user_id === (state.user || {}).id || (state.user || {}).full_name && String(a.name || a.user_name || "").includes((state.user || {}).full_name))) : [];
+      parts.push(`<div class="mine-kpi"><span>شیفت امروز</span><b>${mine.length ? esc(mine[0].shift_name || mine[0].name || "در برنامه") : "—"}</b><small>${mine.length ? "تخصیص یافته" : "بدون تخصیص"}</small></div>`);
+    } catch (_) {}
+  }
+  if (!parts.length) { host.style.display = "none"; return; }
+  host.style.display = "";
+  body.innerHTML = parts.join("");
+  if (sub) sub.textContent = meName;
+};
+
 /* build-488 — داشبورد پویا (§۴–۱۳): Widgetهای مجاز هر کاربر از /hr/widgets می‌آید؛
    مخفی/ترتیب/Pin/اندازه روی همان کارت‌های فعلی اعمال می‌شود (ظاهر تغییر نمی‌کند).
    فعال‌کردن Widget غیرمجاز در backend رد می‌شود (§۸). */
@@ -406,26 +443,34 @@ window.applyDashboardWidgets = async function () {
   let data = null;
   try { data = await api("/hr/widgets"); } catch (e) { return; }  // بدون دسترسی/آفلاین: همان چیدمان فعلی
   window._widgetLayout = data;
+  // build-489 — اول: کارت‌هایی که Widgetشان برای این کاربر مجاز نیست واقعاً مخفی می‌شوند
+  // (باگ مالک: داشبورد صندوق‌دار مثل مدیر کامل بود). نشت دید = ممنوع.
+  (data.hide_cards || []).forEach((sel) => {
+    document.querySelectorAll(sel).forEach((n) => { n.style.display = "none"; n.dataset.wLocked = "1"; });
+  });
   const hidden = new Set((data.all_allowed || []).filter((w) => w.hidden).map((w) => w.id));
   (data.all_allowed || []).forEach((w, i) => {
     if (!w.card) return;
-    const el = document.querySelector(w.card);
-    if (!el) return;
-    el.dataset.w = w.id;
-    if (hidden.has(w.id)) { el.style.display = "none"; return; }
-    el.style.display = "";
-    el.style.order = String(w.pinned ? -100 + i : i);
-    el.classList.remove("w-sm", "w-md", "w-lg");
-    el.classList.add("w-" + (w.size || "md"));
-    if (w.pinned) el.classList.add("w-pinned"); else el.classList.remove("w-pinned");
+    document.querySelectorAll(w.card).forEach((node) => {
+      if (node.dataset.wLocked === "1") return;
+      node.dataset.w = w.id;
+      if (hidden.has(w.id)) { node.style.display = "none"; return; }
+      node.style.display = "";
+      node.style.order = String(w.pinned ? -100 + i : i);
+      node.classList.remove("w-sm", "w-md", "w-lg");
+      node.classList.add("w-" + (w.size || "md"));
+      if (w.pinned) node.classList.add("w-pinned"); else node.classList.remove("w-pinned");
+    });
   });
   const btn = $("#dash-layout-btn");
-  if (btn) btn.addEventListener("click", () => openDashLayout());
+  if (btn) btn.onclick = () => openDashLayout();
+  if (window.loadMineCard && !window._mineLoaded) loadMineCard(window._dashData);
 };
 window.openDashLayout = function () {
   const data = window._widgetLayout;
   if (!data) return;
-  const items = [...(data.all_allowed || [])];
+  // build-489 — چیدمان فقط کارت‌های واقعی داشبورد را مرتب می‌کند (ویجت‌های مفهومیِ بدون کارت اینجا جایی ندارند)
+  const items = [...(data.all_allowed || [])].filter((w) => w.card);
   const overlay = el("div", { class: "modal-overlay" });
   const render = () => {
     overlay.innerHTML = `
@@ -808,6 +853,7 @@ RENDER.profile = async () => {
 
 RENDER.dashboard = async () => {
   const d = await api("/reports/dashboard");
+  window._dashData = d;   // build-489 — «داشبورد من» از همین payload واقعی می‌خواند
   const v = $("#view");
   const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
   const delta = d.sales.yesterday ? Math.round((d.sales.today - d.sales.yesterday) / d.sales.yesterday * 100) : (d.sales.today ? 100 : 0);
@@ -858,6 +904,11 @@ RENDER.dashboard = async () => {
             </div>
           </div>
           <div class="greet-art" aria-hidden="true">${SHOP_ART}</div>
+        </section>
+        <section class="dcard og-mine" id="og-mine" style="display:none">
+          <div class="dcard-head"><h3>${icon("user", 15)} داشبورد من</h3>
+            <span class="muted" id="mine-sub"></span></div>
+          <div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div>
         </section>
         <div class="og-kpis">
           ${kpi("cart", "i-green", "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
@@ -927,7 +978,7 @@ RENDER.dashboard = async () => {
             ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("truck", 20)}<span>دریافت کالا</span></button>` : ""}
             ${can("inventory.view") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("box", 20)}<span>موجودی کالا</span></button>` : ""}
             ${can("pos.sell") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>ثبت مشتری</span></button>` : ""}
-            ${can("reports.view") ? `<button class="qa qa-amber" onclick="go('marketing')">${icon("gift", 20)}<span>کمپین جدید</span></button>` : ""}
+            ${can("marketing.manage") ? `<button class="qa qa-amber" onclick="go('marketing')">${icon("gift", 20)}<span>کمپین جدید</span></button>` : ""}
             ${can("reports.view") ? `<button class="qa qa-violet" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
           </div>
         </section>
@@ -2697,7 +2748,7 @@ RENDER.inventory = async () => {
       <label class="inline" style="margin-top:8px"><input type="checkbox" id="st-zero" checked /> بچ‌های با موجودی صفر هم شمرده شوند</label>
       <button id="st-create" class="btn btn-primary btn-block" style="margin-top:12px">ایجاد جلسهٔ انبارگردانی</button>
     </div>
-    <div class="card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
+    <div class="card" id="st-list-card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
   </div>`;
   Jalali.attachAll(v);
 
@@ -2728,7 +2779,13 @@ RENDER.inventory = async () => {
     (whs.items || whs).forEach((w) => $("#st-wh").append(el("option", { value: w.id, text: w.name })));
   } catch (_) {}
 
-  $("#st-create").addEventListener("click", async () => {
+  // build-489 — انبارگردانی فقط با inventory.stocktake؛ صفحهٔ موجودی بدون آن نباید
+  // به API انبارگردانی دست بزند (باگ مالک: خطای «Missing permission inventory.stocktake»).
+  const stOk = can("inventory.stocktake");
+  if (!stOk) {
+    v.querySelectorAll(".st-plan, #st-list-card, #st-alarms").forEach((n) => { n.style.display = "none"; });
+  }
+  if (stOk) $("#st-create").addEventListener("click", async () => {
     try {
       const body = { name: $("#st-name").value.trim() || "انبارگردانی", include_zero: $("#st-zero").checked,
         scheduled_for: $("#st-date").value || null, reminder_note: $("#st-note").value.trim() || null,
@@ -2739,6 +2796,7 @@ RENDER.inventory = async () => {
     } catch (e) { toast(e.message, "err"); }
   });
   await renderWarehousesCard();
+  if (!stOk) return;
   await renderStocktakeAlarms();
   const list = await api("/inventory/stocktakes");
   const box = $("#st-list");
@@ -2759,6 +2817,7 @@ RENDER.inventory = async () => {
 async function renderStocktakeAlarms(targetSel = "#st-alarms") {
   const host = $(targetSel);
   if (!host) return;
+  if (!can("inventory.stocktake")) { host.innerHTML = ""; return; }  // build-489
   let list = [];
   try { list = await api("/inventory/stocktakes-upcoming?horizon_days=14"); } catch (_) { return; }
   const alarms = list.filter((a) => a.days_left !== null || a.status === "IN_PROGRESS");
@@ -3256,11 +3315,28 @@ RENDER.users = async () => {
     allPerms = await api("/users/permissions");
     window._rolesCache = roles; window._permsCache = allPerms;
   } catch (e) { /* کاربر بدون users.manage */ }
-  const roleBoxes = (selected = []) => roles.map((r) => `
-    <label class="check" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+  // build-489 — هر نقش باید «کدام بخش‌ها را باز می‌کند» را هنگام hover (دسکتاپ) و
+  // لمس/کلیک ⓘ (موبایل) توضیح دهد (درخواست صریح مالک).
+  const PERM_SECTIONS = [["pos.", "فروش و صندوق"], ["products.", "محصولات"], ["inventory.", "موجودی و انبار"],
+    ["batches.", "خرید و دریافت"], ["customers.", "مشتریان"], ["marketing.", "تخفیف‌ها و کمپین‌ها"],
+    ["pricing.", "قیمت‌گذاری"], ["reports.", "گزارش‌ها"], ["accounting.", "حسابداری"], ["users.", "کاربران"],
+    ["staff.", "کارکنان و سازمان"], ["shifts.", "شیفت‌ها"], ["performance.", "عملکرد و کارکرد"],
+    ["payroll.", "حقوق و دستمزد"], ["announcements.", "اطلاعیه‌ها"], ["profile.", "پروفایل"],
+    ["settings.", "تنظیمات"], ["audit.", "لاگ‌ها"], ["dev.", "حالت توسعه‌دهنده"]];
+  const roleSections = (r) => {
+    const codes = r.permissions || [];
+    const secs = PERM_SECTIONS.filter(([pre]) => codes.some((c) => c.startsWith(pre))).map(([, label]) => label);
+    return secs.length ? secs : ["(فقط مشاهدهٔ پایه)"];
+  };
+  window._roleSecs = roleSections;
+  const roleTipText = (r) => `بخش‌های در دسترس: ${roleSections(r).join("، ")} — ${fa((r.permissions || []).length)} دسترسی`;
+  const roleBoxes = (selected = []) => roles.map((r, ri) => `
+    <label class="check role-pick" style="display:flex;gap:6px;align-items:center;cursor:pointer" title="${esc(roleTipText(r))}">
       <input type="checkbox" class="u-role-cb" value="${esc(r.name)}" ${selected.includes(r.name) ? "checked" : ""}>
       <span>${esc(r.title_fa || r.name)}</span>
-    </label>`).join("");
+      <button type="button" class="role-info" data-role-info="${ri}" aria-label="دسترسی‌های نقش">ⓘ</button>
+    </label>
+    <div class="role-tip" id="role-tip-${ri}" style="display:none">${esc(roleTipText(r))}</div>`).join("");
   const permChips = (selected = []) => allPerms.map((p) => `
     <label class="check" style="display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin:2px">
       <input type="checkbox" class="u-perm-cb" value="${esc(p.code)}" ${selected.includes(p.code) ? "checked" : ""}>
@@ -3301,6 +3377,15 @@ RENDER.users = async () => {
       el("tbody", {}, ...rows));
   };
   await draw();
+  // build-489 — باز/بسته کردن توضیح دسترسی نقش‌ها با کلیک/لمس ⓘ
+  if (!document.body.dataset.roleTipBound) { document.body.dataset.roleTipBound = "1";
+  document.body.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest(".role-info");
+    if (!b) return;
+    e.preventDefault();
+    const tip = document.getElementById("role-tip-" + b.dataset.roleInfo);
+    if (tip) tip.style.display = tip.style.display === "none" ? "" : "none";
+  }); }
   $("#u-add").addEventListener("click", async () => {
     try {
       await api("/users", { method: "POST", body: JSON.stringify({
@@ -3325,10 +3410,12 @@ function openUserEdit(u, refresh) {
       <label>عنوان شغلی</label><input id="ue-job" value="${esc(u.job_title || "")}">
       <label>نقش‌ها (چند انتخابی — §۲)</label>
       <div id="ue-roles" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">
-        ${window._rolesCache ? "" : ""}${(window._rolesCache || []).map((r) => `
-        <label class="check" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        ${window._rolesCache ? "" : ""}${(window._rolesCache || []).map((r, ri) => `
+        <label class="check role-pick" style="display:flex;gap:6px;align-items:center;cursor:pointer" title="بخش‌های در دسترس: ${esc((r.permissions || []).length ? (window._roleSecs ? window._roleSecs(r).join("، ") : (r.permissions || []).join("، ")) : "—")}">
           <input type="checkbox" class="ue-role-cb" value="${esc(r.name)}" ${(u.roles || []).includes(r.name) ? "checked" : ""}>
-          <span>${esc(r.title_fa || r.name)}</span></label>`).join("")}
+          <span>${esc(r.title_fa || r.name)}</span>
+          <button type="button" class="role-info" data-role-info="ue-${ri}" aria-label="دسترسی‌های نقش">ⓘ</button></label>
+        <div class="role-tip" id="role-tip-ue-${ri}" style="display:none">بخش‌های در دسترس: ${esc((window._roleSecs ? window._roleSecs(r).join("، ") : (r.permissions || []).join("، ")))}</div>`).join("")}
       </div>
       <label>دسترسی مستقیم (§۲)</label>
       <div id="ue-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">

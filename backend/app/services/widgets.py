@@ -35,8 +35,8 @@ GROUPS_FA: dict[str, str] = {
 
 #: کاتالوگ Widgetها: requires = همهٔ این دسترسی‌ها باید باشند (§۷)
 WIDGETS: dict[str, dict] = {
-    "sales.my_today": {"title": "فروش امروز من", "group": "sales", "icon": "receipt",
-                       "requires": ["pos.sell"], "card": ""},
+    "sales.my_today": {"title": "داشبورد من (فروش/شیفت/عملکرد)", "group": "sales", "icon": "receipt",
+                       "requires": [], "card": ".og-mine"},
     "sales.today": {"title": "فروش امروز", "group": "sales", "icon": "trend",
                     "requires": ["reports.view"], "card": ".og-kpis"},
     "sales.trend": {"title": "روند فروش", "group": "sales", "icon": "trend",
@@ -148,9 +148,14 @@ def compose(db: Session, user: User) -> dict:
                    for g, ws in groups.items() if ws],
         "all_allowed": [{"id": w, "title": WIDGETS[w]["title"], "group": WIDGETS[w]["group"],
                          "group_title": GROUPS_FA.get(WIDGETS[w]["group"], WIDGETS[w]["group"]),
+                         "card": WIDGETS[w]["card"],
                          "hidden": w in hidden, "pinned": w in pinned,
                          "size": sizes.get(w, "md")}
                         for w in allowed],
+        # build-489 — کارت‌هایی که کاربر به Widget آن‌ها دسترسی ندارد باید واقعاً مخفی
+        # شوند (باگ مالک: داشبورد صندوق‌دار مثل مدیر بود). کلاینت این سلکتورها را می‌بندد.
+        "hide_cards": sorted({WIDGETS[w]["card"] for w in WIDGETS
+                              if w not in allowed_set and WIDGETS[w]["card"]}),
         "personalization": True,
     }
 
