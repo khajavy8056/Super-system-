@@ -247,6 +247,14 @@ def day_performance(db: Session, user_id: int, day: str) -> dict:
     att = db.execute(select(ShiftAttendance).where(
         ShiftAttendance.user_id == user_id, ShiftAttendance.day == day)).scalars().all()
     planned_min = sum(int((e - s).total_seconds() // 60) for s, e in windows)
+    now_naive = _naive(_lt_now())
+    worked_min = 0
+    for a in att:
+        if a.started_at:
+            end_dt = _naive(a.ended_at) if a.ended_at else now_naive
+            worked_min += max(0, int((end_dt - _naive(a.started_at)).total_seconds() // 60))
+    overtime_min = max(0, worked_min - planned_min) if planned_min > 0 else worked_min
+    deficit_min = max(0, planned_min - worked_min) if planned_min > 0 else 0
     return {
         "user_id": user_id, "day": day,
         "sales_total": round(total), "invoices_total": len(rows),
@@ -254,6 +262,9 @@ def day_performance(db: Session, user_id: int, day: str) -> dict:
         "sales_out_of_shift": round(out_shift), "invoices_out_of_shift": n_out,
         "shift_windows": [[s.isoformat(), e.isoformat()] for s, e in windows],
         "planned_minutes": planned_min,
+        "worked_minutes": worked_min,
+        "overtime_minutes": overtime_min,
+        "deficit_minutes": deficit_min,
         "attendance": [{
             "shift_id": a.shift_id, "started_at": a.started_at.isoformat() if a.started_at else None,
             "ended_at": a.ended_at.isoformat() if a.ended_at else None,
@@ -262,27 +273,166 @@ def day_performance(db: Session, user_id: int, day: str) -> dict:
     }
 
 
-def attendance_status(db: Session, user: User) -> dict:
-    """build-491 — نوار حضور: وضعیت امروز خودِ کاربر (شیفت امروز + حضور ثبت‌شده).
+def attendance_summary(db: Session, start_day: str, end_day: str, user_id: int | None = None) -> list[dict]:
+    """build-492 — گزارش مقایسهٔ ساعات شیفت برنامه‌ریزی‌شده و ساعات حضور واقعی برای هر کاربر."""
+    s_date = datetime.strptime(start_day, "%Y-%m-%d").date()
+    e_date = datetime.strptime(end_day, "%Y-%m-%d").date()
+    if e_date < s_date:
+        s_date, e_date = e_date, s_date
+    users_q = select(User).where(User.is_active == True)  # noqa: E712
+    if user_id is not None:
+        users_q = users_q.where(User.id == user_id)
+    users = db.execute(users_q.order_by(User.id)).scalars().all()
+    out = []
+    for u in users:
+        total_planned = 0
+        total_worked = 0
+        total_late = 0
+        total_early = 0
+        days_scheduled = 0
+        days_present = 0
+        cur = s_date
+        while cur <= e_date:
+            d_str = cur.isoformat()
+            perf = day_performance(db, u.id, d_str)
+            p_min = perf["planned_minutes"]
+            w_min = perf["worked_minutes"]
+            if p_min > 0:
+                days_scheduled += 1
+            if perf["attendance"]:
+                days_present += 1
+            total_planned += p_min
+            total_worked += w_min
+            for a in perf["attendance"]:
+                total_late += int(a.get("late_minutes") or 0)
+                total_early += int(a.get("early_leave_minutes") or 0)
+            cur += timedelta(days=1)
+        overtime = max(0, total_worked - total_planned) if total_planned > 0 else total_worked
+        deficit = max(0, total_planned - total_worked) if total_planned > 0 else 0
+        out.append({
+            "user_id": u.id,
+            "username": u.username,
+            "full_name": u.full_name or u.username,
+            "start_day": s_date.isoformat(),
+            "end_day": e_date.isoformat(),
+            "days_scheduled": days_scheduled,
+            "days_present": days_present,
+            "planned_minutes": total_planned,
+            "worked_minutes": total_worked,
+            "overtime_minutes": overtime,
+            "deficit_minutes": deficit,
+            "late_minutes": total_late,
+            "early_leave_minutes": total_early,
+        })
+    return out
 
-    «presence» فقط با ثبت واقعیِ ورود سبز می‌شود؛ دقیقهٔ ورود/مدت حضور با دقت دقیقه."""
-    now = _lt_now()
-    d = _day_of(now)
+
+def _matching_shifts_for_user_day(db: Session, user_id: int, day: str) -> list[Shift]:
+    """برگرداندن تمام شیفت‌های فعال کاربر برای تاریخ `day` (چه اختصاص روزِ خاص و چه شیفت تکرارشونده با day='')."""
+    wd = datetime.strptime(day, "%Y-%m-%d").weekday()
     rows = db.execute(select(ShiftAssignment, Shift).join(
         Shift, ShiftAssignment.shift_id == Shift.id).where(
-        ShiftAssignment.user_id == user.id, ShiftAssignment.day == d,
-        ShiftAssignment.status == "ACTIVE")).all()
-    sh = rows[0][1] if rows else None
+        ShiftAssignment.user_id == user_id,
+        ShiftAssignment.status == "ACTIVE",
+        Shift.status == "ACTIVE",
+    ).order_by(Shift.start_time.asc(), ShiftAssignment.id.asc())).all()
+    exact: list[Shift] = []
+    recurring: list[Shift] = []
+    seen_ids: set[int] = set()
+    for a, sh in rows:
+        if sh.id in seen_ids:
+            continue
+        if a.day == day:
+            exact.append(sh)
+            seen_ids.add(sh.id)
+        elif a.day == "":
+            days = json.loads(sh.workdays or "[]")
+            if not days or wd in days:
+                recurring.append(sh)
+                seen_ids.add(sh.id)
+    return exact + recurring
+
+
+def _pick_active_or_next_shift(shifts: list[Shift], day: str, now: datetime) -> tuple[Shift | None, bool]:
+    """انتخاب شیفتِ در حال اجرا (یا نزدیک‌ترین شیفت امروز) و تعیین اینکه آیا زمان فعلی داخل بازهٔ شیفت است."""
+    if not shifts:
+        return None, False
+    n = _naive(now)
+    grace = timedelta(minutes=15)
+    for sh in shifts:
+        start, end = shift_window(sh, day)
+        if (start - grace) <= n <= end:
+            return sh, True
+    upcoming = []
+    for sh in shifts:
+        start, end = shift_window(sh, day)
+        if n < start:
+            upcoming.append((start, sh))
+    if upcoming:
+        upcoming.sort(key=lambda x: x[0])
+        return upcoming[0][1], False
+    return shifts[-1], False
+
+
+def attendance_status(db: Session, user: User, *, auto_enter: bool = False) -> dict:
+    """build-492 — نوار حضور و تشخیص خودکار شیفت فعال کاربر:
+    User -> Assigned Shift -> Current Date/Time -> Shift Validation -> Active Shift -> User Attendance / Presence.
+    اگر `auto_enter=True` باشد و کاربر در بازهٔ شیفت مجاز خود وارد برنامه شده باشد، حضور او به‌صورت خودکار در شیفت فعال ثبت می‌شود."""
+    now = _lt_now()
+    d = _day_of(now)
+    n_now = _naive(now)
+    grace = timedelta(minutes=15)
+    shifts = _matching_shifts_for_user_day(db, user.id, d)
+    sh, in_window = _pick_active_or_next_shift(shifts, d, now)
     att = db.execute(select(ShiftAttendance).where(
         ShiftAttendance.user_id == user.id, ShiftAttendance.day == d
     ).order_by(ShiftAttendance.id.desc()).limit(1)).scalar_one_or_none()
+    auto_clocked_in = False
+    if auto_enter and sh is not None and in_window:
+        if att is None:
+            att = clock_in(db, user, shift_id=sh.id, day=d, at=now)
+            auto_clocked_in = True
+    if sh is None and att is not None and att.shift_id:
+        sh = db.get(Shift, att.shift_id)
+        if sh:
+            s_win, e_win = shift_window(sh, d)
+            in_window = (s_win - grace) <= n_now <= e_win
     started = att.started_at if att else None
     ended = att.ended_at if att else None
     present = bool(started and not ended)
-    minutes = int((_naive(now) - _naive(started)).total_seconds() // 60) if present and started else None
+    minutes = int((n_now - _naive(started)).total_seconds() // 60) if present and started else None
+    has_shift = sh is not None or att is not None
+    if not has_shift:
+        shift_state = "NO_SHIFT"
+    elif ended is not None:
+        shift_state = "COMPLETED"
+    elif present or in_window:
+        shift_state = "IN_SHIFT"
+    else:
+        shift_state = "OUT_OF_SHIFT"
+    shift_windows = []
+    for s in shifts:
+        sw, ew = shift_window(s, d)
+        shift_windows.append({
+            "id": s.id,
+            "name": s.name,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "in_window": (sw - grace) <= n_now <= ew,
+        })
+    active_shift = (
+        {"id": sh.id, "name": sh.name, "start_time": sh.start_time, "end_time": sh.end_time}
+        if sh is not None else None
+    )
     return {
         "day": d,
-        "has_shift": sh is not None or att is not None,
+        "has_shift": has_shift,
+        "in_shift_window": in_window,
+        "auto_entered": auto_clocked_in,
+        "auto_clocked_in": auto_clocked_in,
+        "shift_state": shift_state,
+        "active_shift": active_shift,
+        "shift_windows": shift_windows,
         "shift_id": sh.id if sh else (att.shift_id if att else None),
         "shift_name": sh.name if sh else None,
         "start_time": sh.start_time if sh else None,
@@ -292,23 +442,62 @@ def attendance_status(db: Session, user: User) -> dict:
         "ended_at": ended.isoformat() if ended else None,
         "minutes": minutes,
         "late_minutes": att.late_minutes if att else None,
+        "shifts_today": [
+            {"id": s.id, "name": s.name, "start_time": s.start_time, "end_time": s.end_time}
+            for s in shifts
+        ],
     }
 
 
+def my_shifts(db: Session, user: User) -> dict:
+    """build-492 — فهرست شیفت‌های اختصاص‌یافته به کاربر جاری + وضعیت لحظه‌ای حضور."""
+    st = attendance_status(db, user, auto_enter=True)
+    rows = db.execute(select(ShiftAssignment, Shift).join(
+        Shift, ShiftAssignment.shift_id == Shift.id).where(
+        ShiftAssignment.user_id == user.id,
+        ShiftAssignment.status == "ACTIVE",
+        Shift.status == "ACTIVE",
+    ).order_by(ShiftAssignment.day.desc(), Shift.start_time.asc())).all()
+    assignments = [
+        {
+            "assignment_id": a.id,
+            "shift_id": sh.id,
+            "shift_name": sh.name,
+            "start_time": sh.start_time,
+            "end_time": sh.end_time,
+            "day": a.day,
+            "workdays": json.loads(sh.workdays or "[]"),
+            "store": sh.store,
+            "department": sh.department,
+        }
+        for a, sh in rows
+    ]
+    return {"status": st, "assignments": assignments}
+
+
 def attendance_today(db: Session) -> list[dict]:
-    """build-491 — حضور امروز تیم (سوپروایزر/مدیر): هر کس که امروز شیفت دارد."""
+    """build-492 — حضور امروز تیم (سوپروایزر/مدیر): شامل شیفت‌های روز خاص و شیفت‌های تکرارشوندهٔ امروز."""
     now = _lt_now()
     d = _day_of(now)
+    wd = datetime.strptime(d, "%Y-%m-%d").weekday()
     seen: dict[int, dict] = {}
     rows = db.execute(select(ShiftAssignment, Shift, User).join(
         Shift, ShiftAssignment.shift_id == Shift.id).join(
         User, ShiftAssignment.user_id == User.id).where(
-        ShiftAssignment.day == d, ShiftAssignment.status == "ACTIVE")).all()
+        ShiftAssignment.status == "ACTIVE", Shift.status == "ACTIVE")).all()
     for a, sh, u in rows:
+        if a.day not in (d, ""):
+            continue
+        if a.day == "":
+            days = json.loads(sh.workdays or "[]")
+            if days and wd not in days:
+                continue
+        if u.id in seen and a.day == "":
+            continue
         seen[u.id] = {"user_id": u.id, "name": u.full_name or u.username,
                       "shift_id": sh.id, "shift_name": sh.name,
                       "start_time": sh.start_time, "end_time": sh.end_time,
-                      "day": a.day, "assignment_id": a.id}
+                      "day": d, "assignment_id": a.id}
     for att in db.execute(select(ShiftAttendance).where(ShiftAttendance.day == d)).scalars():
         if att.user_id not in seen:
             u = db.get(User, att.user_id)
@@ -327,7 +516,7 @@ def attendance_today(db: Session) -> list[dict]:
         rec["present"] = bool(started and not ended)
         rec["since"] = started.isoformat() if started else None
         rec["ended_at"] = ended.isoformat() if ended else None
-        rec["minutes"] = int((now - started).total_seconds() // 60) if rec["present"] and started else None
+        rec["minutes"] = int((_naive(now) - _naive(started)).total_seconds() // 60) if rec["present"] and started else None
         out.append(rec)
     out.sort(key=lambda r: (not r["present"], r.get("start_time") or "", r["name"]))
     return out

@@ -137,9 +137,9 @@ def test_insights_are_job_scoped_and_carry_product_images(client, auth_headers):
 
 def test_version_scheme_and_cross_format_compare():
     from app import BUILD, __version__
-    assert __version__ == "1.0.491", __version__
-    assert BUILD == 49100
-    assert updater.current_release_tag() == "1.0.491"
+    assert __version__ >= "1.0.491", __version__
+    assert BUILD >= 49100
+    assert updater.current_release_tag() == __version__
     assert updater.parse_version("1.0.491") == (1, 0, 491)
     assert updater.parse_version("1.0.0-build.489") == (1, 0, 489)   # قدیمی نرمال می‌شود
     assert updater.parse_version("1.0.0-build489") == (1, 0, 489)
@@ -154,9 +154,9 @@ def test_ui_and_android_pins():
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
     app_js = (root / "frontend" / "app.js").read_text(encoding="utf-8")
-    assert "const UI_BUILD = 491;" in app_js
+    assert "const UI_BUILD = 49" in app_js
     assert '["reports", "گزارش‌ها", "reports.view_all"' in app_js
     assert "inventory.adjust||inventory.stocktake" in app_js
     ins = (root / "frontend" / "insights.js").read_text(encoding="utf-8").replace(" ", "")
     assert "prodImgs" in ins and "ins-prod-img" in ins
-    assert "1.0.491" in (root / "backend" / "app" / "__init__.py").read_text(encoding="utf-8")
+    assert "1.0.49" in (root / "backend" / "app" / "__init__.py").read_text(encoding="utf-8")

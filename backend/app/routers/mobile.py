@@ -270,17 +270,17 @@ def _port_env() -> int:
 def pair_token(body: TokenIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Mint (or re-mint) a device token.
 
-    v4.8.1 — pairing is PERMANENT. A phone that already paired once must be
-    able to come back with the same user/password after ANY interruption
-    (token expiry, PC reboot, IP change, app reinstall on the same device_id)
-    WITHOUT scanning a QR or typing a pairing code again. So: minting a token
-    for an ALREADY-KNOWN device needs only a successful sign-in (the password
-    proved who the user is); minting a brand-new device still requires
-    ``settings.manage`` (the admin is introducing a new phone to the shop).
+    v4.8.1 / build-492 — pairing is PERMANENT. A phone that already paired once
+    can re-mint a token bound to the currently signed-in user for its known
+    ``device_id``; introducing a brand-new ``device_id`` requires ``settings.manage``.
     """
     from ..security import is_admin as _is_admin
     did = (body.device_id or "").strip()
-    known = any(d.get("id") == did and did for d in _devices(db))
+    devs = _devices(db)
+    if did and any(d.get("id") == did and d.get("revoked") for d in devs):
+        raise HTTPException(status_code=403, detail={
+            "code": "DEVICE_REVOKED", "message": "این دستگاه توسط مدیر غیرفعال شده است"})
+    known = any(d.get("id") == did and did for d in devs)
     if not known and not has_permission(user, "settings.manage") and not _is_admin(user):
         raise HTTPException(status_code=403, detail={
             "code": "DEVICE_NEW_FORBIDDEN", "message": "افزودن دستگاه تازه فقط با دسترسی مدیر انجام می‌شود"})
@@ -546,9 +546,13 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         # deliberately do NOT travel: the phone caches its own verifier when the
         # user signs in online at least once.
         from ..models import User as _User
+        from ..security import allowed_views_for_user, is_admin as _is_admin, user_permissions
         usrs = _changed_since(db, _User, since, body.limit)
         pull["users"] = [{"id": u.id, "username": u.username, "full_name": u.full_name,
-                          "roles": [r.name for r in u.roles], "is_active": bool(u.is_active),
+                          "roles": [r.name for r in u.roles],
+                          "permissions": sorted(user_permissions(u)),
+                          "allowed_views": allowed_views_for_user(u),
+                          "is_active": bool(u.is_active),
                           "local_only": bool(u.local_only),
                           "updated_at": u.updated_at.isoformat()} for u in usrs]
     # remember the device
@@ -567,5 +571,22 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
     if body.pull and not has_permission(user, "pricing.view_cost"):
         # v3.7 (§34) — cashier phones sync everything except buy costs.
         pull["batches"] = redact_costs(pull.get("batches", []))
+    from ..security import allowed_views_for_user as _av, is_admin as _ia, user_permissions as _up
+    from ..services import shifts as _shift_svc
+    current_user_payload = {
+        "id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "is_active": bool(user.is_active),
+        "is_admin": _ia(user),
+        "local_only": bool(getattr(user, "local_only", True)),
+        "roles": [r.name for r in user.roles],
+        "permissions": sorted(_up(user)),
+        "allowed_views": _av(user),
+    }
+    try:
+        shift_status = _shift_svc.attendance_status(db, user, auto_enter=True)
+    except Exception:
+        shift_status = None
     return {"applied": applied, "pull": pull, "cursor": cursor, "server_time": now,
-            "has_more": has_more}
+            "has_more": has_more, "current_user": current_user_payload, "shift_status": shift_status}

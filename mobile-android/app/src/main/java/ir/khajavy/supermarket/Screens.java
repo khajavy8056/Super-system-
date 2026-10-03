@@ -66,19 +66,23 @@ public final class Screens {
         }
         return null;
     }
-    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "settings.manage"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.view"}, {"movements", "inventory.view"}, {"reports", "reports.view"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view"}, {"backup", "settings.manage"}, {"insightsCustomers", "reports.view"}};
+    static final String[][] PERMS = {{"pos", "pos.sell"}, {"held", "pos.sell"}, {"invoices", "reports.view"}, {"customers", "customers.manage"}, {"marketing", "marketing.view"}, {"products", "products.view"}, {"receive", "batches.manage"}, {"inventory", "inventory.view"}, {"stocktake", "inventory.stocktake"}, {"stockops", "inventory.adjust"}, {"warehouses", "inventory.adjust"}, {"movements", "inventory.adjust"}, {"reports", "reports.view_all"}, {"accounting", "accounting.view"}, {"users", "users.manage"}, {"audit", "audit.view"}, {"settings", "settings.manage"}, {"store", "settings.manage"}, {"sms", "settings.manage"}, {"hardware", "settings.manage"}, {"diagnostics", "settings.manage"}, {"license", "settings.manage"}, {"cloud", "settings.manage"}, {"insights", "reports.view"}, {"insightsPlan", "reports.view_all"}, {"backup", "settings.manage"}, {"insightsCustomers", "reports.view_all"}};
     public static boolean allowed(String key) {
+        if ("customers".equals(key)) return can("customers.manage") || can("customers.settle") || can("pos.sell");
+        if ("invoices".equals(key)) return can("pos.sell") || can("reports.view") || can("reports.view_all") || can("accounting.view");
         String need = null; for (String[] p : PERMS) if (p[0].equals(key)) need = p[1];
         if (need == null) return true;
-        JSONArray ps = user.optJSONArray("permissions"); if (ps == null) return true; // unknown yet → show, server enforces
-        for (int i = 0; i < ps.length(); i++) if (need.equals(ps.optString(i))) return true;
-        return false;
+        return can(need);
     }
     public static boolean can(String perm) { JSONArray ps = user.optJSONArray("permissions"); if (ps == null) return true; for (int i = 0; i < ps.length(); i++) if (perm.equals(ps.optString(i))) return true; return false; }
     public static String userName() { String n = user.optString("full_name", ""); return n.isEmpty() ? user.optString("username", "") : n; }
     public static void loadConfig(AppActivity a) {
         try { user = new JSONObject(Prefs.get("user_json", "{}")); } catch (Exception ignore) {}
-        Api.get("/auth/me", r -> { user = (JSONObject) r; Prefs.set("user_json", user.toString()); }, e -> {});
+        Api.get("/auth/me", r -> {
+            user = (JSONObject) r;
+            Prefs.set("user_json", user.toString());
+            if (a != null) a.refreshCurrent();
+        }, e -> {});
         Api.get("/settings/currency", r -> { JSONObject c = (JSONObject) r; String code = c.optString("code", "IRR"); Ui.currencyLabel = "IRT".equals(code) ? "تومان" : "ریال"; Prefs.set("currency_label", Ui.currencyLabel); }, e -> {});
         if (Prefs.get("theme_mode", "").isEmpty()) Api.get("/settings/theme", r -> { String res = ((JSONObject) r).optString("resolved", "dark"); if (!res.equals(Prefs.get("theme_resolved", "dark"))) { Prefs.set("theme_resolved", res); a.recreate(); } }, e -> {});
         Api.get("/settings/store-profile", r -> Prefs.set("store_name", ((JSONObject) r).optString("name", "")), e -> {});
@@ -140,14 +144,16 @@ public final class Screens {
             hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, "امروز یک روز عالی برای رشد فروشگاه است", 13, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه") + " · " + Jalali.todayLong(), 12, 0xDDFFFFFF, false));
             hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x557383EF, 18)); hr.addView(av); hero.addView(hr);
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
-            quick.addView(qb("cart", "فروش جدید", Ui.GREEN, () -> a.route("pos")));
-            quick.addView(qb("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
-            quick.addView(qb("box", "موجودی کالا", 0xFF4F8CFF, () -> a.route("inventory")));
+            if (allowed("pos")) quick.addView(qb("cart", "فروش جدید", Ui.GREEN, () -> a.route("pos")));
+            if (allowed("receive")) quick.addView(qb("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
+            if (allowed("inventory")) quick.addView(qb("box", "موجودی کالا", 0xFF4F8CFF, () -> a.route("inventory")));
             LinearLayout quick2 = Ui.row(c);
-            quick2.addView(qb("user", "ثبت مشتری", 0xFFF4657A, () -> a.route("customers")));
-            quick2.addView(qb("gift", "کمپین جدید", Ui.AMBER, () -> a.route("marketing")));
-            quick2.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
-            hero.addView(quick); hero.addView(quick2); body.addView(hero);
+            if (allowed("customers")) quick2.addView(qb("user", "ثبت مشتری", 0xFFF4657A, () -> a.route("customers")));
+            if (allowed("marketing")) quick2.addView(qb("gift", "کمپین جدید", Ui.AMBER, () -> a.route("marketing")));
+            if (allowed("reports")) quick2.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
+            if (quick.getChildCount() > 0) hero.addView(quick);
+            if (quick2.getChildCount() > 0) hero.addView(quick2);
+            body.addView(hero);
             final double[] loc = Db.todayStats();
             final View ph = Ui.empty(c, "در حال دریافت داشبورد…"); body.addView(ph);
             final long gen = ++loadGen;

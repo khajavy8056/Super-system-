@@ -161,6 +161,7 @@ public class AppActivity extends Activity {
     private void buildTabs(String active) {
         tabs.removeAllViews();
         for (String[] t : TABS) {
+            if (!"home".equals(t[0]) && !"more".equals(t[0]) && !Screens.allowed(t[0])) continue;
             boolean on = t[0].equals(active) || ("more".equals(t[0]) && active != null && !isTabKey(active));
             LinearLayout col = Ui.col(this); col.setGravity(Gravity.CENTER); LinearLayout.LayoutParams wp = Ui.weight(1); wp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0); col.setLayoutParams(wp); col.setPadding(0, Ui.dp(6), 0, Ui.dp(4));
             col.setBackground(on ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 18) : Ui.rounded(Color.TRANSPARENT, 0, 18));
@@ -229,13 +230,17 @@ public class AppActivity extends Activity {
         android.widget.Switch sw = new android.widget.Switch(this); sw.setChecked(!Ui.dark); sw.setOnCheckedChangeListener((b, on) -> { Prefs.set("theme_resolved", on ? "light" : "dark"); Prefs.set("theme_mode", on ? "light" : "dark"); recreate(); }); th.addView(sw);
         foot.addView(th);
         foot.addView(Ui.ghost(this, "ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
-        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Prefs.set("device_token", ""); Prefs.set("bio_token", ""); Api.token = ""; Screens.user = new org.json.JSONObject(); startActivity(new Intent(this, LoginActivity.class)); finish(); })));
         drawer.addView(foot);
         drawerLayer.setVisibility(View.VISIBLE);
     }
 
     /* ---------------- navigation ---------------- */
-    public void route(String key) { Screens.Screen s = Screens.create(this, key); if (s != null) open(s, !isTabKey(key)); }
+    public void route(String key) {
+        if (!Screens.allowed(key)) { Ui.toast("دسترسی به این بخش برای نقش شما فعال نیست."); return; }
+        Screens.Screen s = Screens.create(this, key);
+        if (s != null) open(s, !isTabKey(key));
+    }
     public void open(Screens.Screen s, boolean push) {
         if (!push) stack.clear();
         stack.push(s); show(s);

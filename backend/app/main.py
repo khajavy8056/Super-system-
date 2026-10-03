@@ -318,14 +318,15 @@ async def security_headers(request: Request, call_next):
 
 @app.middleware("http")
 async def ui_no_cache(request: Request, call_next):
-    """build-485 — جلوگیری از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
+    """build-485/492 — جلوگیری کامل از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
     جدید، ظاهر قدیمی»). WebView2/Edge فایل‌های JS/CSS را با کش تهاجمی نگه می‌داشت؛
-    حالا همهٔ پاسخ‌های متنی با `no-cache` فقط مشروط بازبینی می‌شوند (تصاویر کالا
-    در /media طبق معمول کش می‌شوند)."""
+    حالا همهٔ پاسخ‌های غیر از /media با `no-store, no-cache, must-revalidate` ارسال می‌شوند."""
     response = await call_next(request)
     path = request.url.path
     if not path.startswith("/media/"):
-        response.headers.setdefault("Cache-Control", "no-cache")
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 

@@ -87,6 +87,11 @@ public final class Sync {
                 }
                 JSONObject pull = res.optJSONObject("pull");
                 if (pull != null) Db.applyPull(pull, cursor == null);
+                JSONObject cu = res.optJSONObject("current_user");
+                if (cu != null && cu.optLong("id") > 0) {
+                    Screens.user = cu;
+                    Prefs.set("user_json", cu.toString());
+                }
                 if (res.has("cursor")) Db.kv("cursor", res.optString("cursor"));
                 Db.kv("last_sync", Db.now()); SmsLocal.relayPcOutbox();   // v2.8: PC queue → this SIM
                 autoCatalog();   // v3.4: pull the PC's catalog.pack when it is newer than ours (max once an hour)

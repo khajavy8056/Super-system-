@@ -66,12 +66,17 @@ public final class Local {
     }
 
     /* ===================== auth / users / roles ===================== */
-    static final String[] PERMS = {"products.manage", "products.view", "batches.manage", "inventory.adjust", "inventory.stocktake", "inventory.approve_stocktake", "inventory.view", "pricing.manage", "pricing.view_cost", "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return", "customers.manage", "customers.ledger", "customers.settle", "reports.view", "accounting.view", "accounting.post", "accounting.close", "settings.manage", "users.manage", "audit.view"};
+    static final String[] PERMS = {"products.manage", "products.view", "batches.manage", "inventory.adjust", "inventory.stocktake", "inventory.approve_stocktake", "inventory.view", "pricing.manage", "pricing.view_cost", "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return", "customers.manage", "customers.ledger", "customers.settle", "marketing.view", "marketing.manage", "reports.view", "reports.view_all", "accounting.view", "accounting.post", "accounting.close", "settings.manage", "users.manage", "audit.view", "shifts.view", "shifts.manage", "announcements.view", "announcements.publish", "announcements.manage", "performance.view", "performance.view_all", "payroll.view", "payroll.manage"};
     static final String[][] ROLES = {
         {"Administrator", "مدیر سیستم", "*"},
-        {"Manager", "مدیر فروشگاه", "products.manage,products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.approve_stocktake,inventory.view,pricing.manage,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view,settings.manage,audit.view,accounting.view,accounting.post,accounting.close"},
-        {"Cashier", "صندوق‌دار", "products.view,inventory.view,pos.sell,pos.void_unpaid,customers.manage,customers.ledger,customers.settle,reports.view"},
-        {"Inventory Operator", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,pricing.view_cost,reports.view"},
+        {"General Manager", "مدیر کل", "*"},
+        {"Manager", "مدیر فروشگاه", "*"},
+        {"Supervisor", "سوپروایزر", "products.manage,products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,pricing.manage,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,marketing.view,marketing.manage,reports.view,reports.view_all,accounting.view,shifts.view,shifts.manage,announcements.view,announcements.publish,performance.view_all"},
+        {"Accountant", "حسابدار", "customers.ledger,customers.settle,reports.view,reports.view_all,accounting.view,accounting.post,accounting.close,pricing.view_cost,payroll.view,payroll.manage,announcements.view"},
+        {"Cashier", "صندوق‌دار", "pos.sell,pos.void_unpaid,customers.manage,customers.ledger,reports.view,announcements.view,performance.view"},
+        {"Salesperson", "فروشنده", "pos.sell,pos.void_unpaid,customers.manage,customers.ledger,reports.view,announcements.view,performance.view"},
+        {"Inventory Operator", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,reports.view,announcements.view"},
+        {"Warehouse Keeper", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,reports.view,announcements.view"},
         {"Viewer", "ناظر", "products.view,inventory.view,reports.view"}};
     static JSONArray permsFor(JSONArray roles) {
         java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();

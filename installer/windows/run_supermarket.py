@@ -124,6 +124,37 @@ def persistent_secret(base: Path) -> str:
     return key
 
 
+def purge_stale_webview_cache(base: Path) -> None:
+    """build-492 (§۸–۹) — پاک‌سازی خودکار کش WebView2 و ServiceWorker هنگام تغییر نسخه.
+    از باقی‌ماندن فایل‌های قدیمی جاوااسکریپت/استایل پس از به‌روزرسانی جلوگیری می‌کند."""
+    import shutil
+    try:
+        from app import __version__
+    except Exception:
+        return
+    ver_file = base / "ui.version"
+    prev = ver_file.read_text(encoding="utf-8").strip() if ver_file.exists() else ""
+    if prev == __version__:
+        return
+    wv = base / "webview2"
+    if wv.exists():
+        for sub in (
+            "EBWebView/Default/Cache",
+            "EBWebView/Default/Code Cache",
+            "EBWebView/Default/Service Worker",
+            "Default/Cache",
+            "Default/Code Cache",
+            "Default/Service Worker",
+        ):
+            target = wv / sub
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+    try:
+        ver_file.write_text(__version__, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def wait_healthy(port: int, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -277,6 +308,7 @@ def main() -> None:
     os.environ.setdefault("SUPERMARKET_DATA_DIR", str(base))
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
     os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
+    purge_stale_webview_cache(base)
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ENVIRONMENT", "production")
 

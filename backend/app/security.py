@@ -99,7 +99,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
     "Cashier": [
         "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
         "customers.manage", "customers.ledger", "customers.settle",
-        "reports.view", "shifts.view",
+        "reports.view",
     ],
     # §۱.۲ — حسابدار: مالی و حسابداری؛ بدون مدیریت کاربران/کارکنان/تنظیمات/امنیت
     "Accountant": [
@@ -125,7 +125,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
     "Inspector": ["products.view", "inventory.view", "reports.view", "reports.view_all", "audit.view"],
     "Salesperson": [
         "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
-        "customers.manage", "reports.view", "shifts.view",
+        "customers.manage", "reports.view",
     ],
     "Inventory Operator": [
         "products.view", "batches.manage", "inventory.adjust", "inventory.stocktake",
@@ -270,8 +270,62 @@ def require_permission(code: str):
     return _checker
 
 
+def require_any_permission(*codes: str):
+    """Dependency factory enforcing at least one of the given permissions."""
+
+    def _checker(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+        have = _user_permission_codes(current_user)
+        if not any(c in have for c in codes):
+            raise HTTPException(status_code=403, detail=f"Missing permission: {codes[0]}")
+        return current_user
+
+    return _checker
+
+
+#: Single Source of Truth for UI route/view permissions (shared by Backend & Frontend).
+VIEW_PERMISSIONS: dict[str, str | None] = {
+    "dashboard": "reports.view",
+    "pos": "pos.sell",
+    "batches": "batches.manage",
+    "inventory": "inventory.adjust||inventory.stocktake||inventory.approve_stocktake",
+    "products": "products.manage||batches.manage||pricing.manage",
+    "customers": "pos.sell||customers.manage||customers.ledger",
+    "marketing": "marketing.view||marketing.manage",
+    "reports": "reports.view_all",
+    "invoices": "reports.view",
+    "insights": "reports.view",
+    "insightsPlan": "reports.view_all",
+    "insightsCustomers": "reports.view_all||customers.manage",
+    "accounting": "accounting.view",
+    "hardware": "settings.manage",
+    "users": "users.manage",
+    "settings": "settings.manage",
+    "diagnostics": "settings.manage",
+    "support": "pos.sell||settings.manage||users.manage",
+    "audit": "audit.view",
+    "staff": "users.manage||payroll.view||payroll.manage||shifts.manage||shifts.view||performance.view_all||announcements.manage||announcements.publish",
+    "profile": None,
+}
+
+
+def user_can_view(user: User, view: str) -> bool:
+    expr = VIEW_PERMISSIONS.get(view)
+    if not expr:
+        return True
+    have = _user_permission_codes(user)
+    return any(part.strip() in have for part in expr.split("||") if part.strip())
+
+
+def allowed_views_for_user(user: User) -> list[str]:
+    return [v for v in VIEW_PERMISSIONS if user_can_view(user, v)]
+
+
 def has_permission(user: User, code: str) -> bool:
     return code in _user_permission_codes(user)
+
+
+user_permissions = _user_permission_codes
+user_permission_codes = _user_permission_codes
 
 
 def is_admin(user: User) -> bool:

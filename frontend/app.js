@@ -8,6 +8,7 @@ const state = {
   token: localStorage.getItem("token") || "",   // build-489: m_token (جفت‌سازی گوشی) هرگز نشست دسکتاپ نمی‌سازد
   user: null,
   view: "dashboard",
+  renderSeq: 0,
   kiosk: localStorage.getItem("kiosk") === "1",
   kioskShortcut: "Ctrl+Shift+L",
   currency: { code: "IRT", label: "تومان" },
@@ -52,16 +53,17 @@ function toast(msg, kind = "ok") {
  * app NO page starts from an empty "در حال بارگذاری…". One-shot per key:
  * the second visit is a fresh request as before. */
 const WARM_KEYS = [
-  "/reports/dashboard",
-  "/products?limit=1000",        // what the products view actually fetches
-  "/inventory/stock",            // inventory view's first call
-  "/reports/expiry",             // expiry report
-  "/insights/summary",
+  ["/reports/dashboard", "reports.view"],
+  ["/products?limit=1000", "products.view"],        // what the products view actually fetches
+  ["/inventory/stock", "inventory.view"],            // inventory view's first call
+  ["/reports/expiry", "reports.view_all"],           // expiry report (store-wide only)
+  ["/insights/summary", "reports.view"],
 ];
 const warm = {};
 async function warmup() {
-  if (!state.token) return;
-  await Promise.allSettled(WARM_KEYS.map(async (k) => {
+  if (!state.token || !state.user) return;
+  const allowedKeys = WARM_KEYS.filter(([, perm]) => !perm || canNav(perm)).map(([k]) => k);
+  await Promise.allSettled(allowedKeys.map(async (k) => {
     try { warm[k] = await api(k); } catch (_) { /* offline keys warm lazily */ }
   }));
 }
@@ -169,31 +171,50 @@ $("#login-form").addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(body.detail || "ورود ناموفق");
     state.token = body.access_token;
     localStorage.setItem("token", state.token);
-    const me = await api("/auth/me");
-    state.user = me;
-    if (window.Onboarding) await Onboarding.afterLogin();   // v1.5: licence recheck + loading
-    await loadRuntimeConfig();
-    await warmup();   // v4.3.1 — the loading screen prepares the data too
-    showApp();
-    buildNav();
-    await applyTheme();
-    startStatusBar();
-    if (window.updatePresence) updatePresence();   // build-491 — نوار حضور
-    if (window.Onboarding) Onboarding.alertsStack();
-    if (window.Sfx) Sfx.play("welcome");
-    if (state.kiosk) enterKiosk(); else go("dashboard");
+    await initAuthenticatedSession(true);
   } catch (err) {
     $("#login-error").textContent = err.message;
     $("#login-error").classList.remove("hidden");
   }
 });
 
+async function initAuthenticatedSession(fromLogin = false) {
+  const me = await api("/auth/me");
+  state.user = me;
+  if (window.Onboarding) await Onboarding.afterLogin();
+  await loadRuntimeConfig().catch(() => {});
+  await warmup().catch(() => {});
+  showApp();
+  buildNav();
+  await applyTheme().catch(() => {});
+  startStatusBar();
+  if (window.updatePresence) updatePresence(true);   // build-492 — تشخیص خودکار حضور در شیفت
+  if (window.Onboarding) Onboarding.alertsStack();
+  if (fromLogin && window.Sfx) Sfx.play("welcome");
+  const startView = canView("dashboard") ? "dashboard" : firstAllowedView();
+  if (state.kiosk && canView("pos")) enterKiosk(); else go(startView);
+}
+
 function doLogout() {
   localStorage.removeItem("token");
-  state.token = ""; state.user = null;
-  // build-489 — کش‌های نشست باید همراه کاربر پاک شوند (نشت بین حساب‌ها ممنوع)
+  localStorage.removeItem("sm.loading.done");
+  state.token = ""; state.user = null; state.view = "dashboard";
+  if (typeof posState === "object" && posState) {
+    posState.cart = []; posState.customer = null; posState.coupon = null;
+    posState.couponInfo = null; posState.invoiceDiscount = 0;
+    posState.campaign = null; posState.campaignInfo = null;
+  }
+  Object.keys(warm).forEach((k) => { delete warm[k]; });
+  clearInterval(window._presenceTimer);
+  clearInterval(window._sbTimer);
+  // build-489/492 — کش‌های نشست و نمای فعال باید همراه کاربر پاک شوند (نشت بین حساب‌ها ممنوع)
   ["_rolesCache", "_permsCache", "_widgetLayout", "_updateInfo", "_updateChecked",
-   "_mineLoaded"].forEach((k) => { try { delete window[k]; } catch (_) {} });
+   "_mineLoaded", "_dashData", "_presence"].forEach((k) => { try { delete window[k]; } catch (_) {} });
+  if ($("#view")) $("#view").innerHTML = "";
+  if ($("#nav")) $("#nav").innerHTML = "";
+  ["#tb-presence", "#tb-bell", "#tb-cal"].forEach((sel) => { const el = $(sel); if (el) el.classList.add("hidden"); });
+  const aiBtn = document.querySelector(".ai-assist");
+  if (aiBtn) aiBtn.classList.add("hidden");
   try { sessionStorage.clear(); } catch (_) {}
   showLogin();
 }
@@ -308,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-491 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-492 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 491;
+const UI_BUILD = 492;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -320,8 +341,32 @@ const icon = (name, size = 18) =>
 
 /* build-485 — ترتیب و نام‌ها دقیقاً مطابق تصویر مرجع؛ بخش‌های اضافهٔ محصول
    (فاکتورها، هوش مصنوعی، حسابداری، …) بدون حذف بعد از فهرست مرجع می‌آیند. */
-/* build-490 (§۱–۳) — ماتریس نقش‌ها: هر بخش دقیقاً با مجوزِ «عملیات همان بخش» دیده می‌شود؛
-   فقط Permission تعیین می‌کند (هرگز نام Role). صندوقدار/حسابدار/سوپروایزر/مدیر کل — مطابق دستور. */
+/* build-490/492 (§۱–۵) — منبع واحد حقیقت (Single Source of Truth) برای مجوزهای هر بخش.
+   تنها Permission تعیین می‌کند که آیا منو، آیکون، دکمه و مسیر (Route) برای کاربر فعال است یا خیر. */
+const VIEW_PERMS = {
+  dashboard: "reports.view",
+  pos: "pos.sell",
+  batches: "batches.manage",
+  inventory: "inventory.adjust||inventory.stocktake||inventory.approve_stocktake",
+  products: "products.manage||batches.manage||pricing.manage",
+  customers: "pos.sell||customers.manage||customers.ledger",
+  marketing: "marketing.view||marketing.manage",
+  reports: "reports.view_all",
+  invoices: "reports.view",
+  insights: "reports.view",
+  insightsPlan: "reports.view_all",
+  insightsCustomers: "reports.view_all||customers.manage",
+  accounting: "accounting.view",
+  hardware: "settings.manage",
+  users: "users.manage",
+  settings: "settings.manage",
+  diagnostics: "settings.manage",
+  support: "pos.sell||settings.manage||users.manage",
+  audit: "audit.view",
+  staff: "users.manage||payroll.view||payroll.manage||shifts.manage||shifts.view||performance.view_all||announcements.manage||announcements.publish",
+  profile: null,
+};
+
 const NAV = [
   ["dashboard", "داشبورد", "reports.view", "dashboard"],
   ["pos", "فروش و صندوق", "pos.sell", "pos"],
@@ -338,20 +383,43 @@ const NAV = [
   ["users", "کاربران", "users.manage", "users"],
   ["settings", "تنظیمات", "settings.manage", "gear"],
   ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
-  ["support", "درخواست پشتیبانی", "pos.sell", "lifebuoy"],
+  ["support", "درخواست پشتیبانی", "pos.sell||settings.manage||users.manage", "lifebuoy"],
   ["audit", "لاگ‌ها", "audit.view", "shield"],
-  ["staff", "کارکنان و سازمان", "staff.view", "users"],
+  ["staff", "کارکنان و سازمان", "users.manage||payroll.view||payroll.manage||shifts.manage||shifts.view||performance.view_all||announcements.manage||announcements.publish", "users"],
 ];
 
 /** build-490 — «perm» می‌تواند چند مجوز با جداکنندهٔ || (هر کدام کافی است). */
 function canNav(perm) {
-  return String(perm || "").split("||").some((p) => can(p));
+  if (!perm) return true;
+  return String(perm).split("||").some((p) => can(p.trim()));
 }
 
 function can(perm) {
   if (!state.user) return false;
   return (state.user.permissions || []).includes(perm);
 }
+
+function canView(view) {
+  if (!state.user) return false;
+  if (view === "profile") return true;
+  if (Array.isArray(state.user.allowed_views) && state.user.allowed_views.length && Object.prototype.hasOwnProperty.call(VIEW_PERMS, view)) {
+    return state.user.allowed_views.includes(view);
+  }
+  if (!Object.prototype.hasOwnProperty.call(VIEW_PERMS, view)) return false;
+  return canNav(VIEW_PERMS[view]);
+}
+
+function firstAllowedView() {
+  for (const [k] of NAV) {
+    if (canView(k)) return k;
+  }
+  return "profile";
+}
+
+window.can = can;
+window.canNav = canNav;
+window.canView = canView;
+window.firstAllowedView = firstAllowedView;
 
 /* v2.9 — sidebar grouped into sections (icon badge + label), like a premium back-office. */
 const NAV_GROUPS = [
@@ -362,22 +430,24 @@ const NAV_GROUPS = [
   ["کارکنان و سازمان", ["staff"]],
 ];
 function buildNav() {
-  // build-485 — سایدبار تخت مطابق تصویر مرجع (بدون سرفصل گروهی)
+  // build-485/492 — سایدبار و آیکون‌های نوار بالا فقط بخش‌های مجاز را نمایش می‌دهند (منبع واحد حقیقت)
   const nav = $("#nav");
+  if (!nav) return;
   nav.innerHTML = "";
-  NAV.forEach(([key, label, perm, ico]) => {
-    if (key === "staff") {
-      // build-488 — «کارکنان و سازمان»: دیده‌شدن = اجتماع دسترسی‌های این بخش (§۳/§۷)
-      // build-489 — دیدن «کارکنان و سازمان» = مسئولیت سازمانی؛ نه صرفاً shifts.view/performance.view
-      // (باگ مالک: فروشنده/صندوق‌دار بخش کارکنان و کاربران را می‌دید). فقط مدیریت پرسنل/حقوق/شیفت‌ها/اطلاعیه‌ها.
-      const staffOk = can("users.manage") || can("payroll.view") || can("payroll.manage") ||
-        can("shifts.manage") || can("performance.view_all") || can("announcements.manage");
-      if (!staffOk) return;
-    } else if (perm && !canNav(perm)) return;
+  NAV.forEach(([key, label, , ico]) => {
+    if (!canView(key)) return;
     const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
     btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "insights" ? `<i class="nav-new">جدید</i>` : ""}${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
     nav.append(btn);
   });
+  // مخفی‌سازی کامل آیکون‌ها و میان‌برهای غیرمجاز در نوار بالا و سایدبار (§۴)
+  const calBtn = $("#tb-cal");
+  if (calBtn) calBtn.classList.toggle("hidden", !canView("reports"));
+  const bellBtn = $("#tb-bell");
+  if (bellBtn) bellBtn.classList.toggle("hidden", !canView("insights"));
+  const aiAssist = document.querySelector(".ai-assist");
+  if (aiAssist) aiAssist.classList.toggle("hidden", !canView("insights"));
+
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
   // نام واقعی فروشگاه در بلوک برند (پیش‌تر فقط هنگام ذخیرهٔ پروفایل به‌روز می‌شد)
   const bs = $("#brand-store");
@@ -422,7 +492,7 @@ window.loadMineCard = async function (dashData) {
   const parts = [];
   // ۱) فروش امروز من — از payload داشبورد (همان ردیف «گزارش فروش روزانه»)
   const meName = (state.user && state.user.full_name) || "";
-  const staff = (dashData && dashData.today_by_staff) || [];
+  const staff = Array.isArray(dashData && dashData.today_by_staff) ? dashData.today_by_staff : [];
   const myRow = staff.find((s) => (s.name && meName && s.name.includes(meName)) || s.user_id === (state.user || {}).id);
   if (myRow) parts.push(`<div class="mine-kpi"><span>فروش امروز من</span><b>${money(myRow.sales != null ? myRow.sales : myRow.total || 0)}</b><small>${fa(myRow.invoice_count != null ? myRow.invoice_count : 0)} فاکتور</small></div>`);
   // ۲) عملکرد من — هر کاربر خودش (performance/me عمومی است)
@@ -431,18 +501,28 @@ window.loadMineCard = async function (dashData) {
     const sc = pr && (pr.score != null ? pr.score : (pr.summary && pr.summary.score));
     if (sc != null) parts.push(`<div class="mine-kpi"><span>امتیاز عملکرد من</span><b>${fa(sc)}</b><small>${pr.period_label ? esc(pr.period_label) : "دورهٔ اخیر"}</small></div>`);
   } catch (_) {}
-  // ۳) حضور امروز + شیفت (build-491) — هر کاربر وضعیت خودش را می‌بیند
+  // ۳) حضور امروز + شیفت (build-491/492) — با تشخیص خودکار حضور در شیفت فعال
   try {
-    const st = await api("/hr/attendance/status"); window._presence = st;
+    const st = await api("/hr/attendance/status?auto=1"); window._presence = st;
     if (st.has_shift && st.present) {
-      parts.push(`<div class="mine-kpi"><span class="pres-on">● حضور امروز</span><b>${presenceClock(st.since)}</b><small>حاضر — ${fa(st.minutes || 0)} دقیقه</small></div>`);
+      parts.push(`<div class="mine-kpi"><span class="pres-on">● حضور امروز</span><b>${presenceClock(st.since)}</b><small>حاضر در شیفت — ${fa(st.minutes || 0)} دقیقه</small></div>`);
+    } else if (st.shift_state === "COMPLETED") {
+      parts.push(`<div class="mine-kpi"><span class="pres-on">✓ شیفت امروز</span><b>تکمیل شد</b><small>ورود ${presenceClock(st.since)} · خروج ${presenceClock(st.ended_at)}</small></div>`);
+    } else if (st.shift_state === "OUT_OF_SHIFT") {
+      parts.push(`<div class="mine-kpi"><span>وضعیت شیفت</span><b>خارج از ساعت شیفت</b><small>بازهٔ شیفت: ${fa(st.start_time)} تا ${fa(st.end_time)} · <button class="btn btn-xs btn-ghost" id="pres-in-card">ثبت حضور</button></small></div>`);
     } else if (st.has_shift) {
       parts.push(`<div class="mine-kpi"><span class="pres-off">● حضور امروز</span><b>غایب</b><small>${st.late_minutes ? fa(st.late_minutes) + " دقیقه تأخیر · " : ""}<button class="btn btn-xs btn-primary" id="pres-in-card">ثبت حضور</button></small></div>`);
     } else {
       parts.push(`<div class="mine-kpi"><span>حضور امروز</span><b>—</b><small>شیفتی برای امروز ثبت نشده</small></div>`);
     }
-    if (st.has_shift) parts.push(`<div class="mine-kpi"><span>شیفت امروز</span><b>${esc(st.shift_name || "—")}</b><small>${fa(st.start_time)} تا ${fa(st.end_time)}</small></div>`);
+    if (st.has_shift) {
+      const multi = Array.isArray(st.shifts_today) && st.shifts_today.length > 1
+        ? ` (${fa(st.shifts_today.length)} شیفت امروز)`
+        : "";
+      parts.push(`<div class="mine-kpi"><span>شیفت امروز${multi}</span><b>${esc(st.shift_name || "—")}</b><small>${fa(st.start_time)} تا ${fa(st.end_time)}</small></div>`);
+    }
   } catch (_) {}
+  if (!body.isConnected) return;
   if (!parts.length) { host.style.display = "none"; return; }
   host.style.display = "";
   body.innerHTML = parts.join("");
@@ -450,19 +530,37 @@ window.loadMineCard = async function (dashData) {
   if (pic) pic.addEventListener("click", async () => {
     try {
       await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
-      toast("حضور ثبت شد", "ok"); updatePresence(); loadMineCard();
+      toast("حضور ثبت شد", "ok"); updatePresence(); loadMineCard(window._dashData);
     } catch (e) { toast(e.message, "err"); }
   });
   if (sub) sub.textContent = meName;
 };
 
-/* build-491 (دستور مالک) — پنجره‌های فرم به‌جای prompt() مرورگر (سیستمی/داخلی).
-   هیچ prompt()‌ای در هیچ‌کدام از UIها نباید وجود داشته باشد. */
-function openShiftCreate(onDone) {
-  openModal(`<h3>تعریف شیفت جدید</h3>
-    <label>نام شیفت</label><input id="shf-name" placeholder="مثلاً «صبح»">
-    <label>ساعت شروع (HH:MM)</label><input id="shf-start" value="08:00" placeholder="08:00">
-    <label>ساعت پایان (HH:MM)</label><input id="shf-end" value="14:00" placeholder="14:00">
+/* build-491/492 (دستور مالک) — پنجره‌های فرم داخلی به‌جای prompt() مرورگر + تنظیم کامل شیفت برای هر کاربر. */
+async function openShiftCreate(onDone) {
+  let users = [];
+  if (can("shifts.manage")) {
+    try { users = await api("/hr/roster-users"); } catch (_) { users = []; }
+  }
+  const dayNames = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"];
+  openModal(`<h3>تعریف شیفت کاری جدید</h3>
+    <label>نام شیفت</label><input id="shf-name" placeholder="مثلاً «شیفت صبح» یا «شیفت ویژه»">
+    <div class="form-row">
+      <div><label>ساعت شروع (HH:MM)</label><input id="shf-start" value="08:00" placeholder="08:00"></div>
+      <div><label>ساعت پایان (HH:MM)</label><input id="shf-end" value="14:00" placeholder="14:00"></div>
+    </div>
+    <label>بخش / واحد (اختیاری)</label><input id="shf-dept" placeholder="مثلاً صندوق، انبار، فروش">
+    <label>روزهای تکرار در هفته (خالی = همه روزها)</label>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin:6px 0" id="shf-days">
+      ${dayNames.map((dn, idx) => `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${idx}" checked style="margin-inline-end:4px">${dn}</label>`).join("")}
+    </div>
+    ${users.length ? `
+      <label style="margin-top:8px">تخصیص مستقیم به شخص (اختیاری)</label>
+      <select id="shf-user">
+        <option value="">— بدون تخصیص فوری (بعداً تخصیص می‌دهم) —</option>
+        ${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}${u.job_title ? " — " + esc(u.job_title) : ""}</option>`).join("")}
+      </select>
+    ` : ""}
     <div class="prof-actions" style="margin-top:14px">
       <button class="btn btn-primary" id="shf-save">ذخیره شیفت</button>
       <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
@@ -471,10 +569,16 @@ function openShiftCreate(onDone) {
     const name = $("#shf-name").value.trim();
     const start = $("#shf-start").value.trim();
     const end = $("#shf-end").value.trim();
+    const department = ($("#shf-dept") ? $("#shf-dept").value.trim() : "");
+    const checkedDays = [...document.querySelectorAll("#shf-days input:checked")].map((el) => Number(el.value));
+    const workdays = checkedDays.length === 7 ? [] : checkedDays;
+    const uid = $("#shf-user") && $("#shf-user").value ? Number($("#shf-user").value) : null;
     if (!name) return toast("نام شیفت لازم است", "err");
     if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return toast("ساعت را درست وارد کنید (HH:MM)", "err");
     try {
-      await api("/hr/shifts", { method: "POST", body: JSON.stringify({ name, start_time: start, end_time: end }) });
+      await api("/hr/shifts", { method: "POST", body: JSON.stringify({
+        name, start_time: start, end_time: end, department, workdays, user_id: uid, day: "",
+      }) });
       toast("شیفت ساخته شد", "ok"); closeModal(); if (onDone) onDone();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -484,16 +588,27 @@ async function openShiftAssign(s, onDone) {
   try { users = await api("/hr/roster-users"); } catch (e) { return toast(e.message, "err"); }
   const today = new Date().toISOString().slice(0, 10);
   openModal(`<h3>تخصیص شیفت «${esc(s.name)}» به شخص</h3>
-    <label>شخص</label>
+    <label>انتخاب شخص</label>
     <select id="sa-user">${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}${u.job_title ? " — " + esc(u.job_title) : ""}</option>`).join("")}</select>
-    <label>روز</label><input id="sa-day" type="date" value="${today}">
+    <label style="margin-top:8px">نوع برنامهٔ شیفت</label>
+    <select id="sa-mode">
+      <option value="recurring">تکرارشونده (برنامهٔ ثابت در روزهای کاری شیفت)</option>
+      <option value="date">روز مشخص (فقط یک تاریخ خاص)</option>
+    </select>
+    <div id="sa-day-wrap" style="margin-top:8px">
+      <label>روز مشخص</label><input id="sa-day" type="date" value="${today}">
+    </div>
     <div class="prof-actions" style="margin-top:14px">
       <button class="btn btn-primary" id="sa-save">تخصیص شیفت</button>
       <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
     </div>`);
+  const modeEl = $("#sa-mode"), dayWrap = $("#sa-day-wrap");
+  const syncMode = () => { if (dayWrap && modeEl) dayWrap.style.display = modeEl.value === "date" ? "" : "none"; };
+  if (modeEl) { modeEl.addEventListener("change", syncMode); syncMode(); }
   $("#sa-save").addEventListener("click", async () => {
+    const dayVal = (modeEl && modeEl.value === "recurring") ? "" : ($("#sa-day") ? $("#sa-day").value : today);
     try {
-      await api(`/hr/shifts/${s.id}/assign`, { method: "POST", body: JSON.stringify({ user_id: Number($("#sa-user").value), day: $("#sa-day").value }) });
+      await api(`/hr/shifts/${s.id}/assign`, { method: "POST", body: JSON.stringify({ user_id: Number($("#sa-user").value), day: dayVal }) });
       toast("شیفت به شخص تخصیص یافت", "ok"); closeModal(); if (onDone) onDone();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -508,14 +623,13 @@ function openTextPrompt(title, label, def, onOk) {
   $("#tp-ok").addEventListener("click", () => { const v = $("#tp-val").value; closeModal(); if (onOk) onOk(v); });
 }
 
-/* build-491 (دستور مالک) — نوار حضور: زیر کارت پروفایل (نوار بالا) + داشبورد.
-   سبز = حضور ثبت‌شده (ساعت ورود با دقت دقیقه + مدت)، قرمز = غایب (شیفت امروز دارد).
-   ثبت حضور/خروج از همان نوار — داده از /hr/attendance/status. */
-window.updatePresence = async function () {
+/* build-491/492 (دستور مالک) — نوار حضور: زیر کارت پروفایل (نوار بالا) + داشبورد.
+   هنگامی که کاربر در بازهٔ شیفت خودش وارد برنامه می‌شود، سیستم به‌طور خودکار حضور او را در شیفت فعال ثبت می‌کند. */
+window.updatePresence = async function (autoEnter = true) {
   const strip = $("#tb-presence");
   if (!strip || !state.user) return;
   let st = null;
-  try { st = await api("/hr/attendance/status"); } catch (e) { return; }
+  try { st = await api(autoEnter ? "/hr/attendance/status?auto=1" : "/hr/attendance/status"); } catch (e) { return; }
   window._presence = st;
   strip.innerHTML = presenceHtml(st, true);
   strip.style.display = "";
@@ -523,14 +637,14 @@ window.updatePresence = async function () {
   if (pin) pin.addEventListener("click", async () => {
     try {
       await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
-      toast("حضور ثبت شد", "ok"); updatePresence();
+      toast("حضور ثبت شد", "ok"); updatePresence(false);
       if (state.view === "dashboard") go("dashboard");
     } catch (e) { toast(e.message, "err"); }
   });
   if (pout) pout.addEventListener("click", async () => {
     try {
       await api("/hr/attendance/clock-out", { method: "POST", body: JSON.stringify({}) });
-      toast("خروج ثبت شد", "ok"); updatePresence();
+      toast("خروج ثبت شد", "ok"); updatePresence(false);
       if (state.view === "dashboard") go("dashboard");
     } catch (e) { toast(e.message, "err"); }
   });
@@ -542,12 +656,19 @@ function presenceHtml(st, withBtn) {
   if (!st || !st.has_shift) return `<span class="pres pres-none">شیفت امروز ثبت نشده</span>`;
   const win = st.start_time ? ` (${fa(st.start_time)} تا ${fa(st.end_time)})` : "";
   if (st.present) {
-    return `<span class="pres pres-on" title="حضور از ${presenceClock(st.since)}">● حضور — از ${presenceClock(st.since)} · ${fa(st.minutes || 0)} دقیقه</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-out">خروج</button>` : ""}`;
+    const shLabel = st.shift_name ? `در شیفت «${esc(st.shift_name)}» — ` : "";
+    return `<span class="pres pres-on" title="حضور از ${presenceClock(st.since)}">● ${shLabel}حضور از ${presenceClock(st.since)} · ${fa(st.minutes || 0)} دقیقه</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-out">خروج</button>` : ""}`;
+  }
+  if (st.shift_state === "COMPLETED") {
+    return `<span class="pres pres-on" title="شیفت تکمیل شده">✓ شیفت «${esc(st.shift_name || "")}» تکمیل شد (${presenceClock(st.since)} تا ${presenceClock(st.ended_at)})</span>`;
+  }
+  if (st.shift_state === "OUT_OF_SHIFT") {
+    return `<span class="pres pres-none" title="خارج از ساعت شیفت">◔ خارج از ساعت شیفت${st.shift_name ? " — «" + esc(st.shift_name) + "»" : ""}${win}</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-in">ثبت حضور</button>` : ""}`;
   }
   const late = st.late_minutes ? ` · ${fa(st.late_minutes)} دقیقه تأخیر` : "";
   return `<span class="pres pres-off" title="حضور ثبت نشده">● غایب${st.shift_name ? " — شیفت «" + esc(st.shift_name) + "»" : ""}${win}${late}</span>${withBtn ? `<button class="btn btn-sm btn-primary pres-btn" id="pres-in">ثبت حضور</button>` : ""}`;
 }
-setInterval(() => { if (state.user && window.updatePresence) updatePresence(); }, 60000);   // هر دقیقه
+setInterval(() => { if (state.user && window.updatePresence) updatePresence(true); }, 60000);   // هر دقیقه بررسی و همگام‌سازی حضور با بازهٔ شیفت
 
 /* build-488 — داشبورد پویا (§۴–۱۳): Widgetهای مجاز هر کاربر از /hr/widgets می‌آید؛
    مخفی/ترتیب/Pin/اندازه روی همان کارت‌های فعلی اعمال می‌شود (ظاهر تغییر نمی‌کند).
@@ -700,24 +821,39 @@ const VIEW_SUBS = {
   staff: "عملکرد، شیفت‌ها، اطلاعیه‌ها و حقوق کارکنان",
 };
 async function go(view) {
+  if (!RENDER[view]) view = firstAllowedView();
+  if (state.user && !canView(view)) {
+    const fallback = firstAllowedView();
+    if (fallback && fallback !== view && state.view !== fallback) {
+      toast("دسترسی به این بخش برای نقش کاربری شما فعال نیست", "err");
+      return go(fallback);
+    }
+    toast("دسترسی به این بخش برای نقش کاربری شما فعال نیست", "err");
+    return;
+  }
+  const seq = ++state.renderSeq;
   state.view = view;
   buildNav();
   const titles = Object.fromEntries(NAV.map(([k, v]) => [k, v]));
   titles.profile = "پروفایل من";
   titles.staff = "کارکنان و سازمان";
-  $("#view-title").textContent = titles[view] || view;
+  const vt = $("#view-title"); if (vt) vt.textContent = titles[view] || view;
   const sub = $("#view-sub"); if (sub) sub.textContent = VIEW_SUBS[view] || "";
-  $("#topbar-actions").innerHTML = "";
+  const tba = $("#topbar-actions"); if (tba) tba.innerHTML = "";
   const viewEl = $("#view");
+  if (!viewEl) return;
+  viewEl.dataset.renderSeq = String(seq);
   viewEl.className = "view view-" + view;
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
-    await RENDER[view]();
+    await RENDER[view](seq);
+    if (seq !== state.renderSeq) return;
     if (view === "dashboard" && window.applyDashboardWidgets) applyDashboardWidgets();
     Jalali.attachAll(viewEl);
     if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
-    viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${err.message}</p></div>`;
+    if (seq !== state.renderSeq) return;
+    viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${esc(err && err.message ? err.message : String(err))}</p></div>`;
   }
 }
 
@@ -732,9 +868,9 @@ const RENDER = {};
 RENDER.staff = async () => {
   const tabs = [];
   if (can("performance.view") || can("performance.view_all")) tabs.push(["perf", "عملکرد"]);
-  if (can("shifts.view")) tabs.push(["shifts", "شیفت‌ها"]);
-  if (can("announcements.publish") || true) tabs.push(["ann", "اطلاعیه‌ها"]);
-  if (can("payroll.view")) tabs.push(["payroll", "حقوق"]);
+  if (can("shifts.view") || can("shifts.manage")) tabs.push(["shifts", "شیفت‌ها"]);
+  if (can("announcements.publish") || can("announcements.manage")) tabs.push(["ann", "اطلاعیه‌ها"]);
+  if (can("payroll.view") || can("payroll.manage")) tabs.push(["payroll", "حقوق"]);
   if (!tabs.length) { $("#view").innerHTML = '<div class="card"><p class="muted">دسترسی‌ای در این بخش ندارید</p></div>'; return; }
   const moneyFa = (n) => fa((Number(n) || 0).toLocaleString("en-US"));
   $("#view").innerHTML = `
@@ -746,16 +882,18 @@ RENDER.staff = async () => {
     </div>`;
   const body = $("#staff-body");
   const renderTab = async (key) => {
+    if (!body || !body.isConnected) return;
     if (key === "perf") {
       let rows = [];
-      try { rows = await api("/hr/performance/team"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      try { rows = await api("/hr/performance/team"); } catch (e) { if (body.isConnected) body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      if (!body.isConnected) return;
       body.innerHTML = `
         <div class="dcard-head"><h3>${icon("trend", 15)} عملکرد کارکنان (۳۰ روز اخیر)</h3>
           ${can("reports.export") ? `<button class="btn btn-sm" id="staff-pdf">خروجی PDF</button>` : ""}</div>
         <div class="table-scroll"><table class="dtable"><thead><tr>
           <th>نام</th><th>عنوان شغلی</th><th>فروش</th><th>فاکتور</th><th>میانگین فاکتور</th>
           <th>داخل شیفت</th><th>خارج از شیفت</th><th>تأخیر (دقیقه)</th><th>امتیاز</th></tr></thead><tbody>
-        ${rows.map((r) => `<tr>
+        ${(Array.isArray(rows) ? rows : []).map((r) => `<tr>
           <td><b>${esc(r.full_name)}</b></td><td class="muted">${esc(r.job_title || "—")}</td>
           <td><b>${moneyFa(r.sales_total)}</b></td><td>${fa(r.invoice_count)}</td>
           <td>${moneyFa(r.avg_invoice)}</td><td>${moneyFa(r.sales_in_shift)}</td>
@@ -772,18 +910,19 @@ RENDER.staff = async () => {
     }
     if (key === "shifts") {
       let shifts = [];
-      try { shifts = await api("/hr/shifts"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      try { shifts = await api("/hr/shifts"); } catch (e) { if (body.isConnected) body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
       let att = [];
       try { att = await api("/hr/attendance/today"); } catch (_) { att = []; }
+      if (!body.isConnected) return;
       const attMap = {};
-      (att || []).forEach((a) => { attMap[a.user_id] = a; });
+      (Array.isArray(att) ? att : []).forEach((a) => { attMap[a.user_id] = a; });
       body.innerHTML = `
         <div class="dcard-head"><h3>${icon("clock", 15)} شیفت‌های کاری — تخصیص به اشخاص</h3>
           <span class="muted tiny">● حاضر — ✕ غایب — ○ بدون شیفت امروز</span>
           ${can("shifts.manage") ? `<button class="btn btn-sm btn-primary" id="shf-new">شیفت جدید</button>` : ""}</div>
         <div class="table-scroll"><table class="dtable"><thead><tr>
           <th>نام شیفت</th><th>ساعت</th><th>روزها</th><th>بخش</th><th>اعضا (حضور امروز)</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>
-        ${shifts.map((s) => `<tr>
+        ${(Array.isArray(shifts) ? shifts : []).map((s) => `<tr>
           <td><b>${esc(s.name)}</b></td>
           <td>${fa(s.start_time)} تا ${fa(s.end_time)}</td>
           <td class="muted">${(s.workdays || []).length ? s.workdays.map((d) => ["ش", "ی", "د", "س", "چ", "پ", "ج"][d]).join(" ") : "هر روز"}</td>
@@ -792,10 +931,11 @@ RENDER.staff = async () => {
             const a = attMap[r.user_id];
             const dot = !a ? "○" : (a.present ? "●" : "✕");
             const cls = !a ? "mem-none" : (a.present ? "mem-on" : "mem-off");
+            const dayTag = r.day ? ` (${fa(r.day)})` : " (ثابت)";
             const tip = a ? (a.present ? `حضور از ${presenceClock(a.since)}` : "غایب") : "شیفت امروز ندارد";
-            return `<span class="member ${cls}" title="${tip}">${dot} ${esc(r.full_name || r.username || ("#" + r.user_id))}</span>`;
+            return `<span class="member ${cls}" title="${tip}">${dot} ${esc(r.full_name || r.username || ("#" + r.user_id))}<small class="muted">${dayTag}</small></span>`;
           }).join("، ") || "—"}
-          ${(s.roster || []).map((r) => (r.assignment_id ? `<button class="btn btn-xs btn-ghost mem-x" data-aid="${r.assignment_id}" title="لغو تخصیص">✕</button>` : "")).join("")}</td>
+          ${can("shifts.manage") ? (s.roster || []).map((r) => (r.assignment_id ? `<button class="btn btn-xs btn-ghost mem-x" data-aid="${r.assignment_id}" title="لغو تخصیص">✕</button>` : "")).join("") : ""}</td>
           <td><span class="badge ${s.status === "ACTIVE" ? "ok" : ""}">${s.status === "ACTIVE" ? "فعال" : "بایگانی"}</span></td>
           <td>${can("shifts.manage") ? `<button class="btn btn-sm btn-primary shf-assign" data-id="${s.id}" data-name="${esc(s.name)}">تخصیص به شخص</button>` : ""}</td>
           </tr>`).join("") || '<tr><td colspan="7" class="muted">شیفتی تعریف نشده</td></tr>'}
@@ -950,11 +1090,10 @@ RENDER.profile = async () => {
           ${me.payroll.map((r) => `<tr><td>${esc(r.period)}</td><td><b>${moneyFa(r.total)}</b></td><td><span class="badge">${esc(r.status)}</span></td></tr>`).join("")}
         </tbody></table>` : '<span class="muted">ردیف حقوقی ثبت نشده است</span>'}
       </section>` : ""}
-      ${can("shifts.view") ? `
       <section class="dcard">
-        <h3>${icon("clock", 15)} شیفت امروز</h3>
+        <h3>${icon("clock", 15)} شیفت و حضور من</h3>
         <div id="prof-shift"><span class="muted">در حال بارگذاری…</span></div>
-      </section>` : ""}
+      </section>
     </div>`;
   const lo = $("#prof-logout");
   if (lo) lo.addEventListener("click", () => { if (window.doLogout) window.doLogout(); });
@@ -994,22 +1133,108 @@ RENDER.profile = async () => {
   if (ps) {
     const today = new Date().toISOString().slice(0, 10);
     try {
-      const perf = await api(`/hr/shifts/performance/${me.id}/${today}`);
+      const [mySh, perf] = await Promise.all([
+        api("/hr/shifts/my").catch(() => null),
+        api(`/hr/shifts/performance/${me.id}/${today}`).catch(() => ({})),
+      ]);
+      if (!ps.isConnected) return;
       const windows = (perf.shift_windows || []).map(([a, b]) => `${fa(new Date(a).toTimeString().slice(0, 5))} تا ${fa(new Date(b).toTimeString().slice(0, 5))}`).join("، ");
+      const assigns = Array.isArray(mySh && mySh.assignments) ? mySh.assignments : [];
+      const assignBadges = assigns.map((a) => `<span class="badge">${esc(a.name)} (${fa(a.start_time)} تا ${fa(a.end_time)}${a.recurring ? " · ثابت" : " · " + fa(a.day)})</span>`).join(" ");
       ps.innerHTML = `<div class="acc-mini">
         <div><span class="muted">برنامهٔ امروز</span><b>${windows || "شیفتی ثبت نشده"}</b></div>
+        <div><span class="muted">حضور امروز / موظفی</span><b>${fa(perf.worked_minutes || 0)} از ${fa(perf.planned_minutes || 0)} دقیقه${perf.overtime_minutes ? " (+" + fa(perf.overtime_minutes) + " اضافه)" : ""}</b></div>
         <div><span class="muted">فروش داخل شیفت</span><b>${moneyFa(perf.sales_in_shift)}</b></div>
         <div><span class="muted">فروش خارج از شیفت</span><b>${moneyFa(perf.sales_out_of_shift)}</b></div>
         <div><span class="muted">مجموع امروز</span><b>${moneyFa(perf.sales_total)}</b></div>
+        ${assignBadges ? `<div class="span2"><span class="muted">شیفت‌های اختصاصی من</span><div class="prof-perms" style="margin-top:4px">${assignBadges}</div></div>` : ""}
       </div>`;
-    } catch (e) { ps.innerHTML = '<span class="muted">در دسترس نیست</span>'; }
+    } catch (e) { if (ps.isConnected) ps.innerHTML = '<span class="muted">در دسترس نیست</span>'; }
   }
 };
 
+function normalizeDashboardData(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const sales = r.sales && typeof r.sales === "object" ? r.sales : {};
+  const inv = r.inventory && typeof r.inventory === "object" ? r.inventory : {};
+  const exp = r.expiry && typeof r.expiry === "object" ? r.expiry : {};
+  const prc = r.pricing && typeof r.pricing === "object" ? r.pricing : {};
+  const rec = r.receivables && typeof r.receivables === "object" ? r.receivables : {};
+  const acc = r.accounting && typeof r.accounting === "object" ? r.accounting : {};
+  const cust = r.customers_new && typeof r.customers_new === "object" ? r.customers_new : {};
+  const sms = r.sms && typeof r.sms === "object" ? r.sms : {};
+  const sys = r.system && typeof r.system === "object" ? r.system : {};
+  return {
+    scope: r.scope || "self",
+    sales: {
+      today: Number(sales.today || 0),
+      yesterday: Number(sales.yesterday || 0),
+      week: Number(sales.week || 0),
+      month: Number(sales.month || 0),
+      invoice_count_today: Number(sales.invoice_count_today || 0),
+      invoice_count_yesterday: Number(sales.invoice_count_yesterday || 0),
+      avg_invoice_today: Number(sales.avg_invoice_today || 0),
+    },
+    inventory: {
+      product_count: Number(inv.product_count || 0),
+      low_stock_count: Number(inv.low_stock_count || 0),
+      no_stock_count: Number(inv.no_stock_count || 0),
+      low_stock: Array.isArray(inv.low_stock) ? inv.low_stock : [],
+    },
+    expiry: {
+      EXPIRED: Array.isArray(exp.EXPIRED) ? exp.EXPIRED : [],
+      EXPIRING_TODAY: Array.isArray(exp.EXPIRING_TODAY) ? exp.EXPIRING_TODAY : [],
+      EXPIRING_3_DAYS: Array.isArray(exp.EXPIRING_3_DAYS) ? exp.EXPIRING_3_DAYS : [],
+      EXPIRING_7_DAYS: Array.isArray(exp.EXPIRING_7_DAYS) ? exp.EXPIRING_7_DAYS : [],
+      EXPIRING_30_DAYS: Array.isArray(exp.EXPIRING_30_DAYS) ? exp.EXPIRING_30_DAYS : [],
+    },
+    pricing: {
+      price_conflict_count: Number(prc.price_conflict_count || 0),
+      price_conflicts: Array.isArray(prc.price_conflicts) ? prc.price_conflicts : [],
+    },
+    receivables: {
+      customer_debt: Number(rec.customer_debt || 0),
+      debtor_count: Number(rec.debtor_count || 0),
+      pending_amount: Number(rec.pending_amount || 0),
+      pending_count: Number(rec.pending_count || 0),
+      top_debtors: Array.isArray(rec.top_debtors) ? rec.top_debtors : [],
+    },
+    accounting: acc,
+    customers_new: {
+      today: Number(cust.today || 0),
+      yesterday: Number(cust.yesterday || 0),
+      week: Number(cust.week || 0),
+      month: Number(cust.month || 0),
+      total: Number(cust.total || 0),
+      latest_name: cust.latest_name || null,
+    },
+    sms: {
+      configured: Boolean(sms.configured),
+      provider: sms.provider || "",
+      sent: Number(sms.sent || 0),
+      pending: Number(sms.pending || 0),
+      failed: Number(sms.failed || 0),
+      last_error: sms.last_error || "",
+    },
+    system: sys,
+    top_products: Array.isArray(r.top_products) ? r.top_products : [],
+    sales_by_category: Array.isArray(r.sales_by_category) ? r.sales_by_category : [],
+    weekday_sales: Array.isArray(r.weekday_sales) ? r.weekday_sales : [],
+    trend: Array.isArray(r.trend) ? r.trend : [],
+    payment_breakdown: Array.isArray(r.payment_breakdown) ? r.payment_breakdown : [],
+    recent_invoices: Array.isArray(r.recent_invoices) ? r.recent_invoices : [],
+    today_by_staff: Array.isArray(r.today_by_staff) ? r.today_by_staff : [],
+  };
+}
+
 RENDER.dashboard = async () => {
-  const d = await api("/reports/dashboard");
+  const rawDash = await api("/reports/dashboard");
+  const d = normalizeDashboardData(rawDash);
   window._dashData = d;   // build-489 — «داشبورد من» از همین payload واقعی می‌خواند
   const v = $("#view");
+  if (!v) return;
+  const isStore = d.scope === "store";
+  const wLocked = (key) => !isStore || (d.hide_cards || []).includes(key);
   const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
   const delta = d.sales.yesterday ? Math.round((d.sales.today - d.sales.yesterday) / d.sales.yesterday * 100) : (d.sales.today ? 100 : 0);
   const monthTarget = Math.max(d.sales.month, d.sales.today * 30, 1);
@@ -1019,11 +1244,11 @@ RENDER.dashboard = async () => {
      مالک باید در چند ثانیه بفهمد «امروز چه خبر است»: اول عددهای اول، بعد هشدارها،
      بعد تحلیل، و آخر سامانه. همهٔ این‌ها از همان پاسخ `/reports/dashboard` ساخته
      می‌شوند (هیچ درخواست شبکه‌ای اضافه نمی‌شود) تا داشبورد سنگین نشود. */
-  const expiryBuckets = d.expiry || {};
-  const expSoon = (expiryBuckets.EXPIRING_3_DAYS || []).length + (expiryBuckets.EXPIRING_TODAY || []).length;
-  const expExpired = (expiryBuckets.EXPIRED || []).length;
+  const expiryBuckets = d.expiry;
+  const expSoon = expiryBuckets.EXPIRING_3_DAYS.length + expiryBuckets.EXPIRING_TODAY.length;
+  const expExpired = expiryBuckets.EXPIRED.length;
   const lowCount = d.inventory.low_stock_count || 0, zeroCount = d.inventory.no_stock_count || 0;
-  const priceConf = (d.pricing || {}).price_conflict_count || 0;
+  const priceConf = d.pricing.price_conflict_count || 0;
   const sysOk = (d.system || {}).status === "ok" || (d.system || {}).ok === true;
   const kpi = (ico, tone, label, value, trendHtml) => `
       <div class="kpi-tile">
@@ -1070,10 +1295,10 @@ RENDER.dashboard = async () => {
           <div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div>
         </section>
         <div class="og-kpis">
-          ${(() => { const mine = d.scope === "self"; return `
+          ${(() => { const mine = !isStore; return `
           ${kpi("cart", "i-green", mine ? "فروش امروز من" : "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
           ${kpi("invoice", "i-violet", mine ? "فاکتورهای امروز من" : "تعداد فاکتورها", fa(d.sales.invoice_count_today), trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday)))}
-          ${kpi("users", "i-amber", "مشتریان امروز", fa((d.customers_new || {}).today || 0), mine ? `<span class="muted">ثبت‌شده در فروشگاه</span>` : trendHtml(pct((d.customers_new || {}).today || 0, (d.customers_new || {}).yesterday || 0)))}
+          ${kpi("users", "i-amber", "مشتریان امروز", fa(d.customers_new.today || 0), mine ? `<span class="muted">ثبت‌شده در فروشگاه</span>` : trendHtml(pct(d.customers_new.today || 0, d.customers_new.yesterday || 0)))}
           ${kpi("box", "i-blue", "موجودی کل محصولات", mine ? "—" : fa(d.inventory.product_count), `<span class="muted">${mine ? "در دسترس مدیریت" : "در حال حاضر"}</span>`)}`; })()}
         </div>
         <div class="og-row">
@@ -1086,28 +1311,28 @@ RENDER.dashboard = async () => {
                 <button class="chip" data-r="1">امروز</button>
               </div>
             </div>
-            <div id="dash-trend-body">${trendChart(d.trend || [])}</div>
+            <div id="dash-trend-body">${trendChart(d.trend)}</div>
           </section>
-          <section class="dcard og-donut">
+          ${isStore ? `<section class="dcard og-donut">
             <h3>${icon("chart", 18)} توزیع فروش بر اساس دسته‌بندی</h3>
-            <div class="donut-wrap">${dashDonut(d.sales_by_category || [])}</div>
-          </section>
+            <div class="donut-wrap">${dashDonut(d.sales_by_category)}</div>
+          </section>` : ""}
         </div>
         <div class="og-row">
           <section class="dcard og-inv">
             <div class="dcard-head">
               <h3>${icon("invoice", 18)} فاکتورهای اخیر</h3>
-              <button class="btn btn-sm btn-ghost" onclick="go('invoices')">مشاهده همه</button>
+              ${canView("invoices") ? `<button class="btn btn-sm btn-ghost" onclick="go('invoices')">مشاهده همه</button>` : ""}
             </div>
-            <div class="table-scroll">${dashInvoicesTable(d.recent_invoices || [])}</div>
+            <div class="table-scroll">${dashInvoicesTable(d.recent_invoices)}</div>
           </section>
-          <section class="dcard og-daily">
+          ${isStore ? `<section class="dcard og-daily">
             <div class="dcard-head">
               <h3>${icon("chart", 18)} گزارش فروش روزانه</h3>
               <span class="chip on static-chip">امروز</span>
             </div>
-            <div class="table-scroll">${dashStaffTable(d.today_by_staff || [], d.sales.today)}</div>
-          </section>
+            <div class="table-scroll">${dashStaffTable(d.today_by_staff, d.sales.today)}</div>
+          </section>` : ""}
         </div>
       </div>
       <aside class="og-rail">
@@ -1115,34 +1340,34 @@ RENDER.dashboard = async () => {
           <div class="dcard-head">
             <h3 class="og-title-dark">${icon("bell", 17)} اطلاعیه‌ها و هشدارها</h3>
             <h3 class="og-title-light">${icon("star", 17)} پیشنهادات هوشمند</h3>
-            <button class="btn btn-sm btn-ghost" onclick="go('insights')" title="هوش فروشگاه">${icon("star", 14)}</button>
+            ${canView("insights") ? `<button class="btn btn-sm btn-ghost" onclick="go('insights')" title="هوش فروشگاه">${icon("star", 14)}</button>` : ""}
           </div>
           <div id="dash-sug" class="og-sug-list">
             ${(() => {
               const rows = [];
-              if (lowCount + zeroCount) rows.push({ ic: "box", tone: "amber", t: `موجودی ${fa(lowCount + zeroCount)} محصول در حال اتمام است`, s: (d.inventory.low_stock || []).slice(0, 3).map((x) => x.name).join("، ") || "بررسی قفسه‌ها", go: "inventory" });
-              if (expExpired + expSoon) rows.push({ ic: "clock", tone: "red", t: `${fa(expExpired + expSoon)} بچ نزدیک انقضا یا منقضی`, s: expExpired ? `${fa(expExpired)} بچ منقضی روی قفسه است` : "پیش از ضرر بررسی کنید", go: "inventory" });
-              if ((d.customers_new || {}).week) rows.push({ ic: "user", tone: "blue", t: `مشتری وفادار جدید: ${fa(d.customers_new.week)} نفر در ۷ روز اخیر`, s: d.customers_new.latest_name ? `آخرین: ${esc(d.customers_new.latest_name)}` : "ثبت‌نام‌های تازه", go: "customers" });
-              if (priceConf) rows.push({ ic: "tag", tone: "violet", t: `پیشنهاد قیمت‌گذاری: ${fa(priceConf)} کالا با چند قیمت فعال`, s: "یکسان‌سازی قیمت پیش از فروش", go: "products" });
+              if (isStore && (lowCount + zeroCount) && canView("inventory")) rows.push({ ic: "box", tone: "amber", t: `موجودی ${fa(lowCount + zeroCount)} محصول در حال اتمام است`, s: d.inventory.low_stock.slice(0, 3).map((x) => x.name).join("، ") || "بررسی قفسه‌ها", go: "inventory" });
+              if (isStore && (expExpired + expSoon) && canView("inventory")) rows.push({ ic: "clock", tone: "red", t: `${fa(expExpired + expSoon)} بچ نزدیک انقضا یا منقضی`, s: expExpired ? `${fa(expExpired)} بچ منقضی روی قفسه است` : "پیش از ضرر بررسی کنید", go: "inventory" });
+              if (d.customers_new.week && canView("customers")) rows.push({ ic: "user", tone: "blue", t: `مشتری وفادار جدید: ${fa(d.customers_new.week)} نفر در ۷ روز اخیر`, s: d.customers_new.latest_name ? `آخرین: ${esc(d.customers_new.latest_name)}` : "ثبت‌نام‌های تازه", go: "customers" });
+              if (isStore && priceConf && canView("products")) rows.push({ ic: "tag", tone: "violet", t: `پیشنهاد قیمت‌گذاری: ${fa(priceConf)} کالا با چند قیمت فعال`, s: "یکسان‌سازی قیمت پیش از فروش", go: "products" });
               return rows.map((r) => `<button class="og-sug-row" onclick="go('${r.go}')">
                 <span class="og-sug-ic ${r.tone}">${icon(r.ic, 15)}</span>
                 <span class="og-sug-tx"><b>${r.t}</b><small>${r.s}</small></span>
-                <span class="og-chev">‹</span></button>`).join("") || `<div class="muted rail-empty">هشدار فعالی نیست؛ موجودی، انقضا و قیمت‌ها در محدودهٔ نرمال‌اند.</div>`;
+                <span class="og-chev">‹</span></button>`).join("") || `<div class="muted rail-empty">هشدار فعالی نیست؛ وضعیت در محدودهٔ نرمال است.</div>`;
             })()}
           </div>
         </section>
         <section class="dcard og-quick">
           <h3>${icon("gear", 18)} عملیات سریع</h3>
           <div class="quick-grid">
-            ${can("pos.sell") ? `<button class="qa qa-green" onclick="go('pos')">${icon("cart", 20)}<span>فاکتور جدید</span></button>` : ""}
-            ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("truck", 20)}<span>دریافت کالا</span></button>` : ""}
-            ${can("inventory.view") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("box", 20)}<span>موجودی کالا</span></button>` : ""}
-            ${can("pos.sell") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>ثبت مشتری</span></button>` : ""}
+            ${canView("pos") ? `<button class="qa qa-green" onclick="go('pos')">${icon("cart", 20)}<span>فاکتور جدید</span></button>` : ""}
+            ${canView("batches") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("truck", 20)}<span>دریافت کالا</span></button>` : ""}
+            ${canView("inventory") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("box", 20)}<span>موجودی کالا</span></button>` : ""}
+            ${canView("customers") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>ثبت مشتری</span></button>` : ""}
             ${can("marketing.manage") ? `<button class="qa qa-amber" onclick="go('marketing')">${icon("gift", 20)}<span>کمپین جدید</span></button>` : ""}
-            ${can("reports.view") ? `<button class="qa qa-violet" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
+            ${canView("reports") ? `<button class="qa qa-violet" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
           </div>
         </section>
-        <section class="dcard og-status">
+        ${isStore ? `<section class="dcard og-status">
           <div class="dcard-head">
             <h3>${icon("stethoscope", 17)} وضعیت فروشگاه</h3>
             <span class="og-online"><i></i> آنلاین</span>
@@ -1152,15 +1377,15 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۰ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
-        </section>
-        <section class="dcard og-acts">
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۲ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+        </section>` : ""}
+        ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
             <h3>${icon("clock", 17)} فعالیت‌های اخیر</h3>
             <button class="btn btn-sm btn-ghost" onclick="go('audit')">مشاهده همه</button>
           </div>
           <div id="dash-acts" class="og-act-list"><div class="muted">در حال بارگذاری…</div></div>
-        </section>
+        </section>` : ""}
       </aside>
     </div>
     <div class="dash">
@@ -1178,9 +1403,9 @@ RENDER.dashboard = async () => {
         <div class="gauge-foot"><span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪ نسبت به دیروز</span><span class="muted">${fa(d.sales.invoice_count_today)} فاکتور · میانگین ${money(d.sales.avg_invoice_today)}</span></div>
       </section>
 
-      <section class="dcard dcard-top">
+      ${isStore ? `<section class="dcard dcard-top">
         <h3>${icon("box", 18)} پرفروش‌ترین کالاها <span class="muted">۳۰ روز</span></h3>
-        <div class="toplist">${(d.top_products || []).map((t, i) => `
+        <div class="toplist">${d.top_products.map((t, i) => `
           <div class="topitem">
             <div class="ring ring-sm" style="--p:${t.share_pct};--c:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"><span>${fa(Math.round(t.share_pct))}٪</span></div>
             <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش${t.profit === null || t.profit === undefined ? "" : ` · سود ${money(t.profit)}`}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
@@ -1190,18 +1415,16 @@ RENDER.dashboard = async () => {
 
       <section class="dcard dcard-low">
         <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
-        <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
+        <div class="lowlist">${d.inventory.low_stock.slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
           ${d.inventory.no_stock_count ? `<div class="lowrow err"><span>بدون موجودی</span><b>${fa(d.inventory.no_stock_count)}</b></div>` : ""}</div>
-      </section>
-
+      </section>` : ""}
 
       <section class="dcard dcard-recent">
         <h3>${icon("invoice", 18)} تراکنش‌های اخیر</h3>
-        <table class="recent"><tbody>${(d.recent_invoices || []).map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
+        <table class="recent"><tbody>${d.recent_invoices.map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
       </section>
 
-
-      ${can("accounting.view") ? `
+      ${isStore && can("accounting.view") ? `
       <section class="dcard dcard-acc">
         <h3>${icon("ledger", 18)} وضعیت مالی</h3>
         <div class="acc-mini">
@@ -1214,23 +1437,23 @@ RENDER.dashboard = async () => {
         ${acc.cheques_due ? `<div class="muted" style="margin-top:8px">${fa(acc.cheques_due)} چک در جریان</div>` : ""}
       </section>` : ""}
 
-      <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
+      ${isStore ? `<section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
       <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
       <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
       <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
-      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
+      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>` : ""}
     </div>
-    <div class="ai-line">
+    ${canView("insights") ? `<div class="ai-line">
       <span class="ai-line-ic">${icon("star", 17)}</span>
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
-    </div>
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.491")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
-    <button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
+    </div>` : ""}
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.492")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
-    </button>`;
-  if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
+    </button>` : ""}`;
+  if (window.InsightsDash && canView("insights")) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
   mountDashWidgets(d);   // build-484 — ویجت‌های زندهٔ چیدمان مرجع (پیشنهاد، فعالیت، بازه، جدول)
 };
 
@@ -1342,9 +1565,10 @@ function dashLoadRange(r) {
    فعالیت‌های اخیر از تاریخچه، و چیپ‌های بازهٔ نمودار. */
 function mountDashWidgets(d) {
   const sug = $("#dash-sug");
-  if (sug && window.api) {
+  if (sug && window.api && canView("insights")) {
     api("/insights?status=OPEN&limit=3").then((res) => {
-      const items = ((res && res.items) || []).slice(0, 3);
+      if (!sug.isConnected) return;
+      const items = (Array.isArray(res) ? res : ((res && res.items) || [])).slice(0, 3);
       if (!items.length) return;
       const extra = items.map((x) => `
         <button class="og-sug-row" onclick="go('insights')">
@@ -1360,8 +1584,9 @@ function mountDashWidgets(d) {
     }).catch(() => {});
   }
   const acts = $("#dash-acts");
-  if (acts && window.api) {
+  if (acts && window.api && can("audit.view")) {
     api("/audit?limit=5").then((res) => {
+      if (!acts.isConnected) return;
       const items = ((res && res.items) || []).slice(0, 5);
       acts.innerHTML = items.length ? items.map((x) => `
         <div class="og-act-row">
@@ -1369,7 +1594,7 @@ function mountDashWidgets(d) {
           <span class="og-act-tx">${esc((x.action || "activity") + (x.entity ? " · " + x.entity : ""))}</span>
           <span class="act-when muted">${x.created_at ? faDateTime(x.created_at) : ""}</span>
         </div>`).join("") : `<div class="muted">هنوز فعالیتی ثبت نشده است.</div>`;
-    }).catch(() => { acts.innerHTML = `<div class="muted">تاریخچه در دسترس نیست.</div>`; });
+    }).catch(() => { if (acts.isConnected) acts.innerHTML = `<div class="muted">تاریخچه در دسترس نیست.</div>`; });
   }
   const range = $("#dash-range");
   if (range) range.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => {
@@ -1418,15 +1643,17 @@ function statCard(label, value, sub) {
 }
 
 function expiryCard(title, buckets) {
+  const safeBuckets = buckets && typeof buckets === "object" ? buckets : {};
   const rows = [];
   const map = { EXPIRED: ["منقضی", "badge-red"], EXPIRING_TODAY: ["امروز", "badge-red"],
     EXPIRING_3_DAYS: ["کمتر از ۳ روز", "badge-amber"], EXPIRING_7_DAYS: ["کمتر از ۷ روز", "badge-amber"],
     EXPIRING_30_DAYS: ["کمتر از ۳۰ روز", "badge-blue"] };
-  for (const [k, items] of Object.entries(buckets)) {
+  for (const [k, items] of Object.entries(safeBuckets)) {
     const [label, cls] = map[k] || [k, "badge-gray"];
+    const arr = Array.isArray(items) ? items : [];
     rows.push(el("tr", {},
       el("td", {}, el("span", { class: "badge " + cls, text: label })),
-      el("td", { text: items.length + " مورد" }),
+      el("td", { text: arr.length + " مورد" }),
     ));
   }
   return el("div", { class: "card" },
@@ -1436,10 +1663,13 @@ function expiryCard(title, buckets) {
 }
 
 function priceCard(title, pricing) {
-  const rows = pricing.price_conflicts.map((p) =>
-    el("tr", {}, el("td", { text: p.name }), el("td", { text: p.prices.map(fmt).join(" / ") })));
+  const safePricing = pricing && typeof pricing === "object" ? pricing : {};
+  const conflicts = Array.isArray(safePricing.price_conflicts) ? safePricing.price_conflicts : [];
+  const count = Number(safePricing.price_conflict_count || conflicts.length || 0);
+  const rows = conflicts.map((p) =>
+    el("tr", {}, el("td", { text: p.name || "—" }), el("td", { text: (Array.isArray(p.prices) ? p.prices : []).map(fmt).join(" / ") })));
   return el("div", { class: "card" },
-    el("h3", { text: title + ` (${pricing.price_conflict_count})` }),
+    el("h3", { text: title + ` (${count})` }),
     el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "قیمت‌ها" }))),
       el("tbody", {}, ...rows)),
   );
@@ -1516,8 +1746,21 @@ window.posState = posState;   // v3.0: shared with insights.js (POS whisper-sugg
  * Up to 10 at once; persisted in localStorage so a crash/exit never loses them.
  * ------------------------------------------------------------------------ */
 const HELD_MAX = 10;
-function heldInvoices() { try { return JSON.parse(localStorage.getItem("sm.held") || "[]"); } catch (_) { return []; } }
-function saveHeld(list) { localStorage.setItem("sm.held", JSON.stringify(list.slice(0, HELD_MAX))); renderHeldDock(); }
+function heldStorageKey() {
+  return state.user && state.user.id ? `sm.held.u_${state.user.id}` : "sm.held";
+}
+function heldInvoices() {
+  try {
+    const raw = localStorage.getItem(heldStorageKey()) || localStorage.getItem("sm.held") || "[]";
+    return JSON.parse(raw);
+  } catch (_) { return []; }
+}
+function saveHeld(list) {
+  const data = JSON.stringify(list.slice(0, HELD_MAX));
+  localStorage.setItem(heldStorageKey(), data);
+  localStorage.setItem("sm.held", data);
+  renderHeldDock();
+}
 function posSnapshot() {
   return { cart: JSON.parse(JSON.stringify(posState.cart)), customer: posState.customer, coupon: posState.coupon,
            couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount,
@@ -3151,7 +3394,9 @@ RENDER.invoices = async () => {
         if (p.ok && typeof p.message === "string") openModal(`<pre class="receipt">${p.message}</pre>`);
         else toast(p.message, p.ok ? "ok" : "err");
       } }),
-      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })));
+      (i.status !== "VOID" && (i.status === "PAID" ? can("pos.void_paid") : can("pos.void_unpaid")))
+        ? el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })
+        : null));
   const t = $("#inv-table");
   t.innerHTML = "";
   const tb = el("tbody", {});
@@ -3233,13 +3478,13 @@ const REPORT_TABS = [
   ["daily", "فروش روزانه", "reports.view"],
   ["weekly", "فروش هفتگی", "reports.view"],
   ["monthly", "فروش ماهانه (شمسی)", "reports.view"],
-  ["cashiers", "صندوق‌دارها", "reports.view"],
+  ["cashiers", "صندوق‌دارها", "reports.view_all"],
   ["profit", "سود به تفکیک Batch", "pricing.view_cost"],
-  ["inventory", "ارزش موجودی", "reports.view"],
+  ["inventory", "ارزش موجودی", "reports.view_all"],
   ["purchase", "تاریخچه بهای خرید", "pricing.view_cost"],
-  ["expiry", "انقضا", "reports.view"],
-  ["adjustments", "اصلاحات و ضایعات", "reports.view"],
-  ["movements", "گردش کالا", "reports.view"],
+  ["expiry", "انقضا", "reports.view_all"],
+  ["adjustments", "اصلاحات و ضایعات", "reports.view_all"],
+  ["movements", "گردش کالا", "reports.view_all"],
 ];
 
 RENDER.reports = async () => {
@@ -4637,11 +4882,13 @@ RENDER.audit = async () => {
 /* ---------- Marketing: campaigns & coupons (§31–38) ---------- */
 RENDER.marketing = async () => {
   const v = $("#view");
+  if (!v) return;
+  const canManage = can("marketing.manage");
   v.innerHTML = `<div class="grid grid-4" id="mk-stats"></div>
     <div class="grid grid-2" style="margin-top:14px">
       <div class="card">
         <div class="card-head"><h3>کوپن‌ها</h3>
-          <button class="btn btn-primary btn-sm" id="mk-new-coupon">+ کوپن جدید</button></div>
+          ${canManage ? `<button class="btn btn-primary btn-sm" id="mk-new-coupon">+ کوپن جدید</button>` : ""}</div>
         <div class="toolbar"><input id="mk-q" placeholder="جستجوی کد یا شماره موبایل…" />
           <select id="mk-status"><option value="">همه وضعیت‌ها</option>
             <option value="ACTIVE">فعال</option><option value="USED">مصرف‌شده</option>
@@ -4650,67 +4897,103 @@ RENDER.marketing = async () => {
       </div>
       <div class="card">
         <div class="card-head"><h3>جشنواره‌ها (کمپین)</h3>
-          <button class="btn btn-primary btn-sm" id="mk-new-camp">+ کمپین جدید</button></div>
+          ${canManage ? `<button class="btn btn-primary btn-sm" id="mk-new-camp">+ کمپین جدید</button>` : ""}</div>
         <div class="table-wrap"><table id="mk-camps"></table></div>
       </div>
     </div>`;
-  $("#mk-new-coupon").addEventListener("click", couponModal);
-  $("#mk-new-camp").addEventListener("click", campaignModal);
-  $("#mk-q").addEventListener("input", debounce(loadCoupons, 300));
-  $("#mk-status").addEventListener("change", loadCoupons);
-  await Promise.all([loadMarketingStats(), loadCoupons(), loadCampaigns()]);
+  const btnCoupon = $("#mk-new-coupon");
+  if (btnCoupon) btnCoupon.addEventListener("click", couponModal);
+  const btnCamp = $("#mk-new-camp");
+  if (btnCamp) btnCamp.addEventListener("click", campaignModal);
+  const qEl = $("#mk-q");
+  if (qEl) qEl.addEventListener("input", debounce(loadCoupons, 300));
+  const stEl = $("#mk-status");
+  if (stEl) stEl.addEventListener("change", loadCoupons);
+  await Promise.allSettled([loadMarketingStats(), loadCoupons(), loadCampaigns()]);
 };
 
 async function loadMarketingStats() {
-  const s = await api("/marketing/stats");
-  const by = s.by_status || {};
-  $("#mk-stats").innerHTML = "";
-  $("#mk-stats").append(
-    statCard("کل کوپن‌ها", fmt(s.total_coupons), `${s.campaigns} کمپین`),
-    statCard("فعال", fmt(by.ACTIVE || 0), ""),
-    statCard("مصرف‌شده", fmt(by.USED || 0), ""),
-    statCard("ارزش تخفیف داده‌شده", money(s.redeemed_value), ""),
-  );
+  const statsEl = $("#mk-stats");
+  if (!statsEl || !statsEl.isConnected) return;
+  try {
+    const s = await api("/marketing/stats");
+    const target = $("#mk-stats");
+    if (!target || !target.isConnected) return;
+    const by = (s && s.by_status) || {};
+    target.innerHTML = "";
+    target.append(
+      statCard("کل کوپن‌ها", fmt(s ? s.total_coupons : 0), `${(s && s.campaigns) || 0} کمپین`),
+      statCard("فعال", fmt(by.ACTIVE || 0), ""),
+      statCard("مصرف‌شده", fmt(by.USED || 0), ""),
+      statCard("ارزش تخفیف داده‌شده", money(s ? s.redeemed_value : 0), ""),
+    );
+  } catch (e) {
+    const target = $("#mk-stats");
+    if (target && target.isConnected) target.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p></div>`;
+  }
 }
 
 const COUPON_BADGE = { ACTIVE: "green", USED: "blue", EXPIRED: "amber", BLOCKED: "red" };
 
 async function loadCoupons() {
+  const tableEl = $("#mk-coupons");
+  if (!tableEl || !tableEl.isConnected) return;
   const params = new URLSearchParams();
-  if ($("#mk-q").value.trim()) params.set("q", $("#mk-q").value.trim());
-  if ($("#mk-status").value) params.set("status", $("#mk-status").value);
-  const rows = await api("/marketing/coupons?" + params.toString());
-  const body = rows.map((c) => `<tr>
-      <td><code>${esc(c.code)}</code>${c.customer_phone ? `<div class="muted">${esc(c.customer_phone)}</div>` : ""}</td>
-      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}
-        ${c.max_discount ? `<div class="muted">سقف ${money(c.max_discount)}</div>` : ""}</td>
-      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-      <td>${c.used_count}/${c.usage_limit}</td>
-      <td><span class="badge badge-${COUPON_BADGE[c.status] || "blue"}">${esc(c.status)}</span></td>
-      <td>${c.valid_until ? esc(c.valid_until.slice(0, 10)) : "—"}</td>
-      <td>${c.status === "ACTIVE" ? `<button class="btn btn-sm btn-danger" onclick="window._blockCoupon(${c.id})">مسدود</button>` : ""}</td>
-    </tr>`).join("");
-  $("#mk-coupons").innerHTML = `<thead><tr><th>کد</th><th>تخفیف</th><th>حداقل خرید</th>
-      <th>مصرف</th><th>وضعیت</th><th>اعتبار تا</th><th></th></tr></thead>
-    <tbody>${body || `<tr><td colspan="7" class="muted empty">کوپنی ثبت نشده است</td></tr>`}</tbody>`;
+  const qEl = $("#mk-q"), stEl = $("#mk-status");
+  if (qEl && qEl.value.trim()) params.set("q", qEl.value.trim());
+  if (stEl && stEl.value) params.set("status", stEl.value);
+  try {
+    const raw = await api("/marketing/coupons?" + params.toString());
+    const target = $("#mk-coupons");
+    if (!target || !target.isConnected) return;
+    const rows = Array.isArray(raw) ? raw : [];
+    const canManage = can("marketing.manage");
+    const body = rows.map((c) => `<tr>
+        <td><code>${esc(c.code)}</code>${c.customer_phone ? `<div class="muted">${esc(c.customer_phone)}</div>` : ""}</td>
+        <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}
+          ${c.max_discount ? `<div class="muted">سقف ${money(c.max_discount)}</div>` : ""}</td>
+        <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+        <td>${c.used_count}/${c.usage_limit}</td>
+        <td><span class="badge badge-${COUPON_BADGE[c.status] || "blue"}">${esc(c.status)}</span></td>
+        <td>${c.valid_until ? esc(c.valid_until.slice(0, 10)) : "—"}</td>
+        <td>${canManage && c.status === "ACTIVE" ? `<button class="btn btn-sm btn-danger" onclick="window._blockCoupon(${c.id})">مسدود</button>` : ""}</td>
+      </tr>`).join("");
+    target.innerHTML = `<thead><tr><th>کد</th><th>تخفیف</th><th>حداقل خرید</th>
+        <th>مصرف</th><th>وضعیت</th><th>اعتبار تا</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="7" class="muted empty">کوپنی ثبت نشده است</td></tr>`}</tbody>`;
+  } catch (e) {
+    const target = $("#mk-coupons");
+    if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
+  }
 }
 
 window._blockCoupon = async (id) => {
+  if (!can("marketing.manage")) return;
   try { await api(`/marketing/coupons/${id}/block`, { method: "POST" });
     toast("کوپن مسدود شد"); loadCoupons(); loadMarketingStats();
   } catch (e) { toast(e.message, "err"); }
 };
 
 async function loadCampaigns() {
-  const rows = await api("/marketing/campaigns");
-  const body = rows.map((c) => `<tr>
-      <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
-      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
-      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-      <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
-    </tr>`).join("");
-  $("#mk-camps").innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
-    <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+  const tableEl = $("#mk-camps");
+  if (!tableEl || !tableEl.isConnected) return;
+  try {
+    const raw = await api("/marketing/campaigns");
+    const target = $("#mk-camps");
+    if (!target || !target.isConnected) return;
+    const rows = Array.isArray(raw) ? raw : [];
+    const body = rows.map((c) => `<tr>
+        <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
+        <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
+        <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
+      </tr>`).join("");
+    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+  } catch (e) {
+    const target = $("#mk-camps");
+    if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
+  }
 }
 
 function couponModal() {
@@ -4806,14 +5089,18 @@ function campaignModal() {
 /* ---------- Customers phone book (§30) ---------- */
 RENDER.customers = async () => {
   const v = $("#view");
+  if (!v) return;
+  const canManage = can("customers.manage");
   v.innerHTML = `<div class="card">
       <div class="card-head"><h3>دفترچه مشتریان</h3>
-        <button class="btn btn-primary btn-sm" id="cu-new">+ مشتری جدید</button></div>
+        ${canManage ? `<button class="btn btn-primary btn-sm" id="cu-new">+ مشتری جدید</button>` : ""}</div>
       <div class="toolbar"><input id="cu-q" placeholder="جستجوی نام یا شماره تماس…" /></div>
       <div class="table-wrap"><table id="cu-table"></table></div>
     </div>`;
-  $("#cu-q").addEventListener("input", debounce(loadCustomers, 300));
-  $("#cu-new").addEventListener("click", () => {
+  const qEl = $("#cu-q");
+  if (qEl) qEl.addEventListener("input", debounce(loadCustomers, 300));
+  const newBtn = $("#cu-new");
+  if (newBtn) newBtn.addEventListener("click", () => {
     openModal(`<h3>مشتری جدید</h3>
       <div class="form-grid">
         <div><label>نام</label><input id="nc-name" /></div>
@@ -4842,10 +5129,16 @@ RENDER.customers = async () => {
 };
 
 async function loadCustomers() {
+  const tableEl = $("#cu-table");
+  if (!tableEl || !tableEl.isConnected) return;
   const q = $("#cu-q") ? $("#cu-q").value.trim() : "";
   const params = new URLSearchParams({ with_debt: "true" });
   if (q) params.set("q", q);
-  const rows = await api("/customers?" + params.toString());
+  const raw = await api("/customers?" + params.toString());
+  const target = $("#cu-table");
+  if (!target || !target.isConnected) return;
+  const rows = Array.isArray(raw) ? raw : [];
+  const canLedger = can("customers.ledger");
   const body = rows.map((c) => {
     const bal = Number(c.balance || 0);
     return `<tr>
@@ -4854,30 +5147,30 @@ async function loadCustomers() {
       <td class="${bal > 0 ? "ledger-amount debit" : "muted"}">
         ${bal > 0 ? money(bal) : "تسویه"}</td>
       <td>
-        <button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>
+        ${canLedger ? `<button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="window._custHistory(${c.id}, '${esc(c.name)}')">سوابق خرید</button>
       </td>
     </tr>`;
   }).join("");
-  $("#cu-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
+  target.innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
     <tbody>${body || `<tr><td colspan="4" class="muted empty">مشتری‌ای ثبت نشده است</td></tr>`}</tbody>`;
 }
 
 window._custHistory = async (id, name) => {
   const invoices = await api("/invoices?customer_id=" + id).catch(() => ({ items: [] }));
   const list = (invoices.items || invoices || []).filter((i) => i.customer_id === id);
-  const coupons = await api("/marketing/coupons?customer_id=" + id).catch(() => []);
+  const coupons = can("marketing.view") ? await api("/marketing/coupons?customer_id=" + id).catch(() => []) : [];
   openModal(`<h3>سوابق ${esc(name)}</h3>
     <h4>فاکتورها</h4>
     <table><thead><tr><th>شماره</th><th>مبلغ</th><th>وضعیت</th></tr></thead><tbody>
       ${list.map((i) => `<tr><td>${esc(i.invoice_number)}</td><td>${money(i.total_amount)}</td><td>${esc(i.status)}</td></tr>`).join("")
         || `<tr><td colspan="3" class="muted">فاکتوری ثبت نشده</td></tr>`}
     </tbody></table>
-    <h4 style="margin-top:14px">کوپن‌ها</h4>
+    ${can("marketing.view") ? `<h4 style="margin-top:14px">کوپن‌ها</h4>
     <table><thead><tr><th>کد</th><th>وضعیت</th></tr></thead><tbody>
       ${coupons.map((c) => `<tr><td><code>${esc(c.code)}</code></td><td>${esc(c.status)}</td></tr>`).join("")
         || `<tr><td colspan="2" class="muted">کوپنی ندارد</td></tr>`}
-    </tbody></table>`);
+    </tbody></table>` : ""}`);
 };
 
 /* ---------- Connection diagnostics (§42–44) ---------- */
@@ -4885,6 +5178,7 @@ const DIAG_BADGE = { PASS: "green", FAIL: "red", WARN: "amber", SKIPPED: "blue" 
 
 RENDER.diagnostics = async () => {
   const v = $("#view");
+  if (!v) return;
   v.innerHTML = `<div class="card">
       <div class="card-head"><h3>تست اتصالات سیستم</h3>
         <div>
@@ -4900,30 +5194,34 @@ RENDER.diagnostics = async () => {
     </div>
     <div class="card" style="margin-top:14px"><h3>صف همگام‌سازی آفلاین</h3><div id="dg-sync"></div></div>
     <div class="card" style="margin-top:14px"><h3>تاریخچه تست‌ها</h3><div id="dg-history"></div></div>`;
-  $("#dg-run").addEventListener("click", runDiagnostics);
-  await Promise.all([loadSyncPanel(), loadDiagHistory()]);
+  const runBtn = $("#dg-run");
+  if (runBtn) runBtn.addEventListener("click", runDiagnostics);
+  await Promise.allSettled([loadSyncPanel(), loadDiagHistory()]);
 };
 
 async function runDiagnostics() {
-  const btn = $("#dg-run");
+  const btn = $("#dg-run"), resEl = $("#dg-results");
+  if (!btn || !resEl) return;
   btn.disabled = true; btn.textContent = "در حال اجرا…";
-  $("#dg-results").innerHTML = `<p class="muted">در حال تست اتصال‌ها…</p>`;
+  resEl.innerHTML = `<p class="muted">در حال تست اتصال‌ها…</p>`;
   try {
-    const ext = $("#dg-ext").checked;
+    const ext = $("#dg-ext") ? $("#dg-ext").checked : true;
     const r = await api(`/diagnostics/run?include_external=${ext}`, { method: "POST" });
     renderDiagnostics(r);
     await loadDiagHistory();
-  } catch (e) { toast(e.message, "err"); $("#dg-results").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
-  btn.disabled = false; btn.textContent = "▶ اجرای تست کامل";
+  } catch (e) { toast(e.message, "err"); if (resEl.isConnected) resEl.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  if (btn.isConnected) { btn.disabled = false; btn.textContent = "▶ اجرای تست کامل"; }
 }
 
 function renderDiagnostics(r) {
-  $("#dg-summary").innerHTML = `<div class="diag-summary">
+  const sumEl = $("#dg-summary"), resEl = $("#dg-results");
+  if (!sumEl || !resEl || !r) return;
+  sumEl.innerHTML = `<div class="diag-summary">
       <span class="badge badge-green">موفق ${r.passed}</span>
       <span class="badge badge-red">ناموفق ${r.failed}</span>
       <span class="badge badge-blue">رد/هشدار ${r.skipped}</span>
       <span class="muted">مجموع ${r.total} تست</span></div>`;
-  $("#dg-results").innerHTML = r.checks.map((c) => `
+  resEl.innerHTML = (r.checks || []).map((c) => `
     <div class="diag-row">
       <div class="diag-head">
         <span class="badge badge-${DIAG_BADGE[c.status] || "blue"}">${esc(c.status)}</span>
@@ -4937,16 +5235,20 @@ function renderDiagnostics(r) {
 }
 
 async function loadSyncPanel() {
+  const syncEl = $("#dg-sync");
+  if (!syncEl || !syncEl.isConnected) return;
   const s = await api("/diagnostics/sync/stats");
   const jobs = await api("/diagnostics/sync/jobs?limit=20");
-  $("#dg-sync").innerHTML = `
+  const target = $("#dg-sync");
+  if (!target || !target.isConnected) return;
+  target.innerHTML = `
     <div class="diag-summary">
       <span class="badge badge-amber">در انتظار ${s.pending}</span>
       <span class="badge badge-red">ناموفق ${s.failed}</span>
       <button class="btn btn-sm" onclick="window._runSync()">اجرای صف</button>
     </div>
     <div class="table-wrap"><table><thead><tr><th>نوع</th><th>وضعیت</th><th>تلاش</th><th>خطا</th><th></th></tr></thead>
-      <tbody>${jobs.map((j) => `<tr><td>${esc(j.job_type)}</td>
+      <tbody>${(Array.isArray(jobs) ? jobs : []).map((j) => `<tr><td>${esc(j.job_type)}</td>
         <td><span class="badge badge-${j.status === "COMPLETED" ? "green" : j.status === "FAILED" ? "red" : "amber"}">${esc(j.status)}</span></td>
         <td>${j.attempts}/${j.max_attempts}</td><td class="muted">${esc((j.last_error || "").slice(0, 60))}</td>
         <td>${j.status === "FAILED" ? `<button class="btn btn-sm" onclick="window._retryJob(${j.id})">تلاش مجدد</button>` : ""}</td></tr>`).join("")
@@ -4965,10 +5267,14 @@ window._retryJob = async (id) => {
 };
 
 async function loadDiagHistory() {
+  const histEl = $("#dg-history");
+  if (!histEl || !histEl.isConnected) return;
   const h = await api("/diagnostics/history");
-  $("#dg-history").innerHTML = `<div class="table-wrap"><table>
+  const target = $("#dg-history");
+  if (!target || !target.isConnected) return;
+  target.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>زمان</th><th>موفق</th><th>ناموفق</th><th>رد شده</th><th></th></tr></thead>
-    <tbody>${h.map((r) => `<tr><td>${esc(r.started_at.slice(0, 16).replace("T", " "))}</td>
+    <tbody>${(Array.isArray(h) ? h : []).map((r) => `<tr><td>${esc(r.started_at.slice(0, 16).replace("T", " "))}</td>
       <td class="ok">${r.passed}</td><td class="error">${r.failed}</td><td>${r.skipped}</td>
       <td><button class="btn btn-sm" onclick="window._showRun(${r.id})">مشاهده</button></td></tr>`).join("")
       || `<tr><td colspan="5" class="muted empty">هنوز تستی اجرا نشده است</td></tr>`}</tbody></table></div>`;
@@ -5198,18 +5504,12 @@ async function boot() {
   if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {
-    state.user = await api("/auth/me");
-    if (window.Onboarding) await Onboarding.afterLogin();
-    await loadRuntimeConfig();
-    showApp();
-    buildNav();
-    await applyTheme();
-    startStatusBar();
-    if (window.Onboarding) Onboarding.alertsStack();
-    go("dashboard");
+    await initAuthenticatedSession(false);
   } catch (e) {
-    localStorage.removeItem("token"); state.token = "";
-    showLogin();
+    if (!state.user) {
+      localStorage.removeItem("token"); state.token = "";
+      showLogin();
+    }
   }
 }
 if (!window.__NO_AUTOBOOT) boot();
@@ -5222,13 +5522,13 @@ if (!window.__NO_AUTOBOOT) boot();
 
   function paletteItems() {
     const acts = [
-      can("pos.sell") ? { ico: "cart", label: "فاکتور جدید (صندوق)", hint: "اقدام", run: () => go("pos") } : null,
-      can("batches.manage") ? { ico: "inbox", label: "دریافت کالا", hint: "اقدام", run: () => go("batches") } : null,
+      canView("pos") ? { ico: "cart", label: "فاکتور جدید (صندوق)", hint: "اقدام", run: () => go("pos") } : null,
+      canView("batches") ? { ico: "inbox", label: "دریافت کالا", hint: "اقدام", run: () => go("batches") } : null,
       can("accounting.post") ? { ico: "cash", label: "ثبت هزینه", hint: "اقدام", run: () => window.AccountingUI && AccountingUI.expenseModal() } : null,
-      can("reports.view") ? { ico: "chart", label: "هوش فروشگاه", hint: "اقدام", run: () => go("insights") } : null,
+      canView("insights") ? { ico: "chart", label: "هوش فروشگاه", hint: "اقدام", run: () => go("insights") } : null,
       { ico: "gear", label: "تغییر پوسته (روشن/تیره)", hint: "تنظیم", run: () => { const b = document.getElementById("sb-theme"); if (b) b.click(); } },
     ].filter(Boolean);
-    const navs = NAV.filter((n) => can(n[2])).map(([key, label, perm, ico]) => ({
+    const navs = NAV.filter(([key]) => canView(key)).map(([key, label, , ico]) => ({
       ico, label, hint: "بخش", run: () => go(key),
     }));
     return [...acts, ...navs];
@@ -5244,22 +5544,26 @@ if (!window.__NO_AUTOBOOT) boot();
     // build-484 — «جست‌وجوی هوشمند» واقعی: کالا/مشتری/فاکتور از API کنار بخش‌ها و اقدام‌ها
     const tok = ++searchTok;
     if (qq.length >= 2 && state.user) {
-      api("/products?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
-        if (tok !== searchTok) return;
-        const its = ((res && res.items) || []).map((p) => ({
-          ico: "box", label: p.name + (p.barcode ? " · " + p.barcode : ""), hint: "کالا",
-          run: () => go("products"),
-        }));
-        pushEntities(its);
-      }).catch(() => {});
-      api("/customers?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
-        if (tok !== searchTok) return;
-        const its = ((res && res.items) || []).map((c) => ({
-          ico: "user", label: (c.full_name || c.name || "مشتری") + (c.phone ? " · " + c.phone : ""), hint: "مشتری",
-          run: () => go("customers"),
-        }));
-        pushEntities(its);
-      }).catch(() => {});
+      if (can("products.view")) {
+        api("/products?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
+          if (tok !== searchTok) return;
+          const its = ((res && res.items) || []).map((p) => ({
+            ico: "box", label: p.name + (p.barcode ? " · " + p.barcode : ""), hint: "کالا",
+            run: () => go(canView("products") ? "products" : "pos"),
+          }));
+          pushEntities(its);
+        }).catch(() => {});
+      }
+      if (canView("customers")) {
+        api("/customers?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
+          if (tok !== searchTok) return;
+          const its = ((res && res.items) || []).map((c) => ({
+            ico: "user", label: (c.full_name || c.name || "مشتری") + (c.phone ? " · " + c.phone : ""), hint: "مشتری",
+            run: () => go("customers"),
+          }));
+          pushEntities(its);
+        }).catch(() => {});
+      }
     }
   }
   function pushEntities(its) {

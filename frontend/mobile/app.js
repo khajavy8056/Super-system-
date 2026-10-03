@@ -241,6 +241,10 @@ async function mobileSync(showToast) {
     }
     if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []);
       if (window.Local) await Local.applyPull(r.pull, !localStorage.getItem("m_cursor")); }
+    if (r.current_user && r.current_user.id) {
+      state.user = r.current_user;
+      localStorage.setItem("m_user", JSON.stringify(r.current_user));
+    }
     for (const a of r.applied || []) { if (a.status === "APPLIED" && a.result && a.result.invoice_number && window.Local) { const o = ops.find((x) => x.id === a.id); if (o && o.local_no) await Local.markInvoiceSynced(o.local_no, a.result.invoice_number); } }
     localStorage.setItem("m_cursor", r.cursor); localStorage.setItem("m_last_sync", new Date().toISOString());
     if (showToast || applied || rejected) toast(`همگام‌سازی با رایانه: ${applied} ثبت شد${rejected ? ` · ${rejected} رد شد` : ""}`, rejected ? "err" : "ok");
@@ -354,7 +358,8 @@ window.unpairDevice = () => {
 };
 window.logout = () => {
   localStorage.removeItem("m_token");
-  state.token = ""; state.user = null;
+  localStorage.removeItem("m_user");
+  state.token = ""; state.user = null; state.cart = [];
   showLogin();
 };
 

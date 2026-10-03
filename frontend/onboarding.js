@@ -300,33 +300,40 @@
       <ul class="ob-phases" id="ob-phases">${phases.map((p, i) => `<li data-i="${i}"><i></i><span>${p[0]}</span><em></em></li>`).join("")}</ul>
       <div class="ob-log" id="ob-log"></div>
     </div>`;
-    const fg = q("#ob-ring-fg"), C = 2 * Math.PI * 52; fg.style.strokeDasharray = C; fg.style.strokeDashoffset = C;
-    const fast = +sessionStorage.getItem("sm.loading.fast") || +(new URLSearchParams(location.search).get("fastload") || 0);
-    if (fast) seconds = fast;
-    const start = Date.now(), total = Math.max(3, seconds) * 1000;
-    const key = "sm.loading.start." + (first ? "first" : "login");
-    let t0 = +sessionStorage.getItem(key) || 0; if (!t0 || Date.now() - t0 > total) { t0 = start; sessionStorage.setItem(key, String(t0)); }
+    const fg = q("#ob-ring-fg"), C = 2 * Math.PI * 52;
+    if (fg) { fg.style.strokeDasharray = C; fg.style.strokeDashoffset = C; }
+    const start = Date.now(), minDisplayMs = first ? 900 : 350;
     const logEl = q("#ob-log"); const lines = [];
-    const log = (s) => { lines.push(s); if (lines.length > 6) lines.shift(); logEl.innerHTML = lines.map((l) => `<div>${l}</div>`).join(""); };
-    let workDone = false, workErr = null;
+    const log = (s) => { if (!logEl) return; lines.push(s); if (lines.length > 6) lines.shift(); logEl.innerHTML = lines.map((l) => `<div>${l}</div>`).join(""); };
+    let workDone = false, workErr = null, finished = false;
     Promise.resolve().then(work).then(() => { workDone = true; }).catch((e) => { workErr = e; workDone = true; });
     let lastPhase = -1;
     const tick = () => {
-      const el = Date.now() - t0; let p = Math.min(1, el / total);
-      // ease so it looks like real work: fast start, slow middle, final sprint
-      const eased = p < 0.9 ? Math.pow(p, 0.85) * 0.92 : 0.92 + (p - 0.9) * 0.8;
-      const pct = Math.min(100, Math.round(eased * 100));
-      q("#ob-pct").textContent = _fa(pct) + "٪"; fg.style.strokeDashoffset = C * (1 - eased);
-      q("#ob-eta").textContent = p < 1 ? "لطفاً صبر کنید" : "";
-      let ph = phases.findIndex((x) => eased < x[1]); if (ph < 0) ph = phases.length - 1;
+      if (finished) return;
+      const elapsed = Date.now() - start;
+      const readyToClose = workDone && elapsed >= minDisplayMs;
+      const eased = readyToClose ? 1 : Math.min(0.92, elapsed / Math.max(1200, minDisplayMs * 2));
+      const pct = readyToClose ? 100 : Math.min(95, Math.max(15, Math.round(eased * 100)));
+      const pctEl = q("#ob-pct"); if (pctEl) pctEl.textContent = _fa(pct) + "٪";
+      if (fg) fg.style.strokeDashoffset = C * (1 - (readyToClose ? 1 : eased));
+      const etaEl = q("#ob-eta"); if (etaEl) etaEl.textContent = readyToClose ? "" : "لطفاً صبر کنید";
+      let ph = phases.findIndex((x) => (readyToClose ? 1 : eased) < x[1]); if (ph < 0) ph = phases.length - 1;
       if (ph !== lastPhase) {
-        document.querySelectorAll("#ob-phases li").forEach((li) => { const k = +li.dataset.i; li.className = k < ph ? "done" : k === ph ? "active" : ""; li.querySelector("em").textContent = k < ph ? "✓" : ""; });
+        document.querySelectorAll("#ob-phases li").forEach((li) => {
+          const k = +li.dataset.i;
+          li.className = (readyToClose || k < ph) ? "done" : k === ph ? "active" : "";
+          const em = li.querySelector("em"); if (em) em.textContent = (readyToClose || k < ph) ? "✓" : "";
+        });
         log(`▸ ${phases[ph][0]}…`); lastPhase = ph;
-      } else if (Math.random() < 0.04) {
-        log(["اتصال برقرار شد", "بستهٔ داده دریافت شد", "جدول به‌روزرسانی شد", "ایندکس ساخته شد", "بررسی یکپارچگی: موفق", "پیکربندی اعمال شد"][Math.floor(Math.random() * 6)]);
       }
-      if (p >= 1 && workDone) { sessionStorage.removeItem(key); q("#ob-load-sub").textContent = "آماده شد"; if (window.Sfx) Sfx.play(first ? "install" : "ready"); setTimeout(() => onDone(workErr), 600); return; }
-      requestAnimationFrame(() => setTimeout(tick, 250));
+      if (readyToClose) {
+        finished = true;
+        const subEl = q("#ob-load-sub"); if (subEl) subEl.textContent = "آماده شد";
+        if (window.Sfx) Sfx.play(first ? "install" : "ready");
+        setTimeout(() => onDone(workErr), 120);
+        return;
+      }
+      requestAnimationFrame(() => setTimeout(tick, 80));
     };
     tick();
   }
@@ -340,14 +347,16 @@
       const tok = localStorage.getItem("token");
       if (!tok) { host.innerHTML = ""; return; }
       let a; try { a = await pub("/setup/alerts", { headers: { Authorization: "Bearer " + tok } }); } catch (_) { return; }
-      const items = a.items.filter((i) => !dismissed.has(i.id)).slice(0, 5);
+      const rawItems = Array.isArray(a && a.items) ? a.items : [];
+      const canGo = (v) => (typeof window.canView === "function" ? window.canView(v) : false);
+      const items = rawItems.filter((i) => !dismissed.has(i.id)).slice(0, 5);
       const prevIds = new Set([...host.querySelectorAll(".ob-alert")].map((x) => x.dataset.id));
       if (window.Sfx && items.some((i) => !prevIds.has(i.id) && i.severity === "CRITICAL") && host._loaded) Sfx.play("alert");
       host._loaded = true;
-      host.innerHTML = items.map((i) => `<div class="ob-alert sev-${i.severity.toLowerCase()} ob-pop" data-id="${i.id}">
+      host.innerHTML = items.map((i) => `<div class="ob-alert sev-${String(i.severity || "info").toLowerCase()} ob-pop" data-id="${i.id}">
         <div class="ob-alert-ico">${i.kind === "LICENSE" ? ico("key", 20) : ico("box", 20)}</div>
         <div class="ob-alert-txt"><b>${_esc(i.title)}</b><span>${_esc(i.body)}</span></div>
-        ${i.kind === "EXPIRY" ? `<button class="ob-alert-go" data-go="inventory" title="نمایش در انبار">›</button>` : i.id === "lic-blocked" || i.kind === "LICENSE" ? `<button class="ob-alert-go" data-go="settings" title="تنظیمات">›</button>` : ""}
+        ${i.kind === "EXPIRY" && canGo("inventory") ? `<button class="ob-alert-go" data-go="inventory" title="نمایش در انبار">›</button>` : (i.id === "lic-blocked" || i.kind === "LICENSE") && canGo("settings") ? `<button class="ob-alert-go" data-go="settings" title="تنظیمات">›</button>` : ""}
         <button class="ob-alert-x" title="بستن">×</button></div>`).join("");
       host.querySelectorAll(".ob-alert-x").forEach((b) => (b.onclick = () => { const id = b.parentElement.dataset.id; dismissed.add(id); sessionStorage.setItem("sm.alerts.dismissed", JSON.stringify([...dismissed])); b.parentElement.remove(); }));
       if (items.length) {
@@ -407,23 +416,37 @@
     return true;
   }
 
-  // After a successful login: licence recheck (if due) + the per-login loading screen (2 min; 45 min the very first time).
+  // After a successful login: fast, deterministic initialization (runs once per token; never blocks on a fake timer or kicks back to login on transient network errors).
   async function afterLogin() {
     if (window.SM_NATIVE) return;   // v1.9: the phone reuses the PC's licence state — no second loading screen
-    if (sessionStorage.getItem(LS_LOADED) === localStorage.getItem("token")) return;
-    // v1.5.1: the long install screen is shown ONLY inside the setup wizard.
-    // Every login afterwards gets the short one (2 min).
-    const first = false;
-    const seconds = 120;
-    await new Promise((resolve) => loadingScreen(seconds, first, async () => {
-      try { const l = await api("/setup/license/recheck", { method: "POST" }); if (!l.allowed) throw Object.assign(new Error(l.reason), { code: "LICENSE" }); } catch (e) { if (e.code === "LICENSE" || e.status === 402) throw e; }
+    const tok = localStorage.getItem("token") || "";
+    if (!tok) return;
+    if (sessionStorage.getItem(LS_LOADED) === tok || localStorage.getItem(LS_LOADED) === tok) return;
+    await new Promise((resolve) => loadingScreen(1, false, async () => {
+      try {
+        const st = await pub("/setup/status");
+        if (st && st.license && !st.license.allowed) {
+          throw Object.assign(new Error(st.license.reason || "لایسنس فعال نیست"), { code: "LICENSE", license: st.license });
+        }
+      } catch (e) {
+        if (e && e.code === "LICENSE") throw e;
+      }
       try { if (typeof loadRuntimeConfig === "function") await loadRuntimeConfig(); if (typeof applyTheme === "function") await applyTheme(); } catch (_) {}
     }, async (err) => {
       closeOverlay();
-      if (err) { toast(err.message || "لایسنس نامعتبر", "err"); localStorage.removeItem("token"); location.reload(); return; }
+      if (err && err.code === "LICENSE") {
+        toast(err.message || "لایسنس نامعتبر", "err");
+        await new Promise((r2) => licenseScreen(err.license || {}, () => { closeOverlay(); r2(); }));
+        resolve();
+        return;
+      }
       const firstEver = sessionStorage.getItem("sm.first.pending") === "1";
-      sessionStorage.setItem(LS_LOADED, localStorage.getItem("token") || "1"); sessionStorage.removeItem("sm.first.pending");
-      if (firstEver) { try { await pairingIntro(); } catch (_) {} }
+      sessionStorage.setItem(LS_LOADED, tok);
+      localStorage.setItem(LS_LOADED, tok);
+      sessionStorage.removeItem("sm.first.pending");
+      if (firstEver && typeof window.can === "function" && window.can("settings.manage")) {
+        try { await pairingIntro(); } catch (_) {}
+      }
       resolve();
     }));
   }

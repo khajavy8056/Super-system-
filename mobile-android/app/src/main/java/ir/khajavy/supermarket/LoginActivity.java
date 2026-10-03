@@ -134,13 +134,14 @@ public class LoginActivity extends Activity {
             Object mint = Api.call("POST", "/mobile/pair/token", dev.toString(), "application/json");
             if (mint instanceof JSONObject) { token = ((JSONObject) mint).optString("token", tok); devId = ((JSONObject) mint).optString("device_id", devId); }
         } catch (Api.ApiError mintFail) {
-            // دستگاه ناشناخته + کاربر غیرمدیر (یا رایانه میانی) → همان توکن فعلی کافی است؛
-            // ورود نباید هرگز به خاطر توکن دستگاه شکست بخورد.
-            String held = Prefs.deviceToken(this);
-            if (held != null && !held.isEmpty()) token = held;
+            // build-492 — دستگاه ناشناخته + کاربر غیرمدیر (یا رایانه میانی): هرگز توکنِ
+            // کاربرِ قبلی (Prefs.deviceToken) را جایگزین توکنِ کاربرِ فعلی (tok) نکن!
+            // همان tok که از /auth/login برای همین کاربر صادر شده معتبر و اختصاصی اوست.
+            token = tok;
         }
         Prefs.save(this, base, token, Prefs.get("store_name", ""), devId == null || devId.isEmpty() ? Prefs.hwidSeed() : devId);
         Api.token = token;
+        Screens.user = me;
         Prefs.set("user_json", me.toString());
         Session.start();
         if (!Api.standalone()) { Prefs.set("lic_mode", "pc"); Sync.checkPcLicense(); Prefs.set("setup_done", "1"); }

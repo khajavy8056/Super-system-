@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import (Announcement, PayrollEntry, Shift, ShiftAssignment,
                       ShiftAttendance, User)
-from ..security import get_current_user, has_permission, require_permission
+from ..security import get_current_user, has_permission, require_any_permission, require_permission
 from ..services import announcements as ann_svc
 from ..services import payroll as pay_svc
 from ..services import shifts as shift_svc
@@ -133,6 +133,8 @@ class ShiftIn(BaseModel):
     store: str = ""
     department: str = ""
     role_hint: str | None = None
+    user_id: int | None = None
+    day: str | None = None
 
 
 class ShiftPatch(BaseModel):
@@ -157,9 +159,15 @@ class MoveIn(BaseModel):
 
 
 @router.get("/shifts")
-def list_shifts(db: Session = Depends(get_db), _: User = Depends(require_permission("shifts.manage"))):
+def list_shifts(db: Session = Depends(get_db), _: User = Depends(require_any_permission("shifts.view", "shifts.manage"))):
     return [shift_svc.out_dict(db, s) for s in
             db.execute(select(Shift).order_by(Shift.id.desc())).scalars()]
+
+
+@router.get("/shifts/my")
+def my_shifts(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """build-492 — شیفت‌های شخصی کاربر جاری + وضعیت لحظه‌ای حضور."""
+    return shift_svc.my_shifts(db, user)
 
 
 @router.post("/shifts", status_code=201)
@@ -170,12 +178,19 @@ def create_shift(body: ShiftIn, db: Session = Depends(get_db),
                                     end_time=body.end_time, workdays=body.workdays,
                                     store=body.store, department=body.department,
                                     role_hint=body.role_hint, user=user)
+        assigned_user_id = None
+        if body.user_id is not None:
+            shift_svc.assign(db, sh, int(body.user_id), (body.day or "").strip(), actor=user)
+            assigned_user_id = int(body.user_id)
     except shift_svc.ShiftError as exc:
         raise _err(exc)
     write_audit(db, action="SHIFT_CREATED", user_id=user.id, entity_type="Shift",
-                entity_id=sh.id, after={"name": sh.name, "start": sh.start_time, "end": sh.end_time})
+                entity_id=sh.id, after={"name": sh.name, "start": sh.start_time, "end": sh.end_time,
+                                        "assigned_user_id": assigned_user_id})
     db.commit()
-    return shift_svc.out_dict(db, sh)
+    out = shift_svc.out_dict(db, sh)
+    out["assigned_user_id"] = assigned_user_id
+    return out
 
 
 @router.patch("/shifts/{shift_id}")
@@ -246,7 +261,7 @@ def move_shift(assignment_id: int, body: MoveIn, db: Session = Depends(get_db),
 
 @router.get("/shifts/day/{day}")
 def shift_day(day: str, db: Session = Depends(get_db),
-              _: User = Depends(require_permission("shifts.view"))):
+              _: User = Depends(require_any_permission("shifts.view", "shifts.manage"))):
     """شیفت‌های یک روز + عملکرد هر نفر با تفکیک داخل/خارج شیفت (§۱۹–۲۰)."""
     rows = []
     seen = set()
@@ -272,7 +287,7 @@ def user_day_performance(user_id: int, day: str, db: Session = Depends(get_db),
 
 @router.get("/roster-users")
 def roster_users(db: Session = Depends(get_db),
-                 _: User = Depends(require_permission("shifts.manage"))):
+                 _: User = Depends(require_any_permission("shifts.view", "shifts.manage"))):
     # build-491 — فهرست حداقلی افراد برای تخصیص شیفت (نام/عنوان شغلی)؛ بدون اطلاعات حساس
     from ..models import User as U
     from sqlalchemy import select as _sel
@@ -281,14 +296,60 @@ def roster_users(db: Session = Depends(get_db),
 
 
 @router.get("/attendance/status")
-def attendance_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    # build-491 — نوار حضور (بالای برنامه/داشبورد): وضعیت امروز خودِ کاربر — هر کاربر فقط خودش
-    return shift_svc.attendance_status(db, user)
+def attendance_status(
+    auto: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # build-491/492 — نوار حضور (بالای برنامه/داشبورد): وضعیت امروز خودِ کاربر + تشخیص خودکار شیفت فعال
+    return shift_svc.attendance_status(db, user, auto_enter=auto)
+
+
+@router.post("/attendance/enter")
+def attendance_enter(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # build-492 — ثبت خودکار حضور هنگام ورود کاربر به برنامه در بازهٔ شیفت مجاز
+    return shift_svc.attendance_status(db, user, auto_enter=True)
+
+
+@router.get("/attendance/summary")
+def attendance_summary(
+    start: str | None = None,
+    end: str | None = None,
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_any_permission("shifts.view", "shifts.manage", "payroll.view", "payroll.manage")),
+):
+    from datetime import date, timedelta
+    today = date.today()
+    s_str = start or (today - timedelta(days=29)).isoformat()
+    e_str = end or today.isoformat()
+    return shift_svc.attendance_summary(db, s_str, e_str, user_id=user_id)
+
+
+@router.get("/attendance/my-summary")
+def my_attendance_summary(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from datetime import date, timedelta
+    today = date.today()
+    s_str = start or (today - timedelta(days=29)).isoformat()
+    e_str = end or today.isoformat()
+    rows = shift_svc.attendance_summary(db, s_str, e_str, user_id=user.id)
+    return rows[0] if rows else {
+        "user_id": user.id, "start_day": s_str, "end_day": e_str,
+        "days_scheduled": 0, "days_present": 0,
+        "planned_minutes": 0, "worked_minutes": 0,
+        "overtime_minutes": 0, "deficit_minutes": 0,
+        "late_minutes": 0, "early_leave_minutes": 0,
+    }
 
 
 @router.get("/attendance/today")
 def attendance_today(db: Session = Depends(get_db),
-                     _: User = Depends(require_permission("shifts.view"))):
+                     _: User = Depends(require_any_permission("shifts.view", "shifts.manage"))):
     # build-491 — حضور امروز تیم برای سوپروایزر/مدیر (شیفت‌ها)
     return shift_svc.attendance_today(db)
 
