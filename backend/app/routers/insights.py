@@ -51,7 +51,8 @@ def list_insights(status: str = Query("NEW"), kind: str | None = None, limit: in
     if group and group in svc.GROUPS:
         q = q.where(Insight.kind.in_(svc.GROUPS[group][1]))
     q = q.order_by(Insight.priority.asc(), Insight.expected_gain.desc(), Insight.created_at.desc()).limit(limit)
-    return [svc.to_dict(r) for r in db.execute(q).scalars()]
+    # build-490 (§۶) — تصویر واقعی محصول: رکورد Product با شناسهٔ واقعی کنار هر پیشنهاد
+    return svc.attach_products(db, [svc.to_dict(r) for r in db.execute(q).scalars()])
 
 
 @router.get("/summary")
@@ -73,7 +74,7 @@ def report(db: Session = Depends(get_db), user: User = Depends(require_permissio
     s = svc.impact_summary(db)
     from ..security import _user_permission_codes
     codes = _user_permission_codes(user)
-    open_rows = [svc.to_dict(r) for r in db.execute(select(Insight).where(Insight.status == "NEW").order_by(Insight.priority, Insight.expected_gain.desc()).limit(10)).scalars() if svc.kind_visible(r.kind, codes)]
+    open_rows = svc.attach_products(db, [svc.to_dict(r) for r in db.execute(select(Insight).where(Insight.status == "NEW").order_by(Insight.priority, Insight.expected_gain.desc()).limit(10)).scalars() if svc.kind_visible(r.kind, codes)])
     return {"summary": s, "open": open_rows, "narrative": ai_narrator.weekly_report(db, s, open_rows), "generated_at": datetime.utcnow().isoformat()}
 
 
@@ -179,12 +180,16 @@ def actions_health_scan(db: Session = Depends(get_db), _: User = Depends(require
 
 
 @router.get("/{insight_id}")
-def get_insight(insight_id: int, narrate: bool = False, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def get_insight(insight_id: int, narrate: bool = False, db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     row = _get(db, insight_id)
+    # build-490 (§۷) — دسترسی مستقیم با URL هم باید قفل باشد؛ Insight غیرمجاز اصلاً برنمی‌گردد
+    from ..security import _user_permission_codes
+    if not svc.kind_visible(row.kind, _user_permission_codes(user)):
+        raise HTTPException(status_code=404, detail="INSIGHT_NOT_FOUND")
     if narrate:
         ai_narrator.narrate(db, row)
         db.commit()
-    out = svc.to_dict(row)
+    out = svc.attach_products(db, [svc.to_dict(row)])[0]
     if row.status in ("NEW", "SNOOZED"):
         from ..services import forecast
         try:

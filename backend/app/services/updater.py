@@ -55,9 +55,11 @@ APK_PATTERN = re.compile(r"\.apk$", re.I)
 
 
 def current_release_tag() -> str:
-    """نسخهٔ فعلی نصب‌شده از اطلاعات داخلی خود برنامه (§۴۱)."""
-    from .. import BUILD
-    return f"{__version__}-build.{BUILD // 100}"
+    """نسخهٔ فعلی نصب‌شده از اطلاعات داخلی خود برنامه (§۴۱).
+
+    build-490 (§۸–۹) — ساختار نسخه Major.Minor.Build شد («1.0.490»)؛
+    رقم سوم همان Build Number است و «1.0.0-build.489» بازنشسته شد."""
+    return __version__
 
 
 class UpdateError(Exception):
@@ -70,15 +72,27 @@ class UpdateError(Exception):
 # version comparison
 # ---------------------------------------------------------------------------
 def parse_version(text: str) -> tuple[int, ...]:
-    """'v1.2.3' -> (1, 2, 3). Non-numeric suffixes are ignored."""
+    """'v1.2.3' -> (1, 2, 3). Non-numeric suffixes are ignored.
+
+    build-490 (§۸–۱۰) — ساختار جدید «Major.Minor.Build» (رقم سوم = Build):
+      '1.0.490'          -> (1, 0, 490)
+      'v1.0.0-build.489' -> (1, 0, 489)   # ساختار قدیمی هم نرمال می‌شود
+      '1.0.0-build489'   -> (1, 0, 489)
+    تا مقایسه بین نسخه‌های قدیمی و جدید همیشه درست بماند (هیچ به‌روزرسانی
+    به‌خاطر تغییر فرمت، اشتباه تشخیص داده یا نادیده گرفته نمی‌شود)."""
     cleaned = (text or "").strip().lstrip("vV")
+    legacy = re.search(r"-build\.?(\d+)", cleaned, re.I)
+    cleaned = re.sub(r"-.*$", "", cleaned)  # هر پسوندی (build/RC/...) کنار می‌رود
     parts: list[int] = []
-    for chunk in cleaned.split(".")[:4]:
+    for chunk in cleaned.split(".")[:3]:
         match = re.match(r"(\d+)", chunk)
         parts.append(int(match.group(1)) if match else 0)
     while len(parts) < 3:
         parts.append(0)
-    return tuple(parts)
+    if legacy:
+        # '1.0.0-build.489' -> (1, 0, 489): در ساختار قدیمی، رقم سومِ «Build» از پسوند می‌آید
+        return (parts[0], parts[1], int(legacy.group(1)))
+    return (parts[0], parts[1], parts[2])
 
 
 def is_newer(candidate: str, current: str) -> bool:

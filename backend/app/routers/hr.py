@@ -157,7 +157,7 @@ class MoveIn(BaseModel):
 
 
 @router.get("/shifts")
-def list_shifts(db: Session = Depends(get_db), _: User = Depends(require_permission("shifts.view"))):
+def list_shifts(db: Session = Depends(get_db), _: User = Depends(require_permission("shifts.manage"))):
     return [shift_svc.out_dict(db, s) for s in
             db.execute(select(Shift).order_by(Shift.id.desc())).scalars()]
 
@@ -270,9 +270,35 @@ def user_day_performance(user_id: int, day: str, db: Session = Depends(get_db),
     return shift_svc.day_performance(db, user_id, day)
 
 
+@router.get("/roster-users")
+def roster_users(db: Session = Depends(get_db),
+                 _: User = Depends(require_permission("shifts.manage"))):
+    # build-491 — فهرست حداقلی افراد برای تخصیص شیفت (نام/عنوان شغلی)؛ بدون اطلاعات حساس
+    from ..models import User as U
+    from sqlalchemy import select as _sel
+    return [{"id": u.id, "full_name": u.full_name or u.username, "job_title": u.job_title or ""}
+            for u in db.execute(_sel(U).where(U.is_active.is_(True)).order_by(U.full_name)).scalars()]
+
+
+@router.get("/attendance/status")
+def attendance_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # build-491 — نوار حضور (بالای برنامه/داشبورد): وضعیت امروز خودِ کاربر — هر کاربر فقط خودش
+    return shift_svc.attendance_status(db, user)
+
+
+@router.get("/attendance/today")
+def attendance_today(db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("shifts.view"))):
+    # build-491 — حضور امروز تیم برای سوپروایزر/مدیر (شیفت‌ها)
+    return shift_svc.attendance_today(db)
+
+
 @router.post("/attendance/clock-in")
 def clock_in(db: Session = Depends(get_db), user: User = Depends(get_current_user),
              shift_id: int | None = None, day: str | None = None):
+    # build-491 — ممنوعیت دوبار ثبت حضور در یک روز
+    if shift_svc.has_attendance(db, user, day):
+        raise HTTPException(status_code=400, detail="حضور امروز قبلاً ثبت شده")
     att = shift_svc.clock_in(db, user, shift_id=shift_id, day=day)
     return {"id": att.id, "day": att.day, "started_at": att.started_at.isoformat(),
             "late_minutes": att.late_minutes}

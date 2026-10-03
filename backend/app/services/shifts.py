@@ -25,10 +25,18 @@ def _now() -> datetime:
     return datetime.utcnow()
 
 
+def _naive(dt):
+    """build-491 — نرمال‌سازی برای محاسبات زمانی (SQLite مقدار را naive برمی‌گرداند)."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) is not None else dt
+
+
 def _lt_now() -> datetime:
     try:
         from ..services.timeservice import local_now
-        return local_now()
+        # build-491 — همیشه naive محلی؛ جلوگیری از TypeError در تفریق/مقایسهٔ زمان‌ها
+        return _naive(local_now())
     except Exception:
         return datetime.utcnow()
 
@@ -143,6 +151,15 @@ def _day_of(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+def has_attendance(db: Session, user: User, day: str | None = None) -> bool:
+    """build-491 — آیا برای این روز حضوری (با ساعت ورود) ثبت شده؟"""
+    d = day or _day_of(_lt_now())
+    att = db.execute(select(ShiftAttendance).where(
+        ShiftAttendance.user_id == user.id, ShiftAttendance.day == d
+    ).order_by(ShiftAttendance.id.desc()).limit(1)).scalar_one_or_none()
+    return bool(att and att.started_at)
+
+
 def clock_in(db: Session, user: User, *, shift_id: int | None = None,
              day: str | None = None, at: datetime | None = None) -> ShiftAttendance:
     now = at or _lt_now()
@@ -158,7 +175,7 @@ def clock_in(db: Session, user: User, *, shift_id: int | None = None,
     if sh:
         start, _ = shift_window(sh, d)
         # تأخیر فقط وقتی معنا دارد که ورود بعد از ساعت برنامه باشد
-        late = int((att.started_at - start).total_seconds() // 60)
+        late = int((_naive(att.started_at) - _naive(start)).total_seconds() // 60)
         att.late_minutes = max(0, late) if late > 0 else 0
     db.commit()
     db.refresh(att)
@@ -180,7 +197,7 @@ def clock_out(db: Session, user: User, *, day: str | None = None,
         sh = db.get(Shift, att.shift_id)
         if sh:
             _, end = shift_window(sh, d)
-            early = int((end - att.ended_at).total_seconds() // 60)
+            early = int((_naive(end) - _naive(att.ended_at)).total_seconds() // 60)
             att.early_leave_minutes = max(0, early) if early > 0 else 0
     db.commit()
     db.refresh(att)
@@ -243,6 +260,77 @@ def day_performance(db: Session, user_id: int, day: str) -> dict:
             "late_minutes": a.late_minutes, "early_leave_minutes": a.early_leave_minutes,
         } for a in att],
     }
+
+
+def attendance_status(db: Session, user: User) -> dict:
+    """build-491 — نوار حضور: وضعیت امروز خودِ کاربر (شیفت امروز + حضور ثبت‌شده).
+
+    «presence» فقط با ثبت واقعیِ ورود سبز می‌شود؛ دقیقهٔ ورود/مدت حضور با دقت دقیقه."""
+    now = _lt_now()
+    d = _day_of(now)
+    rows = db.execute(select(ShiftAssignment, Shift).join(
+        Shift, ShiftAssignment.shift_id == Shift.id).where(
+        ShiftAssignment.user_id == user.id, ShiftAssignment.day == d,
+        ShiftAssignment.status == "ACTIVE")).all()
+    sh = rows[0][1] if rows else None
+    att = db.execute(select(ShiftAttendance).where(
+        ShiftAttendance.user_id == user.id, ShiftAttendance.day == d
+    ).order_by(ShiftAttendance.id.desc()).limit(1)).scalar_one_or_none()
+    started = att.started_at if att else None
+    ended = att.ended_at if att else None
+    present = bool(started and not ended)
+    minutes = int((_naive(now) - _naive(started)).total_seconds() // 60) if present and started else None
+    return {
+        "day": d,
+        "has_shift": sh is not None or att is not None,
+        "shift_id": sh.id if sh else (att.shift_id if att else None),
+        "shift_name": sh.name if sh else None,
+        "start_time": sh.start_time if sh else None,
+        "end_time": sh.end_time if sh else None,
+        "present": present,
+        "since": started.isoformat() if started else None,
+        "ended_at": ended.isoformat() if ended else None,
+        "minutes": minutes,
+        "late_minutes": att.late_minutes if att else None,
+    }
+
+
+def attendance_today(db: Session) -> list[dict]:
+    """build-491 — حضور امروز تیم (سوپروایزر/مدیر): هر کس که امروز شیفت دارد."""
+    now = _lt_now()
+    d = _day_of(now)
+    seen: dict[int, dict] = {}
+    rows = db.execute(select(ShiftAssignment, Shift, User).join(
+        Shift, ShiftAssignment.shift_id == Shift.id).join(
+        User, ShiftAssignment.user_id == User.id).where(
+        ShiftAssignment.day == d, ShiftAssignment.status == "ACTIVE")).all()
+    for a, sh, u in rows:
+        seen[u.id] = {"user_id": u.id, "name": u.full_name or u.username,
+                      "shift_id": sh.id, "shift_name": sh.name,
+                      "start_time": sh.start_time, "end_time": sh.end_time,
+                      "day": a.day, "assignment_id": a.id}
+    for att in db.execute(select(ShiftAttendance).where(ShiftAttendance.day == d)).scalars():
+        if att.user_id not in seen:
+            u = db.get(User, att.user_id)
+            if u:
+                seen[att.user_id] = {"user_id": u.id, "name": u.full_name or u.username,
+                                     "shift_id": att.shift_id, "shift_name": None,
+                                     "start_time": None, "end_time": None,
+                                     "day": d, "assignment_id": None}
+    out = []
+    for rec in seen.values():
+        att = db.execute(select(ShiftAttendance).where(
+            ShiftAttendance.user_id == rec["user_id"], ShiftAttendance.day == d
+        ).order_by(ShiftAttendance.id.desc()).limit(1)).scalar_one_or_none()
+        started = att.started_at if att else None
+        ended = att.ended_at if att else None
+        rec["present"] = bool(started and not ended)
+        rec["since"] = started.isoformat() if started else None
+        rec["ended_at"] = ended.isoformat() if ended else None
+        rec["minutes"] = int((now - started).total_seconds() // 60) if rec["present"] and started else None
+        out.append(rec)
+    out.sort(key=lambda r: (not r["present"], r.get("start_time") or "", r["name"]))
+    return out
 
 
 def shift_roster(db: Session, sh: Shift) -> list[dict]:

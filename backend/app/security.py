@@ -49,6 +49,9 @@ PERMISSIONS: dict[str, str] = {
     "customers.ledger": "View customer account statements",
     "customers.settle": "Record payments / settle customer debt",
     "reports.view": "View reports & dashboard",
+    # build-490 (§۲–۳) — دامنهٔ داده: آمار/گزارش «همهٔ کارکنان» فقط با این مجوز؛
+    # بدون آن، گزارش‌ها و داشبورد فقط دادهٔ خودِ کاربر را می‌بینند (زنجیرهٔ Role → Permission → Data Scope).
+    "reports.view_all": "مشاهدهٔ آمار و گزارش‌های کل فروشگاه (همهٔ کارکنان)",
     "accounting.view": "View ledgers, journal and financial statements",
     "accounting.post": "Post manual journal entries, expenses, cheques",
     "accounting.close": "Close fiscal periods / cash sessions",
@@ -73,59 +76,70 @@ PERMISSIONS: dict[str, str] = {
 }
 
 ROLE_PRESETS: dict[str, list[str]] = {
+    # ── build-490 (دستور جامع مالک — §۱) — هر Role فقط مسئولیت خودش؛ Role = مجموعهٔ Permission ──
+    # قابل توسعه: نقش سفارشی (is_system=False) هرگز بازنشانی نمی‌شود؛ نقش‌های استاندارد
+    # هنگام راه‌اندازی دقیقاً به همین فهرست بازنشانی می‌شوند (One Source of Truth).
     "Administrator": list(PERMISSIONS.keys()),
+    # §۱.۴ — مدیر کل/مالک: دسترسی کامل به تمام بخش‌ها + موارد اختصاصی مدیریتی
+    "General Manager": list(PERMISSIONS.keys()),
     "Manager": [
         "products.manage", "products.view", "batches.manage", "inventory.adjust",
         "inventory.stocktake", "inventory.approve_stocktake", "inventory.view",
         "pricing.manage", "pricing.view_cost",
         "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
         "customers.manage", "customers.ledger", "customers.settle",
-        "reports.view", "settings.manage", "audit.view",
+        "reports.view", "reports.view_all", "reports.export",
+        "settings.manage", "audit.view",
         "marketing.view", "marketing.manage",
         "accounting.view", "accounting.post", "accounting.close",
+        "shifts.view", "shifts.manage", "performance.view", "performance.view_all",
     ],
+    # §۱.۱ — صندوقدار: فقط صندوق/فروش/مشتریِ موردنیاز فروش + گزارش شخصی
+    # (شیفت‌ها = «شیفت‌های خودش»؛ /hr/performance/me بدون مجوز ویژه، فقط خودِ کاربر)
     "Cashier": [
         "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
-        "customers.manage", "customers.ledger", "customers.settle", "reports.view",
+        "customers.manage", "customers.ledger", "customers.settle",
+        "reports.view", "shifts.view",
+    ],
+    # §۱.۲ — حسابدار: مالی و حسابداری؛ بدون مدیریت کاربران/کارکنان/تنظیمات/امنیت
+    "Accountant": [
+        "products.view", "inventory.view", "pricing.view_cost",
+        "customers.manage", "customers.ledger", "customers.settle",
+        "reports.view", "reports.view_all", "reports.export",
+        "accounting.view", "accounting.post", "accounting.close",
+    ],
+    # §۱.۳ — سوپروایزر: نظارت عملیاتی گسترده (خرید/فروش/صندوق/انبار/کمپین/حسابداری عملیاتی)
+    # بدون موارد اختصاصی مدیر کل: کاربران/کارکنان/تنظیمات اصلی/لاگ‌های امنیتی/ارزیابی محرمانه
+    "Supervisor": [
+        "products.view", "batches.manage", "batches.delete",
+        "inventory.view", "inventory.adjust", "inventory.stocktake", "inventory.approve_stocktake",
+        "pricing.view", "pricing.view_cost",
+        "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
+        "customers.manage", "customers.ledger", "customers.settle",
+        "reports.view", "reports.view_all", "reports.export",
+        "marketing.view", "marketing.manage",
+        "accounting.view",
+        # build-491 (دستور صریح مالک) — تعریف/تخصیص شیفت کاری بر عهدهٔ سوپروایزر یا مدیر
+        "shifts.view", "shifts.manage",
+    ],
+    "Inspector": ["products.view", "inventory.view", "reports.view", "reports.view_all", "audit.view"],
+    "Salesperson": [
+        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
+        "customers.manage", "reports.view", "shifts.view",
     ],
     "Inventory Operator": [
         "products.view", "batches.manage", "inventory.adjust", "inventory.stocktake",
-        "inventory.view", "pricing.view_cost", "reports.view",
+        "inventory.view", "pricing.view_cost", "reports.view", "reports.view_all",
     ],
-    "Viewer": ["products.view", "inventory.view", "reports.view"],
-    # ── build-488 — عناوین استاندارد فروشگاه (§۳)؛ Role فقط مجموعهٔ Permission می‌سازد ──
-    "Supervisor": [
-        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid", "pos.return",
-        "customers.manage", "customers.ledger",
-        "reports.view", "announcements.publish", "shifts.view", "shifts.manage",
-        "performance.view", "audit.view",
-    ],
-    "Inspector": ["products.view", "inventory.view", "reports.view", "audit.view"],
     "Storekeeper": [
         "products.view", "batches.manage", "batches.delete", "inventory.adjust",
-        "inventory.stocktake", "inventory.view", "reports.view", "shifts.view",
+        "inventory.stocktake", "inventory.view", "reports.view", "reports.view_all", "shifts.view",
     ],
     "Stocktake Lead": [
         "products.view", "inventory.view", "inventory.stocktake",
-        "inventory.approve_stocktake", "inventory.adjust", "reports.view", "shifts.view",
+        "inventory.approve_stocktake", "inventory.adjust", "reports.view", "reports.view_all", "shifts.view",
     ],
-    "Salesperson": [
-        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
-        "customers.manage", "reports.view", "shifts.view", "performance.view",
-    ],
-    "General Manager": [
-        "products.manage", "products.view", "batches.manage", "inventory.adjust",
-        "inventory.stocktake", "inventory.approve_stocktake", "inventory.view",
-        "pricing.manage", "pricing.view_cost",
-        "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return",
-        "customers.manage", "customers.ledger", "customers.settle",
-        "reports.view", "reports.export", "settings.manage", "audit.view",
-        "accounting.view", "accounting.post", "accounting.close",
-        "users.manage", "profile.view_all",
-        "announcements.publish", "announcements.manage",
-        "shifts.view", "shifts.manage", "performance.view", "performance.view_all",
-        "payroll.view", "payroll.manage",
-        "marketing.view", "marketing.manage"],
+    "Viewer": ["products.view", "inventory.view", "reports.view", "reports.view_all"],
 }
 
 #: عنوان نمایشی فارسی هر Role (§۳) — فقط برای نمایش؛ UI هرگز از Role تصمیم نمی‌گیرد

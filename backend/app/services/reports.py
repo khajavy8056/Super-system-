@@ -58,35 +58,42 @@ def _paid_filter(start: datetime, end: datetime):
     return and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
 
 
-def _sales_agg(db: Session, start: datetime, end: datetime) -> tuple[int, Decimal]:
+def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> tuple[int, Decimal]:
+    cond = _paid_filter(start, end)
+    if user_id is not None:
+        cond = and_(cond, Invoice.created_by == user_id)
     row = db.execute(
         select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.total_amount), 0))
-        .where(_paid_filter(start, end))
+        .where(cond)
     ).one()
     return int(row[0]), Decimal(row[1])
 
 
-def _profit_agg(db: Session, start: datetime, end: datetime) -> Decimal:
+def _profit_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
+    cond = _paid_filter(start, end)
+    if user_id is not None:
+        cond = and_(cond, Invoice.created_by == user_id)
     val = db.execute(
         select(func.coalesce(func.sum(InvoiceItem.profit), 0))
         .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
-        .where(_paid_filter(start, end))
+        .where(cond)
     ).scalar_one()
     return Decimal(val)
 
 
-def dashboard(db: Session) -> dict:
+def dashboard(db: Session, *, user_id: int | None = None) -> dict:
     from .timeservice import local_today
     today = local_today()
     t0, t1 = _day_range(today)
     y0, y1 = _day_range(today - timedelta(days=1))
     m0, _ = _day_range(today.replace(day=1))
 
-    cnt_t, sum_t = _sales_agg(db, t0, t1)
-    cnt_y, sum_y = _sales_agg(db, y0, y1)
-    _, sum_m = _sales_agg(db, m0, datetime.utcnow())
-    profit_t = _profit_agg(db, t0, t1)
-    profit_m = _profit_agg(db, m0, datetime.utcnow())
+    # build-490 (§۲–۳) — user_id فقط برای «دامنهٔ خودِ کاربر» می‌آید (زنجیرهٔ Role → Permission → Data Scope)
+    cnt_t, sum_t = _sales_agg(db, t0, t1, user_id)
+    cnt_y, sum_y = _sales_agg(db, y0, y1, user_id)
+    _, sum_m = _sales_agg(db, m0, datetime.utcnow(), user_id)
+    profit_t = _profit_agg(db, t0, t1, user_id)
+    profit_m = _profit_agg(db, m0, datetime.utcnow(), user_id)
 
     # inventory value + expiry buckets (only batches that can expire)
     inv_val = Decimal(db.execute(
@@ -176,19 +183,19 @@ def dashboard(db: Session) -> dict:
         "sms": _sms_status(db),
         "system": _system_status(db),
         # v1.4 — visual dashboard blocks
-        "trend": _sales_trend(db, days=7),
+        "trend": _sales_trend(db, days=7, user_id=user_id),
         "top_products": _top_products(db, t0 - timedelta(days=29), t1, limit=5),
         # build-484 — donut «توزیع فروش بر اساس دسته‌بندی» (۳۰ روز اخیر)
         "sales_by_category": _sales_by_category(db, t0 - timedelta(days=29), t1, limit=6),
-        "recent_invoices": _recent_invoices(db, limit=6),
+        "recent_invoices": _recent_invoices(db, limit=6, user_id=user_id),
         # build-485 — داده‌های واقعی چیدمان تصویر مرجع
         "customers_new": _customers_new(db, today),
-        "today_by_staff": _today_by_staff(db, t0, t1),
+        "today_by_staff": _today_by_staff(db, t0, t1, user_id=user_id),
         "accounting": _accounting_block(db),
     }
 
 
-def _sales_trend(db: Session, days: int = 7) -> list[dict]:
+def _sales_trend(db: Session, days: int = 7, user_id: int | None = None) -> list[dict]:
     """Per-day sales & profit for the last N days (today included), Jalali label."""
     from .timeservice import to_jalali
     out = []
@@ -196,8 +203,8 @@ def _sales_trend(db: Session, days: int = 7) -> list[dict]:
     for i in range(days - 1, -1, -1):
         d = today - timedelta(days=i)
         s0, e1 = _day_range(d)
-        cnt, total = _sales_agg(db, s0, e1)
-        prof = _profit_agg(db, s0, e1)
+        cnt, total = _sales_agg(db, s0, e1, user_id)
+        prof = _profit_agg(db, s0, e1, user_id)
         jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
         out.append({"date": str(d), "label": f"{jm:02d}/{jd:02d}", "weekday": d.weekday(),
                     "sales": float(total), "profit": float(prof), "invoices": cnt})
@@ -243,8 +250,11 @@ def _sales_by_category(db: Session, start: datetime, end: datetime, limit: int =
     return out
 
 
-def _recent_invoices(db: Session, limit: int = 6) -> list[dict]:
-    rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit)).scalars().all()
+def _recent_invoices(db: Session, limit: int = 6, user_id: int | None = None) -> list[dict]:
+    q = select(Invoice).order_by(Invoice.created_at.desc())
+    if user_id is not None:
+        q = q.where(Invoice.created_by == user_id)
+    rows = db.execute(q.limit(limit)).scalars().all()
     out = []
     for i in rows:
         # build-485 — ستون‌های جدول «فاکتورهای اخیر» در تصویر مرجع: نام محصول، تعداد،
@@ -288,17 +298,22 @@ def _customers_new(db: Session, today) -> dict:
             "latest_name": latest_name}
 
 
-def _today_by_staff(db: Session, s0, e1) -> list[dict]:
-    """build-485 — جدول «گزارش فروش روزانه» (فروش امروز به تفکیک صندوق‌دار)."""
+def _today_by_staff(db: Session, s0, e1, user_id: int | None = None) -> list[dict]:
+    """build-485 — جدول «گزارش فروش روزانه» (فروش امروز به تفکیک صندوق‌دار).
+
+    build-490 — user_id فقط ردیف خودِ کاربر را برمی‌گرداند (دامنهٔ شخصی)."""
+    cond = _paid_filter(s0, e1)
+    if user_id is not None:
+        cond = and_(cond, Invoice.created_by == user_id)
     rows = db.execute(
-        select(User.full_name, func.count(Invoice.id),
+        select(User.id, User.full_name, func.count(Invoice.id),
                func.coalesce(func.sum(Invoice.total_amount), 0))
         .join(Invoice, Invoice.created_by == User.id)
-        .where(_paid_filter(s0, e1))
-        .group_by(User.full_name)
+        .where(cond)
+        .group_by(User.id, User.full_name)
         .order_by(func.sum(Invoice.total_amount).desc()).limit(6)).all()
-    return [{"name": r[0] or "نامشخص", "invoice_count": int(r[1]),
-             "sales": float(Decimal(r[2]))} for r in rows]
+    return [{"user_id": r[0], "name": r[1] or "نامشخص", "invoice_count": int(r[2]),
+             "sales": float(Decimal(r[3]))} for r in rows]
 
 
 def _accounting_block(db: Session) -> dict:
@@ -451,13 +466,17 @@ def _system_status(db: Session) -> dict:
 
 # --- Sales ------------------------------------------------------------------
 
-def sales_report(db: Session, start: date, end: date, group: str = "daily") -> dict:
+def sales_report(db: Session, start: date, end: date, group: str = "daily", user_id: int | None = None) -> dict:
     s0, _ = _day_range(start)
     _, e1 = _day_range(end)
-    cnt, total = _sales_agg(db, s0, e1)
+    def _f():
+        cond = _paid_filter(s0, e1)
+        return and_(cond, Invoice.created_by == user_id) if user_id is not None else cond
+
+    cnt, total = _sales_agg(db, s0, e1, user_id)
 
     invoices = list(db.execute(
-        select(Invoice).where(_paid_filter(s0, e1)).order_by(Invoice.created_at.desc()).limit(500)
+        select(Invoice).where(_f()).order_by(Invoice.created_at.desc()).limit(500)
     ).scalars())
 
     out: dict = {
@@ -474,7 +493,7 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
         rows = db.execute(
             select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
                    func.coalesce(func.sum(Invoice.total_amount), 0))
-            .where(_paid_filter(s0, e1))
+            .where(_f())
             .group_by(_local_date_expr(Invoice.created_at))
             .order_by(_local_date_expr(Invoice.created_at))
         ).all()
@@ -487,7 +506,7 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
         rows = db.execute(
             select(_local_date_expr(Invoice.created_at), func.count(Invoice.id),
                    func.coalesce(func.sum(Invoice.total_amount), 0))
-            .where(_paid_filter(s0, e1))
+            .where(_f())
             .group_by(_local_date_expr(Invoice.created_at))
             .order_by(_local_date_expr(Invoice.created_at))
         ).all()
@@ -515,7 +534,7 @@ def sales_report(db: Session, start: date, end: date, group: str = "daily") -> d
             .select_from(InvoiceItem)
             .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
             .join(Product, InvoiceItem.product_id == Product.id)
-            .where(_paid_filter(s0, e1))
+            .where(_f())
             .group_by(Product.id, Product.name)
             .order_by(func.sum(InvoiceItem.subtotal).desc())
         ).all()

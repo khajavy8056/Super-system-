@@ -984,12 +984,25 @@ KIND_PERMS: dict[str, tuple[str, ...]] = {
     "CATEGORY_MARGIN": ("pricing.manage", "pricing.view_cost"),
     "CASHIER_PERF": ("performance.view_all",),
     "CASH_DIFF": ("performance.view_all", "pos.void_paid"),
+    "DATA_HYGIENE": ("settings.manage", "audit.view"),
+    "SMS_ROI": ("marketing.manage", "accounting.view"),
+    "RETURNS_PRODUCT": ("inventory.adjust", "reports.view_all"),
+    "CREDIT_RISK": ("customers.ledger", "accounting.view"),
+}
+
+#: build-490 (§۵) — پیش‌فرض گروه‌ها: kindهای بدون ورودی صریح از اینجا تصمیم می‌گیرند
+#: (انبار = کار عملیات انبار؛ قیمت/سود = دید قیمت/سود) — توسعه‌پذیر برای kindهای آینده.
+GROUP_PERMS: dict[str, tuple[str, ...]] = {
+    "stock": ("inventory.adjust", "batches.manage", "inventory.stocktake"),
+    "price": ("pricing.manage", "pricing.view_cost"),
 }
 
 
 def kind_visible(kind: str, codes: set[str]) -> bool:
-    """آیا این kind برای کاربری با این مجموعه دسترسی‌ها دیدنی است؟"""
+    """آیا این kind برای کاربری با این مجموعه دسترسی‌ها دیدنی است؟ (§۵ — هوش در‌خور شغل)"""
     need = KIND_PERMS.get(kind)
+    if need is None:
+        need = GROUP_PERMS.get(group_of(kind), ())
     return (not need) or any(p in codes for p in need)
 
 
@@ -1671,6 +1684,59 @@ def group_of(kind: str) -> str:
     return "growth"
 
 
+def product_ids_of(r: Insight) -> list[int]:
+    """build-490 (§۶) — شناسهٔ واقعی کالاهای یک پیشنهاد (از metric/shواهد/اقدام‌ها)؛
+    ارتباط فقط با ID — هرگز با نام. برای نمایش «تصویر واقعی محصول» به‌جای آیکون عمومی."""
+    ids: list[int] = []
+
+    def _add(v):
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return
+        if n > 0 and n not in ids:
+            ids.append(n)
+
+    try:
+        spec = json.loads(r.metric or "{}")
+        _add(spec.get("product_id"))
+        for v in (spec.get("product_ids") or []):
+            _add(v)
+        _add(spec.get("a"))
+        _add(spec.get("b"))
+        ev = json.loads(r.evidence or "{}")
+        for row in (ev.get("rows") or ev.get("table") or []):
+            if isinstance(row, dict):
+                _add(row.get("product_id"))
+        for act in json.loads(r.actions or "[]"):
+            if not isinstance(act, dict):
+                continue
+            params = act.get("params") or {}
+            _add(params.get("product_id"))
+            for v in (params.get("product_ids") or params.get("products") or []):
+                _add(v)
+    except Exception:
+        pass
+    return ids[:8]
+
+
+def attach_products(db, rows: list[dict]) -> list[dict]:
+    """build-490 (§۶) — تصویر واقعی محصول: ردیف‌ها را با رکورد Product (id/name/image_url/gallery)
+    از همان پایگاه‌داده پر می‌کند؛ اگر محصول تصویر نداشته باشد UI به آیکون برمی‌گردد (Fallback)."""
+    ids = sorted({pid for r in rows for pid in (r.get("product_ids") or [])})
+    if not ids:
+        return rows
+    from sqlalchemy import select as _sel
+    from ..models import Product as _P
+    prods = db.execute(_sel(_P.id, _P.name, _P.image_url, _P.gallery, _P.barcode)
+                       .where(_P.id.in_(ids))).all()
+    by = {int(p[0]): {"id": int(p[0]), "name": p[1], "image_url": p[2], "gallery": p[3], "barcode": p[4]}
+          for p in prods}
+    for r in rows:
+        r["products"] = [by[i] for i in (r.get("product_ids") or []) if i in by]
+    return rows
+
+
 def to_dict(r: Insight) -> dict:
     from .insight_guides import guide_for   # v4.6.0 — plain-language guide per kind
     return {
@@ -1681,6 +1747,7 @@ def to_dict(r: Insight) -> dict:
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,
         "result": json.loads(r.result) if r.result else None, "measured_gain": _f(r.measured_gain) if r.measured_gain is not None else None,
         "narrative": r.narrative, "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        "product_ids": product_ids_of(r),
         "resolved_at": r.resolved_at.isoformat() if getattr(r, "resolved_at", None) else None,
         "resolution": json.loads(r.resolution) if getattr(r, "resolution", None) else None,
     }

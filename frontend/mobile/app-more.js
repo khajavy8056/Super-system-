@@ -75,7 +75,8 @@
     if (!state.cart.length) { toast("سبد خالی است", "err"); return; }
     const h = held();
     if (h.length >= 10) { toast("حداکثر ۱۰ فاکتور معلق مجاز است", "err"); return; }
-    const label = prompt("نام مشتری / برچسب فاکتور (اختیاری)") || `فاکتور ${h.length + 1}`;
+    // build-491 — برچسب خودکار؛ هیچ prompt() مرورگری در هیچ UI نباید باشد
+    const label = `فاکتور ${h.length + 1}`;
     h.push({ id: Date.now(), label, cart: state.cart, at: new Date().toISOString() });
     saveHeld(h); state.cart = []; toast("فاکتور معلق شد"); showPos();
   };

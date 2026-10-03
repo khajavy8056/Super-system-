@@ -134,9 +134,20 @@
         <span class="badge ${e.status === "REVERSED" ? "badge-red" : "badge-green"}">${STATUS_FA[e.status] || e.status}</span>
         <div>${e.status !== "REVERSED" && can("accounting.post") ? `<button class="btn btn-danger" id="je-rev">برگشت سند</button>` : ""} <button class="btn" onclick="closeModal()">بستن</button></div></div>`);
     const rb = $("#je-rev");
-    if (rb) rb.onclick = async () => {
-      const reason = prompt("دلیل برگشت سند:"); if (reason === null) return;
-      try { await api(`/accounting/journal/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }); toast("سند برگشت خورد"); closeModal(); show(tab); } catch (err) { toast(err.message, "err"); }
+    if (rb) rb.onclick = () => {
+      // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+      openModal(`<h3>برگشت سند</h3>
+        <label>دلیل برگشت</label><textarea id="rev-reason" rows="3"></textarea>
+        <div class="prof-actions" style="margin-top:14px">
+          <button class="btn btn-danger" id="rev-ok">برگشت سند</button>
+          <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+        </div>`);
+      $("#rev-ok").addEventListener("click", async () => {
+        try {
+          await api(`/accounting/journal/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason: $("#rev-reason").value }) });
+          toast("سند برگشت خورد"); closeModal(); show(tab);
+        } catch (err) { toast(err.message, "err"); }
+      });
     };
   }
 

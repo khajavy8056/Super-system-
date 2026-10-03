@@ -59,6 +59,19 @@
     return Number(i.expected_gain) > 0 ? `<span class="ins-gain muted">برآورد اثر: ${money(i.expected_gain)} / ماه</span>` : "";
   }
 
+  // build-490 (§۶) — تصویر واقعی محصول: اگر Insight به کالای مشخصی مربوط باشد، تصویر واقعی
+  // همان کالا (از رکورد Product با شناسهٔ واقعی) جایگزین آیکون عمومی می‌شود؛ بدون تصویر → Fallback.
+  function prodImgs(i) {
+    const ps = (i.products || []).filter((p) => p && (p.image_url || p.gallery));
+    return ps.map((p) => {
+      let src = String(p.image_url || "").trim();
+      if (!src && p.gallery) {
+        try { const g = JSON.parse(p.gallery); src = Array.isArray(g) && g.length ? String(g[0]) : ""; } catch (_) {}
+      }
+      if (!src || src.startsWith("pack://")) return "";
+      return `<img class="ins-prod-img" src="${esc(src)}" alt="${esc(p.name || "")}" loading="lazy" onerror="this.remove()">`;
+    }).filter(Boolean).slice(0, 3);
+  }
   function card(i, compact) {
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
     /* v1.0.0 (RASA) — «چرا این پیشنهاد آمد؟» — مالک باید بداند چه چیزی دیده شده و
@@ -67,7 +80,7 @@
     const why = String(i.narrative || (i.evidence && (i.evidence.summary || i.evidence.reason)) || "").trim();
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
-      <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
+      <header><span class="ins-ic">${prodImgs(i).join("") || ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}

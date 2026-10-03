@@ -57,9 +57,18 @@ def types(_: User = Depends(get_current_user)):
             "priorities": [{"id": k, "label": v} for k, v in svc.PRIORITIES.items()]}
 
 
+def _support_desk(user) -> bool:
+    """build-490 (§۱/§۷) — میز پشتیبانی (دیدن همهٔ تیکت‌ها) برای مدیریت؛ بقیه فقط تیکت‌های خودشان."""
+    from ..security import has_permission
+    return has_permission(user, "settings.manage") or has_permission(user, "users.manage")
+
+
 @router.get("/tickets")
-def list_tickets(limit: int = Query(default=50, ge=1, le=500), db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    rows = db.execute(select(SupportTicket).order_by(SupportTicket.id.desc()).limit(limit)).scalars().all()
+def list_tickets(limit: int = Query(default=50, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    q = select(SupportTicket).order_by(SupportTicket.id.desc())
+    if not _support_desk(user):
+        q = q.where(SupportTicket.created_by == user.id)   # نشت تیکت‌های دیگران ممنوع
+    rows = db.execute(q.limit(limit)).scalars().all()
     from sqlalchemy import func
     unread = dict(db.execute(select(SupportMessage.ticket_id, func.count(SupportMessage.id))
                              .where(SupportMessage.direction == "IN", SupportMessage.is_read.is_(False))
@@ -154,10 +163,10 @@ def create_ticket(body: TicketIn, db: Session = Depends(get_db), user: User = De
 
 
 @router.post("/tickets/{ticket_id}/resend")
-def resend(ticket_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def resend(ticket_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     t = db.get(SupportTicket, ticket_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail="درخواست یافت نشد")
+    if t is None or (not _support_desk(user) and t.created_by != user.id):
+        raise HTTPException(status_code=404, detail="درخواست یافت نشد")   # build-490
     try:
         svc._handle_ticket(db, {"ticket_id": t.id})
         db.commit()
@@ -179,10 +188,10 @@ def close(ticket_id: int, db: Session = Depends(get_db), user: User = Depends(re
 
 
 @router.get("/tickets/{ticket_id}/messages")
-def messages(ticket_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def messages(ticket_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     t = db.get(SupportTicket, ticket_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail="درخواست یافت نشد")
+    if t is None or (not _support_desk(user) and t.created_by != user.id):
+        raise HTTPException(status_code=404, detail="درخواست یافت نشد")   # build-490 — تیکت دیگران دیده نمی‌شود
     rows = db.execute(select(SupportMessage).where(SupportMessage.ticket_id == ticket_id).order_by(SupportMessage.id.asc())).scalars().all()
     for m in rows:
         if m.direction == "IN" and not m.is_read:

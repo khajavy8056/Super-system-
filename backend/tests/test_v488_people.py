@@ -131,7 +131,9 @@ def test_announcement_targeting_and_read_states(client, auth_headers):
 
 def test_announcement_permission_gate(client, auth_headers):
     """ایجاد اطلاعیه فقط با Permission — نه عنوان شغلی (§۱۵)."""
-    _mkuser(client, auth_headers, "ann_sup", roles=["Supervisor"])   # announcements.publish دارد
+    # build-490 — ماتریس نقش‌ها (دستور جامع §۱.۳) «Supervisor» را از اطلاعیه‌ها جدا کرد؛
+    # مقصود این تست «مجوز مهم است نه عنوان» است → مجوز مستقیم (§۲) + صندوقدار بدون مجوز.
+    _mkuser(client, auth_headers, "ann_sup", roles=["Salesperson"], permissions=["announcements.publish"])
     _mkuser(client, auth_headers, "ann_cas", roles=["Cashier"])      # ندارد
     sup = _login(client, "ann_sup", "pass1234")
     cas = _login(client, "ann_cas", "pass1234")

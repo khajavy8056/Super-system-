@@ -22,22 +22,46 @@ def _maybe_redact(user: User, payload):
     return rep.redact_costs(payload)
 
 
+_SELF_ONLY_BLOCKS = ("receivables", "accounting", "top_products", "sales_by_category",
+                     "customers_new", "expiry", "pricing")
+
+
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
-    return _maybe_redact(user, rep.dashboard(db))
+    # build-490 (§۲–۳/§۷) — زنجیرهٔ واقعی Role → Permission → Data Scope:
+    # «کل فروشگاه» فقط با reports.view_all؛ فروشنده/صندوق‌دار فقط دادهٔ خودش؛ بدون آن دامنهٔ خالی.
+    # اطلاعات حساس (بدهکاران، مالی، عملکرد دیگران) اصلاً به کلاینت نمی‌رود — نه اینکه در UI مخفی شود.
+    if has_permission(user, "reports.view_all"):
+        scope = "store"
+    elif has_permission(user, "pos.sell"):
+        scope = "self"
+    else:
+        scope = "none"
+    uid = user.id if scope == "self" else None
+    payload = rep.dashboard(db, user_id=uid)
+    payload["scope"] = scope
+    if scope != "store":
+        for k in _SELF_ONLY_BLOCKS:
+            payload[k] = [] if isinstance(payload.get(k), list) else {}
+        payload["inventory"] = {"value": 0, "product_count": 0, "low_stock": [],
+                                "no_stock": [], "low_stock_count": 0, "no_stock_count": 0}
+    return _maybe_redact(user, payload)
 
 
 @router.get("/sales")
 def sales(start: date, end: date, group: str = "daily", db: Session = Depends(get_db),
           user: User = Depends(require_permission("reports.view"))):
     """group: daily | weekly | monthly (Jalali buckets) | product (§49, §137)."""
-    return _maybe_redact(user, rep.sales_report(db, start, end, group))
+    # build-490 — دامنهٔ شخصی: بدون reports.view_all فقط فروش‌های خودِ کاربر (نه آمار کل فروشگاه)
+    uid = None if has_permission(user, "reports.view_all") else user.id
+    return _maybe_redact(user, rep.sales_report(db, start, end, group, user_id=uid))
 
 
 @router.get("/cashiers")
 def cashiers(start: date | None = None, end: date | None = None, db: Session = Depends(get_db),
-             user: User = Depends(require_permission("reports.view"))):
-    return _maybe_redact(user, rep.cashier_report(db, start, end))
+             _: User = Depends(require_permission("reports.view_all"))):
+    # build-490 (§۲/§۷) — گزارش تفکیکی صندوق‌داران = دادهٔ عملکرد کارکنان؛ فقط گزارش کل فروشگاه
+    return _maybe_redact(_, rep.cashier_report(db, start, end))
 
 
 @router.get("/inventory")

@@ -56,7 +56,11 @@ def _out(inv: Invoice) -> dict:
 @router.get("")
 def list_invoices(limit: int = Query(default=100, le=1000), offset: int = 0,
                   db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
-    rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit).offset(offset)).scalars().all()
+    q = select(Invoice).order_by(Invoice.created_at.desc())
+    # build-490 (§۲–۳) — بدون reports.view_all فقط فاکتورهای خودِ کاربر (سوابق فروش خودش)
+    if not has_permission(user, "reports.view_all"):
+        q = q.where(Invoice.created_by == user.id)
+    rows = db.execute(q.limit(limit).offset(offset)).scalars().all()
     return _maybe_redact(user, {"items": [_out(i) for i in rows]})
 
 
@@ -64,6 +68,9 @@ def list_invoices(limit: int = Query(default=100, le=1000), offset: int = 0,
 def get_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     inv = db.get(Invoice, invoice_id)
     if not inv:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    # build-490 (§۲) — فاکتور دیگران برای کاربر بدون reports.view_all قابل دسترسی نیست (حتی با URL مستقیم)
+    if not has_permission(user, "reports.view_all") and inv.created_by != user.id:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
     return _maybe_redact(user, _out(inv))
 

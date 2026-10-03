@@ -178,6 +178,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     buildNav();
     await applyTheme();
     startStatusBar();
+    if (window.updatePresence) updatePresence();   // build-491 — نوار حضور
     if (window.Onboarding) Onboarding.alertsStack();
     if (window.Sfx) Sfx.play("welcome");
     if (state.kiosk) enterKiosk(); else go("dashboard");
@@ -307,10 +308,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-489 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-491 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 489;
+const UI_BUILD = 491;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -319,15 +320,17 @@ const icon = (name, size = 18) =>
 
 /* build-485 — ترتیب و نام‌ها دقیقاً مطابق تصویر مرجع؛ بخش‌های اضافهٔ محصول
    (فاکتورها، هوش مصنوعی، حسابداری، …) بدون حذف بعد از فهرست مرجع می‌آیند. */
+/* build-490 (§۱–۳) — ماتریس نقش‌ها: هر بخش دقیقاً با مجوزِ «عملیات همان بخش» دیده می‌شود؛
+   فقط Permission تعیین می‌کند (هرگز نام Role). صندوقدار/حسابدار/سوپروایزر/مدیر کل — مطابق دستور. */
 const NAV = [
   ["dashboard", "داشبورد", "reports.view", "dashboard"],
   ["pos", "فروش و صندوق", "pos.sell", "pos"],
   ["batches", "خرید و دریافت", "batches.manage", "inbox"],
-  ["inventory", "موجودی و انبار", "inventory.view", "warehouse"],
-  ["products", "محصولات", "products.view", "box"],
-  ["customers", "مشتریان", "pos.sell", "user"],
+  ["inventory", "موجودی و انبار", "inventory.adjust||inventory.stocktake||inventory.approve_stocktake", "warehouse"],
+  ["products", "محصولات", "products.manage||batches.manage||pricing.manage", "box"],
+  ["customers", "مشتریان", "pos.sell||customers.manage||customers.ledger", "user"],
   ["marketing", "تخفیف‌ها و کمپین‌ها", "marketing.view", "gift"],
-  ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["reports", "گزارش‌ها", "reports.view_all", "chart"],
   ["invoices", "فاکتورها", "reports.view", "invoice"],
   ["insights", "هوش مصنوعی", "reports.view", "star"],
   ["accounting", "حسابداری", "accounting.view", "ledger"],
@@ -339,6 +342,11 @@ const NAV = [
   ["audit", "لاگ‌ها", "audit.view", "shield"],
   ["staff", "کارکنان و سازمان", "staff.view", "users"],
 ];
+
+/** build-490 — «perm» می‌تواند چند مجوز با جداکنندهٔ || (هر کدام کافی است). */
+function canNav(perm) {
+  return String(perm || "").split("||").some((p) => can(p));
+}
 
 function can(perm) {
   if (!state.user) return false;
@@ -365,7 +373,7 @@ function buildNav() {
       const staffOk = can("users.manage") || can("payroll.view") || can("payroll.manage") ||
         can("shifts.manage") || can("performance.view_all") || can("announcements.manage");
       if (!staffOk) return;
-    } else if (perm && !can(perm)) return;
+    } else if (perm && !canNav(perm)) return;
     const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
     btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "insights" ? `<i class="nav-new">جدید</i>` : ""}${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
     nav.append(btn);
@@ -403,6 +411,7 @@ function bindGlobalBar() {
   // build-487 — کارت کاربر «پروفایل کاربر» را باز می‌کند، نه پروفایل فروشگاه
   const us = $("#tb-user"); if (us) us.addEventListener("click", () => go("profile"));
   if (window.checkUpdateOnce) checkUpdateOnce();
+  if (window.updatePresence) updatePresence();   // build-491 — نوار حضور
 }
 
 /* build-489 — «داشبورد من» (§۳۰ نقش داشبوردها): فروش/شیفت/عملکرد خودِ کاربر از
@@ -422,19 +431,123 @@ window.loadMineCard = async function (dashData) {
     const sc = pr && (pr.score != null ? pr.score : (pr.summary && pr.summary.score));
     if (sc != null) parts.push(`<div class="mine-kpi"><span>امتیاز عملکرد من</span><b>${fa(sc)}</b><small>${pr.period_label ? esc(pr.period_label) : "دورهٔ اخیر"}</small></div>`);
   } catch (_) {}
-  // ۳) شیفت — فقط با shifts.view
-  if (can("shifts.view")) {
-    try {
-      const sh = await api("/hr/shifts/day/" + new Date().toISOString().slice(0, 10));
-      const mine = ((sh && sh.assignments) || sh || []).filter ? ((sh.assignments || sh).filter((a) => a.user_id === (state.user || {}).id || (state.user || {}).full_name && String(a.name || a.user_name || "").includes((state.user || {}).full_name))) : [];
-      parts.push(`<div class="mine-kpi"><span>شیفت امروز</span><b>${mine.length ? esc(mine[0].shift_name || mine[0].name || "در برنامه") : "—"}</b><small>${mine.length ? "تخصیص یافته" : "بدون تخصیص"}</small></div>`);
-    } catch (_) {}
-  }
+  // ۳) حضور امروز + شیفت (build-491) — هر کاربر وضعیت خودش را می‌بیند
+  try {
+    const st = await api("/hr/attendance/status"); window._presence = st;
+    if (st.has_shift && st.present) {
+      parts.push(`<div class="mine-kpi"><span class="pres-on">● حضور امروز</span><b>${presenceClock(st.since)}</b><small>حاضر — ${fa(st.minutes || 0)} دقیقه</small></div>`);
+    } else if (st.has_shift) {
+      parts.push(`<div class="mine-kpi"><span class="pres-off">● حضور امروز</span><b>غایب</b><small>${st.late_minutes ? fa(st.late_minutes) + " دقیقه تأخیر · " : ""}<button class="btn btn-xs btn-primary" id="pres-in-card">ثبت حضور</button></small></div>`);
+    } else {
+      parts.push(`<div class="mine-kpi"><span>حضور امروز</span><b>—</b><small>شیفتی برای امروز ثبت نشده</small></div>`);
+    }
+    if (st.has_shift) parts.push(`<div class="mine-kpi"><span>شیفت امروز</span><b>${esc(st.shift_name || "—")}</b><small>${fa(st.start_time)} تا ${fa(st.end_time)}</small></div>`);
+  } catch (_) {}
   if (!parts.length) { host.style.display = "none"; return; }
   host.style.display = "";
   body.innerHTML = parts.join("");
+  const pic = body.querySelector("#pres-in-card");
+  if (pic) pic.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
+      toast("حضور ثبت شد", "ok"); updatePresence(); loadMineCard();
+    } catch (e) { toast(e.message, "err"); }
+  });
   if (sub) sub.textContent = meName;
 };
+
+/* build-491 (دستور مالک) — پنجره‌های فرم به‌جای prompt() مرورگر (سیستمی/داخلی).
+   هیچ prompt()‌ای در هیچ‌کدام از UIها نباید وجود داشته باشد. */
+function openShiftCreate(onDone) {
+  openModal(`<h3>تعریف شیفت جدید</h3>
+    <label>نام شیفت</label><input id="shf-name" placeholder="مثلاً «صبح»">
+    <label>ساعت شروع (HH:MM)</label><input id="shf-start" value="08:00" placeholder="08:00">
+    <label>ساعت پایان (HH:MM)</label><input id="shf-end" value="14:00" placeholder="14:00">
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="shf-save">ذخیره شیفت</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  $("#shf-save").addEventListener("click", async () => {
+    const name = $("#shf-name").value.trim();
+    const start = $("#shf-start").value.trim();
+    const end = $("#shf-end").value.trim();
+    if (!name) return toast("نام شیفت لازم است", "err");
+    if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return toast("ساعت را درست وارد کنید (HH:MM)", "err");
+    try {
+      await api("/hr/shifts", { method: "POST", body: JSON.stringify({ name, start_time: start, end_time: end }) });
+      toast("شیفت ساخته شد", "ok"); closeModal(); if (onDone) onDone();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+async function openShiftAssign(s, onDone) {
+  let users = [];
+  try { users = await api("/hr/roster-users"); } catch (e) { return toast(e.message, "err"); }
+  const today = new Date().toISOString().slice(0, 10);
+  openModal(`<h3>تخصیص شیفت «${esc(s.name)}» به شخص</h3>
+    <label>شخص</label>
+    <select id="sa-user">${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}${u.job_title ? " — " + esc(u.job_title) : ""}</option>`).join("")}</select>
+    <label>روز</label><input id="sa-day" type="date" value="${today}">
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="sa-save">تخصیص شیفت</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  $("#sa-save").addEventListener("click", async () => {
+    try {
+      await api(`/hr/shifts/${s.id}/assign`, { method: "POST", body: JSON.stringify({ user_id: Number($("#sa-user").value), day: $("#sa-day").value }) });
+      toast("شیفت به شخص تخصیص یافت", "ok"); closeModal(); if (onDone) onDone();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+function openTextPrompt(title, label, def, onOk) {
+  openModal(`<h3>${esc(title)}</h3>
+    <label>${esc(label)}</label><textarea id="tp-val" rows="4">${esc(def || "")}</textarea>
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="tp-ok">تأیید</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  $("#tp-ok").addEventListener("click", () => { const v = $("#tp-val").value; closeModal(); if (onOk) onOk(v); });
+}
+
+/* build-491 (دستور مالک) — نوار حضور: زیر کارت پروفایل (نوار بالا) + داشبورد.
+   سبز = حضور ثبت‌شده (ساعت ورود با دقت دقیقه + مدت)، قرمز = غایب (شیفت امروز دارد).
+   ثبت حضور/خروج از همان نوار — داده از /hr/attendance/status. */
+window.updatePresence = async function () {
+  const strip = $("#tb-presence");
+  if (!strip || !state.user) return;
+  let st = null;
+  try { st = await api("/hr/attendance/status"); } catch (e) { return; }
+  window._presence = st;
+  strip.innerHTML = presenceHtml(st, true);
+  strip.style.display = "";
+  const pin = $("#pres-in"), pout = $("#pres-out");
+  if (pin) pin.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
+      toast("حضور ثبت شد", "ok"); updatePresence();
+      if (state.view === "dashboard") go("dashboard");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  if (pout) pout.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-out", { method: "POST", body: JSON.stringify({}) });
+      toast("خروج ثبت شد", "ok"); updatePresence();
+      if (state.view === "dashboard") go("dashboard");
+    } catch (e) { toast(e.message, "err"); }
+  });
+};
+function presenceClock(iso) {
+  try { const d = new Date(iso); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); } catch (_) { return ""; }
+}
+function presenceHtml(st, withBtn) {
+  if (!st || !st.has_shift) return `<span class="pres pres-none">شیفت امروز ثبت نشده</span>`;
+  const win = st.start_time ? ` (${fa(st.start_time)} تا ${fa(st.end_time)})` : "";
+  if (st.present) {
+    return `<span class="pres pres-on" title="حضور از ${presenceClock(st.since)}">● حضور — از ${presenceClock(st.since)} · ${fa(st.minutes || 0)} دقیقه</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-out">خروج</button>` : ""}`;
+  }
+  const late = st.late_minutes ? ` · ${fa(st.late_minutes)} دقیقه تأخیر` : "";
+  return `<span class="pres pres-off" title="حضور ثبت نشده">● غایب${st.shift_name ? " — شیفت «" + esc(st.shift_name) + "»" : ""}${win}${late}</span>${withBtn ? `<button class="btn btn-sm btn-primary pres-btn" id="pres-in">ثبت حضور</button>` : ""}`;
+}
+setInterval(() => { if (state.user && window.updatePresence) updatePresence(); }, 60000);   // هر دقیقه
 
 /* build-488 — داشبورد پویا (§۴–۱۳): Widgetهای مجاز هر کاربر از /hr/widgets می‌آید؛
    مخفی/ترتیب/Pin/اندازه روی همان کارت‌های فعلی اعمال می‌شود (ظاهر تغییر نمی‌کند).
@@ -465,6 +578,23 @@ window.applyDashboardWidgets = async function () {
   const btn = $("#dash-layout-btn");
   if (btn) btn.onclick = () => openDashLayout();
   if (window.loadMineCard && !window._mineLoaded) loadMineCard(window._dashData);
+  if (window.loadFinCard && can("accounting.view")) loadFinCard();
+};
+
+/* build-490 (§۳) — کارت مالی داشبورد حسابدار/مدیر: بدهکاران + دریافت/پرداخت از /accounting/overview */
+window.loadFinCard = async function () {
+  const host = $("#og-fin"), body = $("#fin-body");
+  if (!host || !body) return;
+  try {
+    const ov = await api("/accounting/overview");
+    const ch = ov.cheques || {};
+    body.innerHTML = `
+      <div class="mine-kpi"><span>مطالبات (بدهکاران)</span><b>${money(ov.receivables || 0)}</b><small>چک دریافتی در انتظار: ${money(ch.received_pending || 0)}</small></div>
+      <div class="mine-kpi"><span>بدهکاران (بستانکاران)</span><b>${money(ov.payables || 0)}</b><small>چک صادره در انتظار: ${money(ch.issued_pending || 0)}</small></div>
+      <div class="mine-kpi"><span>نقد / بانک / کارت</span><b>${money(ov.cash || 0)}</b><small>بانک ${money(ov.bank || 0)} · کارت ${money(ov.card || 0)}</small></div>
+      <div class="mine-kpi"><span>سود خالص این ماه</span><b>${money((ov.month || {}).net_profit || 0)}</b><small>درآمد ${money((ov.month || {}).revenue || 0)} · هزینه ${money((ov.month || {}).expenses || 0)}</small></div>`;
+    host.style.display = "";
+  } catch (e) { host.style.display = "none"; }
 };
 window.openDashLayout = function () {
   const data = window._widgetLayout;
@@ -643,33 +773,44 @@ RENDER.staff = async () => {
     if (key === "shifts") {
       let shifts = [];
       try { shifts = await api("/hr/shifts"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      let att = [];
+      try { att = await api("/hr/attendance/today"); } catch (_) { att = []; }
+      const attMap = {};
+      (att || []).forEach((a) => { attMap[a.user_id] = a; });
       body.innerHTML = `
-        <div class="dcard-head"><h3>${icon("clock", 15)} شیفت‌های کاری</h3>
+        <div class="dcard-head"><h3>${icon("clock", 15)} شیفت‌های کاری — تخصیص به اشخاص</h3>
+          <span class="muted tiny">● حاضر — ✕ غایب — ○ بدون شیفت امروز</span>
           ${can("shifts.manage") ? `<button class="btn btn-sm btn-primary" id="shf-new">شیفت جدید</button>` : ""}</div>
         <div class="table-scroll"><table class="dtable"><thead><tr>
-          <th>نام شیفت</th><th>ساعت</th><th>روزها</th><th>بخش</th><th>تیم</th><th>وضعیت</th></tr></thead><tbody>
+          <th>نام شیفت</th><th>ساعت</th><th>روزها</th><th>بخش</th><th>اعضا (حضور امروز)</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>
         ${shifts.map((s) => `<tr>
           <td><b>${esc(s.name)}</b></td>
           <td>${fa(s.start_time)} تا ${fa(s.end_time)}</td>
           <td class="muted">${(s.workdays || []).length ? s.workdays.map((d) => ["ش", "ی", "د", "س", "چ", "پ", "ج"][d]).join(" ") : "هر روز"}</td>
           <td>${esc(s.department || "—")}</td>
-          <td>${(s.roster || []).map((r) => esc(r.full_name)).join("، ") || "—"}</td>
-          <td><span class="badge ${s.status === "ACTIVE" ? "ok" : ""}">${s.status === "ACTIVE" ? "فعال" : "بایگانی"}</span></td></tr>`).join("") || '<tr><td colspan="6" class="muted">شیفتی تعریف نشده</td></tr>'}
+          <td>${(s.roster || []).map((r) => {
+            const a = attMap[r.user_id];
+            const dot = !a ? "○" : (a.present ? "●" : "✕");
+            const cls = !a ? "mem-none" : (a.present ? "mem-on" : "mem-off");
+            const tip = a ? (a.present ? `حضور از ${presenceClock(a.since)}` : "غایب") : "شیفت امروز ندارد";
+            return `<span class="member ${cls}" title="${tip}">${dot} ${esc(r.full_name || r.username || ("#" + r.user_id))}</span>`;
+          }).join("، ") || "—"}
+          ${(s.roster || []).map((r) => (r.assignment_id ? `<button class="btn btn-xs btn-ghost mem-x" data-aid="${r.assignment_id}" title="لغو تخصیص">✕</button>` : "")).join("")}</td>
+          <td><span class="badge ${s.status === "ACTIVE" ? "ok" : ""}">${s.status === "ACTIVE" ? "فعال" : "بایگانی"}</span></td>
+          <td>${can("shifts.manage") ? `<button class="btn btn-sm btn-primary shf-assign" data-id="${s.id}" data-name="${esc(s.name)}">تخصیص به شخص</button>` : ""}</td>
+          </tr>`).join("") || '<tr><td colspan="7" class="muted">شیفتی تعریف نشده</td></tr>'}
         </tbody></table></div>`;
       const shn = $("#shf-new");
-      if (shn) shn.addEventListener("click", async () => {
-        const name = prompt("نام شیفت (مثلاً «صبح»):");
-        if (!name) return;
-        const start = prompt("ساعت شروع (HH:MM):", "08:00");
-        if (!start) return;
-        const end = prompt("ساعت پایان (HH:MM):", "14:00");
-        if (!end) return;
+      if (shn) shn.addEventListener("click", () => openShiftCreate(() => renderTab("shifts")));
+      body.querySelectorAll(".shf-assign").forEach((b) => b.addEventListener("click", () =>
+        openShiftAssign({ id: Number(b.dataset.id), name: b.dataset.name }, () => renderTab("shifts"))));
+      body.querySelectorAll(".mem-x").forEach((b) => b.addEventListener("click", async () => {
+        if (!confirm("تخصیص این شیفت از این شخص لغو شود؟")) return;
         try {
-          await api("/hr/shifts", { method: "POST", body: JSON.stringify({ name, start_time: start, end_time: end }) });
-          toast("شیفت ساخته شد", "ok");
-          renderTab("shifts");
+          await api(`/hr/shifts/assignments/${b.dataset.aid}`, { method: "DELETE" });
+          toast("تخصیص لغو شد", "ok"); renderTab("shifts");
         } catch (e) { toast(e.message, "err"); }
-      });
+      }));
       return;
     }
     if (key === "ann") {
@@ -696,21 +837,28 @@ RENDER.staff = async () => {
       }));
       const annn = $("#ann-new");
       if (annn) annn.addEventListener("click", async () => {
-        const title = prompt("عنوان اطلاعیه:");
-        if (!title) return;
-        const text = prompt("متن اطلاعیه:") || "";
-        const kind = prompt("مخاطب: ALL=همه / ROLES=نقش‌ها / USERS=کاربران", "ALL") || "ALL";
-        let roles = [], users = [];
-        if (kind.toUpperCase() === "ROLES") {
-          const rl = prompt("نام نقش‌ها با ویرگول (مثلاً Salesperson,Cashier):") || "";
-          roles = rl.split(",").map((x) => x.trim()).filter(Boolean);
-        }
-        try {
-          await api("/hr/announcements", { method: "POST", body: JSON.stringify({
-            title, body: text, target_kind: kind.toUpperCase(), target_roles: roles, target_users: users, priority: 3 }) });
-          toast("اطلاعیه منتشر شد", "ok");
-          renderTab("ann");
-        } catch (e) { toast(e.message, "err"); }
+        // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+        openModal(`<h3>اطلاعیه جدید</h3>
+          <label>عنوان</label><input id="an-title">
+          <label>متن</label><textarea id="an-body" rows="4"></textarea>
+          <label>مخاطب</label>
+          <select id="an-kind"><option value="ALL">همهٔ کارکنان</option><option value="ROLES">نقش‌های مشخص</option></select>
+          <label>نقش‌ها (با ویرگول، برای مخاطب نقش‌ها)</label><input id="an-roles" placeholder="مثلاً Salesperson,Cashier">
+          <div class="prof-actions" style="margin-top:14px">
+            <button class="btn btn-primary" id="an-save">انتشار اطلاعیه</button>
+            <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+          </div>`);
+        $("#an-save").addEventListener("click", async () => {
+          const title = $("#an-title").value.trim();
+          if (!title) return toast("عنوان لازم است", "err");
+          const kind = $("#an-kind").value;
+          const roles = kind === "ROLES" ? $("#an-roles").value.split(",").map((x) => x.trim()).filter(Boolean) : [];
+          try {
+            await api("/hr/announcements", { method: "POST", body: JSON.stringify({
+              title, body: $("#an-body").value, target_kind: kind, target_roles: roles, target_users: [], priority: 3 }) });
+            toast("اطلاعیه منتشر شد", "ok"); closeModal(); renderTab("ann");
+          } catch (e) { toast(e.message, "err"); }
+        });
       });
       return;
     }
@@ -824,16 +972,23 @@ RENDER.profile = async () => {
     } catch (e) { toast(e.message, "err"); }
   });
   const pe = $("#prof-edit");
-  if (pe) pe.addEventListener("click", async () => {
-    const nn = prompt("نام کامل:", me.full_name || "");
-    if (nn === null) return;
-    const ph = prompt("شماره تماس:", me.phone || "");
-    if (ph === null) return;
-    try {
-      await api("/users/me", { method: "PATCH", body: JSON.stringify({ full_name: nn, phone: ph }) });
-      toast("پروفایل ذخیره شد", "ok");
-      await RENDER.profile();
-    } catch (e) { toast(e.message, "err"); }
+  if (pe) pe.addEventListener("click", () => {
+    // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+    openModal(`<h3>ویرایش پروفایل</h3>
+      <label>نام کامل</label><input id="pe-name" value="${esc(me.full_name || "")}">
+      <label>شماره تماس</label><input id="pe-phone" value="${esc(me.phone || "")}" placeholder="09xxxxxxxxx">
+      <div class="prof-actions" style="margin-top:14px">
+        <button class="btn btn-primary" id="pe-save">ذخیره</button>
+        <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+      </div>`);
+    $("#pe-save").addEventListener("click", async () => {
+      try {
+        await api("/users/me", { method: "PATCH", body: JSON.stringify({
+          full_name: $("#pe-name").value.trim(), phone: $("#pe-phone").value.trim() }) });
+        toast("پروفایل ذخیره شد", "ok"); closeModal();
+        await RENDER.profile();
+      } catch (e) { toast(e.message, "err"); }
+    });
   });
   const ps = $("#prof-shift");
   if (ps) {
@@ -905,16 +1060,21 @@ RENDER.dashboard = async () => {
           </div>
           <div class="greet-art" aria-hidden="true">${SHOP_ART}</div>
         </section>
+        <section class="dcard og-fin" id="og-fin" style="display:none">
+          <div class="dcard-head"><h3>${icon("cash", 15)} مالی — بدهکاران و دریافت/پرداخت</h3></div>
+          <div class="fin-kpis" id="fin-body"><span class="muted">در حال آماده‌سازی…</span></div>
+        </section>
         <section class="dcard og-mine" id="og-mine" style="display:none">
           <div class="dcard-head"><h3>${icon("user", 15)} داشبورد من</h3>
             <span class="muted" id="mine-sub"></span></div>
           <div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div>
         </section>
         <div class="og-kpis">
-          ${kpi("cart", "i-green", "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
-          ${kpi("invoice", "i-violet", "تعداد فاکتورها", fa(d.sales.invoice_count_today), trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday)))}
-          ${kpi("users", "i-amber", "مشتریان امروز", fa((d.customers_new || {}).today || 0), trendHtml(pct((d.customers_new || {}).today || 0, (d.customers_new || {}).yesterday || 0)))}
-          ${kpi("box", "i-blue", "موجودی کل محصولات", fa(d.inventory.product_count), `<span class="muted">در حال حاضر</span>`)}
+          ${(() => { const mine = d.scope === "self"; return `
+          ${kpi("cart", "i-green", mine ? "فروش امروز من" : "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
+          ${kpi("invoice", "i-violet", mine ? "فاکتورهای امروز من" : "تعداد فاکتورها", fa(d.sales.invoice_count_today), trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday)))}
+          ${kpi("users", "i-amber", "مشتریان امروز", fa((d.customers_new || {}).today || 0), mine ? `<span class="muted">ثبت‌شده در فروشگاه</span>` : trendHtml(pct((d.customers_new || {}).today || 0, (d.customers_new || {}).yesterday || 0)))}
+          ${kpi("box", "i-blue", "موجودی کل محصولات", mine ? "—" : fa(d.inventory.product_count), `<span class="muted">${mine ? "در دسترس مدیریت" : "در حال حاضر"}</span>`)}`; })()}
         </div>
         <div class="og-row">
           <section class="dcard og-trend">
@@ -1065,7 +1225,7 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.0")} · بیلد ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.491")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     <button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
@@ -4920,6 +5080,7 @@ async function refreshSupportBadge() {
   } catch (_) {}
 }
 function startStatusBar() {
+  if (window.updatePresence) updatePresence();   // build-491 — نوار حضور (همهٔ مسیرهای ورود)
   refreshSupportBadge(); clearInterval(window._supTimer); window._supTimer = setInterval(refreshSupportBadge, 30000);
   const btn = $("#sb-theme");
   if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", cycleTheme); }

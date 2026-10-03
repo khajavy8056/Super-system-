@@ -88,10 +88,14 @@
           </button>
           <button id="tb-theme" class="tb-icon tb-round" title="تغییر پوسته ☀/🌙">◐</button>
         </div>
-        <button class="topbar-user" id="tb-user" title="حساب کاربری">
-          <span class="tu-meta"><b id="tb-user-name"></b><span id="tb-user-role"></span></span>
-          <span class="tu-avatar" id="tb-user-av">؟</span>
-        </button>
+        <div class="topbar-user-wrap">
+          <button class="topbar-user" id="tb-user" title="حساب کاربری">
+            <span class="tu-meta"><b id="tb-user-name"></b><span id="tb-user-role"></span></span>
+            <span class="tu-avatar" id="tb-user-av">؟</span>
+          </button>
+          <!-- build-491 — نوار حضور: زیر کارت پروفایل — سبز=حاضر (با ساعت دقیقه)، قرمز=غایب -->
+          <div class="presence-strip" id="tb-presence" style="display:none"></div>
+        </div>
       </header>
       <section id="view" class="view"></section>
       <!-- Status bar (§21): network, date/time, and live system state -->

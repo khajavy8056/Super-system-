@@ -20,10 +20,14 @@ def test_default_channel_is_public_release_repo():
 
 
 def test_current_version_carries_build_number():
-    """نسخهٔ فعلی از اطلاعات داخلی خود برنامه (§۴۱) — با Build («عدد سوم»)."""
+    """نسخهٔ فعلی از اطلاعات داخلی خود برنامه (§۴۱).
+
+    build-490 (§۸) — ساختار Major.Minor.Build («1.0.491»)؛ رقم سوم = Build و
+    دیگر «1.0.0-build.N» نیست. مقایسهٔ بین‌ساختاری در test_version_compare."""
     tag = updater.current_release_tag()
-    assert tag.startswith(__version__)
-    assert f"build.{BUILD // 100}" in tag
+    assert tag == __version__
+    assert tag.count(".") == 2 and tag.split(".")[2].isdigit()
+    assert int(tag.split(".")[2]) == BUILD // 100
 
 
 def test_version_compare_is_build_aware():
