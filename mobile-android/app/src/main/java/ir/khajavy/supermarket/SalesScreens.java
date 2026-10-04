@@ -68,6 +68,7 @@ public final class SalesScreens {
             return root;
         }
         public void load() { String restore = Prefs.get("pos_restore", ""); if (!restore.isEmpty()) { Prefs.set("pos_restore", ""); restoreHeld(restore); } renderCart(); }
+        @Override public void refresh() { renderCart(); if (search != null) suggest(Ui.str(search)); }
 
         /* ---- search / add ---- */
         void suggest(String q) {
@@ -77,6 +78,10 @@ public final class SalesScreens {
         }
         void showSugg(List<JSONObject> list) {
             sugg.removeAllViews();
+            if (list.isEmpty() && !"0".equals(Prefs.get("install_starter", "1")) && Db.catalogPending()) {
+                sugg.addView(Ui.muted(c, "فهرست پیش‌فرض هنوز در پس‌زمینه بارگذاری می‌شود؛ پس از آماده‌شدن دوباره جست‌وجو کنید."));
+                return;
+            }
             for (JSONObject p : list) { double avail = p.optDouble("available_qty", 0); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price", 0) : 0; sugg.addView(Ui.pitem(c, p, p.optString("name"), Ui.fa(p.optString("barcode")) + " · موجودی " + Ui.num(avail), Ui.money(price), avail > 0 ? Ui.TEXT : Ui.RED, () -> { add(p, null); search.setText(""); sugg.removeAllViews(); })); }
         }
         void onBarcode(String code) {
@@ -87,7 +92,14 @@ public final class SalesScreens {
             if (Api.online && !Api.standalone()) Api.get("/pos/search?q=" + Api.q(bc) + "&limit=1", r -> { JSONArray it = ((JSONObject) r).optJSONArray("items"); if (it != null && it.length() > 0 && bc.equals(it.optJSONObject(0).optString("barcode"))) add(it.optJSONObject(0), null); else notFound(bc); }, e -> notFound(bc));
             else if (p != null) Ui.toast("موجودی این کالا صفر است"); else notFound(bc);
         }
-        void notFound(String bc) { Ui.toast("کالایی با بارکد " + Ui.fa(bc) + " نیست"); Ui.confirm(c, "کالای " + Ui.fa(bc) + " تعریف نشده. اکنون تعریف و دریافت شود؟", () -> a.open(new StockScreens.Receive(a, bc), true)); }
+        void notFound(String bc) {
+            if (!"0".equals(Prefs.get("install_starter", "1")) && Db.catalogPending()) {
+                Ui.toast("فهرست پیش‌فرض هنوز در پس‌زمینه بارگذاری می‌شود؛ چند لحظه دیگر دوباره اسکن کنید.");
+                return;
+            }
+            Ui.toast("کالایی با بارکد " + Ui.fa(bc) + " نیست");
+            Ui.confirm(c, "کالای " + Ui.fa(bc) + " تعریف نشده. اکنون تعریف و دریافت شود؟", () -> a.open(new StockScreens.Receive(a, bc), true));
+        }
         void add(JSONObject p, JSONObject batch) {
             JSONArray bs = p.optJSONArray("batches");
             if (bs == null || bs.length() == 0) { Sfx.play("error"); Ui.toast("این کالا موجودی ندارد"); return; }

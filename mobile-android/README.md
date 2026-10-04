@@ -1,26 +1,21 @@
-# سوپرمارکت — اپلیکیشن اندروید (§257)
+# رسا سیستم — برنامهٔ بومی Android
 
-پوستهٔ بومی اندروید برای PWA موبایل سیستم (`/mobile/`). همان صفحهٔ انبارگردانی/اسکن بارکد
-که در مرورگر اجرا می‌شود، اینجا داخل یک WebView با دسترسی دوربین و صف آفلاین اجرا می‌گردد.
+این برنامه یک کلاینت Android بومی است: رابط با `Activity`ها و Viewهای Android ساخته شده، ذخیره‌سازی محلی با SQLite انجام می‌شود و API فقط برای ارتباط اختیاری با رایانه/Sync به کار می‌رود. **برای رابط کاربری از WebView، HTML یا سرور وب استفاده نمی‌شود.**
 
-## چرا WebView و نه TWA؟
-TWA به دامنهٔ عمومی HTTPS و Digital Asset Links نیاز دارد. این سیستم local-first است و سرور
-روی رایانهٔ فروشگاه در شبکهٔ داخلی با HTTP ساده اجرا می‌شود (§259)؛ بنابراین WebView تنها راه
-صادقانه است. ترافیک cleartext فقط برای رنج‌های خصوصی (`192.168.*`, `10.*`, `172.16.*`, `localhost`)
-مجاز است (`res/xml/network_security_config.xml`).
+## شروع و کارکرد محلی
+
+- راه‌اندازی اولیه اطلاعات فروشگاه، لایسنس و حساب مدیر را روی گوشی ذخیره می‌کند و اسکیمای SQLite را می‌سازد؛ پس از آماده‌شدن اسکیمای محلی، برنامه وارد داشبورد می‌شود.
+- بارگذاری کاتالوگ انتخابی در راه‌اندازی در پس‌زمینه انجام می‌شود و ورود به برنامه را پشت یک تایمر ثابت یا Sync نگه نمی‌دارد. انتخاب «از صفر شروع می‌کنم» مانع واردکردن کاتالوگ پیش‌فرض می‌شود.
+- داده‌های محلی و عملیات صف‌شده هنگام نبود رایانه باقی می‌مانند؛ Sync قابلیت جانبی است.
+- در نسخه‌های قدیمی‌تر، یک تایمر نصب ۴۵ دقیقه‌ای وجود داشت که ورود به برنامه را بی‌دلیل متوقف می‌کرد. نسخهٔ 1.0.494 آن مانع را حذف می‌کند و نصب‌های گیرکردهٔ قبلی را هنگام ارتقا آزاد می‌کند.
 
 ## ساخت
-- Android Studio Koala یا جدیدتر → Open → پوشهٔ `mobile-android` → Build → Build APK.
-- خط فرمان (با Android SDK نصب‌شده): `gradle assembleRelease` یا `./gradlew assembleRelease`
-  (wrapper را با `gradle wrapper --gradle-version 8.7` بسازید).
-- CI: `installer/ci/release-android.yml` روی `ubuntu-latest` می‌سازد و `SupermarketMobile-<ver>.apk`
-  را به Release ضمیمه می‌کند. شمارهٔ نسخه از `backend/app/__init__.py` خوانده می‌شود.
 
-## امضا
-بدون keystore، APK با کلید debug امضا می‌شود (برای نصب مستقیم روی گوشی‌های فروشگاه کافی است).
-برای انتشار عمومی متغیرهای `SUPERMARKET_KEYSTORE`, `SUPERMARKET_KEYSTORE_PASSWORD`,
-`SUPERMARKET_KEY_ALIAS`, `SUPERMARKET_KEY_PASSWORD` را تنظیم کنید.
+- خط فرمان با ابزارهای موجود در مخزن: `scripts/android/fetch-tools.sh` و سپس `scripts/android/build-apk.sh`.
+- خروجی پیش‌فرض: `installer/output/RasaSystemMobile-<version>.apk` به‌همراه SHA-256.
+- در Android Studio: پوشهٔ `mobile-android` را باز کنید و `assembleRelease` را اجرا کنید.
+- شمارهٔ نسخه از `backend/app/__init__.py` و `mobile-android/BUILD` خوانده می‌شود؛ شمارهٔ Build در Android باید از نسخهٔ نصب‌شده کمتر نباشد.
 
-## وضعیت صداقت (§57)
-کد کامل است اما در محیط توسعهٔ فعلی Android SDK/JDK در دسترس نبود؛ بنابراین ساخت APK
-**NOT VERIFIED** است تا زمانی که workflow اندروید یک بار روی GitHub Actions اجرا شود.
+## وضعیت راستی‌آزمایی
+
+ساخت APK و install-preflight، تست‌های ایستا و تست‌های Backend را می‌توان در محیط توسعه اجرا کرد. در محیط فعلی `adb` و Android emulator/device نصب نیست؛ بنابراین تست واقعی نصب، login، offline، Sync، تغییر کاربر، مجوزها، performance و crash روی دستگاه باید جداگانه انجام شود. موفقیت build را معادل تست runtime ندانید.

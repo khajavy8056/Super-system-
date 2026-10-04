@@ -43,21 +43,31 @@ public class AppActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Prefs.init(this); Db.init(this); Ui.init(this);
-        // Bootstrap imports share the same SQLite database and must be serialized. Keep them
-        // off the UI thread, but never race the starter catalogue against the barcode seed.
-        final android.content.Context appContext = getApplicationContext();
-        Api.bg(() -> Db.bootstrap(appContext));
+        // Build 494 migration: builds through 493 persisted a fake, timed installer gate.
+        // Release it before routing; Db.bootstrap below safely resumes chunked imports.
+        InstallRecovery.releaseLegacyDelay();
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         LockActivity.top = this;
-        if (Api.base.isEmpty() || !Lic.setupDone() || InstallService.running()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (Api.base.isEmpty() || !Lic.setupDone()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
         if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
         // v2.4: a login is always required; the session ends after 30 minutes without interaction
         if (Session.expired()) { Session.end(); startActivity(new Intent(this, LoginActivity.class)); finish(); return; }
         Session.touch();
         if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
         Lic.recheckIfDue();
+        // Start the optional default-catalogue import only after setup and authentication.
+        // It is chunked, local, and does not block the first screen or the login wizard.
+        final android.content.Context appContext = getApplicationContext();
+        Api.bg(() -> {
+            Db.bootstrap(appContext);
+            Api.ui(() -> {
+                if (isFinishing()) return;
+                Screens.Screen active = stack.peek();
+                if (!Ui.interacting() && (active instanceof StockScreens.Products || active instanceof SalesScreens.Pos)) active.refresh();
+            });
+        });
         Sync.watchNetwork(this);
         Images.kick();   // v2.5: pending product-picture lookups (standalone) resume whenever the app opens
         getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);

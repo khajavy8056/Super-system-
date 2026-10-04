@@ -34,6 +34,11 @@ public final class Db extends SQLiteOpenHelper {
     /** One serialized, best-effort local bootstrap. The UI is never held while either import runs. */
     public static void bootstrap(Context c) {
         importBankSeed(c);
+        // The setup wizard explicitly lets the shop start with an empty catalogue.
+        // Preserve that choice; absent preference means an existing/upgraded install,
+        // where the bundled default catalogue remains enabled for compatibility.
+        String starterChoice = Prefs.get("install_starter", "");
+        if ("0".equals(starterChoice)) return;
         try { if (catalogPending()) importStarter(c); }
         catch (Throwable t) { android.util.Log.w("Db", "catalog bootstrap deferred: " + t); }
     }
@@ -554,7 +559,7 @@ public final class Db extends SQLiteOpenHelper {
     }
 
     /**
-     * v3.5 — the bundled default catalogue: 13 570 supermarket/pharmacy products
+     * v3.5 — the bundled default catalogue: 16 953 supermarket/pharmacy products
      * built from the shop's own product sheets, each with its full name, its exact
      * GTIN, its category/sub-category and the picture(s) that shipped with it.
      * Everything is created with NO stock — stock only ever appears through a
@@ -569,11 +574,9 @@ public final class Db extends SQLiteOpenHelper {
     /**
      * Only one import may ever be in flight.
      *
-     * AppActivity fires the import on every launch and InstallService fires it
-     * during the first-run wizard; both go through Api.bg, which is a 4-thread
-     * pool. Without this guard the two ran concurrently on a fresh install and
-     * both called beginTransaction() on the same SQLiteDatabase from different
-     * threads, which is what crashed the app before the catalogue ever appeared.
+     * AppActivity runs bootstrap on the shared four-thread worker pool. The
+     * activity can be recreated while an earlier bootstrap is still importing, so
+     * this guard prevents two calls from opening overlapping SQLite transactions.
      */
     private static final java.util.concurrent.atomic.AtomicBoolean CATALOG_RUNNING =
         new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -740,7 +743,7 @@ public final class Db extends SQLiteOpenHelper {
                     // is_local is the literal 1 in the SQL, so it consumes no
                     // placeholder: json/updated_at/gallery bind at 11/12/13, not
                     // 12/13/14. Binding past the parameter count throws, and the
-                    // per-row guard would have swallowed it for all 13 570 rows.
+                    // per-row guard would have swallowed it for all 16 953 rows.
                     ins.bindString(11, p.toString());      // json
                     ins.bindString(12, now());
                     if (galleryJson == null) ins.bindNull(13); else ins.bindString(13, galleryJson);
@@ -786,7 +789,7 @@ public final class Db extends SQLiteOpenHelper {
             try { JSONArray ua = new JSONArray(); for (java.util.Map.Entry<String, Long> e : units.entrySet()) { JSONObject u = new JSONObject(); u.put("id", e.getValue()); u.put("name", e.getKey()); u.put("allow_decimal", e.getKey().contains("کیلو") || e.getKey().contains("گرم") || e.getKey().contains("لیتر") || e.getKey().contains("متر")); ua.put(u); } kv("local_units", ua.toString()); } catch (Exception ignore) {}
             kv("starter_imported", "1");
             kv("default_catalog_count", String.valueOf(n));
-            kv("pid", String.valueOf(seq));   // written once, not 13 570 times
+            kv("pid", String.valueOf(seq));   // written once, not 16 953 times
             // Only claim success when something actually landed. 3.5.1/3.5.2 wrote
             // this marker unconditionally, so a phone where every single insert
             // failed still reported "imported" and never retried — the shop was
@@ -944,7 +947,7 @@ public final class Db extends SQLiteOpenHelper {
     /* ---------------- local reads ---------------- */
     /** v3.5.4 — one indexed probe for "does this shop hold any sellable stock at all",
      *  measured at 0.01 ms. When the answer is no — which is exactly the state of a
-     *  fresh install that has just been given the 13 570-line default catalogue — the
+     *  fresh install that has just been given the 16 953-line default catalogue — the
      *  stock-first ordering has nothing to order by, so skipping it takes the product
      *  list from 4.75 ms to 0.10 ms and removes a batch query from every result row. */
     private static boolean hasAnyStock() {
@@ -954,7 +957,7 @@ public final class Db extends SQLiteOpenHelper {
     }
 
     /** v3.5.4 — one grouped aggregate, joined once, instead of a correlated sub-query
-     *  that SQLite re-evaluated for every one of the 13 570 rows while sorting. The
+     *  that SQLite re-evaluated for every one of the 16 953 rows while sorting. The
      *  same lesson {@link #stockRows()} already learnt in v3.3. */
     private static final String STOCK_AGG =
         "(SELECT product_id, SUM(current_qty) s FROM batches"
@@ -1034,7 +1037,7 @@ public final class Db extends SQLiteOpenHelper {
         } catch (Exception e) { return new JSONObject(); }
     }
     public static List<JSONObject> stockRows() { return stockRows("", false, 0); }
-    /** v3.5.6 — bounded stock listing. The unbounded version returned all 13 570
+    /** v3.5.6 — bounded stock listing. The unbounded version returned all 16 953
      *  products and the inventory screen inflated a View per row on the UI thread,
      *  which is what hung the phone and then killed it. The search filter, the
      *  low-stock test, the stock value and the page cap now all happen in SQL, so the

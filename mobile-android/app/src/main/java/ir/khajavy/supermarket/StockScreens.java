@@ -29,6 +29,20 @@ public final class StockScreens {
         Products(AppActivity a) { super(a); }
         public String key() { return "products"; } public String title() { return "کالاها"; }
         public boolean autoRefresh() { return true; }
+        @Override public void refresh() {
+            String query = Ui.str(q);
+            load();
+            if (!query.isEmpty()) q.setText(query);
+        }
+        private String emptyProductMessage() {
+            if ("0".equals(Prefs.get("install_starter", "")))
+                return "کاتالوگ خالی انتخاب شده است؛ از «+ کالای جدید» کالا تعریف کنید یا بعداً بانک محصولات را وارد کنید.";
+            JSONObject status = Db.catalogStatus();
+            String error = status.optString("error", "");
+            if (!error.isEmpty()) return "بارگذاری فهرست پیش‌فرض انجام نشد: " + error + " — می‌توانید کالا را دستی تعریف کنید.";
+            if (status.optBoolean("pending")) return "فهرست پیش‌فرض در پس‌زمینه بارگذاری می‌شود؛ پس از آماده‌شدن، کالاها همین‌جا نمایش داده می‌شوند.";
+            return Api.standalone() ? "هنوز کالایی ثبت نشده؛ از «+ کالای جدید» استفاده کنید." : "کاتالوگ رایانه هنوز دریافت نشده؛ اتصال را بررسی کنید یا از بانک محصولات فایل وارد کنید.";
+        }
         public void load() {
             clear(); if (units.length() == 0) loadTaxonomy();
             LinearLayout sr = Ui.row(c); q = Ui.input(c, "نام / بارکد / SKU"); q.setLayoutParams(Ui.weight(1)); sr.addView(q);
@@ -37,7 +51,7 @@ public final class StockScreens {
             TextView cnt = Ui.muted(c, Ui.num(Db.count("products")) + " کالا روی گوشی"); body.addView(cnt);
             list = Ui.col(c); body.addView(list);
             final int[] page={0}; final int pageSize=40; final Runnable[] fill={null};
-            fill[0] = () -> { list.removeAllViews(); int total=Db.productCount(Ui.str(q)), pages=Math.max(1,(total+pageSize-1)/pageSize); page[0]=Math.min(page[0],pages-1); cnt.setText(Ui.num(total)+" کالا · صفحهٔ "+Ui.num(page[0]+1)+" از "+Ui.num(pages)); List<JSONObject> ps = Db.searchProducts(Ui.str(q), pageSize, page[0]*pageSize); if (ps.isEmpty()) list.addView(Ui.empty(c, Db.count("products") == 0 ? "کاتالوگ هنوز از رایانه دریافت نشده — به رایانه وصل شوید" : "کالایی یافت نشد")); for (JSONObject p : ps) { double av = p.optDouble("available_qty"); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price") : 0; list.addView(Ui.pitem(c, p, p.optString("name"), Ui.fa(p.optString("barcode")) + (p.optLong("unit_id") > 0 ? " · " + unitName(p.optLong("unit_id")) : "") + (p.optBoolean("_local") ? " · در انتظار ارسال" : ""), Ui.money(price) + "\n" + "موجودی " + Ui.num(av), av <= p.optDouble("min_stock_alert", 0) ? Ui.RED : Ui.TEXT, () -> a.open(new ProductDetail(a, p.optString("barcode")), true))); }
+            fill[0] = () -> { list.removeAllViews(); int total=Db.productCount(Ui.str(q)), pages=Math.max(1,(total+pageSize-1)/pageSize); page[0]=Math.min(page[0],pages-1); cnt.setText(Ui.num(total)+" کالا · صفحهٔ "+Ui.num(page[0]+1)+" از "+Ui.num(pages)); List<JSONObject> ps = Db.searchProducts(Ui.str(q), pageSize, page[0]*pageSize); if (ps.isEmpty()) list.addView(Ui.empty(c, Db.count("products") == 0 ? emptyProductMessage() : "کالایی یافت نشد")); for (JSONObject p : ps) { double av = p.optDouble("available_qty"); JSONArray bs = p.optJSONArray("batches"); double price = bs != null && bs.length() > 0 ? bs.optJSONObject(0).optDouble("sell_price") : 0; list.addView(Ui.pitem(c, p, p.optString("name"), Ui.fa(p.optString("barcode")) + (p.optLong("unit_id") > 0 ? " · " + unitName(p.optLong("unit_id")) : "") + (p.optBoolean("_local") ? " · در انتظار ارسال" : ""), Ui.money(price) + "\n" + "موجودی " + Ui.num(av), av <= p.optDouble("min_stock_alert", 0) ? Ui.RED : Ui.TEXT, () -> a.open(new ProductDetail(a, p.optString("barcode")), true))); }
                 android.widget.HorizontalScrollView scroll=new android.widget.HorizontalScrollView(c); LinearLayout pager=Ui.row(c); scroll.addView(pager);
                 java.util.TreeSet<Integer> numbers=new java.util.TreeSet<>();numbers.add(0);numbers.add(pages-1);for(int i=Math.max(0,page[0]-2);i<=Math.min(pages-1,page[0]+2);i++)numbers.add(i);
                 int prev=-1;for(int number:numbers){if(prev>=0&&number>prev+1)pager.addView(Ui.muted(c,"…"));pager.addView(Ui.chip(c,Ui.num(number+1),number==page[0],()->{page[0]=number;fill[0].run();}));prev=number;}list.addView(scroll);

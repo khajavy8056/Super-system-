@@ -34,16 +34,16 @@ def test_version_is_the_single_source_of_truth_everywhere():
     build-490 (§۸–۱۰) — ساختار نسخه Major.Minor.Build شد («1.0.491»): رقم سوم
     همان Build Number است. این pin مثل migration-head با انتشار جلو می‌رود.
     """
-    assert VERSION == "1.0.493", VERSION
+    assert VERSION == "1.0.494", VERSION
     setup = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8")
     assert f'#define MyAppVersion "{VERSION}"' in setup, "نسخهٔ نصب‌کنندهٔ ویندوز با بک‌اند یکی نیست"
     assert "RASA SYSTEM" in setup and "RasaSystem" in setup, "نام برند در نصب‌کننده نیست"
-    # بیلد ۴۹۳ = 49300 و از نسخهٔ قبلی (49200) بزرگ‌تر است (INSTALL_FAILED_VERSION_DOWNGRADE)
+    # بیلد ۴۹۴ = 49400 و از نسخهٔ قبلی (49300) بزرگ‌تر است (INSTALL_FAILED_VERSION_DOWNGRADE)
     build = (ROOT / "mobile-android" / "BUILD").read_text(encoding="utf-8").strip()
-    assert build.isdigit() and int(build) == 49300, build
+    assert build.isdigit() and int(build) == 49400, build
     major, minor, build_no = (int(x) for x in VERSION.split("."))
     assert build_no == int(build) // 100, "در ساختار جدید، رقم سوم Version = Build"
-    assert int(build) > 49200
+    assert int(build) > 49300
     strings = (ROOT / "mobile-android" / "app" / "src" / "main" / "res" / "values"
                / "strings.xml").read_text(encoding="utf-8")
     assert 'name="app_name">رسا سیستم<' in strings, "نام برند اندروید به‌روز نیست"
