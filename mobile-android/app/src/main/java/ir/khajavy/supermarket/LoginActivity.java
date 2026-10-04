@@ -21,8 +21,8 @@ import org.json.JSONObject;
  *  PC refreshes that row instead of appending one, and never invents a time-based id.
  *
  *  v4.8.1 (بیلد ۴۸۲) — جفت‌شدن «دائمی» است:
- *   ۱) همان کاربر/رمزِ رایانه، بدون حضور رایانه هم وارد می‌شود (ورود آفلاین با حساب
- *      ذخیره‌شده؛ جزئیات در {@link Local#cacheUser}) — بدون نیاز به اسکن بارکد.
+ *   ۱) همان کاربر/رمزِ رایانه، بدون حضور رایانه هم وارد می‌شود اگر مدیر برای حساب
+ *      «ورود آفلاین» را جداگانه مجاز کرده باشد (رمزسنج محلی در {@link Local#cacheUser}) — بی‌نیاز از بارکد.
  *   ۲) اگر رایانه IP عوض کرده/راه‌اندازی مجدد شده، خودکار از راه کلید اتصال (Discovery)
  *      پیدا می‌شود و ورود آنلاین دوباره برقرار می‌شود.
  *   ۳) توکن دستگاه برای «دستگاه آشنا» با هر ورود تازه می‌شود (بدون نیاز به مدیر).
@@ -81,7 +81,7 @@ public class LoginActivity extends Activity {
                 JSONObject mj = me instanceof JSONObject ? (JSONObject) me : new JSONObject(Prefs.get("user_json", "{}"));
                 if (!policyAllows(mj, Api.lastRoute)) {
                     Prefs.set("bio_token", "");
-                    Api.ui(() -> st.setText("این کاربر فقط داخل شبکهٔ فروشگاه می‌تواند وارد شود — با رمز وارد شوید"));
+                    Api.ui(() -> st.setText("ورود آفلاین برای این کاربر مجاز نیست؛ با رمز یا مدیر فروشگاه پیگیری کنید"));
                     return;
                 }
                 Prefs.set("user_json", me.toString());
@@ -96,22 +96,31 @@ public class LoginActivity extends Activity {
         });
     }
 
-    /** «دسترسی فقط به صورت بومی» — مدیر اصلی همیشه؛ کاربرِ local_only فقط از داخل
-     *  شبکهٔ فروشگاه (مسیر lan). مسیرهای relay / local یعنی بیرون از شبکه.
-     *  گوشیِ مستقل (بدون رایانه) خودش فروشگاه است و سیاست شبکه ندارد. */
+    /** سیاست شبکه و اجازهٔ استفاده از دادهٔ آفلاین مستقل‌اند: مدیر اصلی معاف است؛
+     *  local_only فقط ورود آنلاین از relay را می‌بندد و offline_allowed مجوز ورود
+     *  از SQLite را کنترل می‌کند. */
+    static boolean offlineAllowed(JSONObject me) {
+        if (me == null) return false;
+        // Older PCs did not expose this switch; preserve their established local_only policy.
+        return me.has("offline_allowed") ? me.optBoolean("offline_allowed", false)
+                : !me.optBoolean("local_only", true);
+    }
     static boolean policyAllows(JSONObject me, String route) {
-        if (me == null) return true;
+        if (me == null) return false;
         if (me.optBoolean("is_admin")) return true;
-        if (Api.standalone()) return true;
+        if (Api.standalone() || "offline".equals(route) || "local".equals(route)) return offlineAllowed(me);
         return !me.optBoolean("local_only", true) || "lan".equals(route);
     }
 
     /** cache the account on the phone so the SAME user/password works standalone later */
     static void cacheMe(JSONObject me, String password) {
         if (me == null || password == null) return;
-        Local.cacheUser(me.optString("username"), me.optString("full_name"), password,
+        Local.cacheUser(me.optString("username"), me.optString("full_name"), password, me.optLong("id", 0),
                 me.optJSONArray("roles") == null ? "[]" : me.optJSONArray("roles").toString(),
-                me.optBoolean("is_active", true), me.optBoolean("local_only", true));
+                me.optJSONArray("permissions") == null ? "[]" : me.optJSONArray("permissions").toString(),
+                me.optJSONArray("allowed_views") == null ? "[]" : me.optJSONArray("allowed_views").toString(),
+                me.optString("phone", ""), me.optString("job_title", ""), me.optString("store", ""),
+                me.optString("hire_date", ""), me.optBoolean("is_active", true), me.optBoolean("local_only", true), offlineAllowed(me));
     }
 
     private void onlineLogin(String base, String username, String password, TextView st) throws Api.ApiError {
@@ -121,8 +130,10 @@ public class LoginActivity extends Activity {
         Api.token = tok;
         Prefs.set("bio_token", tok);
         JSONObject me = (JSONObject) Api.call("GET", "/auth/me", null, null);
+        if (!Api.standalone() && "local".equals(Api.lastRoute))
+            throw new Api.ApiError(0, "NETWORK", "پاسخ حساب از رایانه دریافت نشد؛ ورود آفلاین را بررسی می‌کنیم");
         if (!policyAllows(me, route)) throw new Api.ApiError(403, "LOCAL_ONLY", "این کاربر فقط داخل شبکهٔ فروشگاه می‌تواند وارد شود («دسترسی فقط به صورت بومی»)");
-        cacheMe(me, password);   // v4.8.1 — برای ورودهای بعدی بدون رایانه
+        if (!Api.standalone()) cacheMe(me, password);   // حساب‌های رایانه‌ای را محلی cache کن؛ حساب standalone را دوباره نساز
         // توکن دستگاه: برای دستگاهِ آشنا هر بار تازه می‌شود (ردیف همان می‌ماند) —
         // پس از انقضا/ابطال توکن هم دیگر بارکدی اسکن نمی‌شود.
         JSONObject dev = Api.obj("name", "گوشی " + android.os.Build.MODEL);
@@ -161,10 +172,11 @@ public class LoginActivity extends Activity {
             Local.handle("POST", "/auth/login", form);
             JSONObject me = (JSONObject) Local.handle("GET", "/auth/me", null);
             if (!policyAllows(me, "offline")) {
-                Api.ui(() -> st.setText("این کاربر فقط داخل شبکهٔ فروشگاه می‌تواند وارد شود («دسترسی فقط به صورت بومی»)"));
+                Api.ui(() -> st.setText("ورود آفلاین برای این کاربر مجاز نیست؛ با مدیر فروشگاه تماس بگیرید"));
                 return;
             }
             Api.online = false;
+            Screens.user = me;
             Prefs.set("user_json", me.toString());
             Session.start();
             if (!Api.standalone()) { Prefs.set("lic_mode", "pc"); Prefs.set("setup_done", "1"); }   // همان جفت‌شدن قبلی پابرجاست

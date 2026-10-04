@@ -10,6 +10,7 @@ import io
 import pathlib
 from datetime import date, timedelta
 
+from app.services.timeservice import local_now
 from tests.test_v488_people import _login, _mkuser
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -24,7 +25,7 @@ UI_FILES = [
 
 # ---------- ۱) تعریف شیفت + تخصیص به شخص مشخص ----------
 def test_v491_shift_define_and_assign_specific_person(client, auth_headers):
-    day = date.today().isoformat()
+    day = local_now().date().isoformat()
     # سوپروایزر می‌تواند شیفت تعریف کند (shifts.manage)
     _mkuser(client, auth_headers, "v491_sup", roles=["Supervisor"])
     _mkuser(client, auth_headers, "v491_cash", roles=["Cashier"], job_title="صندوق‌دار")
@@ -56,7 +57,7 @@ def test_v491_shift_define_and_assign_specific_person(client, auth_headers):
 
 # ---------- ۲) نوار حضور: ساعت دقیقه + سبز/قرمز ----------
 def test_v491_presence_minute_precision_clocking(client, auth_headers):
-    day = date.today().isoformat()
+    day = local_now().date().isoformat()
     _mkuser(client, auth_headers, "v491_psup", roles=["Supervisor"])
     _mkuser(client, auth_headers, "v491_pcash", roles=["Cashier"])
     sup = _login(client, "v491_psup", "pass1234")

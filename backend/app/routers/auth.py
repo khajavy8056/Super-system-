@@ -69,7 +69,13 @@ class UserOut(BaseModel):
     # «دسترسی فقط به صورت بومی» + admin verdict, so a paired phone can apply the
     # sign-in policy offline (standalone / outside the network) without guessing.
     local_only: bool = False
+    offline_allowed: bool = False
     is_admin: bool = False
+    phone: str | None = None
+    job_title: str | None = None
+    store: str | None = None
+    hire_date: str | None = None
+    pc_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -134,5 +140,9 @@ def me(current_user: Annotated[User, Depends(get_current_user)]):
         permissions=sorted(_user_permission_codes(current_user)),
         allowed_views=allowed_views_for_user(current_user),
         local_only=bool(current_user.local_only),
+        offline_allowed=bool(current_user.offline_allowed),
         is_admin=is_admin(current_user),
+        phone=current_user.phone, job_title=current_user.job_title, store=current_user.store,
+        hire_date=current_user.hire_date.isoformat() if current_user.hire_date else None,
+        pc_id=current_user.id,
     )

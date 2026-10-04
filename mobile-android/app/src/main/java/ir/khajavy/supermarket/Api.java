@@ -40,10 +40,10 @@ public final class Api {
     public static volatile String base = "";
     public static volatile String token = "";
     public static volatile boolean online = false;
-    /** v4.8.1 — how the LAST successful call reached the PC: "lan" (direct on the
+    /** v4.8.1 — how the LAST successful call was served: "lan" (direct on the
      *  shop network), "relay" (online relay, i.e. from outside), or "local"
-     *  (phone's own SQLite). The sign-in policy («دسترسی فقط به صورت بومی») is
-     *  enforced against this — a local_only user may sign in over "lan" only. */
+     *  (phone's own SQLite). LoginActivity applies local_only to online routes
+     *  and offline_allowed to cached SQLite sign-in. */
     public static volatile String lastRoute = "lan";
 
     private Api() {}
@@ -57,21 +57,33 @@ public final class Api {
     public static void patch(String path, JSONObject body, Cb<Object> ok, ErrCb err) { run("PATCH", path, body == null ? "{}" : body.toString(), ok, err, false); }
     public static void delete(String path, Cb<Object> ok, ErrCb err) { run("DELETE", path, null, ok, err, false); }
 
+    private static long activeUserId() {
+        long localId = Db.localUserId();
+        if (localId > 0) return localId;
+        if (Screens.user != null && Screens.user.optLong("id", 0) > 0) return Screens.user.optLong("id", 0);
+        try { return new JSONObject(Prefs.get("user_json", "{}")).optLong("id", 0); }
+        catch (Exception e) { return 0; }
+    }
+    private static String cacheKey(String path, long userId) { return userId > 0 ? "u/" + userId + path : null; }
     private static void run(String method, String path, String body, Cb<Object> ok, ErrCb err, boolean cacheable) {
+        final long requestUserId = activeUserId();
+        final String scopedCacheKey = cacheKey(path, requestUserId);
         POOL.execute(() -> {
             try {
                 Object r = call(method, path, body, "application/json");
-                if (cacheable) Db.cachePut(path, r == null ? "null" : r.toString());
-                if (!standalone()) online = true;
+                if (cacheable && scopedCacheKey != null) Db.cachePut(scopedCacheKey, r == null ? "null" : r.toString());
+                if (!standalone()) online = !"local".equals(lastRoute);
+                if (requestUserId > 0 && activeUserId() != requestUserId) return;
                 MAIN.post(() -> { if (ok != null) ok.ok(r); });
             } catch (ApiError e) {
                 if (e.offline()) online = false;
-                if (cacheable && e.offline()) {
-                    String cached = Db.cacheGet(path);
+                if (cacheable && e.offline() && scopedCacheKey != null) {
+                    String cached = Db.cacheGet(scopedCacheKey);
                     if (cached != null) {
-                        try { Object r = parse(cached); MAIN.post(() -> { Ui.toast("آفلاین — آخرین نسخهٔ ذخیره‌شده"); if (ok != null) ok.ok(r); }); return; } catch (Exception ignore) {}
+                        try { Object r = parse(cached); if (requestUserId > 0 && activeUserId() != requestUserId) return; MAIN.post(() -> { Ui.toast("آفلاین — آخرین نسخهٔ ذخیره‌شده"); if (ok != null) ok.ok(r); }); return; } catch (Exception ignore) {}
                     }
                 }
+                if (requestUserId > 0 && activeUserId() != requestUserId) return;
                 MAIN.post(() -> { if (err != null) err.err(e); else Ui.toast(e.getMessage()); });
             } catch (Throwable t) {   // v3.3: a bug/OOM inside a local handler must surface as an error card, never kill the app
                 ApiError e = new ApiError(500, "LOCAL", t instanceof OutOfMemoryError ? "حافظهٔ گوشی کافی نبود" : "خطای داخلی: " + t);
@@ -84,26 +96,62 @@ public final class Api {
 
     /* ---------------- blocking (call from a worker thread) ---------------- */
     public static Object call(String method, String path, String body, String contentType) throws ApiError {
+        return callWithToken(token, method, path, body, contentType);
+    }
+    /** Use a captured session for long sync cycles so an account switch cannot pair one user's queue with another token. */
+    public static Object callWithToken(String requestToken, String method, String path, String body, String contentType) throws ApiError {
         // v2.4: standalone → the phone answers every endpoint itself from SQLite (Local).
         if (standalone()) { lastRoute = "local"; return Local.handle(method, path, body); }
-        if (Relay.active && Relay.available()) { Object r = viaRelay(method, path, body, contentType); lastRoute = "relay"; return r; }
-        try { Object r = callPc(method, path, body, contentType); lastRoute = "lan"; return r; }
+        if (Relay.active && Relay.available()) { Object r = viaRelay(method, path, body, contentType, requestToken); lastRoute = "relay"; return r; }
+        try { Object r = callPc(method, path, body, contentType, requestToken); lastRoute = "lan"; return r; }
         catch (ApiError e) {
-            // paired but PC unreachable: reads are served from the phone's own data (writes keep using the sync queue)
-            if (e.offline() && "GET".equals(method)) { try { Object r = Local.handle(method, path, body); lastRoute = "local"; return r; } catch (ApiError ignore) {} }
+            // Paired but PC unreachable: reads use the local mirror; HR writes use its
+            // store-and-forward handlers, which persist first and queue a permission-checked sync op.
+            if (e.offline() && ("GET".equals(method) || path.startsWith("/hr/"))) {
+                try { Object r = Local.handle(method, path, body); lastRoute = "local"; return r; }
+                catch (ApiError localError) { if (!"GET".equals(method)) throw localError; }
+            }
             throw e;
         }
     }
-    static Object callPc(String method, String path, String body, String contentType) throws ApiError {
+    /** Cleartext is permitted only to loopback/private-LAN endpoints used by the paired shop PC.
+     * Public internet endpoints must use HTTPS before any bearer token is sent. */
+    static void requireSafeEndpoint(String endpoint) throws Exception {
+        java.net.URL parsed = new URL(endpoint);
+        if (parsed.getUserInfo() != null) throw new SecurityException("Credentials in endpoint URL are forbidden");
+        if ("https".equalsIgnoreCase(parsed.getProtocol())) return;
+        if (!"http".equalsIgnoreCase(parsed.getProtocol()) || !privateHost(parsed.getHost()))
+            throw new SecurityException("Public or untrusted cleartext endpoint refused");
+    }
+    private static boolean privateHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String h = host.toLowerCase(java.util.Locale.ROOT);
+        if ("localhost".equals(h) || h.endsWith(".local")) return true;
+        try {
+            java.net.InetAddress[] addresses = java.net.InetAddress.getAllByName(host);
+            if (addresses.length == 0) return false;
+            for (java.net.InetAddress address : addresses) {
+                if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isSiteLocalAddress()) continue;
+                byte[] b = address.getAddress();
+                if (b.length == 16 && (b[0] & 0xfe) == 0xfc) continue; // IPv6 unique-local fc00::/7
+                return false;
+            }
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    static Object callPc(String method, String path, String body, String contentType, String requestToken) throws ApiError {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(base + "/api" + path).openConnection();
+            String endpoint = base + "/api" + path;
+            requireSafeEndpoint(endpoint);
+            c = (HttpURLConnection) new URL(endpoint).openConnection();
             c.setConnectTimeout(4000); c.setReadTimeout(20000);
             if ("PATCH".equals(method)) { c.setRequestMethod("POST"); c.setRequestProperty("X-HTTP-Method-Override", "PATCH"); }
             else c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("User-Agent", "SupermarketAndroid/" + Version.NAME + " native");
-            if (token != null && !token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
+            if (requestToken != null && !requestToken.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + requestToken);
             if (body != null) {
                 c.setDoOutput(true); c.setRequestProperty("Content-Type", contentType);
                 try (OutputStream os = c.getOutputStream()) { os.write(body.getBytes(StandardCharsets.UTF_8)); }
@@ -117,14 +165,15 @@ public final class Api {
             if (code >= 400) throw errorFrom(code, parsed);
             return parsed;
         } catch (ApiError e) { throw e;
+        } catch (SecurityException e) { throw new ApiError(0, "INSECURE_ENDPOINT", "ارتباط رمزگذاری‌نشده با نشانی عمومی مجاز نیست؛ از شبکهٔ محلی امن استفاده کنید");
         } catch (Exception e) { throw new ApiError(0, "NETWORK", "ارتباط با رایانهٔ فروشگاه برقرار نشد");
         } finally { if (c != null) c.disconnect(); }
     }
 
     /** v2.3: same request, carried by the online relay (PC not on this network). */
-    static Object viaRelay(String method, String path, String body, String contentType) throws ApiError {
+    static Object viaRelay(String method, String path, String body, String contentType, String requestToken) throws ApiError {
         try {
-            String[] r = Relay.call(method, path, body, contentType == null ? "application/json" : contentType, token);
+            String[] r = Relay.call(method, path, body, contentType == null ? "application/json" : contentType, requestToken);
             int code = Integer.parseInt(r[0]); String text = r[1];
             if (code == 204 || text.isEmpty()) { if (code >= 400) throw new ApiError(code, "HTTP_" + code, "خطای " + code); return null; }
             Object parsed = parse(text);
@@ -170,9 +219,13 @@ public final class Api {
         HttpURLConnection c = null;
         try {
             String u = absoluteOrPath.startsWith("http") ? absoluteOrPath : base + absoluteOrPath;
-            c = (HttpURLConnection) new URL(u).openConnection();
+            requireSafeEndpoint(u);
+            URL target = new URL(u);
+            c = (HttpURLConnection) target.openConnection();
             c.setConnectTimeout(4000); c.setReadTimeout(20000);
-            if (token != null && !token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
+            URL server = base == null || base.isEmpty() ? null : new URL(base);
+            if (server != null && server.getHost().equalsIgnoreCase(target.getHost()) && server.getPort() == target.getPort()
+                    && server.getProtocol().equalsIgnoreCase(target.getProtocol()) && token != null && !token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
             if (c.getResponseCode() >= 400) throw new ApiError(c.getResponseCode(), "HTTP", "خطای دریافت فایل");
             ByteArrayOutputStream bo = new ByteArrayOutputStream(); byte[] buf = new byte[8192]; int n;
             try (InputStream in = c.getInputStream()) { while ((n = in.read(buf)) > 0) bo.write(buf, 0, n); }
@@ -202,7 +255,7 @@ public final class Api {
     public static boolean healthAt(String b) {
         if (b == null || b.isEmpty()) return false;
         HttpURLConnection c = null;
-        try { c = (HttpURLConnection) new URL(b + "/health").openConnection(); c.setConnectTimeout(2500); c.setReadTimeout(2500); return c.getResponseCode() == 200; }
+        try { String endpoint = b + "/health"; requireSafeEndpoint(endpoint); c = (HttpURLConnection) new URL(endpoint).openConnection(); c.setConnectTimeout(2500); c.setReadTimeout(2500); return c.getResponseCode() == 200; }
         catch (Exception e) { return false; } finally { if (c != null) c.disconnect(); }
     }
 

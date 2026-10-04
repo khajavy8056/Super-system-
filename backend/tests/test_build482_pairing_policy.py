@@ -23,14 +23,21 @@ def test_new_user_defaults_to_local_only_and_admin_can_toggle(client, auth_heade
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["local_only"] is True          # پیش‌فرض: فقط داخل شبکهٔ فروشگاه
+    assert body["offline_allowed"] is False    # ورود آفلاین به‌صورت مستقل و opt-in است
 
     r = client.patch(f"/api/users/{body['id']}", json={"local_only": False}, headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["local_only"] is False      # ادمین تیک را بردارد → کار بیرون از شبکه آزاد
+    assert r.json()["offline_allowed"] is False # تغییر local_only ورود آفلاین را خودکار باز نمی‌کند
 
     r = client.get("/api/users", headers=auth_headers)
     row = next(u for u in r.json() if u["username"] == "u_local1")
     assert row["local_only"] is False
+    assert row["offline_allowed"] is False
+
+    r = client.patch(f"/api/users/{body['id']}", json={"offline_allowed": True}, headers=auth_headers)
+    assert r.status_code == 200 and r.json()["offline_allowed"] is True
+    assert r.json()["local_only"] is False
 
 
 def test_me_exposes_policy_for_phone_cache(client, auth_headers):
@@ -39,12 +46,20 @@ def test_me_exposes_policy_for_phone_cache(client, auth_headers):
     me = r.json()
     assert me["is_admin"] is True               # ادمین اصلی → دسترسی مستقل پیش‌فرض روشن
     assert isinstance(me["local_only"], bool)
+    assert isinstance(me["offline_allowed"], bool)
 
-    client.post("/api/users", json={"username": "u_local2", "password": "secret99",
-                                    "roles": ["Cashier"]}, headers=auth_headers)
+    created = client.post("/api/users", json={"username": "u_local2", "password": "secret99",
+                                               "roles": ["Cashier"]}, headers=auth_headers)
+    assert created.status_code == 201
     me2 = client.get("/api/auth/me", headers=_login(client, "u_local2", "secret99")).json()
     assert me2["is_admin"] is False
     assert me2["local_only"] is True
+    assert me2["offline_allowed"] is False
+
+    # Granting offline access is exposed by /auth/me for the exact signed-in account.
+    updated = client.patch(f"/api/users/{created.json()['id']}", json={"offline_allowed": True}, headers=auth_headers)
+    assert updated.status_code == 200 and updated.json()["offline_allowed"] is True
+    assert client.get("/api/auth/me", headers=_login(client, "u_local2", "secret99")).json()["offline_allowed"] is True
 
 
 def test_known_device_remints_token_with_password_only(client, auth_headers):
@@ -78,7 +93,7 @@ def test_known_device_remints_token_with_password_only(client, auth_headers):
 def test_sync_pull_carries_users_without_password_hashes(client, auth_headers):
     client.post("/api/users", json={"username": "u_local4", "password": "secret99",
                                     "full_name": "همگام", "roles": ["Cashier"],
-                                    "local_only": False}, headers=auth_headers)
+                                    "local_only": False, "offline_allowed": True}, headers=auth_headers)
     r = client.post("/api/mobile/sync",
                     json={"device_id": "dev-known-1", "push": [], "pull": True, "limit": 2000},
                     headers=auth_headers)
@@ -87,6 +102,7 @@ def test_sync_pull_carries_users_without_password_hashes(client, auth_headers):
     assert users, "pull must include the users table so offline sign-in policy stays current"
     hit = next(u for u in users if u["username"] == "u_local4")
     assert hit["local_only"] is False
+    assert hit["offline_allowed"] is True
     assert hit["is_active"] is True
     assert "Cashier" in hit["roles"]
     for banned in ("password_hash", "pass_hash", "password", "hash"):
@@ -107,13 +123,17 @@ def test_android_offline_signin_needs_no_rescan_and_keeps_pairing():
     # توکن دستگاه برای دستگاه آشنا تازه می‌شود، با همان device_id (بدون QR)
     assert 'dev.put("device_id", knownId)' in login and "/mobile/pair/token" in login
     # سیاست «دسترسی فقط به صورت بومی»
-    assert "policyAllows" in login and "local_only" in login and "is_admin" in login
+    assert "policyAllows" in login and "offlineAllowed" in login and "local_only" in login and "is_admin" in login
     # حساب روی گوشی ذخیره می‌شود تا ورود بعدی مستقل با همان رمز ممکن باشد
     assert "cacheMe" in login
     local = (JAVA / "Local.java").read_text(encoding="utf-8")
-    assert "cacheUser" in local and 'sha(un + "|" + password)' in local
+    assert "cacheUser" in local and "pbkdf2-sha256$" in local and "MessageDigest.isEqual" in local
+    assert "offlineLoginAllowed" in local and "OFFLINE_POLICY" in local
+    assert "passwordVerifier" in local and "selfDuplicates" in local
+    assert "if (!Api.standalone()) cacheMe(me, password)" in login
     db = (JAVA / "Db.java").read_text(encoding="utf-8")
-    assert "putUserMeta" in db and "local_only" in db and "from_pc" in db
+    assert "putUserMeta" in db and "local_only" in db and "from_pc" in db and "offline_allowed" in db
+    assert "VERSION = 10" in db and "v10OfflineAllowed" in db
     # رمزسنج ذخیره‌شدهٔ گوشی نباید با pull پاک شود
     meta = db.split("putUserMeta", 2)[1]
     assert 'up.put("pass_hash"' not in meta, "the sync pull must never touch the cached password verifier"
@@ -143,5 +163,8 @@ def test_android_button_rows_wrap_instead_of_breaking_the_page():
 def test_windows_users_ui_has_local_only_checkbox():
     appjs = (FRONT / "app.js").read_text(encoding="utf-8")
     assert "u-local-only" in appjs and "local_only" in appjs and "دسترسی فقط به صورت بومی" in appjs
+    assert "u-offline-allowed" in appjs and "offline_allowed" in appjs and "آفلاین مجاز" in appjs
+    admin = (JAVA / "AdminScreens.java").read_text(encoding="utf-8")
+    assert "offline_allowed" in admin and "اجازهٔ ورود با دادهٔ محلی" in admin
     launcher = (Path(__file__).resolve().parents[2] / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
     assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in launcher, "the POS program must open full screen by default"

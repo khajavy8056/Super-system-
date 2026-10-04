@@ -40,12 +40,14 @@ class User(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    # «دسترسی فقط به صورت بومی» — the phone may sign this user in ONLY while it
-    # is on the shop's own network (the PC answers over LAN). Unchecked → the
-    # user may work standalone / from outside the network and the data syncs
-    # back when the phone rejoins the LAN. The main admin is exempt by role:
-    # standalone access is ON for the Administrator by default.
+    # «دسترسی فقط به صورت بومی» limits online sign-in to the shop LAN; it is not
+    # permission to use cached credentials with no network (see offline_allowed).
+    # The Administrator is exempt from this network restriction by role.
     local_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Cached credentials on a previously paired phone are independent of local_only:
+    # administrators explicitly decide whether this account may sign in with local data
+    # when no PC/network is reachable.
+    offline_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # build-488 — تکمیل پروفایل کاربر (بخش ۱ دستور): شماره تماس، عنوان شغلی،
     # تصویر پروفایل، تاریخ استخدام. فیلدها افزودنی‌اند و منطق موجود را نمی‌شکنند.

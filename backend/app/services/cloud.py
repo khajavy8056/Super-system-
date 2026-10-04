@@ -311,12 +311,17 @@ def _apply_ops_file(db: Session, payload: dict) -> int:
     tok = payload.get("token")
     if tok:
         try:
-            username = decode_token(tok).get("sub")
-            user = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
+            subject = decode_token(tok).get("sub")
+            try:
+                user = db.get(User, int(subject))
+            except (TypeError, ValueError):
+                user = db.execute(select(User).where(User.username == str(subject))).scalar_one_or_none()
         except Exception:  # noqa: BLE001
             user = None
-    if user is None:
-        user = db.execute(select(User).where(User.is_active.is_(True)).order_by(User.id.asc())).scalars().first()
+    if user is None or not user.is_active:
+        # A Drive mailbox is shared storage, not an authenticated user session. Never
+        # replay anonymous operations as the first active account (which could be admin).
+        raise CloudError("USER_AUTH_REQUIRED", "Cloud operation file has no valid active-user credential")
     body = mobile_router.SyncIn(device_id=payload.get("device_id"), push=[mobile_router.SyncOp(**o) for o in payload.get("push", [])], pull=False)
     applied = 0
     for op in body.push:

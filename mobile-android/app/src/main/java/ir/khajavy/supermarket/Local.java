@@ -29,6 +29,7 @@ public final class Local {
         JSONObject b = new JSONObject(); try { if (body != null && body.trim().startsWith("{")) b = new JSONObject(body); } catch (Exception ignore) {}
         JSONObject q = query(qs);
         String[] seg = path.startsWith("/") ? path.substring(1).split("/") : path.split("/");
+        authorize(method, seg, b);
         try {
             switch (seg[0]) {
                 case "health": return obj("status", "ok", "mode", "standalone");
@@ -48,6 +49,10 @@ public final class Local {
                 case "warehouses": return warehouses(method, seg, b);
                 case "accounting": return accounting(method, seg, q, b);
                 case "users": return users(method, seg, b);
+                case "hr": return HrLocal.handle(method, seg, q, b);
+                case "announcements": return HrLocal.handle(method, new String[]{"hr", "announcements"}, q, b);
+                case "payroll": return HrLocal.handle(method, new String[]{"hr", "payroll"}, q, b);
+                case "performance": return HrLocal.handle(method, new String[]{"hr", "performance"}, q, b);
                 case "audit": return audit(q);
                 case "hardware": return hardware(method, seg, b);
                 case "diagnostics": return diagnostics(method, seg, q);
@@ -65,89 +70,408 @@ public final class Local {
         throw new Api.ApiError(404, "NOT_FOUND", "این بخش روی گوشی در دسترس نیست: " + path);
     }
 
+    /** Local authorization mirrors the PC permission boundary; hiding a drawer item is not access control. */
+    static void authorize(String method, String[] seg, JSONObject body) throws Api.ApiError {
+        if (seg.length == 0) return;
+        String root = seg[0];
+        if ("health".equals(root) || "auth".equals(root) || "system".equals(root) || "setup".equals(root)) return;
+        if (Screens.user == null || Screens.user.optLong("id", 0) <= 0) {
+            try { Screens.user = new JSONObject(Prefs.get("user_json", "{}")); } catch (Exception e) { Screens.user = new JSONObject(); }
+        }
+        if ("support".equals(root)) { requireAny("pos.sell", "settings.manage", "users.manage"); return; }
+        if ("users".equals(root)) {
+            if (seg.length > 2 && "profile".equals(seg[2]) && "GET".equals(method)) {
+                long requested = 0;
+                try { requested = Long.parseLong(seg[1]); } catch (NumberFormatException e) { requested = 0; }
+                if (currentUserTarget(requested)) return;
+                require("profile.view_all"); return;
+            }
+            require("users.manage"); return;
+        }
+        if ("audit".equals(root)) { require("audit.view"); return; }
+        if ("hardware".equals(root) || "diagnostics".equals(root) || "sms".equals(root)) { require("settings.manage"); return; }
+        if ("settings".equals(root)) {
+            boolean publicRead = "GET".equals(method) && seg.length > 1
+                    && ("currency".equals(seg[1]) || "theme".equals(seg[1]) || "time".equals(seg[1])
+                    || "about".equals(seg[1]) || "store-profile".equals(seg[1]));
+            if (!publicRead) require("settings.manage");
+            return;
+        }
+        if ("mobile".equals(root) || "cloud".equals(root) || "backup".equals(root)) { require("settings.manage"); return; }
+        if ("pos".equals(root)) { require("pos.sell"); return; }
+        if ("returns".equals(root)) { require("pos.return"); return; }
+        if ("invoices".equals(root)) {
+            if (seg.length > 2 && "void".equals(seg[2])) requireAny("pos.void_paid", "pos.void_unpaid");
+            else requireAny("pos.sell", "reports.view", "reports.view_all", "accounting.view");
+            return;
+        }
+        if ("customers".equals(root)) {
+            if (seg.length > 2 && "ledger".equals(seg[2])) require("customers.ledger");
+            else if (seg.length > 2 && "settle".equals(seg[2])) require("customers.settle");
+            else if ("POST".equals(method) || "PATCH".equals(method) || "PUT".equals(method)) requireAny("customers.manage", "pos.sell");
+            else requireAny("customers.manage", "customers.ledger", "pos.sell");
+            return;
+        }
+        if ("marketing".equals(root)) {
+            if (seg.length > 2 && "validate".equals(seg[2])) requireAny("pos.sell", "marketing.view", "marketing.manage");
+            else if ("GET".equals(method)) requireAny("marketing.view", "marketing.manage");
+            else require("marketing.manage");
+            return;
+        }
+        if ("products".equals(root)) {
+            if (seg.length > 3 && "quick-price".equals(seg[2])) require("pricing.manage");
+            else if ("GET".equals(method)) requireAny("products.view", "products.manage", "pos.sell", "batches.manage");
+            else require("products.manage");
+            return;
+        }
+        if ("units".equals(root)) {
+            if ("GET".equals(method)) requireAny("products.view", "products.manage", "pos.sell", "batches.manage");
+            else require("products.manage");
+            return;
+        }
+        if ("prices".equals(root)) { requireAny("pricing.manage", "pricing.view_cost"); return; }
+        if ("inventory".equals(root)) {
+            if (seg.length > 1 && "stocktakes".equals(seg[1])) {
+                if (seg.length > 3 && "approve".equals(seg[3])) require("inventory.approve_stocktake");
+                else requireAny("inventory.stocktake", "inventory.view", "inventory.approve_stocktake");
+            } else if (seg.length > 1 && ("adjust".equals(seg[1]) || "waste".equals(seg[1]))) require("inventory.adjust");
+            else if (seg.length > 1 && "movements".equals(seg[1])) requireAny("inventory.view", "inventory.adjust");
+            else requireAny("inventory.view", "inventory.adjust", "inventory.stocktake");
+            return;
+        }
+        if ("warehouses".equals(root)) {
+            if (seg.length > 1 && "transfer".equals(seg[1])) require("inventory.adjust");
+            else if ("GET".equals(method)) requireAny("inventory.view", "inventory.adjust", "batches.manage");
+            else require("settings.manage");
+            return;
+        }
+        if ("reports".equals(root)) {
+            String report = seg.length > 1 ? seg[1] : "";
+            if ("cashiers".equals(report)) require("reports.view_all");
+            else if ("profit".equals(report) || "purchase-cost".equals(report)) require("pricing.view_cost");
+            else requireAny("reports.view", "reports.view_all");
+            return;
+        }
+        if ("accounting".equals(root)) {
+            if (seg.length > 2 && "close".equals(seg[2])) require("accounting.close");
+            else if ("GET".equals(method)) require("accounting.view");
+            else require("accounting.post");
+            return;
+        }
+        if ("insights".equals(root)) {
+            if (seg.length > 1 && ("plan".equals(seg[1]) || "customers".equals(seg[1]))) requireAny("reports.view_all", "customers.manage");
+            else requireAny("reports.view", "reports.view_all");
+            return;
+        }
+        if ("hr".equals(root)) { authorizeHr(method, seg); return; }
+        if ("announcements".equals(root)) { authorizeHr(method, new String[]{"hr", "announcements"}); return; }
+        if ("payroll".equals(root)) { authorizeHr(method, new String[]{"hr", "payroll"}); return; }
+        if ("performance".equals(root)) { authorizeHr(method, new String[]{"hr", "performance"}); return; }
+    }
+    static void authorizeHr(String method, String[] seg) throws Api.ApiError {
+        String area = seg.length > 1 ? seg[1] : "";
+        if ("announcements".equals(area)) {
+            if ("GET".equals(method) && seg.length > 2 && "all".equals(seg[2])) { require("announcements.manage"); return; }
+            if ("GET".equals(method) || ("POST".equals(method) && seg.length > 3 && ("read".equals(seg[3]) || "seen".equals(seg[3])))) return;
+            if ("DELETE".equals(method)) { requireAny("announcements.manage", "announcements.publish"); return; }
+            require("announcements.publish"); return;
+        }
+        if ("roster-users".equals(area)) { requireAny("shifts.view", "shifts.manage", "payroll.view", "payroll.manage"); return; }
+        if ("shifts".equals(area)) {
+            if (seg.length > 2 && "my".equals(seg[2])) return;
+            if ("GET".equals(method)) requireAny("shifts.view", "shifts.manage");
+            else require("shifts.manage");
+            return;
+        }
+        if ("attendance".equals(area)) {
+            if (seg.length > 2 && ("summary".equals(seg[2]) || "today".equals(seg[2])))
+                requireAny("shifts.view", "shifts.manage", "payroll.view", "payroll.manage");
+            return;
+        }
+        if ("payroll".equals(area)) {
+            if ("GET".equals(method)) requireAny("payroll.view", "payroll.manage"); else require("payroll.manage");
+            return;
+        }
+        if ("performance".equals(area)) {
+            if (seg.length > 2 && "me".equals(seg[2])) return;
+            if (seg.length > 2 && "team".equals(seg[2])) { requireAny("performance.view", "performance.view_all"); return; }
+            if (seg.length > 2 && "charts".equals(seg[2])) {
+                long chartUser = 0; try { if (seg.length > 3) chartUser = Long.parseLong(seg[3]); } catch (NumberFormatException e) { chartUser = 0; }
+                if (currentUserTarget(chartUser)) return;
+                require("performance.view"); return;
+            }
+            long target = 0;
+            try { if (seg.length > 2) target = Long.parseLong(seg[2]); } catch (NumberFormatException e) { target = 0; }
+            if (target > 0 && currentUserTarget(target)) return;
+            if (seg.length > 2 && "pdf".equals(seg[2])) requireAny("reports.export", "performance.view_all");
+            else requireAny("performance.view", "performance.view_all");
+        }
+    }
+    static void require(String permission) throws Api.ApiError {
+        if (!Screens.can(permission)) throw new Api.ApiError(403, "PERMISSION", "برای این عملیات مجوز «" + permission + "» لازم است");
+    }
+    static void requireAny(String... permissions) throws Api.ApiError {
+        for (String permission : permissions) if (Screens.can(permission)) return;
+        throw new Api.ApiError(403, "PERMISSION", "برای این عملیات مجوز لازم را ندارید");
+    }
+    static boolean currentUserTarget(long id) {
+        long localId = Db.localUserId(), pcId = Db.pcUserIdForLocal(localId);
+        return pcId > 0 ? pcId == id : localId > 0 && localId == id;
+    }
+
     /* ===================== auth / users / roles ===================== */
-    static final String[] PERMS = {"products.manage", "products.view", "batches.manage", "inventory.adjust", "inventory.stocktake", "inventory.approve_stocktake", "inventory.view", "pricing.manage", "pricing.view_cost", "pos.sell", "pos.void_unpaid", "pos.void_paid", "pos.return", "customers.manage", "customers.ledger", "customers.settle", "marketing.view", "marketing.manage", "reports.view", "reports.view_all", "accounting.view", "accounting.post", "accounting.close", "settings.manage", "users.manage", "audit.view", "shifts.view", "shifts.manage", "announcements.view", "announcements.publish", "announcements.manage", "performance.view", "performance.view_all", "payroll.view", "payroll.manage"};
+    static final String[] PERMS = {
+        "products.manage", "products.view", "batches.manage", "batches.delete", "inventory.adjust", "inventory.stocktake",
+        "inventory.approve_stocktake", "inventory.view", "pricing.manage", "pricing.view_cost", "pos.sell", "pos.void_unpaid",
+        "pos.void_paid", "pos.return", "customers.manage", "customers.ledger", "customers.settle", "reports.view",
+        "reports.view_all", "accounting.view", "accounting.post", "accounting.close", "settings.manage", "marketing.view",
+        "marketing.manage", "users.manage", "audit.view", "profile.view_all", "announcements.publish", "announcements.manage",
+        "shifts.view", "shifts.manage", "performance.view", "performance.view_all", "payroll.view", "payroll.manage",
+        "reports.export", "dev.mode"
+    };
     static final String[][] ROLES = {
         {"Administrator", "مدیر سیستم", "*"},
         {"General Manager", "مدیر کل", "*"},
-        {"Manager", "مدیر فروشگاه", "*"},
-        {"Supervisor", "سوپروایزر", "products.manage,products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,pricing.manage,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,marketing.view,marketing.manage,reports.view,reports.view_all,accounting.view,shifts.view,shifts.manage,announcements.view,announcements.publish,performance.view_all"},
-        {"Accountant", "حسابدار", "customers.ledger,customers.settle,reports.view,reports.view_all,accounting.view,accounting.post,accounting.close,pricing.view_cost,payroll.view,payroll.manage,announcements.view"},
-        {"Cashier", "صندوق‌دار", "pos.sell,pos.void_unpaid,customers.manage,customers.ledger,reports.view,announcements.view,performance.view"},
-        {"Salesperson", "فروشنده", "pos.sell,pos.void_unpaid,customers.manage,customers.ledger,reports.view,announcements.view,performance.view"},
-        {"Inventory Operator", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,reports.view,announcements.view"},
-        {"Warehouse Keeper", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,reports.view,announcements.view"},
-        {"Viewer", "ناظر", "products.view,inventory.view,reports.view"}};
+        {"Manager", "مدیر فروشگاه", "products.manage,products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.approve_stocktake,inventory.view,pricing.manage,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,settings.manage,audit.view,marketing.view,marketing.manage,accounting.view,accounting.post,accounting.close,shifts.view,shifts.manage,performance.view,performance.view_all"},
+        {"Cashier", "صندوق‌دار", "products.view,inventory.view,pos.sell,pos.void_unpaid,customers.manage,customers.ledger,customers.settle,reports.view"},
+        {"Accountant", "حسابدار", "products.view,inventory.view,pricing.view_cost,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,accounting.view,accounting.post,accounting.close"},
+        {"Supervisor", "سوپروایزر", "products.view,batches.manage,batches.delete,inventory.view,inventory.adjust,inventory.stocktake,inventory.approve_stocktake,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,marketing.view,marketing.manage,accounting.view,shifts.view,shifts.manage"},
+        {"Inspector", "بازرس", "products.view,inventory.view,reports.view,reports.view_all,audit.view"},
+        {"Salesperson", "فروشنده", "products.view,inventory.view,pos.sell,pos.void_unpaid,customers.manage,reports.view"},
+        {"Inventory Operator", "انباردار", "products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.view,pricing.view_cost,reports.view,reports.view_all"},
+        {"Storekeeper", "مسئول انبار", "products.view,batches.manage,batches.delete,inventory.adjust,inventory.stocktake,inventory.view,reports.view,reports.view_all,shifts.view"},
+        {"Stocktake Lead", "مسئول انبارگردانی", "products.view,inventory.view,inventory.stocktake,inventory.approve_stocktake,inventory.adjust,reports.view,reports.view_all,shifts.view"},
+        {"Viewer", "ناظر", "products.view,inventory.view,reports.view,reports.view_all"}
+    };
     static JSONArray permsFor(JSONArray roles) {
         java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
         for (int i = 0; roles != null && i < roles.length(); i++) for (String[] r : ROLES) if (r[0].equals(roles.optString(i))) { if ("*".equals(r[2])) out.addAll(java.util.Arrays.asList(PERMS)); else out.addAll(java.util.Arrays.asList(r[2].split(","))); }
         return new JSONArray(out);
     }
     static String sha(String s) { try { java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256"); byte[] d = md.digest(s.getBytes("UTF-8")); StringBuilder sb = new StringBuilder(); for (byte x : d) sb.append(String.format("%02x", x)); return "sha:" + sb; } catch (Exception e) { return "plain:" + s; } }
+    private static final int OFFLINE_HASH_ITERATIONS = 120000;
+    /** Salted PBKDF2-HMAC-SHA256 verifier; the server password hash is never copied to the phone. */
+    static String passwordVerifier(String password) {
+        try {
+            byte[] salt = new byte[16]; new java.security.SecureRandom().nextBytes(salt);
+            byte[] derived = pbkdf2(password.getBytes(java.nio.charset.StandardCharsets.UTF_8), salt, OFFLINE_HASH_ITERATIONS, 32);
+            return "pbkdf2-sha256$" + OFFLINE_HASH_ITERATIONS + "$" + hex(salt) + "$" + hex(derived);
+        } catch (Exception e) { throw new IllegalStateException("ساخت رمزسنج محلی ناموفق بود", e); }
+    }
+    private static boolean verifyPasswordVerifier(String stored, String password) throws Exception {
+        String[] parts = stored.split("\\$", -1);
+        if (parts.length != 4 || !"pbkdf2-sha256".equals(parts[0])) return false;
+        int iterations;
+        try { iterations = Integer.parseInt(parts[1]); } catch (NumberFormatException e) { return false; }
+        if (iterations < 10000 || iterations > 500000) return false;
+        byte[] salt = unhex(parts[2]), expected = unhex(parts[3]);
+        if (salt.length < 16 || expected.length != 32) return false;
+        byte[] actual = pbkdf2(password.getBytes(java.nio.charset.StandardCharsets.UTF_8), salt, iterations, expected.length);
+        return java.security.MessageDigest.isEqual(actual, expected);
+    }
+    private static byte[] pbkdf2(byte[] password, byte[] salt, int iterations, int length) throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(password, "HmacSHA256"));
+        byte[] block = java.util.Arrays.copyOf(salt, salt.length + 4); block[block.length - 1] = 1;
+        byte[] u = mac.doFinal(block), out = u.clone();
+        for (int round = 1; round < iterations; round++) {
+            u = mac.doFinal(u);
+            for (int i = 0; i < out.length; i++) out[i] ^= u[i];
+        }
+        return java.util.Arrays.copyOf(out, length);
+    }
+    private static String hex(byte[] bytes) {
+        char[] digits = "0123456789abcdef".toCharArray(), out = new char[bytes.length * 2];
+        for (int i = 0; i < bytes.length; i++) { int v = bytes[i] & 255; out[i * 2] = digits[v >>> 4]; out[i * 2 + 1] = digits[v & 15]; }
+        return new String(out);
+    }
+    private static byte[] unhex(String value) {
+        if (value == null || (value.length() & 1) != 0) return new byte[0];
+        byte[] out = new byte[value.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int high = Character.digit(value.charAt(i * 2), 16), low = Character.digit(value.charAt(i * 2 + 1), 16);
+            if (high < 0 || low < 0) return new byte[0];
+            out[i] = (byte) ((high << 4) | low);
+        }
+        return out;
+    }
     /** the admin created by the wizard becomes users row #1 the first time anyone asks. */
     static void seedUsers() {
         if (count("users") > 0) return;
         try { JSONObject u = new JSONObject(Prefs.get("user_json", "{}")); String un = u.optString("username", "admin"); if (un.isEmpty()) un = "admin";
             exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at) VALUES(?,?,?,?,1,?)", un, u.optString("full_name", "مدیر"), Prefs.get("local_admin_hash", ""), "[\"Administrator\"]", Db.now()); } catch (Exception ignore) {}
     }
-    static boolean passOk(JSONObject u, String username, String pass) {
-        String h = u.optString("pass_hash", ""); if (h.startsWith("sha:")) return h.equals(sha(username + "|" + pass));
+    static boolean passOk(JSONObject u, String username, String pass) throws Exception {
+        String h = u.optString("pass_hash", "");
+        if (h.startsWith("pbkdf2-sha256$")) return verifyPasswordVerifier(h, pass);
+        if (h.startsWith("sha:")) return h.equals(sha(username + "|" + pass));
         // v3.5.11 — the wizard-era hash was "<device id>:<hex>". Salting a password with the
         // device identity meant it stopped verifying the moment that identity moved, which is
         // exactly why a CORRECT password was reported as wrong once the idle lock had sent the
-        // user back to the login screen. Compare only the digest part; auth() upgrades the row
-        // to the device-independent "sha:" form on the next successful login.
+        // user back to the login screen. Compare only the digest part; auth() upgrades a valid
+        // legacy row to a salted PBKDF2 verifier after a successful offline login.
         if (h.isEmpty()) return false;
         int c = h.lastIndexOf(':');
         return (c < 0 ? h : h.substring(c + 1)).equals(Integer.toHexString((username + "|" + pass).hashCode()));
     }
-    static JSONObject userOut(JSONObject u) throws Exception { JSONArray roles = new JSONArray(u.optString("roles", "[]")); JSONObject o = new JSONObject(); o.put("id", u.optLong("id")); o.put("username", u.optString("username")); o.put("full_name", u.optString("full_name")); o.put("roles", roles); o.put("permissions", permsFor(roles)); o.put("is_active", u.optInt("is_active", 1) == 1); o.put("local_only", u.optInt("local_only", 1) == 1); boolean adm = false; for (int i = 0; i < roles.length(); i++) if ("Administrator".equals(roles.optString(i))) adm = true; o.put("is_admin", adm); return o; }
+    static JSONArray permissionsOut(JSONObject u, JSONArray roles) throws Exception {
+        if (u.optInt("from_pc", 0) != 1) return permsFor(roles);
+        String raw = u.optString("permissions", "[]");
+        return new JSONArray(raw.isEmpty() ? "[]" : raw);
+    }
+    static JSONArray allowedViewsFor(JSONArray ps) {
+        java.util.LinkedHashSet<String> views = new java.util.LinkedHashSet<>();
+        if (has(ps, "reports.view")) views.add("dashboard");
+        if (has(ps, "pos.sell")) views.add("pos");
+        if (has(ps, "batches.manage")) views.add("batches");
+        if (has(ps, "inventory.adjust") || has(ps, "inventory.stocktake") || has(ps, "inventory.approve_stocktake")) views.add("inventory");
+        if (has(ps, "products.manage") || has(ps, "batches.manage") || has(ps, "pricing.manage")) views.add("products");
+        if (has(ps, "pos.sell") || has(ps, "customers.manage") || has(ps, "customers.ledger")) views.add("customers");
+        if (has(ps, "marketing.view") || has(ps, "marketing.manage")) views.add("marketing");
+        if (has(ps, "reports.view_all")) views.add("reports");
+        if (has(ps, "reports.view")) { views.add("invoices"); views.add("insights"); }
+        if (has(ps, "reports.view_all")) views.add("insightsPlan");
+        if (has(ps, "reports.view_all") || has(ps, "customers.manage")) views.add("insightsCustomers");
+        if (has(ps, "accounting.view")) views.add("accounting");
+        if (has(ps, "settings.manage")) { views.add("hardware"); views.add("settings"); views.add("diagnostics"); }
+        if (has(ps, "users.manage")) views.add("users");
+        if (has(ps, "audit.view")) views.add("audit");
+        if (has(ps, "pos.sell") || has(ps, "settings.manage") || has(ps, "users.manage")) views.add("support");
+        if (has(ps, "users.manage") || has(ps, "payroll.view") || has(ps, "payroll.manage") || has(ps, "shifts.manage")
+                || has(ps, "shifts.view") || has(ps, "performance.view_all") || has(ps, "announcements.manage")
+                || has(ps, "announcements.publish")) views.add("staff");
+        views.add("profile");
+        return new JSONArray(views);
+    }
+    static boolean has(JSONArray ps, String permission) {
+        for (int i = 0; ps != null && i < ps.length(); i++) if (permission.equals(ps.optString(i))) return true;
+        return false;
+    }
+    static boolean offlineLoginAllowed(JSONObject u) throws Exception {
+        JSONArray roles = new JSONArray(u.optString("roles", "[]"));
+        for (int i = 0; i < roles.length(); i++) if ("Administrator".equals(roles.optString(i))) return true;
+        return u.optInt("offline_allowed", u.optInt("local_only", 1) == 0 ? 1 : 0) == 1;
+    }
+    static JSONObject userOut(JSONObject u) throws Exception {
+        JSONArray roles = new JSONArray(u.optString("roles", "[]"));
+        JSONArray permissions = permissionsOut(u, roles);
+        JSONArray allowed = u.optInt("from_pc", 0) == 1
+                ? new JSONArray(u.optString("allowed_views", "[]")) : allowedViewsFor(permissions);
+        JSONObject o = new JSONObject(); o.put("id", u.optLong("id"));
+        String publicUsername = u.optInt("from_pc", 0) == 1 && !u.isNull("pc_username") && !u.optString("pc_username").isEmpty() ? u.optString("pc_username") : u.optString("username");
+        o.put("username", publicUsername);
+        o.put("full_name", u.optString("full_name")); o.put("roles", roles); o.put("permissions", permissions);
+        o.put("phone", u.isNull("phone") ? JSONObject.NULL : u.opt("phone"));
+        o.put("job_title", u.isNull("job_title") ? JSONObject.NULL : u.opt("job_title"));
+        o.put("store", u.isNull("store") ? JSONObject.NULL : u.opt("store"));
+        o.put("hire_date", u.isNull("hire_date") ? JSONObject.NULL : u.opt("hire_date"));
+        o.put("allowed_views", allowed); o.put("is_active", u.optInt("is_active", 1) == 1);
+        o.put("local_only", u.optInt("local_only", 1) == 1);
+        o.put("offline_allowed", u.optInt("offline_allowed", u.optInt("local_only", 1) == 0 ? 1 : 0) == 1);
+        o.put("pc_id", u.optLong("pc_id", 0));
+        boolean adm = false; for (int i = 0; i < roles.length(); i++) if ("Administrator".equals(roles.optString(i))) adm = true;
+        o.put("is_admin", adm); return o;
+    }
 
-    /** v4.8.1 — cache a PC user at ONLINE sign-in so the SAME user/password works
-     *  standalone later (no PC, no QR): the phone keeps its own sha verifier +
-     *  the sign-in policy (roles / active / «دسترسی فقط به صورت بومی»). */
-    public static void cacheUser(String username, String fullName, String password, String rolesJson, boolean isActive, boolean localOnly) {
+    /** Cache the server's exact role/direct-permission grant for offline use; never reuse the PC password hash. */
+    public static void cacheUser(String username, String fullName, String password, long pcUserId, String rolesJson,
+                                 String permissionsJson, String allowedViewsJson, String phone, String jobTitle,
+                                 String store, String hireDate, boolean isActive, boolean localOnly, boolean offlineAllowed) {
         if (username == null || username.trim().isEmpty()) return;
         String un = username.trim();
+        String roles = rolesJson == null || rolesJson.isEmpty() ? "[]" : rolesJson;
+        String permissions = permissionsJson == null || permissionsJson.isEmpty() ? "[]" : permissionsJson;
+        String views = allowedViewsJson == null || allowedViewsJson.isEmpty() ? "[]" : allowedViewsJson;
+        String full = fullName == null ? "" : fullName;
+        String verifier = passwordVerifier(password);
         try {
-            JSONObject ex = one("SELECT * FROM users WHERE username=?", un);
+            JSONObject ex = pcUserId > 0 ? one("SELECT * FROM users WHERE pc_id=? ORDER BY id LIMIT 1", pcUserId) : null;
+            String storageName = un;
             if (ex == null) {
-                exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at,local_only,from_pc) VALUES(?,?,?,?,?,?,?,1)",
-                        un, fullName == null ? "" : fullName, sha(un + "|" + password), rolesJson == null ? "[]" : rolesJson, isActive ? 1 : 0, Db.now(), localOnly ? 1 : 0);
-            } else {
-                exec("UPDATE users SET full_name=?, pass_hash=?, roles=?, is_active=?, local_only=?, from_pc=1 WHERE id=?",
-                        fullName == null ? "" : fullName, sha(un + "|" + password), rolesJson == null ? "[]" : rolesJson, isActive ? 1 : 0, localOnly ? 1 : 0, ex.optLong("id"));
+                JSONObject sameName = one("SELECT * FROM users WHERE username=?", un);
+                if (sameName != null && sameName.optInt("from_pc", 0) == 1
+                        && (sameName.optLong("pc_id") == 0 || sameName.optLong("pc_id") == pcUserId)) ex = sameName;
+                else if (sameName != null && pcUserId > 0) {
+                    storageName = "pc-user-" + pcUserId;
+                    ex = one("SELECT * FROM users WHERE username=?", storageName);
+                } else if (sameName != null) ex = sameName;
             }
-        } catch (Exception ignore) {}
+            if (ex == null) {
+                exec("INSERT INTO users(username,pc_username,full_name,pass_hash,roles,is_active,created_at,local_only,from_pc,permissions,allowed_views,pc_id,phone,job_title,store,hire_date,offline_allowed) VALUES(?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)",
+                        storageName, un, full, verifier, roles, isActive ? 1 : 0, Db.now(), localOnly ? 1 : 0, permissions, views, pcUserId, phone, jobTitle, store, hireDate, offlineAllowed ? 1 : 0);
+            } else {
+                long localId = ex.optLong("id");
+                exec("UPDATE users SET pc_username=?,full_name=?,pass_hash=?,roles=?,is_active=?,local_only=?,from_pc=1,permissions=?,allowed_views=?,pc_id=?,phone=?,job_title=?,store=?,hire_date=?,offline_allowed=? WHERE id=?",
+                        un, full, verifier, roles, isActive ? 1 : 0, localOnly ? 1 : 0, permissions, views, pcUserId, phone, jobTitle, store, hireDate, offlineAllowed ? 1 : 0, localId);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("ذخیرهٔ مجوزهای کاربر برای ورود آفلاین ناموفق بود", e);
+        }
     }
     static Object auth(String method, String[] seg, String body) throws Exception {
         seedUsers();
         if ("login".equals(seg[1])) {
             String un = "", pw = ""; for (String kv : (body == null ? "" : body).split("&")) { int e = kv.indexOf('='); if (e < 0) continue; String k = kv.substring(0, e), v = java.net.URLDecoder.decode(kv.substring(e + 1), "UTF-8"); if ("username".equals(k)) un = v; if ("password".equals(k)) pw = v; }
-            JSONObject u = one("SELECT * FROM users WHERE username=?", un);
-            if (u == null || u.optInt("is_active", 1) == 0 || !passOk(u, un, pw)) { audit("LOGIN_FAILED", "User", un, null, null); throw new Api.ApiError(401, "AUTH", "نام کاربری یا رمز اشتباه است"); }
+            List<JSONObject> candidates = rows("SELECT * FROM users WHERE username=? OR pc_username=? ORDER BY CASE WHEN pc_username=? THEN 0 ELSE 1 END", un, un, un);
+            List<JSONObject> matches = new ArrayList<>();
+            for (JSONObject candidate : candidates) if (candidate.optInt("is_active", 1) == 1 && passOk(candidate, un, pw)) matches.add(candidate);
+            JSONObject u = matches.size() == 1 ? matches.get(0) : null;
+            if (matches.size() > 1) {
+                // Repair only the exact duplicate created by older standalone sign-in:
+                // a local account was copied back as PC metadata pointing to its own row id.
+                JSONObject local = null;
+                for (JSONObject candidate : matches) if (candidate.optInt("from_pc", 0) == 0 && un.equals(candidate.optString("username"))) {
+                    if (local != null) { local = null; break; }
+                    local = candidate;
+                }
+                boolean selfDuplicates = local != null;
+                if (local != null) for (JSONObject candidate : matches) if (candidate.optLong("id") != local.optLong("id"))
+                    selfDuplicates &= candidate.optInt("from_pc", 0) == 1 && candidate.optLong("pc_id") == local.optLong("id") && un.equals(candidate.optString("pc_username"));
+                if (selfDuplicates) u = local;
+                else throw new Api.ApiError(409, "AMBIGUOUS_USER", "چند حساب محلی با این نام و رمز وجود دارد؛ برای جلوگیری از اختلاط داده‌ها نام یکی از حساب‌ها را تغییر دهید");
+            }
+            if (u == null) { audit("LOGIN_FAILED", "User", un, null, null); throw new Api.ApiError(401, "AUTH", "نام کاربری یا رمز اشتباه است"); }
+            if (!offlineLoginAllowed(u)) {
+                audit("OFFLINE_LOGIN_DENIED", "User", un, null, null);
+                throw new Api.ApiError(403, "OFFLINE_POLICY", "ورود آفلاین برای این کاربر مجاز نیست؛ مدیر فروشگاه باید این اجازه را فعال کند");
+            }
             // v3.5.11 — one-way migration off the device-bound wizard hash, so this account can
             // never be locked out by a change of device identity again.
-            if (!u.optString("pass_hash", "").startsWith("sha:")) {
-                try { exec("UPDATE users SET pass_hash=? WHERE id=?", sha(un + "|" + pw), u.optLong("id")); } catch (Exception ignore) {}
+            if (!u.optString("pass_hash", "").startsWith("pbkdf2-sha256$")) {
+                exec("UPDATE users SET pass_hash=? WHERE id=?", passwordVerifier(pw), u.optLong("id"));
             }
             Prefs.set("user_json", userOut(u).toString()); audit("LOGIN", "User", un, null, null);
             return obj("access_token", "local-" + u.optLong("id") + "-" + System.currentTimeMillis(), "token_type", "bearer");
         }
-        if ("me".equals(seg[1])) { JSONObject cur = new JSONObject(Prefs.get("user_json", "{}")); JSONObject u = one("SELECT * FROM users WHERE username=?", cur.optString("username")); return u == null ? cur : userOut(u); }
+        if ("me".equals(seg[1])) { JSONObject cur = new JSONObject(Prefs.get("user_json", "{}")); long pcId = cur.optLong("pc_id", 0); JSONObject u = pcId > 0 ? one("SELECT * FROM users WHERE pc_id=?", pcId) : one("SELECT * FROM users WHERE username=? OR pc_username=? ORDER BY CASE WHEN pc_username=? THEN 0 ELSE 1 END LIMIT 1", cur.optString("username"), cur.optString("username"), cur.optString("username")); return u == null ? cur : userOut(u); }
         throw new Api.ApiError(404, "NOT_FOUND", "");
     }
     static Object users(String method, String[] seg, JSONObject b) throws Exception {
         seedUsers();
+        if (seg.length > 2 && "profile".equals(seg[2]) && "GET".equals(method)) {
+            long requested = Long.parseLong(seg[1]); long localId = Db.localUserIdForPc(requested);
+            if (localId <= 0) localId = requested;
+            JSONObject row = one("SELECT * FROM users WHERE id=?", localId);
+            if (row == null) throw new Api.ApiError(404, "NOT_FOUND", "پروفایل کارمند یافت نشد");
+            JSONObject profile = userOut(row);
+            if (Screens.can("payroll.view")) {
+                JSONArray payroll = new JSONArray();
+                for (JSONObject item : rows("SELECT period,total,status FROM local_payroll WHERE user_id=? ORDER BY period DESC LIMIT 12", localId)) payroll.put(item);
+                profile.put("payroll", payroll);
+            } else profile.put("payroll", JSONObject.NULL);
+            profile.put("achievements", new JSONArray());
+            return profile;
+        }
         if (seg.length > 1 && "roles".equals(seg[1])) { JSONArray a = new JSONArray(); for (String[] r : ROLES) { JSONObject o = new JSONObject(); o.put("name", r[0]); o.put("label", r[1]); o.put("permissions", permsFor(new JSONArray().put(r[0]))); a.put(o); } return a; }
         if ("GET".equals(method)) { JSONArray a = new JSONArray(); for (JSONObject u : rows("SELECT * FROM users ORDER BY id")) a.put(userOut(u)); return a; }
-        if ("POST".equals(method)) { if (one("SELECT id FROM users WHERE username=?", b.optString("username")) != null) throw new Api.ApiError(409, "DUP", "این نام کاربری قبلاً ثبت شده"); exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at,local_only) VALUES(?,?,?,?,1,?,?)", b.optString("username"), b.optString("full_name"), sha(b.optString("username") + "|" + b.optString("password")), String.valueOf(b.optJSONArray("roles") == null ? new JSONArray().put("Cashier") : b.optJSONArray("roles")), Db.now(), b.optBoolean("local_only", true) ? 1 : 0); audit("USER_CREATE", "User", b.optString("username"), null, b); return userOut(one("SELECT * FROM users WHERE username=?", b.optString("username"))); }
+        if ("POST".equals(method)) { if (one("SELECT id FROM users WHERE username=?", b.optString("username")) != null) throw new Api.ApiError(409, "DUP", "این نام کاربری قبلاً ثبت شده"); exec("INSERT INTO users(username,full_name,pass_hash,roles,is_active,created_at,local_only,offline_allowed) VALUES(?,?,?,?,1,?,?,?)", b.optString("username"), b.optString("full_name"), passwordVerifier(b.optString("password")), String.valueOf(b.optJSONArray("roles") == null ? new JSONArray().put("Cashier") : b.optJSONArray("roles")), Db.now(), b.optBoolean("local_only", true) ? 1 : 0, b.optBoolean("offline_allowed", false) ? 1 : 0); audit("USER_CREATE", "User", b.optString("username"), null, b); return userOut(one("SELECT * FROM users WHERE username=?", b.optString("username"))); }
         if (seg.length > 1) { long id = Long.parseLong(seg[1]); JSONObject u = one("SELECT * FROM users WHERE id=?", id); if (u == null) throw new Api.ApiError(404, "NOT_FOUND", "کاربر نیست");
             if (b.has("full_name")) exec("UPDATE users SET full_name=? WHERE id=?", b.optString("full_name"), id);
-            if (b.has("roles")) exec("UPDATE users SET roles=? WHERE id=?", String.valueOf(b.optJSONArray("roles")), id);
-            if (!b.optString("password").isEmpty()) exec("UPDATE users SET pass_hash=? WHERE id=?", sha(u.optString("username") + "|" + b.optString("password")), id);
+            if (b.has("roles")) exec("UPDATE users SET roles=?,permissions='[]',allowed_views='[]',from_pc=0,pc_id=NULL WHERE id=?", String.valueOf(b.optJSONArray("roles")), id);
+            if (!b.optString("password").isEmpty()) exec("UPDATE users SET pass_hash=? WHERE id=?", passwordVerifier(b.optString("password")), id);
             if (b.has("is_active")) exec("UPDATE users SET is_active=? WHERE id=?", b.optBoolean("is_active") ? 1 : 0, id);
             if (b.has("local_only")) exec("UPDATE users SET local_only=? WHERE id=?", b.optBoolean("local_only") ? 1 : 0, id);
+            if (b.has("offline_allowed")) exec("UPDATE users SET offline_allowed=? WHERE id=?", b.optBoolean("offline_allowed") ? 1 : 0, id);
             audit("USER_UPDATE", "User", u.optString("username"), u, b); JSONObject nu = userOut(one("SELECT * FROM users WHERE id=?", id));
             JSONObject cur = new JSONObject(Prefs.get("user_json", "{}")); if (cur.optString("username").equals(nu.optString("username"))) Prefs.set("user_json", nu.toString());
             return nu; }
@@ -209,13 +533,23 @@ public final class Local {
         JSONObject o = new JSONObject(); long id = r.optLong("id");
         o.put("id", id); o.put("invoice_id", id); o.put("invoice_number", r.isNull("invoice_number") || r.optString("invoice_number").isEmpty() ? r.optString("local_no") : r.optString("invoice_number")); o.put("local_no", r.optString("local_no"));
         o.put("created_at", r.optString("at")); o.put("status", r.optString("status", "PAID")); o.put("payment_status", r.optString("payment_status", "PAID")); o.put("payment_method", r.optString("payment")); o.put("subtotal", r.optDouble("subtotal", r.optDouble("total"))); o.put("discount", r.optDouble("discount", 0)); o.put("tax", r.optDouble("tax", 0)); o.put("total_amount", r.optDouble("total")); o.put("customer_id", r.isNull("customer_id") ? JSONObject.NULL : r.optLong("customer_id")); o.put("cashier", r.optString("user")); o.put("synced", r.optInt("synced") == 1);
-        JSONArray its = new JSONArray(); for (JSONObject it : rows("SELECT * FROM invoice_items WHERE inv=?", id)) { it.put("returned_qty", it.optDouble("returned_qty", 0)); JSONObject p = Db.productById(it.optLong("product_id")); it.put("name", p == null ? "" : p.optString("name")); its.put(it); } o.put("items", its);
+        JSONArray its = new JSONArray(); for (JSONObject it : rows("SELECT * FROM invoice_items WHERE inv=?", id)) { it.put("returned_qty", it.optDouble("returned_qty", 0)); JSONObject p = Db.productById(it.optLong("product_id")); it.put("name", p == null ? "" : p.optString("name")); if (!Screens.can("pricing.view_cost")) { it.remove("unit_buy_price"); it.remove("profit"); } its.put(it); } o.put("items", its);
         if (!r.isNull("customer_id")) { JSONObject c = one("SELECT * FROM customers WHERE id=?", r.optLong("customer_id")); if (c != null) { o.put("customer_name", c.optString("name")); o.put("customer_phone", c.optString("phone")); } }
         return o;
     }
     static Object invoices(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
-        if (seg.length == 1) { JSONArray a = new JSONArray(); for (JSONObject r : rows("SELECT rowid AS id,* FROM invoices ORDER BY at DESC LIMIT " + q.optInt("limit", 100))) a.put(invoiceOut(r)); return a; }
-        long id = Long.parseLong(seg[1]); JSONObject r = one("SELECT rowid AS id,* FROM invoices WHERE rowid=?", id); JSONObject inv = invoiceOut(r);
+        boolean seeAll = Screens.can("reports.view_all"); long uid = Db.localUserId();
+        if (seg.length == 1) {
+            JSONArray a = new JSONArray();
+            if (!seeAll && uid <= 0) return a;
+            String sql = "SELECT rowid AS id,* FROM invoices" + (seeAll ? "" : " WHERE user_id=?") + " ORDER BY at DESC LIMIT " + q.optInt("limit", 100);
+            for (JSONObject r : (seeAll ? rows(sql) : rows(sql, uid))) a.put(invoiceOut(r));
+            return a;
+        }
+        long id = Long.parseLong(seg[1]);
+        JSONObject r = seeAll ? one("SELECT rowid AS id,* FROM invoices WHERE rowid=?", id)
+                : one("SELECT rowid AS id,* FROM invoices WHERE rowid=? AND user_id=?", id, uid);
+        JSONObject inv = invoiceOut(r);
         if (seg.length == 2) return inv;
         switch (seg[2]) {
             case "receipt": return obj("receipt_text", receipt(inv));
@@ -424,10 +758,11 @@ public final class Local {
         String what = seg[1]; String today = Jalali.todayIso();
         switch (what) {
             case "dashboard": {
+                if (!Screens.can("reports.view_all")) return personalDashboard(Db.localUserId());
                 // v3.3: every block is one set-based, index-backed query (at-range instead of substr(), GROUP BY instead of
                 // per-row loops) so a store with years of history renders in well under a second on a phone.
                 String t0 = today, t1 = today + "T99", m30 = Jalali.daysAgoIso(30);
-                JSONObject d = new JSONObject(); JSONObject sales = new JSONObject();
+                JSONObject d = new JSONObject(); d.put("scope", "store"); JSONObject sales = new JSONObject();
                 JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID'", t0, t1); sales.put("today", t.optDouble("s")); sales.put("invoice_count_today", t.optInt("n"));
                 JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND status<>'VOID'", m30); sales.put("month", m.optDouble("s")); JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID'", Jalali.daysAgoIso(1), today); sales.put("yesterday", yd.optDouble("s")); JSONObject ycnt = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<?", Jalali.daysAgoIso(1), today); sales.put("invoice_count_yesterday", ycnt.optInt("n")); d.put("sales", sales); JSONArray byPay = new JSONArray(); for (JSONObject r : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today)) { byPay.put(r); } d.put("today_by_payment", byPay);
                 JSONObject inv = new JSONObject(); inv.put("product_count", Db.count("products"));
@@ -467,6 +802,39 @@ public final class Local {
         }
         throw new Api.ApiError(404, "NOT_FOUND", "");
     }
+    /** A cashier's local dashboard uses only invoices durably attributed to that user id. */
+    static JSONObject personalDashboard(long userId) throws Exception {
+        JSONObject d = new JSONObject(); d.put("scope", userId > 0 ? "self" : "none");
+        JSONObject sales = new JSONObject(); JSONArray byPay = new JSONArray(), trend = new JSONArray(), recent = new JSONArray();
+        if (userId > 0) {
+            String today = Jalali.todayIso(), tomorrow = Jalali.daysAgoIso(-1), yesterday = Jalali.daysAgoIso(1), monthStart = Jalali.daysAgoIso(30);
+            JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=?", today, tomorrow, userId);
+            JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=?", monthStart, tomorrow, userId);
+            JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=?", yesterday, today, userId);
+            JSONObject yc = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=?", yesterday, today, userId);
+            sales.put("today", t == null ? 0 : t.optDouble("s")); sales.put("invoice_count_today", t == null ? 0 : t.optInt("n"));
+            sales.put("month", m == null ? 0 : m.optDouble("s")); sales.put("yesterday", yd == null ? 0 : yd.optDouble("s"));
+            sales.put("invoice_count_yesterday", yc == null ? 0 : yc.optInt("n"));
+            for (JSONObject row : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=? GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today, tomorrow, userId)) byPay.put(row);
+            java.util.Map<String, JSONObject> byDay = new java.util.HashMap<>();
+            for (JSONObject row : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status<>'VOID' AND user_id=? GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6), tomorrow, userId)) byDay.put(row.optString("d"), row);
+            for (int i = 6; i >= 0; i--) { String day = Jalali.daysAgoIso(i); JSONObject value = byDay.get(day), item = new JSONObject(); item.put("date", day); item.put("label", Ui.jdate(day)); item.put("sales", value == null ? 0 : value.optDouble("s")); item.put("count", value == null ? 0 : value.optInt("n")); trend.put(item); }
+            for (JSONObject row : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices WHERE user_id=? ORDER BY at DESC LIMIT 5", userId)) { JSONObject item = new JSONObject(); item.put("invoice_number", row.optString("invoice_number").isEmpty() || row.isNull("invoice_number") ? row.optString("local_no") : row.optString("invoice_number")); item.put("created_at", row.optString("at")); item.put("total", row.optDouble("total")); item.put("status", row.optString("status", "PAID")); recent.put(item); }
+        } else {
+            sales.put("today", 0); sales.put("month", 0); sales.put("yesterday", 0); sales.put("invoice_count_today", 0); sales.put("invoice_count_yesterday", 0);
+        }
+        d.put("sales", sales); d.put("today_by_payment", byPay); d.put("trend", trend); d.put("recent_invoices", recent);
+        // Store-wide blocks are intentionally empty at this scope; local SQLite is not a permission bypass.
+        d.put("inventory", obj("value", 0, "product_count", 0, "low_stock", new JSONArray(), "no_stock", new JSONArray(), "low_stock_count", 0, "no_stock_count", 0));
+        d.put("receivables", obj("customer_debt", 0, "debtor_count", 0, "pending_count", 0, "pending_amount", 0));
+        d.put("accounting", obj("cash", 0, "bank", 0, "payables", 0)); d.put("profit", obj("today", 0, "month", 0));
+        d.put("expiry", new JSONObject()); d.put("pricing", obj("price_conflict_count", 0));
+        d.put("top_products", new JSONArray()); d.put("sales_by_category", new JSONArray());
+        JSONObject sys = new JSONObject(); sys.put("version", Version.NAME); sys.put("status", "OK"); sys.put("sync_queued", Db.opCountForUser(userId)); sys.put("sync_failed", 0); d.put("system", sys);
+        JSONObject sms = new JSONObject(); sms.put("configured", false); sms.put("pending", 0); d.put("sms", sms);
+        return d;
+    }
+
     static JSONObject expiryBuckets() throws Exception { return expiryBuckets(300); }
     /** v3.3: buckets computed in SQL (julianday) on an indexed range; each bucket is capped so a huge store never
      *  builds thousands of JSON rows for a dashboard card. `total_*` counts are always exact. */
@@ -494,7 +862,7 @@ public final class Local {
     }
     static Object diagnostics(String method, String[] seg, JSONObject q) throws Exception {
         if ("history".equals(seg[1])) return new JSONArray(Db.kv("diag_history") == null ? "[]" : Db.kv("diag_history"));
-        if ("sync".equals(seg[1])) { if (seg.length > 2 && "run".equals(seg[2])) { Sync.kick(); Api.bg(SmsLocal::flush); } return obj("pending", Db.opCount(), "failed", Db.conflicts().size()); }
+        if ("sync".equals(seg[1])) { if (seg.length > 2 && "run".equals(seg[2])) { Sync.kick(); Api.bg(SmsLocal::flush); } long uid = Db.localUserId(); return obj("pending", Screens.can("users.manage") ? Db.opCount() : Db.opCountForUser(uid), "failed", Screens.can("users.manage") ? Db.conflicts().size() : Db.conflictCountForUser(uid)); }
         if ("runs".equals(seg[1])) { JSONArray h = new JSONArray(Db.kv("diag_history") == null ? "[]" : Db.kv("diag_history")); for (int i = 0; i < h.length(); i++) if (String.valueOf(h.optJSONObject(i).optLong("id")).equals(seg[2])) return h.optJSONObject(i); throw new Api.ApiError(404, "NOT_FOUND", ""); }
         if ("run".equals(seg[1])) {
             boolean ext = "true".equals(q.optString("include_external")); JSONArray checks = new JSONArray(); int pass = 0, fail = 0, skip = 0;

@@ -26,10 +26,12 @@ class UserIn(BaseModel):
     full_name: str = ""
     email: str | None = None
     roles: list[str] = []
-    # «دسترسی فقط به صورت بومی» — default ON for non-admin users (they sign in
-    # only on the shop's local network); the admin unchecks it to let a user work
-    # outside the network too (phone standalone / relay), with sync on return.
+    # «دسترسی فقط به صورت بومی» — default ON for non-admin users; it restricts
+    # online sign-in to the shop's local network. It does not grant/revoke cached
+    # sign-in with no network; offline_allowed is the separate opt-in below.
     local_only: bool = True
+    # Offline-first is opt-in for non-admin users; this is distinct from LAN-only access.
+    offline_allowed: bool = False
     # build-488 (§۱–۲) — پروفایل + دسترسی مستقیم مستقل از Role
     phone: str | None = None
     job_title: str | None = None
@@ -45,6 +47,7 @@ class UserPatch(BaseModel):
     is_active: bool | None = None
     roles: list[str] | None = None
     local_only: bool | None = None
+    offline_allowed: bool | None = None
     phone: str | None = None
     job_title: str | None = None
     store: str | None = None
@@ -71,6 +74,7 @@ def _out(u: User) -> dict:
             "email": u.email, "is_active": u.is_active, "roles": [r.name for r in u.roles],
             "roles_titles": [role_title_fa(r.name) for r in u.roles],
             "local_only": bool(u.local_only),
+            "offline_allowed": bool(u.offline_allowed),
             # build-488 — پروفایل (§۱) + دسترسی مستقیم (§۲)
             "phone": u.phone, "job_title": u.job_title, "store": u.store,
             "avatar_url": f"/media/{u.avatar_path}" if u.avatar_path else None,
@@ -123,7 +127,7 @@ def create_user(body: UserIn, db: Session = Depends(get_db), _: User = Depends(r
     roles = db.execute(select(Role).where(Role.name.in_(body.roles))).scalars().all() if body.roles else []
     u = User(username=body.username, full_name=body.full_name, email=body.email,
              password_hash=hash_password(body.password), roles=list(roles),
-             local_only=body.local_only,
+             local_only=body.local_only, offline_allowed=body.offline_allowed,
              phone=body.phone, job_title=body.job_title, store=body.store,
              hire_date=body.hire_date)
     db.add(u)
@@ -131,7 +135,8 @@ def create_user(body: UserIn, db: Session = Depends(get_db), _: User = Depends(r
     _set_direct_permissions(db, u, body.permissions or [])
     write_audit(db, action="USER_CREATED", user_id=u.id, entity_type="User", entity_id=u.id,
                 after={"username": u.username, "roles": body.roles,
-                       "permissions": body.permissions or []})
+                       "permissions": body.permissions or [], "local_only": u.local_only,
+                       "offline_allowed": u.offline_allowed})
     db.commit()
     return _out(u)
 
@@ -225,10 +230,11 @@ def update_user(user_id: int, body: UserPatch, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
     before = {"roles": [r.name for r in u.roles],
               "direct_permissions": [p.code for p in u.direct_permissions],
-              "is_active": u.is_active}
+              "is_active": u.is_active, "local_only": u.local_only,
+              "offline_allowed": u.offline_allowed}
     if body.password:
         u.password_hash = hash_password(body.password)
-    for f in ("full_name", "email", "is_active", "local_only", "phone", "job_title", "store", "hire_date"):
+    for f in ("full_name", "email", "is_active", "local_only", "offline_allowed", "phone", "job_title", "store", "hire_date"):
         v = getattr(body, f)
         if v is not None:
             setattr(u, f, v)
@@ -240,6 +246,7 @@ def update_user(user_id: int, body: UserPatch, db: Session = Depends(get_db),
                 before=before,
                 after={"roles": [r.name for r in u.roles],
                        "direct_permissions": [p.code for p in u.direct_permissions],
-                       "is_active": u.is_active})
+                       "is_active": u.is_active, "local_only": u.local_only,
+                       "offline_allowed": u.offline_allowed})
     db.commit()
     return _out(u)

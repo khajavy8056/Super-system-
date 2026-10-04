@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-492 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-493 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 492;
+const UI_BUILD = 493;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -493,7 +493,9 @@ window.loadMineCard = async function (dashData) {
   // ۱) فروش امروز من — از payload داشبورد (همان ردیف «گزارش فروش روزانه»)
   const meName = (state.user && state.user.full_name) || "";
   const staff = Array.isArray(dashData && dashData.today_by_staff) ? dashData.today_by_staff : [];
-  const myRow = staff.find((s) => (s.name && meName && s.name.includes(meName)) || s.user_id === (state.user || {}).id);
+  const myId = Number((state.user || {}).id || 0);
+  const myRow = staff.find((s) => myId > 0 && Number(s.user_id) === myId)
+    || staff.find((s) => s.name && meName && String(s.name).trim() === String(meName).trim());
   if (myRow) parts.push(`<div class="mine-kpi"><span>فروش امروز من</span><b>${money(myRow.sales != null ? myRow.sales : myRow.total || 0)}</b><small>${fa(myRow.invoice_count != null ? myRow.invoice_count : 0)} فاکتور</small></div>`);
   // ۲) عملکرد من — هر کاربر خودش (performance/me عمومی است)
   try {
@@ -690,7 +692,9 @@ window.applyDashboardWidgets = async function () {
       node.dataset.w = w.id;
       if (hidden.has(w.id)) { node.style.display = "none"; return; }
       node.style.display = "";
-      node.style.order = String(w.pinned ? -100 + i : i);
+      // Preserve the existing hero → personal shift/performance card → dashboard cards hierarchy.
+      // Pinning changes order only within the card area; it can never lift content above the welcome hero.
+      node.style.order = node.classList.contains("og-mine") ? "1" : String(Math.max(2, w.pinned ? -100 + i : i));
       node.classList.remove("w-sm", "w-md", "w-lg");
       node.classList.add("w-" + (w.size || "md"));
       if (w.pinned) node.classList.add("w-pinned"); else node.classList.remove("w-pinned");
@@ -1377,7 +1381,7 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۲ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۳ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>` : ""}
         ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
@@ -1448,7 +1452,7 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>` : ""}
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.492")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.493")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
@@ -3749,7 +3753,7 @@ RENDER.users = async () => {
     </label>`).join("");
   v.innerHTML = `<div class="grid grid-2">
     <div class="card"><h3>کاربران</h3>
-      <p class="muted">«دسترسی فقط به صورت بومی» یعنی کاربر فقط وقتی داخل شبکهٔ فروشگاه است می‌تواند وارد شود. مدیر اصلی همیشه دسترسی مستقل دارد. هر کاربر می‌تواند چند نقش داشته باشد و دسترسی مستقیم هم بگیرد (§۲).</p>
+      <p class="muted">«فقط شبکهٔ فروشگاه» و «اجازهٔ ورود آفلاین با دادهٔ محلی» دو سیاست جدا هستند. ورود آفلاین به‌طور پیش‌فرض خاموش است؛ مدیر اصلی همیشه دسترسی مستقل دارد. هر کاربر می‌تواند چند نقش و دسترسی مستقیم داشته باشد (§۲).</p>
       <table id="u-table"></table></div>
     <div class="card"><h3>افزودن کاربر</h3>
       <label>نام کاربری</label><input id="u-username" />
@@ -3763,6 +3767,8 @@ RENDER.users = async () => {
       <div id="u-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">${permChips([])}</div>
       <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:10px;cursor:pointer">
         <input type="checkbox" id="u-local-only" checked /> دسترسی فقط به صورت بومی (فقط داخل شبکهٔ فروشگاه)</label>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="u-offline-allowed" /> اجازهٔ ورود با دادهٔ محلی هنگام قطع شبکه</label>
       <button id="u-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
     </div>
   </div>`;
@@ -3773,12 +3779,13 @@ RENDER.users = async () => {
       el("td", { text: u.username }), el("td", { text: u.full_name }),
       el("td", { text: (u.roles_titles && u.roles_titles.length ? u.roles_titles : u.roles).join("، ") }),
       el("td", { text: u.job_title || "—" }),
+      el("td", {}, el("span", { class: "badge " + (u.local_only ? "badge-blue" : "badge-green"), text: u.local_only ? "شبکهٔ فروشگاه" : "هر شبکه" }), " ", el("span", { class: "badge " + (u.offline_allowed ? "badge-green" : "badge-red"), text: u.offline_allowed ? "آفلاین مجاز" : "آفلاین ممنوع" })),
       el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" })),
       el("td", {}, el("button", { class: "btn btn-sm", text: "ویرایش", onclick: () => openUserEdit(u, draw) }))));
     const t = $("#u-table");
     t.innerHTML = "";
     t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
-      el("th", { text: "نقش‌ها" }), el("th", { text: "عنوان شغلی" }), el("th", { text: "وضعیت" }), el("th", { text: "عملیات" }))),
+      el("th", { text: "نقش‌ها" }), el("th", { text: "عنوان شغلی" }), el("th", { text: "سیاست ورود" }), el("th", { text: "وضعیت" }), el("th", { text: "عملیات" }))),
       el("tbody", {}, ...rows));
   };
   await draw();
@@ -3798,7 +3805,8 @@ RENDER.users = async () => {
         full_name: $("#u-fullname").value, phone: $("#u-phone").value || null,
         job_title: $("#u-job").value || null,
         roles: checkedVals("u-role-cb", "u-roles"), permissions: checkedVals("u-perm-cb", "u-perms"),
-        local_only: $("#u-local-only").checked }) });
+        local_only: $("#u-local-only").checked,
+        offline_allowed: $("#u-offline-allowed").checked }) });
       toast("کاربر ساخته شد"); draw();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -3829,6 +3837,10 @@ function openUserEdit(u, refresh) {
           <input type="checkbox" class="ue-perm-cb" value="${esc(p.code)}" ${(u.direct_permissions || []).includes(p.code) ? "checked" : ""}>
           <span class="badge badge-blue">${esc(p.code)}</span></label>`).join("")}
       </div>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="ue-local-only" ${u.local_only ? "checked" : ""}> فقط ورود از شبکهٔ فروشگاه</label>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="ue-offline-allowed" ${u.offline_allowed ? "checked" : ""}> اجازهٔ ورود با دادهٔ محلی هنگام قطع شبکه</label>
       <div class="prof-actions" style="margin-top:12px">
         <button class="btn btn-primary" id="ue-save">ذخیره</button>
         <button class="btn btn-ghost" id="ue-toggle">${u.is_active ? "غیرفعال کردن" : "فعال کردن"}</button>
@@ -3843,7 +3855,9 @@ function openUserEdit(u, refresh) {
     try {
       await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({
         full_name: overlay.querySelector("#ue-name").value, phone: overlay.querySelector("#ue-phone").value || null,
-        job_title: overlay.querySelector("#ue-job").value || null, roles, permissions }) });
+        job_title: overlay.querySelector("#ue-job").value || null, roles, permissions,
+        local_only: overlay.querySelector("#ue-local-only").checked,
+        offline_allowed: overlay.querySelector("#ue-offline-allowed").checked }) });
       toast("ذخیره شد", "ok"); close(); refresh();
     } catch (e) { toast(e.message, "err"); }
   });

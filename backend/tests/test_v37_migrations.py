@@ -79,12 +79,32 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # invoice + insight auto-resolution — four additive invoice columns).
     # build-482 note: the head moved again (users.local_only — «دسترسی فقط به
     # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
-    # build-488 note: the head moved again (HR layer: shifts/payroll/announcements/
-    # achievements/widget layouts + user profile fields — دستور جامع مالک).
-    assert heads == ["c488e1a0b7d5"]
+    # build-488 introduced the HR layer; build-493 adds the independent,
+    # administrator-controlled permission for cached/offline mobile sign-in.
+    assert heads == ["d4930f0f4930"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
+
+
+def test_build493_migration_backfills_the_existing_local_login_policy():
+    """The new flag is independent but preserves existing non-local-only users."""
+    d = tempfile.mkdtemp(prefix="mig493policy_")
+    url = f"sqlite:///{d}/policy.db"
+    cfg = _cfg(url)
+    command.upgrade(cfg, "c488e1a0b7d5")
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("""INSERT INTO users
+            (username, full_name, email, password_hash, is_active, local_only)
+            VALUES ('legacy_online', 'Legacy Online', NULL, 'test', 1, 0)"""))
+        conn.execute(text("""INSERT INTO users
+            (username, full_name, email, password_hash, is_active, local_only)
+            VALUES ('legacy_shop_only', 'Legacy Shop', NULL, 'test', 1, 1)"""))
+    command.upgrade(cfg, "head")
+    with eng.connect() as conn:
+        rows = dict(conn.execute(text("SELECT username, offline_allowed FROM users WHERE username LIKE 'legacy_%'")).all())
+    assert rows == {"legacy_online": 1, "legacy_shop_only": 0}
 
 
 def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
@@ -121,18 +141,17 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # build-488 note: the head step is now the HR-layer migration
-    # (c488e1a0b7d5), so "-1" is it: one step down, the HR tables and the new
-    # profile columns go; one step up they are back. Older additive columns
-    # (users.local_only, invoices.campaign_id …) stay put at every step.
+    # build-493 is now the HEAD step: rolling back one revision removes only
+    # the independent offline-login flag; build-488 HR/profile data stays put.
     user_cols = {c["name"] for c in insp.get_columns("users")}
-    assert "local_only" in user_cols               # older step — survives
+    assert "local_only" in user_cols               # build-482 — survives
+    assert "offline_allowed" not in user_cols      # build-493 — rolled back
     for col in ("phone", "job_title", "avatar_path", "hire_date", "store"):
-        assert col not in user_cols, col
+        assert col in user_cols, col
     for tbl in ("hr_shifts", "hr_payroll", "announcements", "announcement_reads",
                 "hr_achievements", "hr_score_events", "user_widget_layouts",
                 "user_permissions"):
-        assert tbl not in tables, tbl
+        assert tbl in tables, tbl
     inv_cols = {c["name"] for c in insp.get_columns("invoices")}
     assert "campaign_id" in inv_cols and "benefit_source" in inv_cols
     # …and everything an earlier revision created stays put

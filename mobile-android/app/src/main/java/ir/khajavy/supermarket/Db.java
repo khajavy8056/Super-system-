@@ -23,7 +23,20 @@ import java.util.UUID;
  */
 public final class Db extends SQLiteOpenHelper {
     private static Db I;
+    /** Long-running imports/pulls must never start overlapping SQLite transactions on the
+     * same helper connection. The lock is re-entrant so import helpers can share the guard. */
+    private static final java.util.concurrent.locks.ReentrantLock BULK_WRITE_LOCK =
+            new java.util.concurrent.locks.ReentrantLock(true);
+    private static final java.util.concurrent.atomic.AtomicBoolean BANK_SEED_RUNNING =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     public static synchronized void init(Context c) { if (I == null) I = new Db(c.getApplicationContext()); }
+
+    /** One serialized, best-effort local bootstrap. The UI is never held while either import runs. */
+    public static void bootstrap(Context c) {
+        importBankSeed(c);
+        try { if (catalogPending()) importStarter(c); }
+        catch (Throwable t) { android.util.Log.w("Db", "catalog bootstrap deferred: " + t); }
+    }
     /** v3.3: set while a restore swaps the database file; every access waits instead of reopening a half-written file. */
     static volatile boolean swapping = false;
     private static SQLiteDatabase w() { while (swapping) { try { Thread.sleep(50); } catch (InterruptedException ignore) {} } return I.getWritableDatabase(); }
@@ -62,9 +75,18 @@ public final class Db extends SQLiteOpenHelper {
     }
     /** v2.4: the local API router ({@link Local}) works directly on the database. */
     public static SQLiteDatabase db() { return w(); }
-    /** v3.4 — wrap a large import in one transaction (catalog.pack apply). */
-    public static void beginBulk() { w().beginTransaction(); }
-    public static void endBulk() { SQLiteDatabase d = w(); try { d.setTransactionSuccessful(); } finally { d.endTransaction(); } }
+    /** v3.4 — wrap a large import in one transaction (catalog.pack apply).
+     * The matching endBulk releases the fair lock on every success/failure path. */
+    public static void beginBulk() {
+        BULK_WRITE_LOCK.lock();
+        try { w().beginTransaction(); }
+        catch (RuntimeException e) { BULK_WRITE_LOCK.unlock(); throw e; }
+    }
+    public static void endBulk() {
+        SQLiteDatabase d = w();
+        try { d.setTransactionSuccessful(); }
+        finally { try { d.endTransaction(); } finally { BULK_WRITE_LOCK.unlock(); } }
+    }
 
     private Db(Context c) { super(c, "supermarket_native.db", null, VERSION); }   // v2.7: db 3 → bank table · v3.3: db 4 → indexes + journal_lines
 
@@ -91,7 +113,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS cheques(id INTEGER PRIMARY KEY AUTOINCREMENT, direction TEXT, number TEXT, amount REAL, due_date TEXT, bank_name TEXT, party_name TEXT, status TEXT DEFAULT 'PENDING', created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY AUTOINCREMENT, number INTEGER, date TEXT, description TEXT, kind TEXT, status TEXT DEFAULT 'POSTED', total REAL, lines TEXT, ref TEXT)",
         "CREATE TABLE IF NOT EXISTS cash_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT, opened_at TEXT, closed_at TEXT, opening_float REAL DEFAULT 0, counted_cash REAL, expected_cash REAL, difference REAL, status TEXT DEFAULT 'OPEN', note TEXT)",
-        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, full_name TEXT, pass_hash TEXT, roles TEXT, is_active INTEGER DEFAULT 1, created_at TEXT, local_only INTEGER DEFAULT 1, from_pc INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, full_name TEXT, pass_hash TEXT, roles TEXT, is_active INTEGER DEFAULT 1, created_at TEXT, local_only INTEGER DEFAULT 1, from_pc INTEGER DEFAULT 0, permissions TEXT NOT NULL DEFAULT '[]', allowed_views TEXT NOT NULL DEFAULT '[]', pc_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, entity_type TEXT, entity_id TEXT, reference TEXT, user TEXT, before TEXT, after TEXT, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
     };
@@ -99,7 +121,14 @@ public final class Db extends SQLiteOpenHelper {
         "ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'PAID'", "ALTER TABLE invoices ADD COLUMN payment_status TEXT DEFAULT 'PAID'",
         "ALTER TABLE invoices ADD COLUMN customer_id INTEGER", "ALTER TABLE invoices ADD COLUMN subtotal REAL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN discount REAL DEFAULT 0",
         "ALTER TABLE invoices ADD COLUMN tax REAL DEFAULT 0", "ALTER TABLE invoices ADD COLUMN user TEXT", "ALTER TABLE invoices ADD COLUMN void_reason TEXT", "ALTER TABLE invoices ADD COLUMN coupon TEXT",
-        "ALTER TABLE customers ADD COLUMN address TEXT", "ALTER TABLE batches ADD COLUMN warehouse_id INTEGER DEFAULT 1", "ALTER TABLE batches ADD COLUMN quantity_received REAL", "ALTER TABLE batches ADD COLUMN received_at TEXT",
+        "ALTER TABLE invoices ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE ops ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE conflicts ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE users ADD COLUMN allowed_views TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE users ADD COLUMN pc_id INTEGER",
+        "ALTER TABLE customers ADD COLUMN address TEXT", "ALTER TABLE batches ADD COLUMN warehouse_id INTEGER DEFAULT 1",
+        "ALTER TABLE batches ADD COLUMN quantity_received REAL", "ALTER TABLE batches ADD COLUMN received_at TEXT",
     };
     static void v2(SQLiteDatabase d) {
         for (String q : V2) d.execSQL(q);
@@ -129,12 +158,14 @@ public final class Db extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE IF NOT EXISTS batches(id INTEGER PRIMARY KEY, product_id INTEGER, batch_number TEXT, current_qty REAL, sell_price REAL, consumer_price REAL, buy_price REAL, expiry_date TEXT, status TEXT, is_local INTEGER DEFAULT 0, json TEXT, updated_at TEXT)");
         d.execSQL("CREATE INDEX IF NOT EXISTS ix_b_p ON batches(product_id)");
         d.execSQL("CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY, name TEXT, last_name TEXT, phone TEXT, credit_limit REAL, is_local INTEGER DEFAULT 0, json TEXT)");
-        d.execSQL("CREATE TABLE IF NOT EXISTS invoices(local_no TEXT PRIMARY KEY, total REAL, item_count INTEGER, payment TEXT, at TEXT, synced INTEGER DEFAULT 0, invoice_number TEXT, json TEXT)");
-        d.execSQL("CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, type TEXT, payload TEXT, label TEXT, local_no TEXT, created_at TEXT, last_error TEXT)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS invoices(local_no TEXT PRIMARY KEY, total REAL, item_count INTEGER, payment TEXT, at TEXT, synced INTEGER DEFAULT 0, invoice_number TEXT, json TEXT, user_id INTEGER NOT NULL DEFAULT 0)");
+        d.execSQL("CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, type TEXT, payload TEXT, label TEXT, local_no TEXT, created_at TEXT, last_error TEXT, owner_user_id INTEGER NOT NULL DEFAULT 0)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_ops_owner_created ON ops(owner_user_id,created_at)");
         d.execSQL("CREATE TABLE IF NOT EXISTS cache(path TEXT PRIMARY KEY, json TEXT, at TEXT)");
         d.execSQL("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
-        d.execSQL("CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT)");
-        v2(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
+        d.execSQL("CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT, owner_user_id INTEGER NOT NULL DEFAULT 0)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_conflicts_owner_at ON conflicts(owner_user_id,at)");
+        v2(d); v8LocalSchema(d); v9UserIdentity(d); v10OfflineAllowed(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
         try (Cursor c = d.rawQuery("PRAGMA user_version=" + VERSION, null)) { c.moveToFirst(); } catch (Exception ignore) {}
     }
     // v3.5.2 — 4 → 5. products.gallery was added to V4_INDEX, but an install
@@ -142,42 +173,121 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 6;
+    static final int VERSION = 10;
+    static void v9UserIdentity(SQLiteDatabase d) {
+        try { d.execSQL("ALTER TABLE users ADD COLUMN pc_username TEXT"); } catch (Exception ignore) {}
+        try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_users_pc_id ON users(pc_id)"); } catch (Exception ignore) {}
+    }
+    static void v10OfflineAllowed(SQLiteDatabase d) {
+        boolean hadColumn = false;
+        try (Cursor c = d.rawQuery("PRAGMA table_info(users)", null)) {
+            while (c.moveToNext()) if ("offline_allowed".equals(c.getString(1))) hadColumn = true;
+        }
+        if (!hadColumn) {
+            d.execSQL("ALTER TABLE users ADD COLUMN offline_allowed INTEGER NOT NULL DEFAULT 0");
+            // Preserve the pre-493 local sign-in policy for existing cached accounts.
+            d.execSQL("UPDATE users SET offline_allowed=CASE WHEN COALESCE(from_pc,0)=0 OR COALESCE(local_only,1)=0 THEN 1 ELSE 0 END");
+        }
+    }
+    static void v7UserIsolation(SQLiteDatabase d) {
+        // Existing rows are retained. Legacy queued operations deliberately remain owner=0
+        // because their original user cannot be determined safely from the payload alone.
+        try { d.execSQL("ALTER TABLE invoices ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignore) {}
+        try { d.execSQL("ALTER TABLE ops ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignore) {}
+        try { d.execSQL("ALTER TABLE conflicts ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignore) {}
+        try { d.execSQL("ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'"); } catch (Exception ignore) {}
+        try { d.execSQL("ALTER TABLE users ADD COLUMN allowed_views TEXT NOT NULL DEFAULT '[]'"); } catch (Exception ignore) {}
+        try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_ops_owner_created ON ops(owner_user_id,created_at)"); } catch (Exception ignore) {}
+        try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_conflicts_owner_at ON conflicts(owner_user_id,at)"); } catch (Exception ignore) {}
+        // Recover only uniquely attributable legacy invoices; ambiguous records remain intact
+        // and visible to a manager, never misattributed to an arbitrary cashier.
+        try { d.execSQL("UPDATE invoices SET user_id=(SELECT MIN(id) FROM users WHERE full_name=invoices.user) "
+                + "WHERE COALESCE(user_id,0)=0 AND user IS NOT NULL AND user<>'' "
+                + "AND (SELECT COUNT(*) FROM users WHERE full_name=invoices.user)=1"); } catch (Exception ignore) {}
+    }
+
+    static final String[] V8_LOCAL_SCHEMA = {
+        "CREATE TABLE IF NOT EXISTS local_shifts(id INTEGER PRIMARY KEY, pc_id INTEGER DEFAULT 0, name TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL, workdays TEXT DEFAULT '[]', store TEXT DEFAULT '', department TEXT DEFAULT '', role_hint TEXT, status TEXT DEFAULT 'ACTIVE', created_by INTEGER DEFAULT 0, updated_at TEXT, is_local INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS local_shift_assignments(id INTEGER PRIMARY KEY, pc_id INTEGER DEFAULT 0, shift_id INTEGER NOT NULL, user_id INTEGER NOT NULL, day TEXT DEFAULT '', status TEXT DEFAULT 'ACTIVE', created_at TEXT, updated_at TEXT, is_local INTEGER DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS ix_local_shift_assignment_user_day ON local_shift_assignments(user_id,day,status)",
+        "CREATE TABLE IF NOT EXISTS local_attendance(id INTEGER PRIMARY KEY, pc_id INTEGER DEFAULT 0, shift_id INTEGER, user_id INTEGER NOT NULL, day TEXT NOT NULL, started_at TEXT, ended_at TEXT, late_minutes INTEGER, early_leave_minutes INTEGER, note TEXT, updated_at TEXT, is_local INTEGER DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS ix_local_attendance_user_day ON local_attendance(user_id,day)",
+        "CREATE TABLE IF NOT EXISTS local_announcements(id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT DEFAULT '', created_by INTEGER DEFAULT 0, status TEXT DEFAULT 'PUBLISHED', priority INTEGER DEFAULT 3, publish_at TEXT, expires_at TEXT, target_kind TEXT DEFAULT 'ALL', target_store TEXT, target_roles TEXT DEFAULT '[]', target_users TEXT DEFAULT '[]', attachment_path TEXT, created_at TEXT, updated_at TEXT, is_local INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS local_announcement_reads(announcement_id INTEGER NOT NULL, user_id INTEGER NOT NULL, delivered_at TEXT, seen_at TEXT, read_at TEXT, PRIMARY KEY(announcement_id,user_id))",
+        "CREATE TABLE IF NOT EXISTS local_payroll(id INTEGER PRIMARY KEY, pc_id INTEGER DEFAULT 0, user_id INTEGER NOT NULL, period TEXT NOT NULL, base_salary REAL DEFAULT 0, hourly_pay REAL DEFAULT 0, worked_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, bonus REAL DEFAULT 0, benefits REAL DEFAULT 0, deductions REAL DEFAULT 0, penalty REAL DEFAULT 0, total REAL DEFAULT 0, status TEXT DEFAULT 'DRAFT', payment_ref TEXT, note TEXT, created_by INTEGER DEFAULT 0, updated_at TEXT, is_local INTEGER DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS ix_local_payroll_period ON local_payroll(period,user_id)",
+    };
+    static void v8LocalSchema(SQLiteDatabase d) {
+        for (String column : new String[]{"pc_id INTEGER", "phone TEXT", "job_title TEXT", "store TEXT", "hire_date TEXT"}) {
+            try { d.execSQL("ALTER TABLE users ADD COLUMN " + column); } catch (Exception ignore) {}
+        }
+        for (String sql : V8_LOCAL_SCHEMA) d.execSQL(sql);
+    }
+
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
         if (a < 3) v2(d);
         if (a < 4) { try { rebuildJournalLines(d); } catch (Exception ignore) {} }
         if (a < 5) indexes(d);   // idempotent: IF NOT EXISTS + try-ALTER per statement
         if (a < 6) v6userPolicy(d);   // v4.8.1 — کاربران: local_only + from_pc
+        if (a < 7) v7UserIsolation(d); // build-493 — preserve and scope existing local records
+        if (a < 8) v8LocalSchema(d); // local HR cache, offline attendance and stable account IDs
+        if (a < 9) v9UserIdentity(d); // separate PC usernames from colliding phone-local accounts
+        if (a < 10) v10OfflineAllowed(d); // per-user cached/offline sign-in permission
     }
 
     /* ---------------- kv ---------------- */
     public static String kv(String k) { try (Cursor c = w().rawQuery("SELECT v FROM kv WHERE k=?", new String[]{k})) { return c.moveToFirst() ? c.getString(0) : null; } }
     public static void kv(String k, String v) { ContentValues cv = new ContentValues(); cv.put("k", k); cv.put("v", v); w().insertWithOnConflict("kv", null, cv, SQLiteDatabase.CONFLICT_REPLACE); }
     private static long counter(String k) { long n = 0; String v = kv(k); if (v != null) n = Long.parseLong(v); n++; kv(k, String.valueOf(n)); return n; }
+    public static long nextLocalId(String key) { return -counter(key); }
 
     /* ---------------- cache ---------------- */
     public static void cachePut(String path, String json) { try { cachePut0(path, json); } catch (Throwable ignore) {} }   // v3.3: never let a cache write (e.g. during a restore) kill the request thread
     private static void cachePut0(String path, String json) { ContentValues cv = new ContentValues(); cv.put("path", path); cv.put("json", json); cv.put("at", now()); w().insertWithOnConflict("cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE); }
     public static String cacheGet(String path) { try (Cursor c = w().rawQuery("SELECT json FROM cache WHERE path=?", new String[]{path})) { return c.moveToFirst() ? c.getString(0) : null; } }
+    public static void cacheClearForUser(long userId) { if (userId > 0) w().delete("cache", "path LIKE ?", new String[]{"u/" + userId + "/%"}); }
 
     /* ---------------- catalogue merge from PC ---------------- */
     public static void applyPull(JSONObject pull, boolean full) {
-        SQLiteDatabase d = w(); d.beginTransaction();
+        BULK_WRITE_LOCK.lock();
+        SQLiteDatabase d = w();
         try {
-            if (full) { d.delete("products", "is_local=0", null); d.delete("batches", "is_local=0", null); d.delete("customers", "is_local=0", null); }
-            JSONArray ps = pull.optJSONArray("products"); if (ps != null) for (int i = 0; i < ps.length(); i++) putProduct(ps.optJSONObject(i), false);
-            JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
-            JSONArray cs = pull.optJSONArray("customers"); if (cs != null) for (int i = 0; i < cs.length(); i++) putCustomer(cs.optJSONObject(i), false);
-            JSONArray bk = pull.optJSONArray("bank"); if (bk != null) for (int i = 0; i < bk.length(); i++) bankPut(bk.optJSONObject(i));   // v2.7
-            JSONArray us = pull.optJSONArray("users"); if (us != null) for (int i = 0; i < us.length(); i++) putUserMeta(us.optJSONObject(i));   // v4.8.1 — سیاست ورود روی گوشی هم تازه بماند
-            if (full) {
-                // temp rows created offline are superseded once the PC has the real ones
-                d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode IN (SELECT barcode FROM products WHERE is_local=0)");
-                d.execSQL("DELETE FROM customers WHERE is_local=1 AND phone IS NOT NULL AND phone<>'' AND phone IN (SELECT phone FROM customers WHERE is_local=0)");
-                if (count("ops") == 0) { d.execSQL("DELETE FROM batches WHERE is_local=1"); d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode LIKE 'INT-L%'"); }
-            }
-            kv("last_pull", now()); d.setTransactionSuccessful();
-        } finally { d.endTransaction(); }
+            d.beginTransaction();
+            try {
+                if (full) {
+                    if (pull.has("products")) d.delete("products", "is_local=0", null);
+                    if (pull.has("batches")) d.delete("batches", "is_local=0", null);
+                    if (pull.has("customers")) d.delete("customers", "is_local=0", null);
+                    if (pull.has("shifts")) d.delete("local_shifts", "is_local=0", null);
+                    if (pull.has("shift_assignments")) d.delete("local_shift_assignments", "is_local=0", null);
+                    if (pull.has("attendance")) d.delete("local_attendance", "is_local=0", null);
+                    if (pull.has("payroll")) d.delete("local_payroll", "is_local=0", null);
+                    if (pull.has("announcements")) d.delete("local_announcements", "is_local=0", null);
+                }
+                JSONArray ps = pull.optJSONArray("products"); if (ps != null) for (int i = 0; i < ps.length(); i++) putProduct(ps.optJSONObject(i), false);
+                JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
+                JSONArray cs = pull.optJSONArray("customers"); if (cs != null) for (int i = 0; i < cs.length(); i++) putCustomer(cs.optJSONObject(i), false);
+                JSONArray bk = pull.optJSONArray("bank"); if (bk != null) for (int i = 0; i < bk.length(); i++) bankPut(bk.optJSONObject(i));   // v2.7
+                JSONArray us = pull.optJSONArray("users"); if (us != null) for (int i = 0; i < us.length(); i++) putUserMeta(us.optJSONObject(i));   // v4.8.1 — سیاست ورود روی گوشی هم تازه بماند
+                JSONArray roster = pull.optJSONArray("roster_users"); if (roster != null) for (int i = 0; i < roster.length(); i++) putRosterUserMeta(roster.optJSONObject(i));
+                JSONArray sh = pull.optJSONArray("shifts"); if (sh != null) for (int i = 0; i < sh.length(); i++) putShift(sh.optJSONObject(i), false);
+                JSONArray sa = pull.optJSONArray("shift_assignments"); if (sa != null) for (int i = 0; i < sa.length(); i++) putShiftAssignment(sa.optJSONObject(i), false);
+                JSONArray at = pull.optJSONArray("attendance"); if (at != null) for (int i = 0; i < at.length(); i++) putAttendance(at.optJSONObject(i), false);
+                JSONArray an = pull.optJSONArray("announcements"); if (an != null) for (int i = 0; i < an.length(); i++) putAnnouncement(an.optJSONObject(i), false);
+                JSONArray py = pull.optJSONArray("payroll"); if (py != null) for (int i = 0; i < py.length(); i++) putPayroll(py.optJSONObject(i), false);
+                if (full) {
+                    // temp rows created offline are superseded once the PC has the real ones.
+                    // Tables omitted by the server's permission scope are never purged here.
+                    if (pull.has("products")) d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode IN (SELECT barcode FROM products WHERE is_local=0)");
+                    if (pull.has("customers")) d.execSQL("DELETE FROM customers WHERE is_local=1 AND phone IS NOT NULL AND phone<>'' AND phone IN (SELECT phone FROM customers WHERE is_local=0)");
+                    if (count("ops") == 0) {
+                        if (pull.has("batches")) d.execSQL("DELETE FROM batches WHERE is_local=1");
+                        if (pull.has("products")) d.execSQL("DELETE FROM products WHERE is_local=1 AND barcode LIKE 'INT-L%'");
+                    }
+                }
+                kv("last_pull", now()); d.setTransactionSuccessful();
+            } finally { d.endTransaction(); }
+        } finally { BULK_WRITE_LOCK.unlock(); }
     }
     public static void putProduct(JSONObject p, boolean local) {
         if (p == null) return; ContentValues cv = new ContentValues();
@@ -214,23 +324,233 @@ public final class Db extends SQLiteOpenHelper {
         String un = u.optString("username", "").trim();
         if (un.isEmpty()) return;
         String roles = u.optJSONArray("roles") == null ? "[]" : u.optJSONArray("roles").toString();
+        String permissions = u.optJSONArray("permissions") == null ? "[]" : u.optJSONArray("permissions").toString();
+        String allowedViews = u.optJSONArray("allowed_views") == null ? "[]" : u.optJSONArray("allowed_views").toString();
         int active = u.optBoolean("is_active", true) ? 1 : 0;
         int localOnly = u.optBoolean("local_only", true) ? 1 : 0;
-        try (Cursor c = w().rawQuery("SELECT id FROM users WHERE username=?", new String[]{un})) {
+        long pcId = u.optLong("id", 0), rowId = 0;
+        String storageName = un;
+        SQLiteDatabase d = w();
+        if (pcId > 0) try (Cursor c = d.rawQuery("SELECT id FROM users WHERE pc_id=? ORDER BY id LIMIT 1", new String[]{String.valueOf(pcId)})) {
+            if (c.moveToFirst()) rowId = c.getLong(0);
+        }
+        if (rowId == 0) try (Cursor c = d.rawQuery("SELECT id,from_pc,COALESCE(pc_id,0) FROM users WHERE username=? LIMIT 1", new String[]{un})) {
             if (c.moveToFirst()) {
-                ContentValues up = new ContentValues();
-                up.put("full_name", u.optString("full_name", "")); up.put("roles", roles);
-                up.put("is_active", active); up.put("local_only", localOnly); up.put("from_pc", 1);
-                w().update("users", up, "id=?", new String[]{String.valueOf(c.getLong(0))});
-            } else {
-                ContentValues cv = new ContentValues();
-                cv.put("username", un); cv.put("full_name", u.optString("full_name", ""));
-                cv.put("pass_hash", ""); cv.put("roles", roles);
-                cv.put("is_active", active); cv.put("local_only", localOnly); cv.put("from_pc", 1);
-                cv.put("created_at", now());
-                w().insertWithOnConflict("users", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+                if (c.getInt(1) == 1 && (c.getLong(2) == 0 || c.getLong(2) == pcId)) rowId = c.getLong(0);
+                else if (pcId > 0) storageName = "pc-user-" + pcId;
             }
         }
+        if (rowId == 0 && !storageName.equals(un)) try (Cursor c = d.rawQuery("SELECT id FROM users WHERE username=? LIMIT 1", new String[]{storageName})) {
+            if (c.moveToFirst()) rowId = c.getLong(0);
+        }
+        ContentValues values = new ContentValues();
+        values.put("full_name", u.optString("full_name", ""));
+        values.put("phone", u.isNull("phone") ? null : u.optString("phone"));
+        values.put("job_title", u.isNull("job_title") ? null : u.optString("job_title"));
+        values.put("store", u.isNull("store") ? null : u.optString("store"));
+        values.put("hire_date", u.isNull("hire_date") ? null : u.optString("hire_date"));
+        values.put("roles", roles); values.put("permissions", permissions); values.put("allowed_views", allowedViews);
+        values.put("pc_id", pcId); values.put("pc_username", un); values.put("is_active", active);
+        values.put("local_only", localOnly);
+        values.put("offline_allowed", u.optBoolean("offline_allowed", !u.optBoolean("local_only", true)) ? 1 : 0);
+        values.put("from_pc", 1);
+        if (rowId > 0) d.update("users", values, "id=?", new String[]{String.valueOf(rowId)});
+        else {
+            values.put("username", storageName); values.put("pass_hash", ""); values.put("created_at", now());
+            d.insertWithOnConflict("users", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+        }
+    }
+
+    public static void putRosterUserMeta(JSONObject item) {
+        if (item == null || item.optLong("id") <= 0) return;
+        long pcId = item.optLong("id"), rowId = 0;
+        String username = "pc-user-" + pcId;
+        SQLiteDatabase d = w();
+        try (Cursor c = d.rawQuery("SELECT id FROM users WHERE pc_id=? ORDER BY id LIMIT 1", new String[]{String.valueOf(pcId)})) {
+            if (c.moveToFirst()) rowId = c.getLong(0);
+        }
+        ContentValues cv = new ContentValues(); cv.put("full_name", item.optString("full_name", username));
+        cv.put("job_title", item.optString("job_title", "")); cv.put("pc_id", pcId);
+        cv.put("from_pc", 1); cv.put("is_active", 1);
+        if (rowId > 0) d.update("users", cv, "id=?", new String[]{String.valueOf(rowId)});
+        else {
+            try (Cursor c = d.rawQuery("SELECT id FROM users WHERE username=? LIMIT 1", new String[]{username})) {
+                if (c.moveToFirst()) rowId = c.getLong(0);
+            }
+            if (rowId > 0) d.update("users", cv, "id=?", new String[]{String.valueOf(rowId)});
+            else {
+                cv.put("username", username); cv.put("roles", "[]"); cv.put("permissions", "[]"); cv.put("allowed_views", "[]");
+                cv.put("pass_hash", ""); cv.put("local_only", 1); cv.put("created_at", now());
+                d.insertWithOnConflict("users", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
+            }
+        }
+    }
+    public static long remoteShiftId(long localId) {
+        try (Cursor c = w().rawQuery("SELECT pc_id FROM local_shifts WHERE id=?", new String[]{String.valueOf(localId)})) {
+            if (c.moveToFirst() && !c.isNull(0) && c.getLong(0) > 0) return c.getLong(0);
+        }
+        String alias = kv("hr_shift_remote_" + localId);
+        if (alias != null) try { return Long.parseLong(alias); } catch (NumberFormatException ignored) {}
+        return localId > 0 ? localId : 0;
+    }
+    public static long remoteAssignmentId(long localId) {
+        try (Cursor c = w().rawQuery("SELECT pc_id FROM local_shift_assignments WHERE id=?", new String[]{String.valueOf(localId)})) {
+            if (c.moveToFirst() && !c.isNull(0) && c.getLong(0) > 0) return c.getLong(0);
+        }
+        String alias = kv("hr_assignment_remote_" + localId);
+        if (alias != null) try { return Long.parseLong(alias); } catch (NumberFormatException ignored) {}
+        return localId > 0 ? localId : 0;
+    }
+    public static long localShiftIdForPc(long pcId) {
+        if (pcId <= 0) return 0;
+        try (Cursor c = w().rawQuery("SELECT id FROM local_shifts WHERE pc_id=? ORDER BY id LIMIT 1", new String[]{String.valueOf(pcId)})) {
+            return c.moveToFirst() ? c.getLong(0) : 0;
+        }
+    }
+    public static long remotePayrollId(long localId) {
+        try (Cursor c = w().rawQuery("SELECT pc_id FROM local_payroll WHERE id=?", new String[]{String.valueOf(localId)})) {
+            if (c.moveToFirst() && !c.isNull(0) && c.getLong(0) > 0) return c.getLong(0);
+        }
+        String alias = kv("hr_payroll_remote_" + localId);
+        if (alias != null) try { return Long.parseLong(alias); } catch (NumberFormatException ignored) {}
+        return localId > 0 ? localId : 0;
+    }
+    public static long remoteAnnouncementId(long localId) {
+        String alias = kv("hr_announcement_remote_" + localId);
+        if (alias != null) try { return Long.parseLong(alias); } catch (NumberFormatException ignored) {}
+        return localId > 0 ? localId : 0;
+    }
+    public static void markPayrollSynced(long localId, long remoteId) {
+        if (localId == 0 || remoteId <= 0) return;
+        kv("hr_payroll_remote_" + localId, String.valueOf(remoteId));
+        SQLiteDatabase d = w();
+        try (Cursor c = d.rawQuery("SELECT 1 FROM local_payroll WHERE id=?", new String[]{String.valueOf(remoteId)})) {
+            if (localId != remoteId && c.moveToFirst()) d.delete("local_payroll", "id=?", new String[]{String.valueOf(localId)});
+            else d.execSQL("UPDATE local_payroll SET id=?,pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, remoteId, now(), localId});
+        }
+        d.execSQL("UPDATE local_payroll SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
+    }
+    public static void markAnnouncementSynced(long localId, long remoteId) {
+        if (localId == 0 || remoteId <= 0) return;
+        kv("hr_announcement_remote_" + localId, String.valueOf(remoteId));
+        SQLiteDatabase d = w();
+        try (Cursor c = d.rawQuery("SELECT 1 FROM local_announcements WHERE id=?", new String[]{String.valueOf(remoteId)})) {
+            if (localId != remoteId && c.moveToFirst()) d.delete("local_announcements", "id=?", new String[]{String.valueOf(localId)});
+            else d.execSQL("UPDATE local_announcements SET id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), localId});
+        }
+        d.execSQL("UPDATE local_announcements SET is_local=0,updated_at=? WHERE id=?", new Object[]{now(), remoteId});
+        d.execSQL("UPDATE local_announcement_reads SET announcement_id=? WHERE announcement_id=?", new Object[]{remoteId, localId});
+    }
+    public static void markAttendanceSynced(long localId, long remoteId) {
+        if (localId == 0 || remoteId <= 0) return;
+        SQLiteDatabase d = w();
+        try (Cursor c = d.rawQuery("SELECT 1 FROM local_attendance WHERE id=?", new String[]{String.valueOf(remoteId)})) {
+            if (localId != remoteId && c.moveToFirst()) d.delete("local_attendance", "id=?", new String[]{String.valueOf(localId)});
+            else d.execSQL("UPDATE local_attendance SET id=?,pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, remoteId, now(), localId});
+        }
+        d.execSQL("UPDATE local_attendance SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
+    }
+    public static void markShiftSynced(long localId, long remoteId) {
+        if (localId == 0 || remoteId <= 0) return;
+        kv("hr_shift_remote_" + localId, String.valueOf(remoteId));
+        SQLiteDatabase d = w(); d.beginTransaction();
+        try {
+            d.execSQL("UPDATE local_shift_assignments SET shift_id=? WHERE shift_id=?", new Object[]{remoteId, localId});
+            try (Cursor c = d.rawQuery("SELECT 1 FROM local_shifts WHERE id=?", new String[]{String.valueOf(remoteId)})) {
+                if (localId != remoteId && c.moveToFirst()) d.delete("local_shifts", "id=?", new String[]{String.valueOf(localId)});
+                else d.execSQL("UPDATE local_shifts SET id=?,pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, remoteId, now(), localId});
+            }
+            d.execSQL("UPDATE local_shifts SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
+            d.setTransactionSuccessful();
+        } finally { d.endTransaction(); }
+    }
+    public static void markAssignmentSynced(long localId, long remoteId) {
+        if (localId == 0 || remoteId <= 0) return;
+        kv("hr_assignment_remote_" + localId, String.valueOf(remoteId));
+        SQLiteDatabase d = w();
+        try (Cursor c = d.rawQuery("SELECT 1 FROM local_shift_assignments WHERE id=?", new String[]{String.valueOf(remoteId)})) {
+            if (localId != remoteId && c.moveToFirst()) d.delete("local_shift_assignments", "id=?", new String[]{String.valueOf(localId)});
+            else d.execSQL("UPDATE local_shift_assignments SET id=?,pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, remoteId, now(), localId});
+        }
+        d.execSQL("UPDATE local_shift_assignments SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
+    }
+
+    public static void putShift(JSONObject item, boolean local) {
+        if (item == null || item.optLong("id") == 0) return;
+        long id = item.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", id); cv.put("pc_id", local ? item.optLong("pc_id", 0) : id);
+        cv.put("name", item.optString("name", "")); cv.put("start_time", item.optString("start_time", "00:00"));
+        cv.put("end_time", item.optString("end_time", "00:00"));
+        JSONArray days = item.optJSONArray("workdays"); cv.put("workdays", days == null ? item.optString("workdays", "[]") : days.toString());
+        cv.put("store", item.optString("store", "")); cv.put("department", item.optString("department", ""));
+        cv.put("role_hint", item.isNull("role_hint") ? null : item.optString("role_hint"));
+        cv.put("status", item.optString("status", "ACTIVE"));
+        long creator = item.optLong("created_by", 0), localCreator = localUserIdForPc(creator);
+        cv.put("created_by", localCreator > 0 ? localCreator : creator);
+        cv.put("updated_at", item.optString("updated_at", now())); cv.put("is_local", local ? 1 : 0);
+        w().insertWithOnConflict("local_shifts", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putShiftAssignment(JSONObject item, boolean local) {
+        if (item == null || item.optLong("id") == 0) return;
+        long pcUid = item.optLong("user_id"), localUid = local ? pcUid : localUserIdForPc(pcUid);
+        long id = item.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", id); cv.put("pc_id", local ? item.optLong("pc_id", 0) : id);
+        cv.put("shift_id", item.optLong("shift_id")); cv.put("user_id", localUid > 0 ? localUid : pcUid);
+        cv.put("day", item.optString("day", "")); cv.put("status", item.optString("status", "ACTIVE"));
+        cv.put("created_at", item.optString("created_at", now())); cv.put("updated_at", item.optString("updated_at", item.optString("created_at", now())));
+        cv.put("is_local", local ? 1 : 0);
+        w().insertWithOnConflict("local_shift_assignments", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putAttendance(JSONObject item, boolean local) {
+        if (item == null || item.optLong("id") == 0) return;
+        long pcUid = item.optLong("user_id"), localUid = local ? pcUid : localUserIdForPc(pcUid);
+        long id = item.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", id); cv.put("pc_id", local ? item.optLong("pc_id", 0) : id);
+        cv.put("shift_id", item.isNull("shift_id") ? null : item.optLong("shift_id"));
+        cv.put("user_id", localUid > 0 ? localUid : pcUid); cv.put("day", item.optString("day", ""));
+        cv.put("started_at", item.isNull("started_at") ? null : item.optString("started_at"));
+        cv.put("ended_at", item.isNull("ended_at") ? null : item.optString("ended_at"));
+        if (item.isNull("late_minutes")) cv.putNull("late_minutes"); else cv.put("late_minutes", item.optInt("late_minutes"));
+        if (item.isNull("early_leave_minutes")) cv.putNull("early_leave_minutes"); else cv.put("early_leave_minutes", item.optInt("early_leave_minutes"));
+        cv.put("note", item.isNull("note") ? null : item.optString("note"));
+        cv.put("updated_at", item.optString("updated_at", item.optString("ended_at", item.optString("started_at", now()))));
+        cv.put("is_local", local ? 1 : 0);
+        w().insertWithOnConflict("local_attendance", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putAnnouncement(JSONObject item) { putAnnouncement(item, false); }
+    public static void putAnnouncement(JSONObject item, boolean local) {
+        if (item == null || item.optLong("id") == 0) return;
+        long id = item.optLong("id"); ContentValues cv = new ContentValues(); cv.put("id", id);
+        cv.put("title", item.optString("title", "")); cv.put("body", item.optString("body", ""));
+        cv.put("created_by", item.optLong("created_by")); cv.put("status", item.optString("status", "PUBLISHED"));
+        cv.put("priority", item.optInt("priority", 3));
+        cv.put("publish_at", item.isNull("publish_at") ? null : item.optString("publish_at"));
+        cv.put("expires_at", item.isNull("expires_at") ? null : item.optString("expires_at"));
+        cv.put("target_kind", item.optString("target_kind", "ALL"));
+        cv.put("target_store", item.isNull("target_store") ? null : item.optString("target_store"));
+        JSONArray roles = item.optJSONArray("target_roles"), users = item.optJSONArray("target_users");
+        cv.put("target_roles", roles == null ? "[]" : roles.toString()); cv.put("target_users", users == null ? "[]" : users.toString());
+        cv.put("attachment_path", item.isNull("attachment_path") ? null : item.optString("attachment_path"));
+        cv.put("created_at", item.optString("created_at", now())); cv.put("updated_at", item.optString("updated_at", item.optString("created_at", now())));
+        cv.put("is_local", local ? 1 : 0); w().insertWithOnConflict("local_announcements", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+        long owner = localUserId();
+        ContentValues read = new ContentValues(); read.put("announcement_id", id); read.put("user_id", owner);
+        read.put("delivered_at", item.isNull("delivered_at") ? null : item.optString("delivered_at"));
+        read.put("seen_at", item.isNull("seen_at") ? null : item.optString("seen_at"));
+        read.put("read_at", item.isNull("read_at") ? null : item.optString("read_at"));
+        w().insertWithOnConflict("local_announcement_reads", null, read, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putPayroll(JSONObject item, boolean local) {
+        if (item == null || item.optLong("id") == 0) return;
+        long pcUid = item.optLong("user_id"), localUid = local ? pcUid : localUserIdForPc(pcUid);
+        long id = item.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", id); cv.put("pc_id", local ? item.optLong("pc_id", 0) : id);
+        cv.put("user_id", localUid > 0 ? localUid : pcUid); cv.put("period", item.optString("period", ""));
+        for (String field : new String[]{"base_salary", "hourly_pay", "worked_hours", "overtime_hours", "bonus", "benefits", "deductions", "penalty", "total"}) cv.put(field, item.optDouble(field, 0));
+        cv.put("status", item.optString("status", "DRAFT")); cv.put("payment_ref", item.isNull("payment_ref") ? null : item.optString("payment_ref"));
+        cv.put("note", item.isNull("note") ? null : item.optString("note")); cv.put("created_by", item.optLong("created_by"));
+        cv.put("updated_at", item.optString("updated_at", now())); cv.put("is_local", local ? 1 : 0);
+        w().insertWithOnConflict("local_payroll", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     /**
@@ -264,7 +584,9 @@ public final class Db extends SQLiteOpenHelper {
             try { busy.put("created", 0); busy.put("matched_existing", 0); busy.put("images_filled", 0); busy.put("already_running", true); } catch (Exception ignore) {}
             return busy;
         }
-        try { return importStarterInner(ctx); } finally { CATALOG_RUNNING.set(false); }
+        BULK_WRITE_LOCK.lock();
+        try { return importStarterInner(ctx); }
+        finally { BULK_WRITE_LOCK.unlock(); CATALOG_RUNNING.set(false); }
     }
 
     private static JSONObject importStarterInner(Context ctx) {
@@ -583,13 +905,31 @@ public final class Db extends SQLiteOpenHelper {
     public static int bankCount() { return count("bank"); }
     /** v2.7 — import the bundled seed once (idempotent; never overrides higher-ranked rows). */
     public static int importBankSeed(Context ctx) {
-        if ("1".equals(kv("bank_seeded"))) return 0; int n = 0; SQLiteDatabase d = w(); d.beginTransaction();
-        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(ctx.getAssets().open("product_bank_seed.csv"), "UTF-8"))) {
-            String line = br.readLine(); // barcode,name,brand,unit,category,image_url
-            while ((line = br.readLine()) != null) { String[] f = line.split(",", -1); if (f.length < 2) continue; bankPut(Api.obj("barcode", f[0].trim(), "name", f[1].trim(), "brand", f.length > 2 ? f[2].trim() : "", "unit", f.length > 3 ? f[3].trim() : "", "category", f.length > 4 ? f[4].trim() : "", "image_url", f.length > 5 ? f[5].trim() : "", "source", "SEED")); n++; }
-            kv("bank_seeded", "1"); d.setTransactionSuccessful();
-        } catch (Exception ignore) {
-        } finally { d.endTransaction(); }
+        if (!BANK_SEED_RUNNING.compareAndSet(false, true)) return 0;
+        BULK_WRITE_LOCK.lock();
+        int n = 0;
+        SQLiteDatabase d = null;
+        boolean inTransaction = false;
+        try {
+            if ("1".equals(kv("bank_seeded"))) return 0;
+            d = w(); d.beginTransaction(); inTransaction = true;
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(ctx.getAssets().open("product_bank_seed.csv"), "UTF-8"))) {
+                String line = br.readLine(); // barcode,name,brand,unit,category,image_url
+                while ((line = br.readLine()) != null) {
+                    String[] f = line.split(",", -1);
+                    if (f.length < 2) continue;
+                    bankPut(Api.obj("barcode", f[0].trim(), "name", f[1].trim(), "brand", f.length > 2 ? f[2].trim() : "", "unit", f.length > 3 ? f[3].trim() : "", "category", f.length > 4 ? f[4].trim() : "", "image_url", f.length > 5 ? f[5].trim() : "", "source", "SEED"));
+                    n++;
+                }
+                kv("bank_seeded", "1"); d.setTransactionSuccessful();
+            }
+        } catch (Exception e) {
+            android.util.Log.w("Db", "barcode-bank seed deferred: " + e);
+            n = 0;
+        } finally {
+            try { if (inTransaction && d != null) d.endTransaction(); }
+            finally { BULK_WRITE_LOCK.unlock(); BANK_SEED_RUNNING.set(false); }
+        }
         return n;
     }
     /** v2.7 — remember a barcode↔name pair locally AND tell the PC (store-and-forward), so every device learns it. */
@@ -788,7 +1128,7 @@ public final class Db extends SQLiteOpenHelper {
             if (payload.has("customer_id")) cv.put("customer_id", payload.optLong("customer_id"));
             double sub = 0, disc = payload.optDouble("invoice_discount", 0);
             for (int i = 0; items != null && i < items.length(); i++) { JSONObject it = items.optJSONObject(i); sub += it.optDouble("quantity", 1) * it.optDouble("price", 0); disc += it.optDouble("discount", 0); }
-            cv.put("subtotal", sub > 0 ? sub : total); cv.put("discount", disc); cv.put("tax", 0); cv.put("user", Screens.userName()); cv.put("coupon", payload.optString("coupon_code", null));
+            cv.put("subtotal", sub > 0 ? sub : total); cv.put("discount", disc); cv.put("tax", 0); cv.put("user", Screens.userName()); cv.put("user_id", localUserId()); cv.put("coupon", payload.optString("coupon_code", null));
             cv.put("at", now()); cv.put("synced", 0); cv.put("json", payload.toString()); long rid = d.insert("invoices", null, cv);
             for (int i = 0; items != null && i < items.length(); i++) {
                 JSONObject it = items.optJSONObject(i); long bid = it.optLong("batch_id", 0); double q = it.optDouble("quantity", 1), pr = it.optDouble("price", 0), buy = 0;
@@ -805,28 +1145,82 @@ public final class Db extends SQLiteOpenHelper {
         } finally { d.endTransaction(); }
     }
     public static void markInvoiceSynced(String localNo, String invoiceNumber) { ContentValues cv = new ContentValues(); cv.put("synced", 1); cv.put("invoice_number", invoiceNumber); w().update("invoices", cv, "local_no=?", new String[]{localNo}); }
+    private static boolean allLocalSalesVisible() { return Screens.can("reports.view_all"); }
+    /** Stable phone-side principal ID; the PC's numeric user ID is kept separately in users.pc_id. */
+    public static long localUserId() {
+        String username = Screens.user == null ? "" : Screens.user.optString("username", "");
+        long fallback = Screens.user == null ? 0 : Screens.user.optLong("id", 0);
+        long pcId = Screens.user == null ? 0 : Screens.user.optLong("pc_id", 0);
+        if (username.isEmpty()) {
+            try {
+                org.json.JSONObject saved = new org.json.JSONObject(Prefs.get("user_json", "{}"));
+                username = saved.optString("username", "");
+                if (fallback <= 0) fallback = saved.optLong("id", 0);
+                if (pcId <= 0) pcId = saved.optLong("pc_id", 0);
+            } catch (Exception e) { return fallback; }
+        }
+        if (pcId > 0) {
+            try (Cursor c = w().rawQuery("SELECT id FROM users WHERE pc_id=? ORDER BY id LIMIT 1", new String[]{String.valueOf(pcId)})) {
+                if (c.moveToFirst()) return c.getLong(0);
+            }
+        }
+        if (!username.isEmpty()) {
+            try (Cursor c = w().rawQuery("SELECT id FROM users WHERE username=? OR pc_username=? ORDER BY CASE WHEN pc_username=? THEN 0 ELSE 1 END LIMIT 1", new String[]{username, username, username})) {
+                if (c.moveToFirst()) return c.getLong(0);
+            }
+        }
+        return fallback;
+    }
+    public static long pcUserIdForLocal(long localId) {
+        try (Cursor c = w().rawQuery("SELECT pc_id FROM users WHERE id=?", new String[]{String.valueOf(localId)})) {
+            return c.moveToFirst() && !c.isNull(0) ? c.getLong(0) : 0;
+        }
+    }
+    public static long localUserIdForPc(long pcId) {
+        if (pcId <= 0) return 0;
+        try (Cursor c = w().rawQuery("SELECT id FROM users WHERE pc_id=? ORDER BY id LIMIT 1", new String[]{String.valueOf(pcId)})) {
+            return c.moveToFirst() ? c.getLong(0) : 0;
+        }
+    }
+    private static String invoiceUserClause() { return allLocalSalesVisible() ? "" : " AND user_id=?"; }
+    private static String[] withUser(long id, String... args) {
+        if (allLocalSalesVisible()) return args;
+        String[] scoped = new String[args.length + 1]; System.arraycopy(args, 0, scoped, 0, args.length); scoped[args.length] = String.valueOf(id); return scoped;
+    }
     public static List<JSONObject> localInvoices() {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = w().rawQuery("SELECT local_no,total,item_count,payment,at,synced,invoice_number,rowid,status FROM invoices ORDER BY at DESC LIMIT 200", null)) {
+        if (!allLocalSalesVisible() && localUserId() <= 0) return out;
+        String scope = allLocalSalesVisible() ? "" : " WHERE user_id=?";
+        String[] args = allLocalSalesVisible() ? null : new String[]{String.valueOf(localUserId())};
+        try (Cursor c = w().rawQuery("SELECT local_no,total,item_count,payment,at,synced,invoice_number,rowid,status FROM invoices" + scope + " ORDER BY at DESC LIMIT 200", args)) {
             while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("local_no", c.getString(0)); o.put("total", c.getDouble(1)); o.put("items", c.getInt(2)); o.put("payment", c.getString(3)); o.put("at", c.getString(4)); o.put("synced", c.getInt(5) == 1); o.put("invoice_number", c.isNull(6) ? null : c.getString(6)); o.put("id", c.getLong(7)); o.put("status", c.getString(8)); } catch (Exception ignore) {} out.add(o); }
         }
         return out;
     }
-    public static double[] todayStats() {  // {count, total, unsynced}
+    public static double[] todayStats() {  // {count, total, unsynced}, scoped to this user unless manager.
         String day = now().substring(0, 10);
-        try (Cursor c = w().rawQuery("SELECT COUNT(*), IFNULL(SUM(total),0), (SELECT COUNT(*) FROM invoices WHERE synced=0) FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { return c.moveToFirst() ? new double[]{c.getDouble(0), c.getDouble(1), c.getDouble(2)} : new double[]{0, 0, 0}; }
+        if (!allLocalSalesVisible() && localUserId() <= 0) return new double[]{0, 0, 0};
+        boolean all = allLocalSalesVisible();
+        String sql = "SELECT COUNT(*), IFNULL(SUM(total),0), (SELECT COUNT(*) FROM invoices WHERE synced=0" + (all ? "" : " AND user_id=?") + ") FROM invoices WHERE at>=? AND at<?" + (all ? "" : " AND user_id=?");
+        String[] args = all ? new String[]{day, day + "T99"} : new String[]{String.valueOf(localUserId()), day, day + "T99", String.valueOf(localUserId())};
+        try (Cursor c = w().rawQuery(sql, args)) { return c.moveToFirst() ? new double[]{c.getDouble(0), c.getDouble(1), c.getDouble(2)} : new double[]{0, 0, 0}; }
     }
 
     /** sales totals for the last 7 days (oldest first) — dashboard sparkline. */
     public static double[] weekSales() {
         double[] out = new double[7]; java.util.Calendar cal = java.util.Calendar.getInstance();
-        for (int i = 6; i >= 0; i--) { String day = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH)); try (Cursor c = w().rawQuery("SELECT IFNULL(SUM(total),0) FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { out[i] = c.moveToFirst() ? c.getDouble(0) : 0; } cal.add(java.util.Calendar.DAY_OF_MONTH, -1); }
+        if (!allLocalSalesVisible() && localUserId() <= 0) return out;
+        String sql = "SELECT IFNULL(SUM(total),0) FROM invoices WHERE at>=? AND at<?" + invoiceUserClause();
+        for (int i = 6; i >= 0; i--) { String day = String.format(java.util.Locale.US, "%04d-%02d-%02d", cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH)); String[] args = allLocalSalesVisible() ? new String[]{day, day + "T99"} : new String[]{day, day + "T99", String.valueOf(localUserId())}; try (Cursor c = w().rawQuery(sql, args)) { out[i] = c.moveToFirst() ? c.getDouble(0) : 0; } cal.add(java.util.Calendar.DAY_OF_MONTH, -1); }
         return out;
     }
-    /** "name|qty" of today's best sellers (from local invoice JSON). */
+    /** "name|qty" of today's best sellers (from this user's local invoice JSON). */
     public static String[] topSellingToday(int n) {
         java.util.Map<String, Double> m = new java.util.HashMap<>(); String day = now().substring(0, 10);
-        try (Cursor c = w().rawQuery("SELECT json FROM invoices WHERE at>=? AND at<?", new String[]{day, day + "T99"})) { while (c.moveToNext()) { try { JSONArray it = new JSONObject(c.getString(0)).optJSONArray("items"); for (int i = 0; it != null && i < it.length(); i++) { JSONObject x = it.optJSONObject(i); String k = x.optString("name"); m.put(k, (m.containsKey(k) ? m.get(k) : 0) + x.optDouble("quantity", 0)); } } catch (Exception ignore) {} } }
+        if (!allLocalSalesVisible() && localUserId() <= 0) return new String[0];
+        String sql = "SELECT json FROM invoices WHERE at>=? AND at<?" + invoiceUserClause();
+        String[] args = allLocalSalesVisible() ? new String[]{day, day + "T99"} : new String[]{day, day + "T99", String.valueOf(localUserId())};
+        try (Cursor c = w().rawQuery(sql, args)) { while (c.moveToNext()) { try { JSONArray it = new JSONObject(c.getString(0)).optJSONArray("items"); for (int i = 0; it != null && i < it.length(); i++) { JSONObject x = it.optJSONObject(i); String k = x.optString("name"); m.put(k, (m.containsKey(k) ? m.get(k) : 0) + x.optDouble("quantity", 0)); } } catch (Exception ignore) {} } }
         java.util.List<java.util.Map.Entry<String, Double>> l = new java.util.ArrayList<>(m.entrySet()); java.util.Collections.sort(l, (x, y) -> Double.compare(y.getValue(), x.getValue()));
         String[] out = new String[Math.min(n, l.size())]; for (int i = 0; i < out.length; i++) out[i] = l.get(i).getKey() + "|" + Ui.num(l.get(i).getValue()); return out;
     }
@@ -854,25 +1248,38 @@ public final class Db extends SQLiteOpenHelper {
     /* ---------------- op queue ---------------- */
     public static String opAdd(String type, JSONObject payload, String label, String localNo) {
         String id = "op" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-        ContentValues cv = new ContentValues(); cv.put("id", id); cv.put("type", type); cv.put("payload", payload.toString()); cv.put("label", label); cv.put("local_no", localNo); cv.put("created_at", now());
+        long owner = localUserId();
+        ContentValues cv = new ContentValues(); cv.put("id", id); cv.put("type", type); cv.put("payload", payload.toString()); cv.put("label", label); cv.put("local_no", localNo); cv.put("created_at", now()); cv.put("owner_user_id", owner);
         w().insert("ops", null, cv); return id;
     }
-    public static List<JSONObject> ops() {
+    private static List<JSONObject> opsQuery(String where, String[] args) {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = w().rawQuery("SELECT id,type,payload,label,local_no,created_at,last_error FROM ops ORDER BY created_at", null)) {
-            while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("id", c.getString(0)); o.put("type", c.getString(1)); o.put("payload", new JSONObject(c.getString(2))); o.put("label", c.getString(3)); o.put("local_no", c.isNull(4) ? null : c.getString(4)); o.put("created_at", c.getString(5)); o.put("last_error", c.isNull(6) ? null : c.getString(6)); } catch (Exception ignore) {} out.add(o); }
+        String sql = "SELECT id,type,payload,label,local_no,created_at,last_error,owner_user_id FROM ops" + (where == null || where.isEmpty() ? "" : " WHERE " + where) + " ORDER BY created_at";
+        try (Cursor c = w().rawQuery(sql, args)) {
+            while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("id", c.getString(0)); o.put("type", c.getString(1)); o.put("payload", new JSONObject(c.getString(2))); o.put("label", c.getString(3)); o.put("local_no", c.isNull(4) ? null : c.getString(4)); o.put("created_at", c.getString(5)); o.put("last_error", c.isNull(6) ? null : c.getString(6)); o.put("owner_user_id", c.getLong(7)); } catch (Exception ignore) {} out.add(o); }
         }
         return out;
+    }
+    /** All pending rows are kept for recovery/administration; only the authenticated owner's rows sync. */
+    public static List<JSONObject> ops() { return opsQuery("", null); }
+    public static List<JSONObject> opsForUser(long userId) { return userId > 0 ? opsQuery("owner_user_id=?", new String[]{String.valueOf(userId)}) : new ArrayList<>(); }
+    public static int opCountForUser(long userId) {
+        if (userId <= 0) return 0;
+        try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM ops WHERE owner_user_id=?", new String[]{String.valueOf(userId)})) { return c.moveToFirst() ? c.getInt(0) : 0; }
     }
     public static void opDelete(String id) { w().delete("ops", "id=?", new String[]{id}); }
     public static void opError(String id, String err) { ContentValues cv = new ContentValues(); cv.put("last_error", err); w().update("ops", cv, "id=?", new String[]{id}); }
     public static int opCount() { return count("ops"); }
-    public static void conflictAdd(String opId, String label, String msg) { ContentValues cv = new ContentValues(); cv.put("op_id", opId); cv.put("label", label); cv.put("message", msg); cv.put("at", now()); w().insert("conflicts", null, cv); }
-    public static List<JSONObject> conflicts() {
+    public static void conflictAdd(String opId, String label, String msg) { conflictAdd(opId, label, msg, localUserId()); }
+    public static void conflictAdd(String opId, String label, String msg, long ownerUserId) { ContentValues cv = new ContentValues(); cv.put("op_id", opId); cv.put("label", label); cv.put("message", msg); cv.put("at", now()); cv.put("owner_user_id", ownerUserId); w().insert("conflicts", null, cv); }
+    private static List<JSONObject> conflictsWhere(String where, String[] args) {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = w().rawQuery("SELECT id,label,message,at FROM conflicts ORDER BY id DESC", null)) { while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("id", c.getLong(0)); o.put("label", c.getString(1)); o.put("message", c.getString(2)); o.put("at", c.getString(3)); } catch (Exception ignore) {} out.add(o); } }
+        try (Cursor c = w().rawQuery("SELECT id,label,message,at,owner_user_id FROM conflicts" + (where == null || where.isEmpty() ? "" : " WHERE " + where) + " ORDER BY id DESC", args)) { while (c.moveToNext()) { JSONObject o = new JSONObject(); try { o.put("id", c.getLong(0)); o.put("label", c.getString(1)); o.put("message", c.getString(2)); o.put("at", c.getString(3)); o.put("owner_user_id", c.getLong(4)); } catch (Exception ignore) {} out.add(o); } }
         return out;
     }
+    public static List<JSONObject> conflicts() { return conflictsWhere("", null); }
+    public static List<JSONObject> conflictsForUser(long userId) { return userId > 0 ? conflictsWhere("owner_user_id=?", new String[]{String.valueOf(userId)}) : new ArrayList<>(); }
+    public static int conflictCountForUser(long userId) { return conflictsForUser(userId).size(); }
     public static void conflictDelete(long id) { w().delete("conflicts", "id=?", new String[]{String.valueOf(id)}); }
 
     /* ---------------- util ---------------- */

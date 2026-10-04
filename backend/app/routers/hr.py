@@ -287,7 +287,7 @@ def user_day_performance(user_id: int, day: str, db: Session = Depends(get_db),
 
 @router.get("/roster-users")
 def roster_users(db: Session = Depends(get_db),
-                 _: User = Depends(require_any_permission("shifts.view", "shifts.manage"))):
+                 _: User = Depends(require_any_permission("shifts.view", "shifts.manage", "payroll.view", "payroll.manage"))):
     # build-491 — فهرست حداقلی افراد برای تخصیص شیفت (نام/عنوان شغلی)؛ بدون اطلاعات حساس
     from ..models import User as U
     from sqlalchemy import select as _sel
@@ -403,7 +403,7 @@ class PayrollPatch(BaseModel):
 
 @router.get("/payroll")
 def list_payroll(period: str | None = None, db: Session = Depends(get_db),
-                 _: User = Depends(require_permission("payroll.view"))):
+                 _: User = Depends(require_any_permission("payroll.view", "payroll.manage"))):
     q = select(PayrollEntry).order_by(PayrollEntry.period.desc(), PayrollEntry.id)
     if period:
         q = q.where(PayrollEntry.period == period)

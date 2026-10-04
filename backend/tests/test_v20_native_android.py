@@ -79,10 +79,12 @@ def test_sync_pull_carries_the_fields_the_phone_db_needs(client, auth_headers):
                     headers=auth_headers)
     assert r.status_code == 200, r.text
     pull = r.json()["pull"]
-    # v4.8.1 (بیلد ۴۸۲) — قرارداد عمداً گسترش یافت: «users» هم سوار همان pull می‌شود
-    # تا سیاست ورود (نقش‌ها / فعال / «دسترسی فقط به صورت بومی») روی گوشی هم تازه بماند؛
-    # هش رمز هرگز عبور نمی‌کند (گوشی هنگام ورود آنلاین رمزسنج خودش را نگه می‌دارد).
-    assert set(pull) == {"products", "batches", "customers", "bank", "users"}   # v2.7: + بانک کالا · v4.8.1: + کاربران
+    # build-493 — identity policy + role-scoped HR cache ride the same pull;
+    # password hashes never cross the wire.
+    assert set(pull) == {
+        "products", "batches", "customers", "bank", "users", "roster_users",
+        "shifts", "shift_assignments", "attendance", "payroll", "announcements",
+    }
     if pull["users"]:
         assert {"username", "roles", "is_active", "local_only"} <= set(pull["users"][0])
         for banned in ("password_hash", "pass_hash", "password", "hash"):

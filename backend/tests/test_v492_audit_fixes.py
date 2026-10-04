@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 from datetime import date, timedelta
 
+from app.services.timeservice import local_now
 from tests.test_v488_people import _login, _mkuser
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -50,7 +51,7 @@ def test_v492_single_source_of_truth_permissions_and_allowed_views(client, auth_
 
 def test_v492_shift_per_user_and_automatic_presence_detection(client, auth_headers):
     """تعریف شیفت برای کاربر مشخص + تشخیص خودکار حضور در بازهٔ شیفت، خارج از بازه، چند شیفت و تکمیل شیفت."""
-    day = date.today().isoformat()
+    day = local_now().date().isoformat()
     _mkuser(client, auth_headers, "v492_shsup", roles=["Supervisor"])
     _mkuser(client, auth_headers, "v492_shuser1", roles=["Cashier"])
     _mkuser(client, auth_headers, "v492_shuser2", roles=["Cashier"])
@@ -132,7 +133,7 @@ def test_v492_no_cache_headers_and_frontend_contracts(client):
     assert "no-store" in res.headers.get("cache-control", "")
 
     app_js = (REPO / "frontend/app.js").read_text(encoding="utf-8")
-    assert "const UI_BUILD = 492;" in app_js
+    assert "const UI_BUILD = 493;" in app_js
     assert "function normalizeDashboardData(" in app_js
     assert "const VIEW_PERMS =" in app_js
     assert "function canView(" in app_js
@@ -145,21 +146,21 @@ def test_v492_no_cache_headers_and_frontend_contracts(client):
     assert "45 * 60 * 1000" not in onb_js
 
     sw_js = (REPO / "frontend/sw.js").read_text(encoding="utf-8")
-    assert "no-sw-v492" in sw_js
+    assert "no-sw-v493" in sw_js
     assert "self.registration.unregister()" in sw_js
 
     run_py = (REPO / "installer/windows/run_supermarket.py").read_text(encoding="utf-8")
     assert "purge_stale_webview_cache" in run_py
 
     from app import BUILD, __version__
-    assert __version__ == "1.0.492"
-    assert BUILD == 49200
-    assert int((REPO / "mobile-android/BUILD").read_text().strip()) == 49200
+    assert __version__ == "1.0.493"
+    assert BUILD == 49300
+    assert int((REPO / "mobile-android/BUILD").read_text().strip()) == 49300
 
 
 def test_v492_mobile_sync_user_isolation_and_attendance_summary(client, auth_headers):
     """همگام‌سازی پایدار موبایل با رایانه + جداسازی کامل نشست کاربران و گزارش ساعات موظفی/حضور."""
-    day = date.today().isoformat()
+    day = local_now().date().isoformat()
     _mkuser(client, auth_headers, "v492_mob_cash", roles=["Cashier"])
     _mkuser(client, auth_headers, "v492_mob_sup", roles=["Supervisor"])
     cash_h = _login(client, "v492_mob_cash", "pass1234")
@@ -205,4 +206,3 @@ def test_v492_mobile_sync_user_isolation_and_attendance_summary(client, auth_hea
     assert 'Prefs.set("bio_token", "")' in app_java
     local_java = (REPO / "mobile-android/app/src/main/java/ir/khajavy/supermarket/Local.java").read_text(encoding="utf-8")
     assert '"Supervisor"' in local_java and '"Accountant"' in local_java
-

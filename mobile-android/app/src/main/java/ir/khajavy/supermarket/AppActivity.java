@@ -42,16 +42,11 @@ public class AppActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        Prefs.init(this); Db.init(this); Ui.init(this); Api.bg(() -> Db.importBankSeed(this));   // v2.7 bundled barcode bank
-        // v3.5.1 — the default catalogue used to be reachable only through the
-        // first-run wizard (AppActivity → SetupActivity → InstallService), and an
-        // in-place update never walks that path, so shops that upgraded saw the new
-        // bank advertised and received none of it. This runs on EVERY launch and is
-        // gated on the catalogue version, not on "is the database empty", so an
-        // upgrade picks up the new lines too. importStarter reconciles against the
-        // products the shop already has (barcode, then normalised name) rather than
-        // duplicating them, so it is safe to run repeatedly.
-        Api.bg(() -> { try { if (Db.catalogPending()) Db.importStarter(this); } catch (Exception ignore) {} });
+        Prefs.init(this); Db.init(this); Ui.init(this);
+        // Bootstrap imports share the same SQLite database and must be serialized. Keep them
+        // off the UI thread, but never race the starter catalogue against the barcode seed.
+        final android.content.Context appContext = getApplicationContext();
+        Api.bg(() -> Db.bootstrap(appContext));
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");
@@ -176,7 +171,7 @@ public class AppActivity extends Activity {
         switch (k) {
             case "pos": return "cart"; case "held": return "pause"; case "customers": return "users"; case "invoices": return "receipt"; case "reports": return "chart"; case "accounting": return "calc";
             case "products": return "tag"; case "receive": return "truck"; case "inventory": return "box"; case "stocktake": return "clipboard"; case "stockops": return "undo"; case "warehouses": return "warehouse"; case "movements": return "history";
-            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
+            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "shifts": case "attendance": case "my-shifts": return "clock"; case "announcements": return "bell"; case "payroll": return "receipt"; case "performance": return "chart"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
             case "hardware": return "printer"; case "diagnostics": return "pulse"; case "notifications": return "bell"; case "support": return "support"; case "license": return "key"; case "sync": return "sync"; case "backup": return "archive"; case "bank": return "bank";
             default: return "chev";
         }
@@ -189,6 +184,8 @@ public class AppActivity extends Activity {
         {"receipt|فاکتورها و گزارش", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
         {"box|کالا و موجودی", "products:کالاها", "receive:ورود کالا", "inventory:انبار و موجودی", "stocktake:انبارگردانی", "stockops:ضایعات / اصلاح / انتقال", "warehouses:انبارها", "movements:گردش موجودی"},
         {"gift|جشنواره و پیامک", "marketing:جشنواره و کوپن", "sms:پیامک"},
+        {"clock|شیفت و حضور", "my-shifts:شیفت‌های من", "shifts:برنامه‌ریزی شیفت", "attendance:حضور کارکنان"},
+        {"users|منابع انسانی", "announcements:اطلاعیه‌ها", "payroll:حقوق و دستمزد", "performance:عملکرد کارکنان"},
         {"settings|مدیریت و سیستم", "home:داشبورد", "users:کاربران و نقش‌ها", "audit:لاگ حسابرسی", "settings:تنظیمات", "backup:پشتیبان‌گیری", "store:مشخصات فروشگاه", "hardware:سخت‌افزار", "diagnostics:تست اتصالات", "notifications:اعلان‌ها", "support:درخواست پشتیبانی", "license:لایسنس", "sync:همگام‌سازی", "cloud:همگام‌سازی ابری", "device:تنظیمات دستگاه", "about:دربارهٔ برنامه"},
     };
     private final java.util.Set<String> openGroups = new java.util.HashSet<>();
