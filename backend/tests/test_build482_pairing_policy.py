@@ -133,7 +133,10 @@ def test_android_offline_signin_needs_no_rescan_and_keeps_pairing():
     assert "if (!Api.standalone()) cacheMe(me, password)" in login
     db = (JAVA / "Db.java").read_text(encoding="utf-8")
     assert "putUserMeta" in db and "local_only" in db and "from_pc" in db and "offline_allowed" in db
-    assert "VERSION = 10" in db and "v10OfflineAllowed" in db
+    # Later Android releases added POS campaign/coupon storage, so the current
+    # schema must retain the offline-login migration and apply all newer tables.
+    assert "VERSION = 12" in db and "v10OfflineAllowed" in db
+    assert "v11PosBenefits" in db and "v12PosAutoIssue" in db
     # رمزسنج ذخیره‌شدهٔ گوشی نباید با pull پاک شود
     meta = db.split("putUserMeta", 2)[1]
     assert 'up.put("pass_hash"' not in meta, "the sync pull must never touch the cached password verifier"

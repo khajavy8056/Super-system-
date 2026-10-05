@@ -2,15 +2,29 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User
-from ..security import get_current_user, has_permission, require_permission
+from ..security import get_current_user, has_permission, require_any_permission, require_permission
 from ..services import reports as rep
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+def _require_stock_report_access(user: User = Depends(get_current_user)) -> User:
+    """Stock reports require report scope as well as inventory visibility.
+
+    A storewide-report grant is sufficient on its own; otherwise the caller
+    must hold both reports.view and inventory.view. Inventory visibility alone
+    never grants access to the Reports area.
+    """
+    if has_permission(user, "reports.view_all") or (
+        has_permission(user, "reports.view") and has_permission(user, "inventory.view")
+    ):
+        return user
+    raise HTTPException(status_code=403, detail="Stock reports require reports.view and inventory.view, or reports.view_all")
 
 
 def _maybe_redact(user: User, payload):
@@ -99,8 +113,12 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require_permis
     if scope != "store":
         for k in _SELF_ONLY_BLOCKS:
             payload[k] = [] if isinstance(payload.get(k), list) else {}
-        payload["inventory"] = {"value": 0, "product_count": 0, "low_stock": [],
-                                "no_stock": [], "low_stock_count": 0, "no_stock_count": 0}
+        # Sales scope and inventory scope are independent. A cashier may see the
+        # stock figures their inventory.view permission authorizes, without gaining
+        # store-wide sales, customer, or staff reporting.
+        if not has_permission(user, "inventory.view"):
+            payload["inventory"] = {"value": 0, "product_count": 0, "low_stock": [],
+                                    "no_stock": [], "low_stock_count": 0, "no_stock_count": 0}
     # Cost visibility and accounting visibility are independent capabilities:
     # inventory operators may inspect costs without opening the general ledger.
     if not has_permission(user, "accounting.view"):
@@ -126,7 +144,8 @@ def cashiers(start: date | None = None, end: date | None = None, db: Session = D
 
 @router.get("/inventory")
 def inventory(limit: int | None = Query(default=None, ge=1, le=5000),
-              db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
+              db: Session = Depends(get_db),
+              user: User = Depends(_require_stock_report_access)):
     # v3.5.9 — one row per product. On a store carrying the full 13k-SKU bank the phone used
     # to build one view per row and froze. Default stays None so the desktop is unchanged.
     rows = rep.inventory_report(db)
@@ -143,7 +162,8 @@ def purchase_cost(product_id: int | None = None, limit: int = Query(default=100,
 
 @router.get("/expiry")
 def expiry(limit: int | None = Query(default=None, ge=1, le=5000),
-           db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
+           db: Session = Depends(get_db),
+           user: User = Depends(_require_stock_report_access)):
     # v3.5.9 — capped per bucket, same reason as /inventory. Desktop unaffected by default.
     out = rep.expiry_report(db)
     if limit and isinstance(out, dict):
@@ -153,7 +173,7 @@ def expiry(limit: int | None = Query(default=None, ge=1, le=5000),
 
 @router.get("/adjustments")
 def adjustments(limit: int = Query(default=200, le=1000), db: Session = Depends(get_db),
-                _: User = Depends(require_permission("reports.view"))):
+                _: User = Depends(_require_stock_report_access)):
     return rep.adjustments_report(db, limit=limit)
 
 
@@ -171,13 +191,15 @@ def profit(start: date | None = None, end: date | None = None,
 
 
 @router.get("/batches")
-def batches(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def batches(db: Session = Depends(get_db),
+           _: User = Depends(_require_stock_report_access)):
     return rep.batch_status_report(db)
 
 
 @router.get("/low-stock")
 def low_stock(limit: int | None = Query(default=None, ge=1, le=5000),
-              db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+              db: Session = Depends(get_db),
+              _: User = Depends(_require_stock_report_access)):
     # v3.5.9 — most of a 13k-SKU store sits at zero stock, so "no stock" alone can be
     # thousands of rows. Desktop unaffected by default.
     rows = rep.low_stock_report(db)
@@ -185,10 +207,12 @@ def low_stock(limit: int | None = Query(default=None, ge=1, le=5000),
 
 
 @router.get("/movements")
-def movements(limit: int = 200, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def movements(limit: int = 200, db: Session = Depends(get_db),
+              _: User = Depends(_require_stock_report_access)):
     return rep.movements_report(db, limit=limit)
 
 
 @router.get("/stocktakes")
-def stocktakes(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def stocktakes(db: Session = Depends(get_db),
+               _: User = Depends(_require_stock_report_access)):
     return rep.stocktake_report(db)

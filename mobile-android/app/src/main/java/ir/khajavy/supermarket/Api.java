@@ -105,9 +105,11 @@ public final class Api {
         if (Relay.active && Relay.available()) { Object r = viaRelay(method, path, body, contentType, requestToken); lastRoute = "relay"; return r; }
         try { Object r = callPc(method, path, body, contentType, requestToken); lastRoute = "lan"; return r; }
         catch (ApiError e) {
-            // Paired but PC unreachable: reads use the local mirror; HR writes use its
-            // store-and-forward handlers, which persist first and queue a permission-checked sync op.
-            if (e.offline() && ("GET".equals(method) || path.startsWith("/hr/"))) {
+            // Paired but PC unreachable: reads use the local mirror; HR writes and
+            // the two read-only POS benefit validators use local rules/snapshots.
+            boolean localOfferValidation = "POST".equals(method)
+                    && ("/pos/campaigns/eligible".equals(path) || "/marketing/coupons/validate".equals(path));
+            if (e.offline() && ("GET".equals(method) || path.startsWith("/hr/") || localOfferValidation)) {
                 try { Object r = Local.handle(method, path, body); lastRoute = "local"; return r; }
                 catch (ApiError localError) { if (!"GET".equals(method)) throw localError; }
             }

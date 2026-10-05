@@ -78,7 +78,7 @@ public final class Screens {
         if ("payroll".equals(key)) return can("payroll.view") || can("payroll.manage");
         if ("shifts".equals(key) || "attendance".equals(key)) return can("shifts.view") || can("shifts.manage");
         if ("customers".equals(key)) return can("customers.manage") || can("customers.settle") || can("pos.sell");
-        if ("invoices".equals(key)) return can("pos.sell") || can("reports.view") || can("reports.view_all") || can("accounting.view");
+        if ("invoices".equals(key)) return can("reports.view");
         String need = null; for (String[] p : PERMS) if (p[0].equals(key)) need = p[1];
         if (need == null) return true;
         return can(need);
@@ -214,7 +214,8 @@ public final class Screens {
             LinearLayout quick2 = Ui.row(c);
             if (allowed("customers")) quick2.addView(qb("user", "ثبت مشتری", 0xFFF4657A, () -> a.route("customers")));
             if (allowed("marketing")) quick2.addView(qb("gift", "کمپین جدید", Ui.AMBER, () -> a.route("marketing")));
-            if (allowed("reports")) quick2.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
+            if ("seller".equals(profile) && allowed("held")) quick2.addView(qb("pause", "فاکتورهای نگه‌داشته", Ui.VIOLET, () -> a.route("held")));
+            if (allowed("reports")) quick2.addView(qb("chart", "seller".equals(profile) ? "گزارش فروش من" : "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
             if (quick.getChildCount() > 0) hero.addView(quick);
             if (quick2.getChildCount() > 0) hero.addView(quick2);
             body.addView(hero);
@@ -349,6 +350,27 @@ public final class Screens {
                     card.addView(Ui.kv(c, p.optString("name", "پرداخت"), Ui.num(p.optInt("invoice_count")) + " فاکتور · " + Ui.money(p.optDouble("sales")), 0));
                 }
                 body.addView(card);
+            }
+            if (Screens.can("inventory.view")) {
+                JSONObject inventory = data.optJSONObject("inventory");
+                if (inventory != null) {
+                    LinearLayout stock = Ui.card(c, "موجودی فروشگاه");
+                    stock.addView(Ui.kv(c, "کالاهای فعال", Ui.num(inventory.optInt("product_count")), Ui.PRIMARY));
+                    stock.addView(Ui.kv(c, "کمبود / بدون موجودی", Ui.fa(inventory.optInt("low_stock_count") + " / " + inventory.optInt("no_stock_count")),
+                            inventory.optInt("low_stock_count") + inventory.optInt("no_stock_count") > 0 ? Ui.AMBER : Ui.GREEN));
+                    JSONArray none = inventory.optJSONArray("no_stock"), low = inventory.optJSONArray("low_stock");
+                    int shown = 0;
+                    for (int i = 0; none != null && shown < 3 && i < none.length(); i++) {
+                        JSONObject item = none.optJSONObject(i);
+                        if (item != null) { stock.addView(Ui.kv(c, "اتمام · " + item.optString("name"), "۰ / حد " + Ui.num(item.optDouble("min_stock_alert")), Ui.RED)); shown++; }
+                    }
+                    for (int i = 0; low != null && shown < 3 && i < low.length(); i++) {
+                        JSONObject item = low.optJSONObject(i);
+                        if (item != null) { stock.addView(Ui.kv(c, "کمبود · " + item.optString("name"), Ui.num(item.optDouble("total_stock")) + " / حد " + Ui.num(item.optDouble("min_stock_alert")), Ui.AMBER)); shown++; }
+                    }
+                    stock.addView(Ui.small(c, "جزئیات موجودی", () -> a.route("inventory")));
+                    body.addView(stock);
+                }
             }
             addTrendChart("روند فروش من · ۷ روز", data.optJSONArray("trend"), "sales");
             addRecentInvoiceCard(data.optJSONArray("recent_invoices"));

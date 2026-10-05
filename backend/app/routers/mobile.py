@@ -29,12 +29,12 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..models import Customer, Product, ProductBatch, SystemSetting, User
+from ..models import Campaign, CampaignRedemption, Coupon, Customer, Product, ProductBatch, SystemSetting, User
 from ..security import create_access_token, get_current_user, has_permission, require_permission
 from ..services import relay_client as relay_svc
 from ..services import sync as sync_svc
@@ -634,6 +634,72 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                         ("inventory.view", "inventory.adjust", "inventory.stocktake", "batches.manage", "pos.sell"))
         can_customers = any(has_permission(user, code) for code in
                             ("customers.manage", "customers.ledger", "customers.settle", "pos.sell"))
+        if has_permission(user, "pos.sell"):
+            # POS-only snapshots keep native checkout useful offline without giving
+            # cashiers access to the general settings or marketing-management APIs.
+            tax_rate = db.execute(select(SystemSetting.value).where(
+                SystemSetting.key == "pos.tax_rate")).scalar_one_or_none()
+            pull["pos_config"] = {"tax_rate": tax_rate if tax_rate is not None else "0"}
+            campaign_stmt = select(Campaign)
+            coupon_stmt = select(Coupon)
+            if since is not None:
+                campaign_stmt = campaign_stmt.where(Campaign.updated_at >= since)
+                coupon_stmt = coupon_stmt.where(Coupon.updated_at >= since)
+            campaigns = db.execute(campaign_stmt.order_by(Campaign.updated_at.asc()).limit(body.limit)).scalars().all()
+            coupons = db.execute(coupon_stmt.order_by(Coupon.updated_at.asc()).limit(body.limit)).scalars().all()
+            assigned_customer_ids = {c.customer_id for c in coupons if c.customer_id is not None}
+            assigned_customer_phones = {}
+            if assigned_customer_ids:
+                assigned_customer_phones = {
+                    customer_id: phone for customer_id, phone in db.execute(
+                        select(Customer.id, Customer.phone).where(Customer.id.in_(assigned_customer_ids))
+                    ).all() if phone
+                }
+            pull["pos_campaigns"] = [{
+                "id": c.id, "name": c.name, "discount_type": c.discount_type,
+                "discount_value": float(c.discount_value or 0), "min_purchase": float(c.min_purchase or 0),
+                "max_purchase": float(c.max_purchase) if c.max_purchase is not None else None,
+                "max_discount": float(c.max_discount) if c.max_discount is not None else None,
+                "valid_from": c.valid_from.isoformat() if c.valid_from else None,
+                "valid_until": c.valid_until.isoformat() if c.valid_until else None,
+                "auto_issue_threshold": float(c.auto_issue_threshold) if c.auto_issue_threshold is not None else None,
+                "auto_issue_validity_days": c.auto_issue_validity_days,
+                "auto_issue_sms": bool(c.auto_issue_sms),
+                "target_type": c.target_type, "target_ids": c.target_ids,
+                "first_purchase_only": bool(c.first_purchase_only),
+                "usage_limit": c.usage_limit, "per_customer_limit": c.per_customer_limit,
+                "stackable": bool(c.stackable), "auto_apply": bool(c.auto_apply),
+                "priority": c.priority, "used_count": c.used_count, "status": c.status,
+                "updated_at": c.updated_at.isoformat(),
+            } for c in campaigns]
+            pull["pos_coupons"] = [{
+                "id": c.id, "code": c.code, "campaign_id": c.campaign_id,
+                "customer_id": c.customer_id,
+                "customer_phone": c.customer_phone or assigned_customer_phones.get(c.customer_id),
+                "discount_type": c.discount_type, "discount_value": float(c.discount_value or 0),
+                "min_purchase": float(c.min_purchase or 0),
+                "max_discount": float(c.max_discount) if c.max_discount is not None else None,
+                "valid_from": c.valid_from.isoformat() if c.valid_from else None,
+                "valid_until": c.valid_until.isoformat() if c.valid_until else None,
+                "usage_limit": c.usage_limit, "used_count": c.used_count,
+                "status": c.status, "updated_at": c.updated_at.isoformat(),
+            } for c in coupons]
+            limited_campaign_ids = db.execute(select(Campaign.id).where(
+                Campaign.per_customer_limit.is_not(None))).scalars().all()
+            pull_redemptions = select(CampaignRedemption)
+            if limited_campaign_ids:
+                pull_redemptions = pull_redemptions.where(
+                    CampaignRedemption.campaign_id.in_(limited_campaign_ids))
+            else:
+                pull_redemptions = pull_redemptions.where(CampaignRedemption.id == -1)
+            if since is not None:
+                pull_redemptions = pull_redemptions.where(CampaignRedemption.created_at >= since)
+            redemptions = db.execute(pull_redemptions.order_by(
+                CampaignRedemption.created_at.asc()).limit(body.limit)).scalars().all()
+            pull["pos_campaign_redemptions"] = [{
+                "id": r.id, "campaign_id": r.campaign_id, "customer_id": r.customer_id,
+                "created_at": r.created_at.isoformat(), "updated_at": r.created_at.isoformat(),
+            } for r in redemptions]
         if can_catalog:
             prods = _changed_since(db, Product, since, body.limit)
             pull["products"] = [{"id": p.id, "name": p.name, "sku": p.sku, "barcode": p.barcode, "unit_id": p.unit_id,
@@ -650,7 +716,16 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                                 "updated_at": b.updated_at.isoformat()} for b in batches]
         if can_customers:
             custs = _changed_since(db, Customer, since, body.limit)
-            pull["customers"] = [{"id": c.id, "name": c.name, "last_name": c.last_name, "phone": c.phone, "credit_limit": float(c.credit_limit or 0),
+            purchase_counts: dict[int, int] = {}
+            if custs:
+                from ..models import Invoice
+                counts = db.execute(select(Invoice.customer_id, func.count(Invoice.id)).where(
+                    Invoice.customer_id.in_([c.id for c in custs]), Invoice.status == "PAID"
+                ).group_by(Invoice.customer_id)).all()
+                purchase_counts = {int(customer_id): int(count) for customer_id, count in counts}
+            pull["customers"] = [{"id": c.id, "name": c.name, "last_name": c.last_name, "phone": c.phone,
+                                  "credit_limit": float(c.credit_limit or 0),
+                                  "lifetime_purchase_count": purchase_counts.get(c.id, 0),
                                   "updated_at": c.updated_at.isoformat()} for c in custs]
         # v4.8.1 — users ride the sync so the phone's offline sign-in policy stays
         # current (roles / is_active / «دسترسی فقط به صورت بومی»). Password hashes

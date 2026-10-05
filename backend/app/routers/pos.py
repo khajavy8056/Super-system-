@@ -64,6 +64,9 @@ class CheckoutIn(BaseModel):
     invoice_discount: Decimal | None = Field(default=None, ge=0)
     #: build-481 (§24) — festival picked from the POS list; the server re-validates
     campaign_id: int | None = None
+    #: build-496 — offline terminals reserve their locally issued next-purchase code
+    #: so queued checkouts can create the exact same coupon on the server.
+    client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
 
@@ -76,7 +79,8 @@ def kiosk_config(db: Session = Depends(get_db),
     """Config the POS terminal needs to enter kiosk mode (any logged-in user)."""
     shortcut = pos_svc.get_setting(db, "pos.kiosk_shortcut", "Ctrl+Shift+L")
     store = pos_svc.get_setting(db, "printer.header", "") or "فروشگاه"
-    return {"shortcut": shortcut, "store_name": store.split("\n")[0]}
+    return {"shortcut": shortcut, "store_name": store.split("\n")[0],
+            "tax_rate": pos_svc.get_setting(db, "pos.tax_rate", "0")}
 
 
 class KioskUnlockIn(BaseModel):
@@ -263,7 +267,8 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
 
         customer = db.get(_C, customer_id) if customer_id else None
         issued = coupon_svc.issue_next_purchase_coupon(
-            db, invoice=invoice, customer=customer, user=user)
+            db, invoice=invoice, customer=customer, user=user,
+            preferred_codes=body.client_issued_coupon_codes)
 
         from ..services import sms as sms_svc
         # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the

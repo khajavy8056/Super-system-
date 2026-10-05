@@ -79,11 +79,12 @@ def test_sync_pull_carries_the_fields_the_phone_db_needs(client, auth_headers):
                     headers=auth_headers)
     assert r.status_code == 200, r.text
     pull = r.json()["pull"]
-    # build-493 — identity policy + role-scoped HR cache ride the same pull;
-    # password hashes never cross the wire.
+    # build-496 — identity policy + role-scoped HR cache and POS-only offline
+    # campaign/coupon/tax configuration ride the same pull; hashes never cross.
     assert set(pull) == {
         "products", "batches", "customers", "bank", "users", "roster_users",
         "shifts", "shift_assignments", "attendance", "payroll", "announcements",
+        "pos_config", "pos_campaigns", "pos_coupons", "pos_campaign_redemptions",
     }
     if pull["users"]:
         assert {"username", "roles", "is_active", "local_only"} <= set(pull["users"][0])

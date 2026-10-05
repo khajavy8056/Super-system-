@@ -97,7 +97,7 @@ ROLE_PRESETS: dict[str, list[str]] = {
     # §۱.۱ — صندوقدار: فقط صندوق/فروش/مشتریِ موردنیاز فروش + گزارش شخصی
     # (شیفت‌ها = «شیفت‌های خودش»؛ /hr/performance/me بدون مجوز ویژه، فقط خودِ کاربر)
     "Cashier": [
-        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid",
+        "products.view", "inventory.view", "pos.sell", "pos.void_unpaid", "pos.return",
         "customers.manage", "customers.ledger", "customers.settle",
         "reports.view",
     ],
@@ -292,6 +292,7 @@ VIEW_PERMISSIONS: dict[str, str | None] = {
     "customers": "pos.sell||customers.manage||customers.ledger",
     "marketing": "marketing.view||marketing.manage",
     "reports": "reports.view_all",
+    "personalReports": "reports.view",
     "invoices": "reports.view",
     "insights": "reports.view",
     "insightsPlan": "reports.view_all",

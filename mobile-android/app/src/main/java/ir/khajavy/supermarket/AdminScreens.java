@@ -26,14 +26,52 @@ public final class AdminScreens {
         static final String[] TABS = {"فروش", "صندوق‌داران", "موجودی", "انقضا", "کمبود", "بچ‌ها", "سود", "هزینهٔ خرید", "اصلاحات", "انبارگردانی‌ها"};
         Reports(AppActivity a) { this(a, 0); } Reports(AppActivity a, int tab) { super(a); this.tab = tab; }
         public String key() { return "reports"; } public String title() { return "گزارش‌ها"; }
+        private boolean tabAllowed(int index) {
+            switch (index) {
+                case 0: return Screens.can("reports.view");
+                case 1: return Screens.can("reports.view_all");
+                case 2: case 3: case 4: case 5: case 8: case 9:
+                    return Screens.can("reports.view_all") || (Screens.can("reports.view") && Screens.can("inventory.view"));
+                case 6: case 7: return Screens.can("pricing.view_cost");
+                default: return false;
+            }
+        }
+        private int firstAllowedTab() {
+            for (int i = 0; i < TABS.length; i++) if (tabAllowed(i)) return i;
+            return 0;
+        }
         public void load() {
-            clear(); LinearLayout ch = Ui.row(c); for (int i = 0; i < TABS.length; i++) { final int k = i; ch.addView(Ui.chip(c, TABS[i], i == tab, () -> { tab = k; load(); })); } body.addView(Ui.chips(c, ch));
+            clear();
+            if (!tabAllowed(tab)) tab = firstAllowedTab();
+            if (!Screens.can("reports.view_all")) {
+                LinearLayout scope = Ui.card(c, "گزارش فروش شخصی");
+                scope.addView(Ui.muted(c, "این گزارش فقط فاکتورهای ثبت‌شده با حساب کاربری شما را نشان می‌دهد."));
+                body.addView(scope);
+            }
+            LinearLayout ch = Ui.row(c);
+            for (int i = 0; i < TABS.length; i++) {
+                if (!tabAllowed(i)) continue;
+                final int k = i;
+                String label = i == 0 && !Screens.can("reports.view_all") ? "فروش من" : TABS[i];
+                ch.addView(Ui.chip(c, label, i == tab, () -> { tab = k; load(); }));
+            }
+            body.addView(Ui.chips(c, ch));
             LinearLayout out = Ui.col(c); body.addView(out); out.addView(Ui.empty(c, "…"));
             String from = Jalali.daysAgoIso(days), to = Jalali.todayIso();
             switch (tab) {
                 case 0: { LinearLayout rg = Ui.row(c); for (int d : new int[]{1, 7, 30, 90}) rg.addView(Ui.chip(c, d == 1 ? "امروز" : Ui.num(d) + " روز", days == d, () -> { days = d; load(); })); body.addView(rg, 1); get("/reports/sales?start=" + (days == 1 ? to : from) + "&end=" + to + "&group=daily", r -> { JSONObject d = (JSONObject) r; out.removeAllViews(); out.addView(Ui.grid2(c, Ui.kpi(c, "جمع فروش", Ui.money(d.optDouble("total_sales")), null, Ui.GREEN), Ui.kpi(c, "تعداد فاکتور", Ui.num(d.optDouble("invoice_count")), null, Ui.PRIMARY))); JSONArray g = d.optJSONArray("groups"); LinearLayout cd = Ui.card(c, "به تفکیک روز"); for (int i = 0; g != null && i < g.length(); i++) { JSONObject x = g.optJSONObject(i); cd.addView(Ui.kv(c, Ui.jdate(x.optString("date")), Ui.num(x.optDouble("invoice_count")) + " فاکتور · " + Ui.money(x.optDouble("total")), 0)); } if (g == null || g.length() == 0) cd.addView(Ui.muted(c, "فروشی در این بازه نیست")); out.addView(cd); }); get("/reports/sales?start=" + (days == 1 ? to : from) + "&end=" + to + "&group=product", r -> { JSONArray g = ((JSONObject) r).optJSONArray("groups"); if (g == null || g.length() == 0) return; LinearLayout cd = Ui.card(c, "به تفکیک کالا"); for (int i = 0; i < Math.min(15, g.length()); i++) { JSONObject x = g.optJSONObject(i); cd.addView(Ui.kv(c, s(x, "name", s(x, "product_name")), Ui.num(x.optDouble("qty", x.optDouble("quantity"))) + " · " + Ui.money(x.optDouble("total")), 0)); } out.addView(cd); }); break; }
                 case 1: get("/reports/cashiers", r -> { JSONArray ar = arr(r); out.removeAllViews(); if (ar.length() == 0) out.addView(Ui.empty(c, "—")); for (int i = 0; i < ar.length(); i++) { JSONObject x = ar.optJSONObject(i); LinearLayout cd = Ui.card(c, x.optString("username")); cd.addView(Ui.kv(c, "فاکتور", Ui.num(x.optDouble("invoice_count")), 0)); cd.addView(Ui.kv(c, "فروش", Ui.money(x.optDouble("total_sales")), Ui.GREEN)); cd.addView(Ui.kv(c, "تخفیف", Ui.money(x.optDouble("total_discount")), 0)); if (Screens.can("pricing.view_cost")) cd.addView(Ui.kv(c, "سود", Ui.money(x.optDouble("profit")), 0)); out.addView(cd); } }); break;
-                case 2: get("/reports/inventory", r -> { JSONArray ar = arr(r); out.removeAllViews(); double tv = 0; for (int i = 0; i < ar.length(); i++) tv += ar.optJSONObject(i).optDouble("value_at_cost"); out.addView(Ui.kpi(c, "ارزش کل موجودی (قیمت خرید)", Ui.money(tv), Ui.num(ar.length()) + " کالا", Ui.AMBER)); LinearLayout cd = Ui.card(c, "کالاها"); Ui.paged(cd, ar, 50, x -> Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("total_qty")) + " · " + Ui.money(x.optDouble("value_at_cost")), x.optDouble("total_qty") <= x.optDouble("min_stock_alert") ? Ui.RED : 0)); out.addView(cd); }); break;
+                case 2: get("/reports/inventory", r -> {
+                    JSONArray ar = arr(r); out.removeAllViews(); boolean canSeeCost = Screens.can("pricing.view_cost");
+                    double totalValue = 0; for (int i = 0; i < ar.length(); i++) totalValue += ar.optJSONObject(i).optDouble("value_at_cost");
+                    out.addView(Ui.kpi(c, canSeeCost ? "ارزش کل موجودی (قیمت خرید)" : "کالاهای فعال",
+                            canSeeCost ? Ui.money(totalValue) : Ui.num(ar.length()) + " کالا", null, Ui.AMBER));
+                    LinearLayout cd = Ui.card(c, "کالاها");
+                    Ui.paged(cd, ar, 50, item -> Ui.kv(c, item.optString("name"),
+                            Ui.num(item.optDouble("total_qty")) + (canSeeCost ? " · " + Ui.money(item.optDouble("value_at_cost")) : " موجود"),
+                            item.optDouble("total_qty") <= item.optDouble("min_stock_alert") ? Ui.RED : 0));
+                    out.addView(cd);
+                }); break;
                 case 3: get("/reports/expiry", r -> { JSONObject ex = (JSONObject) r; out.removeAllViews(); String[][] EK = {{"EXPIRED", "منقضی‌شده"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "تا ۳ روز"}, {"EXPIRING_7_DAYS", "تا ۷ روز"}, {"EXPIRING_30_DAYS", "تا ۳۰ روز"}}; boolean any = false; for (String[] k : EK) { JSONArray ar = ex.optJSONArray(k[0]); if (ar == null || ar.length() == 0) continue; any = true; LinearLayout cd = Ui.card(c, k[1]); Ui.paged(cd, ar, 50, b -> Ui.kv(c, s(b, "product_name", s(b, "name")), Ui.num(b.optDouble("current_qty")) + " · " + Ui.jdate(s(b, "expiry_date")), "EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER)); out.addView(cd); } if (!any) out.addView(Ui.empty(c, "کالای نزدیک انقضا نیست")); }); break;
                 case 4: get("/reports/low-stock", r -> { JSONArray ar = arr(r); out.removeAllViews(); if (ar.length() == 0) out.addView(Ui.empty(c, "کمبودی نیست")); Ui.paged(out, ar, 50, x -> Ui.item(c, x.optString("name"), "حد هشدار " + Ui.num(x.optDouble("min_stock_alert")), Ui.num(x.optDouble("total_stock", x.optDouble("total_qty"))), Ui.RED, null)); }); break;
                 case 5: get("/reports/batches", r -> { out.removeAllViews(); render(out, r, "بچ‌ها"); }); break;

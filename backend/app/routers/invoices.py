@@ -26,6 +26,11 @@ class VoidIn(BaseModel):
     admin_password: str | None = None
 
 
+def _ensure_invoice_scope(inv: Invoice, user: User) -> None:
+    if not has_permission(user, "reports.view_all") and inv.created_by != user.id:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+
+
 def _out(inv: Invoice) -> dict:
     return {
         "id": inv.id, "invoice_number": inv.invoice_number,
@@ -70,8 +75,7 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Dep
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
     # build-490 (§۲) — فاکتور دیگران برای کاربر بدون reports.view_all قابل دسترسی نیست (حتی با URL مستقیم)
-    if not has_permission(user, "reports.view_all") and inv.created_by != user.id:
-        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     return _maybe_redact(user, _out(inv))
 
 
@@ -81,6 +85,7 @@ def void_invoice(invoice_id: int, body: VoidIn, db: Session = Depends(get_db),
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     if inv.status == "PAID":
         # Voiding a paid invoice needs a stronger permission (§84).
         from ..security import has_permission, verify_password
@@ -108,13 +113,14 @@ def void_invoice(invoice_id: int, body: VoidIn, db: Session = Depends(get_db),
 
 
 @router.post("/{invoice_id}/print")
-def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def print_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     """Attempt to (re)print via the hardware layer. Printer failure NEVER voids
     the sale (§20) — it only marks print_status=FAILED for a retry."""
     from ..services.hardware import print_receipt
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     from ..services.hardware import render_receipt
     ok, message = print_receipt(db, invoice=inv)
     db.commit()
@@ -123,12 +129,13 @@ def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depe
 
 
 @router.get("/{invoice_id}/receipt")
-def receipt_preview(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def receipt_preview(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     """Rendered receipt text (what the thermal printer receives) — on-screen preview / browser print."""
     from ..services.hardware import render_receipt, printer_profile
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     prof = printer_profile(db)
     return {"invoice_id": inv.id, "invoice_number": inv.invoice_number, "columns": prof["columns"],
             "print_status": inv.print_status, "receipt_text": render_receipt(db, inv)}

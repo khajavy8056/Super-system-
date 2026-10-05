@@ -5,7 +5,7 @@
  * این فایل در صورت وجود ثبت قدیمی از نسخه‌های پیشین (مانند rasa-shell-v100)،
  * تمام کش‌های Cache Storage را پاک کرده و خودش را لغو ثبت (unregister) می‌کند.
  */
-const CACHE = "rasa-shell-v100-no-sw-v495";
+const CACHE = "rasa-shell-v100-no-sw-v496";
 const PURGE_ASSETS = [
   "/",
   "/index.html",

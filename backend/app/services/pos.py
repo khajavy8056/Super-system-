@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Counter,
+    Customer,
     Invoice,
     InvoiceItem,
     Payment,
@@ -570,6 +571,14 @@ def checkout(
         # a stacking campaign shares the source label with its coupon partner
         benefit_source = "CAMPAIGN+COUPON" if benefit_source == "COUPON" else "CAMPAIGN"
         benefit_amount += campaign_info["discount"]
+
+    # POS-only mobile sync carries a purchase-count snapshot for offline
+    # first-purchase campaign checks. Touch the customer in the same transaction
+    # so an existing customer is pulled again after a sale.
+    if customer_id:
+        customer = db.get(Customer, customer_id)
+        if customer is not None:
+            customer.updated_at = datetime.utcnow()
 
     invoice = Invoice(
         invoice_number=_next_invoice_number(db),

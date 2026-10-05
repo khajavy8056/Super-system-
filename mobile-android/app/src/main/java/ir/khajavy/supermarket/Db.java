@@ -170,7 +170,7 @@ public final class Db extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
         d.execSQL("CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, label TEXT, message TEXT, at TEXT, owner_user_id INTEGER NOT NULL DEFAULT 0)");
         d.execSQL("CREATE INDEX IF NOT EXISTS ix_conflicts_owner_at ON conflicts(owner_user_id,at)");
-        v2(d); v8LocalSchema(d); v9UserIdentity(d); v10OfflineAllowed(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
+        v2(d); v8LocalSchema(d); v9UserIdentity(d); v10OfflineAllowed(d); v11PosBenefits(d); v12PosAutoIssue(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} indexes(d);
         try (Cursor c = d.rawQuery("PRAGMA user_version=" + VERSION, null)) { c.moveToFirst(); } catch (Exception ignore) {}
     }
     // v3.5.2 — 4 → 5. products.gallery was added to V4_INDEX, but an install
@@ -178,7 +178,7 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 10;
+    static final int VERSION = 12;
     static void v9UserIdentity(SQLiteDatabase d) {
         try { d.execSQL("ALTER TABLE users ADD COLUMN pc_username TEXT"); } catch (Exception ignore) {}
         try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_users_pc_id ON users(pc_id)"); } catch (Exception ignore) {}
@@ -229,6 +229,47 @@ public final class Db extends SQLiteOpenHelper {
         for (String sql : V8_LOCAL_SCHEMA) d.execSQL(sql);
     }
 
+    private static boolean hasColumn(SQLiteDatabase d, String table, String column) {
+        try (Cursor c = d.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (c.moveToNext()) if (column.equals(c.getString(1))) return true;
+        }
+        return false;
+    }
+    private static void addColumn(SQLiteDatabase d, String table, String definition) {
+        String column = definition.substring(0, definition.indexOf(' '));
+        if (!hasColumn(d, table, column)) d.execSQL("ALTER TABLE " + table + " ADD COLUMN " + definition);
+    }
+    /** v4.9.6 — offline POS offer rules, redemption scope, and immutable invoice benefits. */
+    static void v11PosBenefits(SQLiteDatabase d) {
+        for (String definition : new String[]{
+                "valid_from TEXT", "max_purchase REAL", "target_type TEXT DEFAULT 'ALL'", "target_ids TEXT",
+                "first_purchase_only INTEGER DEFAULT 0", "usage_limit INTEGER", "per_customer_limit INTEGER",
+                "stackable INTEGER DEFAULT 0", "auto_apply INTEGER DEFAULT 0", "priority INTEGER DEFAULT 3",
+                "used_count INTEGER DEFAULT 0", "updated_at TEXT", "pc_id INTEGER DEFAULT 0",
+                "is_local INTEGER NOT NULL DEFAULT 1"}) addColumn(d, "campaigns", definition);
+        for (String definition : new String[]{
+                "campaign_id INTEGER", "customer_id INTEGER", "max_discount REAL", "valid_from TEXT",
+                "updated_at TEXT", "pc_id INTEGER DEFAULT 0", "is_local INTEGER NOT NULL DEFAULT 1"}) addColumn(d, "coupons", definition);
+        addColumn(d, "customers", "lifetime_purchase_count INTEGER NOT NULL DEFAULT 0");
+        addColumn(d, "invoices", "invoice_discount REAL DEFAULT 0");
+        addColumn(d, "invoices", "coupon_discount REAL DEFAULT 0");
+        addColumn(d, "invoices", "campaign_discount REAL DEFAULT 0");
+        addColumn(d, "invoices", "campaign_id INTEGER");
+        addColumn(d, "invoices", "campaign_name TEXT");
+        addColumn(d, "invoices", "benefit_source TEXT DEFAULT 'NONE'");
+        addColumn(d, "invoices", "benefit_amount REAL DEFAULT 0");
+        addColumn(d, "invoices", "applied_coupon_code TEXT");
+        d.execSQL("CREATE TABLE IF NOT EXISTS pos_campaign_redemptions(id INTEGER PRIMARY KEY, campaign_id INTEGER NOT NULL, customer_id INTEGER, created_at TEXT, updated_at TEXT)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_pos_campaign_redemptions_scope ON pos_campaign_redemptions(campaign_id,customer_id)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_campaigns_pc_id ON campaigns(pc_id)");
+        d.execSQL("CREATE INDEX IF NOT EXISTS ix_coupons_pc_id ON coupons(pc_id)");
+    }
+    /** v4.9.6 — keep next-purchase coupon rules in the on-device POS snapshot. */
+    static void v12PosAutoIssue(SQLiteDatabase d) {
+        addColumn(d, "campaigns", "auto_issue_validity_days INTEGER NOT NULL DEFAULT 30");
+        addColumn(d, "campaigns", "auto_issue_sms INTEGER NOT NULL DEFAULT 1");
+    }
+
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
         if (a < 3) v2(d);
         if (a < 4) { try { rebuildJournalLines(d); } catch (Exception ignore) {} }
@@ -238,6 +279,8 @@ public final class Db extends SQLiteOpenHelper {
         if (a < 8) v8LocalSchema(d); // local HR cache, offline attendance and stable account IDs
         if (a < 9) v9UserIdentity(d); // separate PC usernames from colliding phone-local accounts
         if (a < 10) v10OfflineAllowed(d); // per-user cached/offline sign-in permission
+        if (a < 11) v11PosBenefits(d); // offline coupons/campaigns and invoice benefit snapshots
+        if (a < 12) v12PosAutoIssue(d); // next-purchase offer settings for offline POS
     }
 
     /* ---------------- kv ---------------- */
@@ -268,6 +311,17 @@ public final class Db extends SQLiteOpenHelper {
                     if (pull.has("attendance")) d.delete("local_attendance", "is_local=0", null);
                     if (pull.has("payroll")) d.delete("local_payroll", "is_local=0", null);
                     if (pull.has("announcements")) d.delete("local_announcements", "is_local=0", null);
+                    if (pull.has("pos_campaigns")) d.delete("campaigns", "is_local=0", null);
+                    if (pull.has("pos_coupons")) d.delete("coupons", "is_local=0", null);
+                    if (pull.has("pos_campaign_redemptions")) d.delete("pos_campaign_redemptions", null, null);
+                }
+                JSONArray cps = pull.optJSONArray("pos_campaigns"); if (cps != null) for (int i = 0; i < cps.length(); i++) putPosCampaign(cps.optJSONObject(i));
+                JSONArray cpn = pull.optJSONArray("pos_coupons"); if (cpn != null) for (int i = 0; i < cpn.length(); i++) putPosCoupon(cpn.optJSONObject(i));
+                JSONArray cpr = pull.optJSONArray("pos_campaign_redemptions"); if (cpr != null) for (int i = 0; i < cpr.length(); i++) putPosCampaignRedemption(cpr.optJSONObject(i));
+                JSONObject posConfig = pull.optJSONObject("pos_config");
+                if (posConfig != null && !posConfig.isNull("tax_rate")) {
+                    ContentValues setting = new ContentValues(); setting.put("k", "pos.tax_rate"); setting.put("v", posConfig.optString("tax_rate", "0"));
+                    d.insertWithOnConflict("settings", null, setting, SQLiteDatabase.CONFLICT_REPLACE);
                 }
                 JSONArray ps = pull.optJSONArray("products"); if (ps != null) for (int i = 0; i < ps.length(); i++) putProduct(ps.optJSONObject(i), false);
                 JSONArray bs = pull.optJSONArray("batches"); if (bs != null) for (int i = 0; i < bs.length(); i++) putBatch(bs.optJSONObject(i), false);
@@ -314,8 +368,64 @@ public final class Db extends SQLiteOpenHelper {
     public static void putCustomer(JSONObject c, boolean local) {
         if (c == null) return; ContentValues cv = new ContentValues();
         cv.put("id", c.optLong("id")); cv.put("name", c.optString("name", "")); cv.put("last_name", c.isNull("last_name") ? null : c.optString("last_name")); cv.put("phone", c.isNull("phone") ? null : c.optString("phone"));
-        cv.put("credit_limit", c.optDouble("credit_limit", 0)); cv.put("is_local", local ? 1 : 0); cv.put("json", c.toString());
+        cv.put("credit_limit", c.optDouble("credit_limit", 0)); cv.put("lifetime_purchase_count", c.optInt("lifetime_purchase_count", 0));
+        cv.put("is_local", local ? 1 : 0); cv.put("json", c.toString());
         w().insertWithOnConflict("customers", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    /** Store POS-only rule snapshots received from the desktop sync endpoint. */
+    public static void putPosCampaign(JSONObject campaign) {
+        if (campaign == null || campaign.optLong("id") <= 0) return;
+        long pcId = campaign.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", -pcId); cv.put("pc_id", pcId); cv.put("is_local", 0);
+        cv.put("name", campaign.optString("name", ""));
+        cv.put("discount_type", campaign.optString("discount_type", "PERCENT"));
+        cv.put("discount_value", campaign.optDouble("discount_value", 0));
+        cv.put("min_purchase", campaign.optDouble("min_purchase", 0));
+        if (campaign.isNull("max_purchase")) cv.putNull("max_purchase"); else cv.put("max_purchase", campaign.optDouble("max_purchase"));
+        if (campaign.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", campaign.optDouble("max_discount"));
+        cv.put("valid_from", campaign.isNull("valid_from") ? null : campaign.optString("valid_from"));
+        cv.put("valid_until", campaign.isNull("valid_until") ? null : campaign.optString("valid_until"));
+        if (campaign.isNull("auto_issue_threshold")) cv.putNull("auto_issue_threshold"); else cv.put("auto_issue_threshold", campaign.optDouble("auto_issue_threshold"));
+        cv.put("auto_issue_validity_days", campaign.optInt("auto_issue_validity_days", 30));
+        cv.put("auto_issue_sms", campaign.optBoolean("auto_issue_sms", true) ? 1 : 0);
+        cv.put("target_type", campaign.optString("target_type", "ALL"));
+        cv.put("target_ids", campaign.isNull("target_ids") ? null : campaign.optString("target_ids"));
+        cv.put("first_purchase_only", campaign.optBoolean("first_purchase_only") ? 1 : 0);
+        if (campaign.isNull("usage_limit")) cv.putNull("usage_limit"); else cv.put("usage_limit", campaign.optInt("usage_limit"));
+        if (campaign.isNull("per_customer_limit")) cv.putNull("per_customer_limit"); else cv.put("per_customer_limit", campaign.optInt("per_customer_limit"));
+        cv.put("stackable", campaign.optBoolean("stackable") ? 1 : 0); cv.put("auto_apply", campaign.optBoolean("auto_apply") ? 1 : 0);
+        cv.put("priority", campaign.optInt("priority", 3)); cv.put("used_count", campaign.optInt("used_count", 0));
+        cv.put("status", campaign.optString("status", "ACTIVE")); cv.put("updated_at", campaign.optString("updated_at", now()));
+        cv.put("created_at", "");
+        w().insertWithOnConflict("campaigns", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putPosCoupon(JSONObject coupon) {
+        if (coupon == null || coupon.optLong("id") <= 0 || coupon.optString("code").isEmpty()) return;
+        long pcId = coupon.optLong("id"); ContentValues cv = new ContentValues();
+        cv.put("id", -pcId); cv.put("pc_id", pcId); cv.put("is_local", 0);
+        cv.put("code", coupon.optString("code"));
+        if (coupon.isNull("campaign_id")) cv.putNull("campaign_id"); else cv.put("campaign_id", coupon.optLong("campaign_id"));
+        if (coupon.isNull("customer_id")) cv.putNull("customer_id"); else cv.put("customer_id", coupon.optLong("customer_id"));
+        cv.put("customer_phone", coupon.isNull("customer_phone") ? null : coupon.optString("customer_phone"));
+        cv.put("discount_type", coupon.optString("discount_type", "PERCENT")); cv.put("discount_value", coupon.optDouble("discount_value", 0));
+        cv.put("min_purchase", coupon.optDouble("min_purchase", 0));
+        if (coupon.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", coupon.optDouble("max_discount"));
+        cv.put("valid_from", coupon.isNull("valid_from") ? null : coupon.optString("valid_from"));
+        cv.put("valid_until", coupon.isNull("valid_until") ? null : coupon.optString("valid_until"));
+        if (coupon.isNull("usage_limit")) cv.putNull("usage_limit"); else cv.put("usage_limit", coupon.optInt("usage_limit", 1));
+        cv.put("used_count", coupon.optInt("used_count", 0)); cv.put("status", coupon.optString("status", "ACTIVE"));
+        cv.put("updated_at", coupon.optString("updated_at", now())); cv.put("created_at", "");
+        w().insertWithOnConflict("coupons", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public static void putPosCampaignRedemption(JSONObject redemption) {
+        if (redemption == null || redemption.optLong("id") <= 0 || redemption.optLong("campaign_id") <= 0) return;
+        ContentValues cv = new ContentValues(); cv.put("id", redemption.optLong("id"));
+        cv.put("campaign_id", redemption.optLong("campaign_id"));
+        if (redemption.isNull("customer_id")) cv.putNull("customer_id"); else cv.put("customer_id", redemption.optLong("customer_id"));
+        cv.put("created_at", redemption.optString("created_at", ""));
+        cv.put("updated_at", redemption.optString("updated_at", redemption.optString("created_at", "")));
+        w().insertWithOnConflict("pos_campaign_redemptions", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     /**
@@ -1113,7 +1223,7 @@ public final class Db extends SQLiteOpenHelper {
         putCustomer(c, true); return c;
     }
     /** Apply a sale locally: decrement batches, store the invoice; returns the local number. */
-    public static String localSale(JSONObject payload, double total) {
+    public static String localSale(JSONObject payload, double total) throws Exception {
         try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {}   // v4.8.0 — تخفیف سررسیدشده پیش از فروش (مثل صندوق رایانه)
         SQLiteDatabase d = w(); d.beginTransaction();
         try {
@@ -1123,15 +1233,27 @@ public final class Db extends SQLiteOpenHelper {
                 if (bid != 0) d.execSQL("UPDATE batches SET current_qty=MAX(0, current_qty-?) WHERE id=?", new Object[]{it.optDouble("quantity", 1), bid});
             }
             String no = "M-" + String.format("%06d", counter("inv_no"));
+            JSONObject issuedCodes = Local.issueLocalAutoCoupons(payload, no, total);
+            if (issuedCodes.length() > 0) payload.put("client_issued_coupon_codes", issuedCodes);
             ContentValues cv = new ContentValues(); cv.put("local_no", no); cv.put("total", total); cv.put("item_count", items == null ? 0 : items.length());
             JSONArray pays = payload.optJSONArray("payments"); String method = pays != null && pays.length() > 0 ? pays.optJSONObject(0).optString("method", "CASH") : "CASH";
             boolean credit = false; if (pays != null) for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) credit = true;
             if (pays != null && pays.length() > 1) method = credit ? "CREDIT" : "MIXED";
             cv.put("payment", method); cv.put("status", "PAID"); cv.put("payment_status", credit ? "PENDING" : "PAID");
             if (payload.has("customer_id")) cv.put("customer_id", payload.optLong("customer_id"));
-            double sub = 0, disc = payload.optDouble("invoice_discount", 0);
+            double sub = 0, invoiceDisc = payload.optDouble("invoice_discount", 0);
+            double couponDisc = payload.optDouble("coupon_discount", 0), campaignDisc = payload.optDouble("campaign_discount", 0);
+            double disc = invoiceDisc + couponDisc + campaignDisc;
             for (int i = 0; items != null && i < items.length(); i++) { JSONObject it = items.optJSONObject(i); sub += it.optDouble("quantity", 1) * it.optDouble("price", 0); disc += it.optDouble("discount", 0); }
-            cv.put("subtotal", sub > 0 ? sub : total); cv.put("discount", disc); cv.put("tax", 0); cv.put("user", Screens.userName()); cv.put("user_id", localUserId()); cv.put("coupon", payload.optString("coupon_code", null));
+            cv.put("subtotal", sub > 0 ? sub : total); cv.put("discount", disc); cv.put("invoice_discount", invoiceDisc);
+            cv.put("coupon_discount", couponDisc); cv.put("campaign_discount", campaignDisc);
+            cv.put("tax", payload.optDouble("tax", 0)); cv.put("user", Screens.userName()); cv.put("user_id", localUserId());
+            cv.put("coupon", payload.optString("coupon_code", null)); cv.put("applied_coupon_code", payload.optString("coupon_code", null));
+            if (payload.optLong("campaign_id") > 0) cv.put("campaign_id", payload.optLong("campaign_id"));
+            cv.put("campaign_name", payload.optString("campaign_name", null));
+            String benefitSource = couponDisc > 0 && campaignDisc > 0 ? "CAMPAIGN+COUPON"
+                    : campaignDisc > 0 ? "CAMPAIGN" : couponDisc > 0 ? "COUPON" : "NONE";
+            cv.put("benefit_source", benefitSource); cv.put("benefit_amount", couponDisc + campaignDisc);
             cv.put("at", now()); cv.put("synced", 0); cv.put("json", payload.toString()); long rid = d.insert("invoices", null, cv);
             for (int i = 0; items != null && i < items.length(); i++) {
                 JSONObject it = items.optJSONObject(i); long bid = it.optLong("batch_id", 0); double q = it.optDouble("quantity", 1), pr = it.optDouble("price", 0), buy = 0;
@@ -1141,11 +1263,23 @@ public final class Db extends SQLiteOpenHelper {
             }
             if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += pays.optJSONObject(i).optDouble("amount"); d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
             if (!payload.optString("coupon_code").isEmpty()) d.execSQL("UPDATE coupons SET used_count=used_count+1, status=CASE WHEN used_count+1>=usage_limit THEN 'USED' ELSE status END WHERE code=?", new Object[]{payload.optString("coupon_code")});
+            long campaignId = payload.optLong("campaign_id", 0);
+            if (campaignId > 0) {
+                if (payload.optBoolean("campaign_local"))
+                    d.execSQL("UPDATE campaigns SET used_count=used_count+1 WHERE id=? AND is_local=1", new Object[]{campaignId});
+                else d.execSQL("UPDATE campaigns SET used_count=used_count+1 WHERE pc_id=? AND is_local=0", new Object[]{campaignId});
+            }
             d.setTransactionSuccessful();
             double cogs = 0; try (Cursor c = d.rawQuery("SELECT IFNULL(SUM(qty*unit_buy_price),0) FROM invoice_items WHERE inv=?", new String[]{String.valueOf(rid)})) { if (c.moveToFirst()) cogs = c.getDouble(0); }
             final double fc = cogs; Local.postSale(no, total, fc, pays);
             return no;
         } finally { d.endTransaction(); }
+    }
+    public static JSONObject localInvoicePayload(String localNo) throws Exception {
+        try (Cursor c = w().rawQuery("SELECT json FROM invoices WHERE local_no=?", new String[]{localNo})) {
+            if (!c.moveToFirst() || c.isNull(0)) throw new IllegalStateException("فاکتور محلی یافت نشد: " + localNo);
+            return new JSONObject(c.getString(0));
+        }
     }
     public static void markInvoiceSynced(String localNo, String invoiceNumber) { ContentValues cv = new ContentValues(); cv.put("synced", 1); cv.put("invoice_number", invoiceNumber); w().update("invoices", cv, "local_no=?", new String[]{localNo}); }
     private static boolean allLocalSalesVisible() { return Screens.can("reports.view_all"); }

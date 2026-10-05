@@ -437,6 +437,7 @@ def issue_next_purchase_coupon(
     invoice,
     customer: Customer | None,
     user: User | None = None,
+    preferred_codes: dict[str, str] | None = None,
 ) -> Coupon | None:
     """Auto-issue a coupon for the NEXT purchase when a campaign threshold is
     reached (§36). Returns the coupon, or None when no campaign applies."""
@@ -462,8 +463,15 @@ def issue_next_purchase_coupon(
         ).scalars().first()
         if already is not None:
             return already
+        requested_code = (preferred_codes or {}).get(str(c.id), "").strip().upper()
+        safe_local_code = (
+            requested_code.startswith("NEXT-")
+            and len(requested_code) == len("NEXT-") + 8
+            and all(character in _ALPHABET for character in requested_code[len("NEXT-"):])
+            and get_by_code(db, requested_code) is None
+        )
         coupon = Coupon(
-            code=generate_code("NEXT"),
+            code=requested_code if safe_local_code else generate_code("NEXT"),
             campaign_id=c.id,
             customer_id=customer.id if customer else None,
             customer_phone=customer.phone if customer else None,

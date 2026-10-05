@@ -208,6 +208,8 @@ public final class Sync {
         JSONObject c = new JSONObject(p.toString());
         if (c.has("product_id") && c.optLong("product_id") < 0) c.remove("product_id");
         if (c.has("customer_id") && c.optLong("customer_id") < 0) c.remove("customer_id");
+        if (c.optBoolean("campaign_local")) c.remove("campaign_id");
+        c.remove("campaign_local");
         if (c.has("user_id")) {
             long localOrPc = c.optLong("user_id");
             if (Db.localUserIdForPc(localOrPc) > 0) {

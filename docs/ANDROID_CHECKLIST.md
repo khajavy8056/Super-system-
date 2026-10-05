@@ -1,6 +1,27 @@
-# چک‌لیست کامل برنامهٔ اندروید «رسا سیستم» — v1.0.0 (بومی / Native)
+# چک‌لیست برنامهٔ اندروید «رسا سیستم» — بومی / Native
 
-## نسخهٔ ۱٫۰٫۰ (بیلد ۴۸۱) — چرخهٔ کامل پیشنهاد تا رسید
+## نسخهٔ جاری: 1.0.496 (بیلد 49600)
+
+- APK امضاشده: `releases/android/RasaSystemMobile-1.0.496.apk`، 1,492,443 بایت؛ SHA-256 در فایل کناری `.sha256`.
+- زنجیرهٔ ساخت SDK-less (ECJ/D8/aapt2/apksigner) و `scripts/android/verify-apk.py` install-preflight موفق‌اند؛ این **تست runtime روی گوشی نیست**.
+- Backend کامل: **770 پاس، 1 پرش**؛ تست‌های sync آفلاین POS، coupon-code reconciliation و role dashboard اجرا شدند.
+- بیلد 496: POS مستقل از مسیر `Local.handle(..., "/pos/checkout", ...)` اعتبارسنجی/ذخیره می‌شود؛ tax، کمپین و کوپن در pull فقط به دارندهٔ `pos.sell` می‌رسند؛ سفارش POS از payload فاکتور ذخیره‌شده صف می‌شود.
+- در محیط حاضر Android device/emulator و Windows واقعی نداریم؛ login/offline/sync روی دستگاه، لمس‌پذیری واقعی و Setup.exe ویندوز **تأیید نشده‌اند**.
+
+### نگاشت پنل‌های نقش‌محور: Windows → Android بومی
+
+| نقش / قابلیت | Windows | مقصد Android بومی | مجوز و دامنهٔ داده |
+|---|---|---|---|
+| مدیر کل / سوپروایزر: فروش، موجودی، مشتری، نمودار/دسته، وضعیت فروشگاه و میان‌برها | داشبورد مدیریتی راست‌به‌چپ و چیدمان پرتراکم | `Screens.Dashboard` (نمای مدیریتی)؛ ردیف‌های عمودی، کارت و ناوبری پایین | `reports.view_all` + مجوز مستقل هر کارت؛ فروشگاه فقط با `reports.view_all` |
+| شیفت، حضور و فعالیت | نوار حضور، تیم، رخدادها | `ShiftScreens.Roster`, `ShiftScreens.Attendance`, `HrScreens`؛ نمای شخصی/تیمی متناسب با مجوز | کارمند فقط رکورد خودش؛ مدیریت شیفت با `shifts.manage`؛ حسابرسی با `audit.view` |
+| صندوقدار: فروش، تخفیف، کوپن/کمپین، نگه‌داشتن و بازیابی فاکتور | صندوق و پنل نگه‌داشته‌ها | `SalesScreens.Pos`, `SalesScreens.Held`; فهرست‌های لمسی/برگهٔ انتخاب | `pos.sell`; پیشنهادهای POS از snapshot مجاز؛ مدیریت کمپین جداست و به POS حق ویرایش نمی‌دهد |
+| صندوقدار: فاکتور، مشتری/کالا، پرداخت، مرجوعی و موجودی | فاکتورها، مشتریان، کالاها، انبار و گزارش شخصی | `SalesScreens.Invoices/Customers`, `StockScreens.Products/Inventory`; جزئیات و فرم موبایل | `reports.view`, `customers.*`, `products.view`, `inventory.view`, `pos.return`; فروش فقط به `user_id` خود |
+| حسابدار: دفتر، درآمد/هزینه، سود، دریافت/پرداخت، حساب، چک و گزارش مالی | نمای حسابداری، دفتر روزنامه/کل، صورت‌ها و تنظیمات دوره | `Screens.Dashboard` مالی + `AdminScreens.Accounting` و `AdminScreens.Reports`; هر فهرست روی صفحهٔ جدا | `accounting.view`; ثبت/برگشت/بستن دوره بر اساس `accounting.post/close`; فروش سراسری جداگانه به `reports.view_all` |
+| همهٔ نقش‌ها: offline و Sync | دادهٔ backend/desktop | SQLite بومی `Db`, مسیرهای محلی `Local`, صف `Sync`; Sync پس‌زمینه است و ورود را مسدود نمی‌کند | کش/صف کاربرمحور؛ مجوز cache از حساب جاری؛ `Local.personalDashboard()` و `redactDashboardPermissions()` پیش از نمایش محلی |
+
+این نگاشت مقصدهای اصلی و مرز دسترسی را ثبت می‌کند؛ فهرست کامل صفحه‌ها/endpointها در بخش «بخش‌ها» پایین‌تر است. وجود مسیر، به‌تنهایی اثبات برابری runtime نیست.
+
+## تاریخچهٔ نسخهٔ ۱٫۰٫۰ (بیلد ۴۸۱) — چرخهٔ کامل پیشنهاد تا رسید
 
 | # | مورد | وضعیت | نحوهٔ راستی‌آزمایی |
 |---|------|-------|---------------------|

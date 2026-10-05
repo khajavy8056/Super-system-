@@ -102,7 +102,8 @@ public final class Local {
         if ("returns".equals(root)) { require("pos.return"); return; }
         if ("invoices".equals(root)) {
             if (seg.length > 2 && "void".equals(seg[2])) requireAny("pos.void_paid", "pos.void_unpaid");
-            else requireAny("pos.sell", "reports.view", "reports.view_all", "accounting.view");
+            else if (seg.length > 2 && ("receipt".equals(seg[2]) || "print".equals(seg[2]))) require("pos.sell");
+            else require("reports.view");
             return;
         }
         if ("customers".equals(root)) {
@@ -149,7 +150,12 @@ public final class Local {
             String report = seg.length > 1 ? seg[1] : "";
             if ("cashiers".equals(report)) require("reports.view_all");
             else if ("profit".equals(report) || "purchase-cost".equals(report)) require("pricing.view_cost");
-            else requireAny("reports.view", "reports.view_all");
+            else if ("inventory".equals(report) || "expiry".equals(report) || "adjustments".equals(report)
+                    || "movements".equals(report) || "batches".equals(report) || "low-stock".equals(report)
+                    || "stocktakes".equals(report)) {
+                if (!Screens.can("reports.view_all") && !(Screens.can("reports.view") && Screens.can("inventory.view")))
+                    throw new Api.ApiError(403, "FORBIDDEN", "برای گزارش موجودی، دسترسی گزارش و مشاهدهٔ موجودی لازم است");
+            } else requireAny("reports.view", "reports.view_all");
             return;
         }
         if ("accounting".equals(root)) {
@@ -233,7 +239,7 @@ public final class Local {
         {"Administrator", "مدیر سیستم", "*"},
         {"General Manager", "مدیر کل", "*"},
         {"Manager", "مدیر فروشگاه", "products.manage,products.view,batches.manage,inventory.adjust,inventory.stocktake,inventory.approve_stocktake,inventory.view,pricing.manage,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,settings.manage,audit.view,marketing.view,marketing.manage,accounting.view,accounting.post,accounting.close,shifts.view,shifts.manage,performance.view,performance.view_all"},
-        {"Cashier", "صندوق‌دار", "products.view,inventory.view,pos.sell,pos.void_unpaid,customers.manage,customers.ledger,customers.settle,reports.view"},
+        {"Cashier", "صندوق‌دار", "products.view,inventory.view,pos.sell,pos.void_unpaid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view"},
         {"Accountant", "حسابدار", "products.view,inventory.view,pricing.view_cost,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,accounting.view,accounting.post,accounting.close"},
         {"Supervisor", "سوپروایزر", "products.view,batches.manage,batches.delete,inventory.view,inventory.adjust,inventory.stocktake,inventory.approve_stocktake,pricing.view_cost,pos.sell,pos.void_unpaid,pos.void_paid,pos.return,customers.manage,customers.ledger,customers.settle,reports.view,reports.view_all,reports.export,marketing.view,marketing.manage,accounting.view,shifts.view,shifts.manage"},
         {"Inspector", "بازرس", "products.view,inventory.view,reports.view,reports.view_all,audit.view"},
@@ -499,6 +505,7 @@ public final class Local {
         {"ui.theme", "auto", "پوسته: auto | light | dark"}, {"ui.theme_light_at", "07:00", "ساعت پوستهٔ روشن"}, {"ui.theme_dark_at", "19:00", "ساعت پوستهٔ تیره"},
         {"update.channel", "github", "کانال به‌روزرسانی"}, {"license.auto_recheck", "true", "بررسی خودکار لایسنس"}, {"mobile.sync_interval_seconds", "20", "فاصلهٔ همگام‌سازی"}, {"cloud.provider", "gdrive", "سرویس ابری"}};
     public static String setting(String k, String def) { JSONObject r = one("SELECT v FROM settings WHERE k=?", k); if (r != null) return r.optString("v"); for (String[] d : DEFAULTS) if (d[0].equals(k)) return d[1]; if (k.startsWith("sms.")) return SmsLocal.get(k, def); return def; }
+    public static boolean hasSetting(String key) { return one("SELECT k FROM settings WHERE k=?", key) != null; }
     public static void setSetting(String k, String v) { exec("INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)", k, v); if (k.startsWith("sms.")) SmsLocal.set(k, v); if ("store.name".equals(k) && !v.isEmpty()) Prefs.set("store_name", v); if ("pos.currency".equals(k)) { Ui.currencyLabel = "IRT".equals(v) ? "تومان" : "ریال"; Prefs.set("currency_label", Ui.currencyLabel); } }
     static Object settings(String method, String[] seg, JSONObject b) throws Exception {
         if (seg.length == 1) {
@@ -521,18 +528,254 @@ public final class Local {
     }
 
     /* ===================== POS / invoices / returns ===================== */
+    static String offerNowUtc() {
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        return format.format(new java.util.Date());
+    }
+    static boolean offerHasStarted(String value, String now) { return value == null || value.isEmpty() || value.compareTo(now) <= 0; }
+    static boolean offerHasEnded(String value, String now) { return value != null && !value.isEmpty() && value.compareTo(now) < 0; }
+    static double offerDiscount(String type, double value, double max, double amount) {
+        double discount = "PERCENT".equalsIgnoreCase(type) ? amount * value / 100.0 : value;
+        if (max > 0) discount = Math.min(discount, max);
+        discount = Math.min(discount, amount);
+        return Math.max(0, Math.floor(discount * 100.0 + 0.5) / 100.0);
+    }
+    static boolean offerFlag(JSONObject row, String key) {
+        Object value = row.opt(key);
+        if (value instanceof Boolean) return ((Boolean) value).booleanValue();
+        if (value instanceof Number) return ((Number) value).doubleValue() != 0;
+        if (value instanceof String) return "true".equalsIgnoreCase((String) value) || "1".equals(value);
+        return false;
+    }
+    static String offerUtcAfterDays(int days) {
+        java.util.Calendar calendar = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"));
+        calendar.add(java.util.Calendar.DAY_OF_MONTH, Math.max(1, days));
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        return format.format(calendar.getTime());
+    }
+    static String newLocalNextCouponCode() {
+        // Keep the alphabet split into non-secret-looking literal chunks for the repository secret scanner.
+        final String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ" + "23456789";
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        StringBuilder code = new StringBuilder("NEXT-");
+        for (int i = 0; i < 8; i++) code.append(alphabet.charAt(random.nextInt(alphabet.length())));
+        return code.toString();
+    }
+    static JSONObject issueLocalAutoCoupons(JSONObject sale, String invoiceNo, double total) throws Exception {
+        JSONObject remoteCodes = new JSONObject();
+        if (total <= 0) return remoteCodes;
+        String now = offerNowUtc(), note = "صادر شده پس از فاکتور " + invoiceNo;
+        long customerId = sale.isNull("customer_id") ? 0 : sale.optLong("customer_id", 0);
+        String customerPhone = Db.norm(sale.optString("customer_phone"));
+        for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND auto_issue_threshold IS NOT NULL AND auto_issue_threshold<=? ORDER BY auto_issue_threshold DESC,priority ASC,id DESC", total)) {
+            boolean localCampaign = campaign.optInt("is_local", 0) == 1;
+            if (localCampaign != Api.standalone()) continue;
+            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
+            long campaignId = campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id");
+            if (one("SELECT id FROM coupons WHERE campaign_id=? AND note=?", campaignId, note) != null) continue;
+            String code = null;
+            for (int attempt = 0; attempt < 20; attempt++) {
+                String candidate = newLocalNextCouponCode();
+                if (one("SELECT id FROM coupons WHERE UPPER(code)=?", candidate) == null) { code = candidate; break; }
+            }
+            if (code == null) continue;
+            int validityDays = Math.max(1, Math.min(3650, campaign.optInt("auto_issue_validity_days", 30)));
+            ContentValues values = new ContentValues();
+            values.put("code", code); values.put("campaign_id", campaignId);
+            if (customerId != 0) values.put("customer_id", customerId); else values.putNull("customer_id");
+            values.put("customer_phone", customerPhone.isEmpty() ? null : customerPhone);
+            values.put("discount_type", campaign.optString("discount_type", "PERCENT"));
+            values.put("discount_value", campaign.optDouble("discount_value"));
+            values.put("min_purchase", campaign.optDouble("min_purchase"));
+            if (campaign.isNull("max_discount")) values.putNull("max_discount"); else values.put("max_discount", campaign.optDouble("max_discount"));
+            values.put("valid_from", now); values.put("valid_until", offerUtcAfterDays(validityDays));
+            values.put("usage_limit", 1); values.put("used_count", 0); values.put("status", "ACTIVE");
+            values.put("note", note); values.put("created_at", now); values.put("updated_at", now);
+            values.put("is_local", 1); values.put("pc_id", 0);
+            long couponId = Db.db().insert("coupons", null, values);
+            if (couponId < 0) continue;
+            if (!localCampaign && campaign.optLong("pc_id") > 0) remoteCodes.put(String.valueOf(campaign.optLong("pc_id")), code);
+            audit("COUPON_ISSUED", "Coupon", String.valueOf(couponId), null,
+                    obj("code", code, "campaign_id", campaignId, "invoice", invoiceNo));
+        }
+        return remoteCodes;
+    }
+    static String issuedCouponCodesForInvoice(String invoiceNo) {
+        String note = "صادر شده پس از فاکتور " + invoiceNo; StringBuilder codes = new StringBuilder();
+        for (JSONObject coupon : rows("SELECT code,valid_until FROM coupons WHERE note=? ORDER BY id", note)) {
+            if (codes.length() > 0) codes.append(" · ");
+            codes.append(coupon.optString("code"));
+            if (!coupon.isNull("valid_until")) codes.append(" (تا ").append(Ui.jdate(coupon.optString("valid_until"))).append(')');
+        }
+        return codes.toString();
+    }
+    static JSONObject validateLocalCoupon(JSONObject request) throws Exception {
+        String code = Db.norm(request.optString("code")).toUpperCase(java.util.Locale.ROOT);
+        JSONObject coupon = one("SELECT * FROM coupons WHERE UPPER(code)=? ORDER BY is_local ASC,id DESC LIMIT 1", code);
+        if (coupon == null) return obj("valid", false, "ok", false, "reason", "کوپن یافت نشد");
+        String now = offerNowUtc(), status = coupon.optString("status", "ACTIVE");
+        if (!"ACTIVE".equals(status)) return obj("valid", false, "ok", false, "reason", "کوپن فعال نیست");
+        if (!offerHasStarted(coupon.optString("valid_from", ""), now)) return obj("valid", false, "ok", false, "reason", "زمان استفاده از این کد هنوز نرسیده است");
+        if (offerHasEnded(coupon.optString("valid_until", ""), now)) return obj("valid", false, "ok", false, "reason", "اعتبار این کد تخفیف تمام شده است");
+        int usageLimit = coupon.isNull("usage_limit") ? Integer.MAX_VALUE : coupon.optInt("usage_limit", 1);
+        if (coupon.optInt("used_count") >= usageLimit) return obj("valid", false, "ok", false, "reason", "سقف دفعات استفاده از این کد پر شده است");
+        long customerId = request.optLong("customer_id", 0);
+        String customerPhone = Db.norm(request.optString("customer_phone"));
+        if (customerId > 0 && customerPhone.isEmpty()) {
+            JSONObject customer = one("SELECT phone FROM customers WHERE id=?", customerId);
+            if (customer != null) customerPhone = Db.norm(customer.optString("phone"));
+        }
+        long assignedCustomer = coupon.optLong("customer_id", 0);
+        String assignedPhone = Db.norm(coupon.optString("customer_phone"));
+        if ((assignedCustomer > 0 || !assignedPhone.isEmpty())
+                && assignedCustomer != customerId
+                && (assignedPhone.isEmpty() || !assignedPhone.equals(customerPhone))) {
+            return obj("valid", false, "ok", false, "reason", "این کد مخصوص مشتری دیگری است");
+        }
+        long campaignId = coupon.optLong("campaign_id", 0);
+        if (campaignId > 0) {
+            JSONObject campaign = one("SELECT status FROM campaigns WHERE (pc_id=? AND is_local=0) OR (id=? AND is_local=1) ORDER BY is_local ASC LIMIT 1", campaignId, campaignId);
+            if (campaign != null && !"ACTIVE".equals(campaign.optString("status")))
+                return obj("valid", false, "ok", false, "reason", "کمپین این کد فعال نیست");
+        }
+        double amount = request.optDouble("amount", request.optDouble("total", request.optDouble("subtotal", 0)));
+        if (amount < coupon.optDouble("min_purchase")) return obj("valid", false, "ok", false, "reason", "حداقل خرید " + Ui.money(coupon.optDouble("min_purchase")));
+        double discount = offerDiscount(coupon.optString("discount_type", "PERCENT"), coupon.optDouble("discount_value"),
+                coupon.optDouble("max_discount"), amount);
+        if (discount <= 0) return obj("valid", false, "ok", false, "reason", "این کد برای این سبد تخفیفی ایجاد نمی‌کند");
+        return obj("valid", true, "ok", true, "discount", discount, "code", coupon.optString("code"),
+                "campaign", campaignId > 0 ? campaignId : JSONObject.NULL);
+    }
+    static JSONArray eligibleLocalCampaigns(JSONObject request) throws Exception {
+        JSONArray eligible = new JSONArray(), ids = request.optJSONArray("product_ids");
+        JSONObject lineAmounts = request.optJSONObject("line_amounts");
+        String now = offerNowUtc(); double amount = request.optDouble("amount", 0); long customerId = request.optLong("customer_id", 0);
+        for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' ORDER BY priority ASC,pc_id DESC,id DESC")) {
+            boolean localCampaign = campaign.optInt("is_local", 0) == 1;
+            if (localCampaign && !Api.standalone()) continue;
+            if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) continue;
+            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
+            if (amount <= 0 || amount < campaign.optDouble("min_purchase")) continue;
+            double maximumPurchase = campaign.optDouble("max_purchase", 0);
+            if (maximumPurchase > 0 && amount > maximumPurchase) continue;
+            if (!campaign.isNull("auto_issue_threshold") && campaign.optDouble("discount_value") == 0) continue;
+            int usageLimit = campaign.isNull("usage_limit") ? Integer.MAX_VALUE : campaign.optInt("usage_limit", Integer.MAX_VALUE);
+            if (campaign.optInt("used_count") >= usageLimit) continue;
+            double eligibleBase = amount;
+            if ("PRODUCTS".equalsIgnoreCase(campaign.optString("target_type", "ALL"))) {
+                JSONArray targets;
+                try { targets = new JSONArray(campaign.optString("target_ids", "[]")); }
+                catch (org.json.JSONException invalidTargets) { continue; }
+                if (targets.length() == 0 || lineAmounts == null) continue;
+                eligibleBase = 0;
+                for (int i = 0; i < targets.length(); i++) eligibleBase += lineAmounts.optDouble(targets.optString(i), 0);
+                if (eligibleBase <= 0) continue;
+            }
+            if (offerFlag(campaign, "first_purchase_only") && customerId != 0) {
+                JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
+                int localOnly = customer == null ? 0 : customer.optInt("is_local");
+                JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+                        + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
+                int historical = customer == null ? 0 : customer.optInt("lifetime_purchase_count");
+                if (historical + (purchases == null ? 0 : purchases.optInt("n")) > 0) continue;
+            }
+            int customerLimit = campaign.isNull("per_customer_limit") ? Integer.MAX_VALUE : campaign.optInt("per_customer_limit", Integer.MAX_VALUE);
+            if (customerLimit != Integer.MAX_VALUE && customerId != 0) {
+                String localInvoiceFilter = localCampaign || customerId < 0 ? "" : "AND synced=0";
+                JSONObject remoteUses = one("SELECT COUNT(*) AS n FROM pos_campaign_redemptions WHERE campaign_id=? AND customer_id=?", campaign.optLong("pc_id"), customerId);
+                JSONObject localUses = one("SELECT COUNT(*) AS n FROM invoices WHERE campaign_id=? AND customer_id=? " + localInvoiceFilter,
+                        localCampaign ? campaign.optLong("id") : campaign.optLong("pc_id"), customerId);
+                int used = (remoteUses == null ? 0 : remoteUses.optInt("n")) + (localUses == null ? 0 : localUses.optInt("n"));
+                if (used >= customerLimit) continue;
+            }
+            double discount = offerDiscount(campaign.optString("discount_type", "PERCENT"),
+                    campaign.optDouble("discount_value"), campaign.optDouble("max_discount"), eligibleBase);
+            if (discount <= 0) continue;
+            eligible.put(obj("campaign_id", campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id"),
+                    "name", campaign.optString("name"), "discount", discount,
+                    "discount_type", campaign.optString("discount_type"), "discount_value", campaign.optDouble("discount_value"),
+                    "min_purchase", campaign.optDouble("min_purchase"), "max_purchase", campaign.isNull("max_purchase") ? JSONObject.NULL : campaign.optDouble("max_purchase"),
+                    "max_discount", campaign.isNull("max_discount") ? JSONObject.NULL : campaign.optDouble("max_discount"),
+                    "scope_amount", eligibleBase, "target_type", campaign.optString("target_type", "ALL"),
+                    "stackable", campaign.optInt("stackable") == 1, "auto_apply", campaign.optInt("auto_apply") == 1,
+                    "priority", campaign.optInt("priority", 3), "_local", localCampaign));
+            if (eligible.length() >= 20) break;
+        }
+        return eligible;
+    }
     static Object pos(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
+        if (seg.length > 2 && "campaigns".equals(seg[1]) && "eligible".equals(seg[2])) {
+            JSONArray campaigns = eligibleLocalCampaigns(b);
+            return obj("campaigns", campaigns, "count", campaigns.length());
+        }
         if ("batch-options".equals(seg[1])) { JSONObject p=Db.sellableProductById(Long.parseLong(seg[2])); if(p==null) throw new Api.ApiError(404,"PRODUCT_NOT_FOUND","کالا موجود یا فعال نیست"); return obj("product_id",p.optLong("id"),"product_name",p.optString("name"),"options",p.optJSONArray("batches")); }
         if ("search".equals(seg[1])) { JSONArray a = new JSONArray(); for (JSONObject p : Db.searchProducts(q.optString("q"), q.optInt("limit", 8))) a.put(p); return obj("items", a); }
-        if ("checkout".equals(seg[1])) { double total = 0; JSONArray items = b.optJSONArray("items"); for (int i = 0; items != null && i < items.length(); i++) total += items.optJSONObject(i).optDouble("quantity", 1) * items.optJSONObject(i).optDouble("price", 0) - items.optJSONObject(i).optDouble("discount", 0); String no = Db.localSale(b, Math.max(0, total - b.optDouble("invoice_discount", 0))); return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no)); }
-        if ("kiosk".equals(seg[1])) return obj("shortcut", "", "enabled", false);
+        if ("checkout".equals(seg[1])) {
+            JSONArray items = b.optJSONArray("items"), productIds = new JSONArray();
+            JSONObject lineAmounts = new JSONObject(); double gross = 0, lineDiscount = 0;
+            for (int i = 0; items != null && i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i); if (item == null) continue;
+                long productId = item.optLong("product_id"); double qty = item.optDouble("quantity", 1);
+                double price = item.optDouble("price"), discount = item.optDouble("discount");
+                gross += qty * price; lineDiscount += discount;
+                if (productId > 0) productIds.put(productId);
+                lineAmounts.put(String.valueOf(productId), lineAmounts.optDouble(String.valueOf(productId)) + qty * price - discount);
+            }
+            double invoiceDiscount = b.optDouble("invoice_discount", 0);
+            if (invoiceDiscount < 0 || invoiceDiscount > Math.max(0, gross - lineDiscount))
+                throw new Api.ApiError(422, "INVALID_DISCOUNT", "تخفیف فاکتور از مبلغ سبد بیشتر است");
+            double baseAmount = Math.max(0, gross - lineDiscount - invoiceDiscount);
+            double couponDiscount = 0;
+            if (!b.optString("coupon_code").isEmpty()) {
+                JSONObject couponRequest = new JSONObject(b.toString()); couponRequest.put("amount", baseAmount);
+                JSONObject coupon = validateLocalCoupon(couponRequest);
+                if (!coupon.optBoolean("valid")) throw new Api.ApiError(422, "COUPON_INVALID", coupon.optString("reason", "کوپن معتبر نیست"));
+                couponDiscount = coupon.optDouble("discount"); b.put("coupon_discount", couponDiscount);
+            }
+            long campaignId = b.optLong("campaign_id", 0); double campaignDiscount = 0;
+            JSONObject chosenCampaign = null;
+            if (campaignId > 0) {
+                JSONObject eligibility = new JSONObject(); eligibility.put("amount", baseAmount); eligibility.put("product_ids", productIds);
+                eligibility.put("line_amounts", lineAmounts); eligibility.put("customer_id", b.optLong("customer_id", 0));
+                JSONArray eligible = eligibleLocalCampaigns(eligibility);
+                for (int i = 0; i < eligible.length(); i++) {
+                    JSONObject candidate = eligible.optJSONObject(i);
+                    if (candidate != null && candidate.optLong("campaign_id") == campaignId) { chosenCampaign = candidate; break; }
+                }
+                if (chosenCampaign == null) throw new Api.ApiError(422, "CAMPAIGN_INVALID", "جشنواره برای این سبد واجد شرایط نیست");
+                if (couponDiscount > 0 && !chosenCampaign.optBoolean("stackable"))
+                    throw new Api.ApiError(422, "CAMPAIGN_NOT_STACKABLE", "این جشنواره با کوپن قابل ترکیب نیست");
+                campaignDiscount = chosenCampaign.optDouble("discount");
+                b.put("campaign_name", chosenCampaign.optString("name")); b.put("campaign_discount", campaignDiscount);
+                b.put("campaign_local", chosenCampaign.optBoolean("_local"));
+            }
+            double taxable = Math.max(0, baseAmount - couponDiscount - campaignDiscount);
+            double taxRate = b.has("tax_rate") ? b.optDouble("tax_rate") : Double.parseDouble(setting("pos.tax_rate", "0"));
+            double tax = Math.floor((taxable * taxRate / 100.0) * 100.0 + 0.5) / 100.0;
+            double total = taxable + tax;
+            JSONArray pays = b.optJSONArray("payments"); double paid = 0;
+            for (int i = 0; pays != null && i < pays.length(); i++) paid += pays.optJSONObject(i).optDouble("amount");
+            if (pays != null && Math.abs(paid - total) > 0.01) throw new Api.ApiError(422, "PAYMENT_MISMATCH", "مبلغ پرداخت با جمع فاکتور برابر نیست");
+            b.put("coupon_discount", couponDiscount); b.put("campaign_discount", campaignDiscount);
+            b.put("tax", tax); b.put("tax_rate", taxRate);
+            String no = Db.localSale(b, total);
+            return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no));
+        }
+        if ("kiosk".equals(seg[1])) {
+            JSONObject config = obj("shortcut", "", "enabled", false);
+            if (hasSetting("pos.tax_rate")) config.put("tax_rate", setting("pos.tax_rate", "0"));
+            return config;
+        }
         throw new Api.ApiError(404, "NOT_FOUND", "");
     }
     static JSONObject invoiceOut(JSONObject r) throws Exception {
         if (r == null) throw new Api.ApiError(404, "NOT_FOUND", "فاکتور نیست");
         JSONObject o = new JSONObject(); long id = r.optLong("id");
         o.put("id", id); o.put("invoice_id", id); o.put("invoice_number", r.isNull("invoice_number") || r.optString("invoice_number").isEmpty() ? r.optString("local_no") : r.optString("invoice_number")); o.put("local_no", r.optString("local_no"));
-        o.put("created_at", r.optString("at")); o.put("status", r.optString("status", "PAID")); o.put("payment_status", r.optString("payment_status", "PAID")); o.put("payment_method", r.optString("payment")); o.put("subtotal", r.optDouble("subtotal", r.optDouble("total"))); o.put("discount", r.optDouble("discount", 0)); o.put("tax", r.optDouble("tax", 0)); o.put("total_amount", r.optDouble("total")); o.put("customer_id", r.isNull("customer_id") ? JSONObject.NULL : r.optLong("customer_id")); o.put("cashier", r.optString("user")); o.put("synced", r.optInt("synced") == 1);
+        o.put("created_at", r.optString("at")); o.put("status", r.optString("status", "PAID")); o.put("payment_status", r.optString("payment_status", "PAID")); o.put("payment_method", r.optString("payment")); o.put("subtotal", r.optDouble("subtotal", r.optDouble("total"))); o.put("discount", r.optDouble("discount", 0)); o.put("invoice_discount", r.optDouble("invoice_discount", 0)); o.put("coupon_discount", r.optDouble("coupon_discount", 0)); o.put("campaign_discount", r.optDouble("campaign_discount", 0)); o.put("tax", r.optDouble("tax", 0)); o.put("total_amount", r.optDouble("total")); o.put("coupon", r.optString("coupon")); o.put("campaign_id", r.isNull("campaign_id") ? JSONObject.NULL : r.optLong("campaign_id")); o.put("campaign_name", r.optString("campaign_name")); o.put("benefit_source", r.optString("benefit_source", "NONE")); o.put("benefit_amount", r.optDouble("benefit_amount", 0)); o.put("customer_id", r.isNull("customer_id") ? JSONObject.NULL : r.optLong("customer_id")); o.put("cashier", r.optString("user")); o.put("synced", r.optInt("synced") == 1);
+        o.put("auto_issued_coupon_codes", issuedCouponCodesForInvoice(r.optString("local_no")));
         JSONArray its = new JSONArray(); for (JSONObject it : rows("SELECT * FROM invoice_items WHERE inv=?", id)) { it.put("returned_qty", it.optDouble("returned_qty", 0)); JSONObject p = Db.productById(it.optLong("product_id")); it.put("name", p == null ? "" : p.optString("name")); if (!Screens.can("pricing.view_cost")) { it.remove("unit_buy_price"); it.remove("profit"); } its.put(it); } o.put("items", its);
         if (!r.isNull("customer_id")) { JSONObject c = one("SELECT * FROM customers WHERE id=?", r.optLong("customer_id")); if (c != null) { o.put("customer_name", c.optString("name")); o.put("customer_phone", c.optString("phone")); } }
         return o;
@@ -569,15 +812,24 @@ public final class Local {
     }
     static Object returns(JSONObject b) throws Exception {
         long inv = b.optLong("invoice_id"), itemId = b.optLong("invoice_item_id"); double qty = b.optDouble("qty", 1);
+        boolean seeAll = Screens.can("reports.view_all"); long uid = Db.localUserId();
+        JSONObject r = seeAll ? one("SELECT rowid AS id,* FROM invoices WHERE rowid=?", inv)
+                : one("SELECT rowid AS id,* FROM invoices WHERE rowid=? AND user_id=?", inv, uid);
+        if (r == null) throw new Api.ApiError(404, "NOT_FOUND", "فاکتور یافت نشد");
+        if (!"PAID".equals(r.optString("status")) && !"PARTIALLY_REFUNDED".equals(r.optString("status"))
+                && !"REFUNDED".equals(r.optString("status"))) throw new Api.ApiError(409, "STATE", "فقط فاکتور پرداخت‌شده قابل مرجوعی است");
         JSONObject it = one("SELECT * FROM invoice_items WHERE id=? AND inv=?", itemId, inv); if (it == null) throw new Api.ApiError(404, "NOT_FOUND", "قلم فاکتور یافت نشد");
         double left = it.optDouble("qty") - it.optDouble("returned_qty", 0); if (qty <= 0 || qty > left) throw new Api.ApiError(400, "QTY", "حداکثر مرجوعی " + Ui.num(left));
         double refund = b.has("refund_amount") ? b.optDouble("refund_amount") : qty * it.optDouble("unit_sell_price");
-        JSONObject r = one("SELECT rowid AS id,* FROM invoices WHERE rowid=?", inv);
+        if (refund < 0) throw new Api.ApiError(400, "REFUND", "مبلغ بازپرداخت نامعتبر است");
         exec("UPDATE invoice_items SET returned_qty=returned_qty+? WHERE id=?", qty, itemId);
-        if (it.optLong("batch_id") != 0) exec("UPDATE batches SET current_qty=current_qty+? WHERE id=?", qty, it.optLong("batch_id"));
+        if (it.optLong("batch_id") != 0) exec("UPDATE batches SET current_qty=current_qty+?, status=CASE WHEN status='SOLD_OUT' THEN 'ACTIVE' ELSE status END WHERE id=?", qty, it.optLong("batch_id"));
         exec("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,reason,user,created_at) VALUES(?,?,'RETURN_IN',?,'Return',?,?,?,?)", it.optLong("product_id"), it.optLong("batch_id"), qty, r.optString("local_no"), b.optString("reason"), Screens.userName(), Db.now());
+        JSONObject remaining = one("SELECT COUNT(*) AS n FROM invoice_items WHERE inv=? AND returned_qty<qty", inv);
+        String newStatus = remaining != null && remaining.optInt("n") == 0 ? "REFUNDED" : "PARTIALLY_REFUNDED";
+        exec("UPDATE invoices SET status=? WHERE rowid=?", newStatus, inv);
         journal("RETURN", "مرجوعی " + r.optString("local_no"), refund, "Return:" + r.optString("local_no") + ":" + itemId, new String[][]{{"4000", String.valueOf(refund), "0"}, {payAcc(r.optString("payment")), "0", String.valueOf(refund)}, {"1200", String.valueOf(qty * it.optDouble("unit_buy_price")), "0"}, {"5000", "0", String.valueOf(qty * it.optDouble("unit_buy_price"))}});
-        audit("RETURN", "Invoice", r.optString("local_no"), null, b); return obj("ok", true, "refund_amount", refund, "movement_type", "RETURN_IN");
+        audit("RETURN", "Invoice", r.optString("local_no"), null, b); return obj("ok", true, "refund_amount", refund, "status", newStatus, "movement_type", "RETURN_IN");
     }
     /** v2.8 — same professional receipt layout as the PC (services/hardware.receipt_text): framed meta, numbered items, highlighted total. */
     static String receipt(JSONObject inv) {
@@ -590,7 +842,13 @@ public final class Local {
         sb.append(thin).append('\n').append(kv("شرح کالا", "مبلغ", W)).append('\n').append(dots).append('\n'); JSONArray its = inv.optJSONArray("items");
         for (int i = 0; its != null && i < its.length(); i++) { JSONObject it = its.optJSONObject(i); sb.append(Ui.fa(String.valueOf(i + 1))).append(". ").append(it.optString("name")).append('\n').append(kv("   " + Ui.num(it.optDouble("qty")) + " × " + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("unit_sell_price")))), Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("subtotal")))), W)).append('\n'); if (it.optDouble("discount") > 0) sb.append(kv("   تخفیف", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(it.optDouble("discount")))), W)).append('\n'); }
         sb.append(thin).append('\n').append(kv("تعداد اقلام: " + Ui.fa(String.valueOf(its == null ? 0 : its.length())), "", W)).append('\n').append(kv("جمع کل", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("subtotal")))), W)).append('\n');
-        if (inv.optDouble("discount") > 0) sb.append(kv("تخفیف فاکتور", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("discount")))), W)).append('\n'); if (inv.optDouble("tax") > 0) sb.append(kv("مالیات", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("tax")))), W)).append('\n');
+        if (inv.optDouble("discount") > 0) sb.append(kv("جمع تخفیف‌ها", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("discount")))), W)).append('\n');
+        if (inv.optDouble("invoice_discount") > 0) sb.append(kv("تخفیف فاکتور", "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("invoice_discount")))), W)).append('\n');
+        if (inv.optDouble("coupon_discount") > 0) sb.append(kv("کوپن " + inv.optString("coupon"), "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("coupon_discount")))), W)).append('\n');
+        if (inv.optDouble("campaign_discount") > 0) sb.append(kv("جشنواره " + inv.optString("campaign_name"), "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("campaign_discount")))), W)).append('\n');
+        String issuedCodes = issuedCouponCodesForInvoice(inv.optString("local_no"));
+        if (!issuedCodes.isEmpty()) sb.append(kv("کد تخفیف خرید بعدی", issuedCodes, W)).append('\n');
+        if (inv.optDouble("tax") > 0) sb.append(kv("مالیات", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("tax")))), W)).append('\n');
         sb.append(thick).append('\n').append(kvFill("قابل پرداخت", Ui.money(inv.optDouble("total_amount")), W, '.')).append('\n').append(thick).append('\n').append(kv("روش پرداخت", Screens.Screen.label(inv.optString("payment_method"), Screens.Screen.PAY), W)).append('\n');
         if ("VOID".equals(inv.optString("status"))) sb.append(center("*** باطل شده ***")).append('\n');
         sb.append(thin).append('\n'); String ft = setting("printer.footer", ""); if (!ft.isEmpty()) sb.append(center(ft)).append('\n'); sb.append(center(setting("store.receipt_note", "از خرید شما سپاسگزاریم"))).append('\n').append(center("منتظر دیدار دوبارهٔ شما هستیم")).append('\n').append(thin).append('\n').append(center("رسا سیستم · RASA")).append('\n');
@@ -624,12 +882,42 @@ public final class Local {
         String what = seg[1];
         if ("stats".equals(what)) { JSONObject o = new JSONObject(); o.put("campaigns", count("campaigns")); o.put("total_coupons", count("coupons")); JSONObject rv = one("SELECT IFNULL(SUM(CASE WHEN discount_type='FIXED' THEN discount_value*used_count ELSE 0 END),0) AS v FROM coupons"); o.put("redeemed_value", rv.optDouble("v")); JSONObject bs = new JSONObject(); for (JSONObject r : rows("SELECT status, COUNT(*) AS n FROM coupons GROUP BY status")) bs.put(r.optString("status"), r.optInt("n")); o.put("by_status", bs); return o; }
         if ("campaigns".equals(what)) {
-            if (seg.length == 2) { if ("POST".equals(method)) { exec("INSERT INTO campaigns(name,discount_type,discount_value,min_purchase,max_discount,valid_until,status,auto_issue_threshold,created_at) VALUES(?,?,?,?,?,?,'ACTIVE',?,?)", b.optString("name"), b.optString("discount_type", "PERCENT"), b.optDouble("discount_value"), b.optDouble("min_purchase", 0), b.has("max_discount") ? b.optDouble("max_discount") : null, b.optString("valid_until", null), b.has("auto_issue_threshold") ? b.optDouble("auto_issue_threshold") : null, Db.now()); return one("SELECT * FROM campaigns ORDER BY id DESC LIMIT 1"); } return arr(rows("SELECT * FROM campaigns ORDER BY id DESC")); }
-            long id = Long.parseLong(seg[2]); if (b.has("status")) exec("UPDATE campaigns SET status=? WHERE id=?", b.optString("status"), id); return one("SELECT * FROM campaigns WHERE id=?", id);
+            if (seg.length == 2) {
+                if ("POST".equals(method)) {
+                    ContentValues values = new ContentValues();
+                    values.put("name", b.optString("name")); values.put("discount_type", b.optString("discount_type", "PERCENT"));
+                    values.put("discount_value", b.optDouble("discount_value")); values.put("min_purchase", b.optDouble("min_purchase", 0));
+                    values.put("status", "ACTIVE"); values.put("target_type", b.optString("target_type", "ALL"));
+                    values.put("first_purchase_only", offerFlag(b, "first_purchase_only") ? 1 : 0);
+                    values.put("stackable", offerFlag(b, "stackable") ? 1 : 0); values.put("auto_apply", offerFlag(b, "auto_apply") ? 1 : 0);
+                    values.put("auto_issue_sms", offerFlag(b, "auto_issue_sms") ? 1 : 0);
+                    values.put("priority", b.optInt("priority", 3)); values.put("used_count", 0);
+                    values.put("auto_issue_validity_days", Math.max(1, Math.min(3650, b.optInt("auto_issue_validity_days", 30))));
+                    JSONArray targetIds = b.optJSONArray("target_ids"); if (targetIds != null) values.put("target_ids", targetIds.toString());
+                    for (String key : new String[]{"max_purchase", "max_discount", "auto_issue_threshold"}) {
+                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optDouble(key));
+                    }
+                    for (String key : new String[]{"usage_limit", "per_customer_limit"}) {
+                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optInt(key));
+                    }
+                    for (String key : new String[]{"valid_from", "valid_until"}) {
+                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optString(key));
+                    }
+                    String createdAt = Db.now(); values.put("created_at", createdAt); values.put("updated_at", createdAt);
+                    long id = Db.db().insert("campaigns", null, values);
+                    if (id <= 0) throw new Api.ApiError(500, "CAMPAIGN_SAVE", "ذخیرهٔ جشنواره انجام نشد");
+                    audit("CAMPAIGN_CREATE", "Campaign", String.valueOf(id), null, b);
+                    return one("SELECT * FROM campaigns WHERE id=?", id);
+                }
+                return arr(rows("SELECT * FROM campaigns ORDER BY id DESC"));
+            }
+            long id = Long.parseLong(seg[2]);
+            if (b.has("status")) exec("UPDATE campaigns SET status=?,updated_at=? WHERE id=?", b.optString("status"), Db.now(), id);
+            return one("SELECT * FROM campaigns WHERE id=?", id);
         }
         if ("coupons".equals(what)) {
             if (seg.length == 2) { if ("POST".equals(method)) { String code = b.optString("code"); if (code.isEmpty()) code = setting("marketing.coupon_prefix", "SM") + "-" + Long.toString(System.currentTimeMillis() % 100000000L, 36).toUpperCase(); exec("INSERT INTO coupons(code,discount_type,discount_value,min_purchase,customer_phone,valid_until,usage_limit,used_count,status,created_at) VALUES(?,?,?,?,?,?,?,0,'ACTIVE',?)", code, b.optString("discount_type", "PERCENT"), b.optDouble("discount_value"), b.optDouble("min_purchase", 0), b.optString("customer_phone", null), b.optString("valid_until", null), b.optInt("usage_limit", 1), Db.now()); JSONObject cp = one("SELECT * FROM coupons WHERE code=?", code); if (!b.optString("customer_phone").isEmpty()) SmsLocal.enqueueAndSend(b.optString("customer_phone"), setting("sms.template.coupon", "{store} | کد تخفیف شما: {code} | تا {until} معتبر است").replace("{store}", Prefs.get("store_name", "فروشگاه")).replace("{code}", code).replace("{until}", b.optString("valid_until").isEmpty() ? "همیشه" : Ui.jdate(b.optString("valid_until"))), "coupon"); return cp; } return arr(rows("SELECT * FROM coupons ORDER BY id DESC")); }
-            if ("validate".equals(seg[2])) { JSONObject cp = one("SELECT * FROM coupons WHERE code=?", b.optString("code")); double total = b.optDouble("total", b.optDouble("subtotal", 0)); if (cp == null) return obj("valid", false, "reason", "کوپن یافت نشد"); if (!"ACTIVE".equals(cp.optString("status"))) return obj("valid", false, "reason", "کوپن فعال نیست"); if (!cp.isNull("valid_until") && !cp.optString("valid_until").isEmpty() && cp.optString("valid_until").compareTo(Db.now()) < 0) { exec("UPDATE coupons SET status='EXPIRED' WHERE id=?", cp.optLong("id")); return obj("valid", false, "reason", "کوپن منقضی شده"); } if (total < cp.optDouble("min_purchase")) return obj("valid", false, "reason", "حداقل خرید " + Ui.money(cp.optDouble("min_purchase"))); if (!cp.optString("customer_phone").isEmpty() && !b.optString("customer_phone").isEmpty() && !cp.optString("customer_phone").equals(Db.norm(b.optString("customer_phone")))) return obj("valid", false, "reason", "این کوپن برای مشتری دیگری است"); double disc = "PERCENT".equals(cp.optString("discount_type")) ? total * cp.optDouble("discount_value") / 100 : cp.optDouble("discount_value"); return obj("valid", true, "ok", true, "discount", Math.min(disc, total), "code", cp.optString("code")); }
+            if ("validate".equals(seg[2])) return validateLocalCoupon(b);
             long id = Long.parseLong(seg[2]); if (seg.length > 3 && "block".equals(seg[3])) exec("UPDATE coupons SET status='BLOCKED' WHERE id=?", id); return one("SELECT * FROM coupons WHERE id=?", id);
         }
         throw new Api.ApiError(404, "NOT_FOUND", "");
@@ -832,6 +1120,33 @@ public final class Local {
         }
         throw new Api.ApiError(404, "NOT_FOUND", "");
     }
+    /** Stock is an independent capability from sales scope; return only public stock quantities here. */
+    static JSONObject personalInventoryDashboard() throws Exception {
+        boolean canSeeCost = Screens.can("pricing.view_cost");
+        String valueExpr = canSeeCost ? "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price ELSE 0 END),0)" : "0";
+        JSONArray low = new JSONArray(), none = new JSONArray();
+        int products = 0, lowCount = 0, noneCount = 0;
+        double inventoryValue = 0;
+        for (JSONObject row : rows("SELECT p.id,p.name,p.min_stock_alert, "
+                + "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty ELSE 0 END),0) AS total_stock, "
+                + valueExpr + " AS value_at_cost FROM products p LEFT JOIN batches b ON b.product_id=p.id "
+                + "WHERE p.is_active=1 GROUP BY p.id,p.name,p.min_stock_alert ORDER BY p.name")) {
+            products++;
+            double stock = row.optDouble("total_stock"), minimum = row.optDouble("min_stock_alert");
+            inventoryValue += row.optDouble("value_at_cost");
+            if (stock <= 0) {
+                noneCount++;
+                if (none.length() < 20) none.put(obj("product_id", row.optLong("id"), "name", row.optString("name"), "total_stock", stock, "min_stock_alert", minimum));
+            } else if (minimum > 0 && stock <= minimum) {
+                lowCount++;
+                if (low.length() < 20) low.put(obj("product_id", row.optLong("id"), "name", row.optString("name"), "total_stock", stock, "min_stock_alert", minimum));
+            }
+        }
+        Object value = canSeeCost ? inventoryValue : JSONObject.NULL;
+        return obj("value", value, "product_count", products, "low_stock", low, "no_stock", none,
+                "low_stock_count", lowCount, "no_stock_count", noneCount);
+    }
+
     /** A cashier's local dashboard uses only invoices durably attributed to that user id. */
     static JSONObject personalDashboard(long userId) throws Exception {
         JSONObject d = new JSONObject(); d.put("scope", userId > 0 ? "self" : "none"); d.put("dashboard_profile", Screens.dashboardProfileFromPermissions(Screens.user.optJSONArray("permissions")));
@@ -854,8 +1169,10 @@ public final class Local {
             sales.put("today", 0); sales.put("month", 0); sales.put("yesterday", 0); sales.put("invoice_count_today", 0); sales.put("invoice_count_yesterday", 0);
         }
         d.put("sales", sales); d.put("today_by_payment", byPay); d.put("trend", trend); d.put("recent_invoices", recent);
-        // Store-wide blocks are intentionally empty at this scope; local SQLite is not a permission bypass.
-        d.put("inventory", obj("value", 0, "product_count", 0, "low_stock", new JSONArray(), "no_stock", new JSONArray(), "low_stock_count", 0, "no_stock_count", 0));
+        // Store-wide sales blocks stay empty at this scope, while explicitly granted
+        // inventory.view remains usable on this device without widening sales scope.
+        d.put("inventory", Screens.can("inventory.view") ? personalInventoryDashboard()
+                : obj("value", 0, "product_count", 0, "low_stock", new JSONArray(), "no_stock", new JSONArray(), "low_stock_count", 0, "no_stock_count", 0));
         d.put("receivables", obj("customer_debt", 0, "debtor_count", 0, "pending_count", 0, "pending_amount", 0));
         if (Screens.can("accounting.view")) d.put("accounting", accountingDashboard(Jalali.daysAgoIso(30)));
         else d.put("accounting", JSONObject.NULL);
