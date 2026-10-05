@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-494 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-495 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 494;
+const UI_BUILD = 495;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -397,6 +397,36 @@ function canNav(perm) {
 function can(perm) {
   if (!state.user) return false;
   return (state.user.permissions || []).includes(perm);
+}
+
+/* Presentation profile mirrors Backend's effective-permission classification.
+   It never grants access; every action and payload is still permission-checked. */
+function dashboardProfileFromPermissions(permissions) {
+  const ps = Array.isArray(permissions) ? permissions : [];
+  const has = (permission) => ps.includes(permission);
+  if (has("users.manage") && has("settings.manage")) return "administrator";
+  if (has("reports.view_all") && has("shifts.manage") && has("inventory.adjust")
+      && !has("users.manage") && !has("settings.manage")) return "supervisor";
+  if (has("accounting.view") && !has("pos.sell") && !has("shifts.manage")
+      && !has("users.manage") && !has("settings.manage")) return "accountant";
+  if (has("pos.sell") && !has("reports.view_all") && !has("accounting.view")
+      && !has("shifts.manage") && !has("users.manage") && !has("settings.manage")) return "seller";
+  if (has("users.manage") || has("settings.manage")) return "manager";
+  if (has("reports.view_all")) return "operations";
+  return "staff";
+}
+function dashboardProfileFor(data) {
+  const valid = ["administrator", "supervisor", "accountant", "seller", "manager", "operations", "staff"];
+  if (data && valid.includes(data.dashboard_profile)) return data.dashboard_profile;
+  return dashboardProfileFromPermissions(state.user ? state.user.permissions : []);
+}
+function dashboardProfileLabel(profile) {
+  return ({ administrator: "مدیر کل", supervisor: "سوپروایزر", accountant: "حسابدار",
+    seller: "فروشنده / صندوق‌دار", manager: "مدیر فروشگاه", operations: "عملیات فروشگاه", staff: "کاربر" })[profile] || "کاربر";
+}
+function dashboardProfileTitle(profile) {
+  return ({ administrator: "پنل مدیر کل", supervisor: "پنل سوپروایزر", accountant: "پنل حسابداری",
+    seller: "پنل فروش و صندوق", manager: "پنل مدیریت فروشگاه", operations: "پنل عملیات فروشگاه", staff: "داشبورد" })[profile] || "داشبورد";
 }
 
 function canView(view) {
@@ -852,7 +882,7 @@ async function go(view) {
   try {
     await RENDER[view](seq);
     if (seq !== state.renderSeq) return;
-    if (view === "dashboard" && window.applyDashboardWidgets) applyDashboardWidgets();
+    if (view === "dashboard" && window.applyDashboardWidgets && viewEl.dataset.customDashboard !== "1") applyDashboardWidgets();
     Jalali.attachAll(viewEl);
     if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
@@ -1165,11 +1195,13 @@ function normalizeDashboardData(raw) {
   const prc = r.pricing && typeof r.pricing === "object" ? r.pricing : {};
   const rec = r.receivables && typeof r.receivables === "object" ? r.receivables : {};
   const acc = r.accounting && typeof r.accounting === "object" ? r.accounting : {};
+  const profit = r.profit && typeof r.profit === "object" ? r.profit : {};
   const cust = r.customers_new && typeof r.customers_new === "object" ? r.customers_new : {};
   const sms = r.sms && typeof r.sms === "object" ? r.sms : {};
   const sys = r.system && typeof r.system === "object" ? r.system : {};
   return {
     scope: r.scope || "self",
+    dashboard_profile: typeof r.dashboard_profile === "string" ? r.dashboard_profile : "",
     sales: {
       today: Number(sales.today || 0),
       yesterday: Number(sales.yesterday || 0),
@@ -1204,6 +1236,10 @@ function normalizeDashboardData(raw) {
       top_debtors: Array.isArray(rec.top_debtors) ? rec.top_debtors : [],
     },
     accounting: acc,
+    profit: {
+      today: profit.today == null ? null : Number(profit.today),
+      month: profit.month == null ? null : Number(profit.month),
+    },
     customers_new: {
       today: Number(cust.today || 0),
       yesterday: Number(cust.yesterday || 0),
@@ -1227,6 +1263,7 @@ function normalizeDashboardData(raw) {
     trend: Array.isArray(r.trend) ? r.trend : [],
     payment_breakdown: Array.isArray(r.payment_breakdown) ? r.payment_breakdown : [],
     recent_invoices: Array.isArray(r.recent_invoices) ? r.recent_invoices : [],
+    today_by_payment: Array.isArray(r.today_by_payment) ? r.today_by_payment : [],
     today_by_staff: Array.isArray(r.today_by_staff) ? r.today_by_staff : [],
   };
 }
@@ -1270,6 +1307,107 @@ RENDER.dashboard = async () => {
   const hh = new Date().getHours();
   const greetTxt = hh < 12 ? "صبح بخیر" : hh < 17 ? "ظهر بخیر" : hh < 20 ? "عصر بخیر" : "شب بخیر";
   const nowClock = `${fa(String(new Date().getHours()).padStart(2, "0"))}:${fa(String(new Date().getMinutes()).padStart(2, "0"))}`;
+  const profile = dashboardProfileFor(d);
+  for (const oldProfile of ["seller", "accountant", "supervisor", "administrator", "manager", "operations", "staff"]) {
+    v.classList.remove("dashboard-profile--" + oldProfile);
+  }
+  v.classList.add("dashboard-profile", "dashboard-profile--" + profile);
+  v.dataset.customDashboard = "0";
+  const viewTitle = $("#view-title");
+  if (viewTitle) viewTitle.textContent = dashboardProfileTitle(profile);
+  const profileSummary = profile === "administrator"
+    ? "مرکز مدیریت کل فروشگاه؛ دسترسی‌ها و عملیات مدیریتی بر اساس مجوزهای حساب شما فعال است."
+    : profile === "supervisor"
+      ? "نمای نظارتی فروش، موجودی و عملیات روزانهٔ فروشگاه؛ هر اقدام مطابق دسترسی شماست."
+      : "نمای زندهٔ فروشگاه و کارهای مجاز امروز شما.";
+  const quickAction = (view, label, ico, tone) => canView(view)
+    ? `<button class="role-action role-action--${tone}" onclick="go('${view}')"><span>${icon(ico, 19)}</span><b>${label}</b><i>›</i></button>`
+    : "";
+  if (profile === "seller") {
+    v.dataset.customDashboard = "1";
+    const paymentLabels = { CASH: "نقدی", CARD: "کارت‌خوان", TRANSFER: "انتقال بانکی", ACCOUNT: "اعتباری", CREDIT: "اعتباری", CHEQUE: "چک", MIXED: "ترکیبی", OTHER: "سایر" };
+    const payments = d.today_by_payment.length
+      ? d.today_by_payment.map((item) => `<div class="role-payment-row"><span>${esc(paymentLabels[item.name] || item.name || "پرداخت")}</span><b>${money(item.sales)}</b><small>${fa(item.invoice_count || 0)} فاکتور</small></div>`).join("")
+      : `<div class="role-empty">امروز پرداختی ثبت نشده است.</div>`;
+    const invoiceRows = d.recent_invoices.length
+      ? d.recent_invoices.map((item) => {
+          const status = ({ PAID: "تسویه‌شده", PENDING: "در انتظار", VOID: "باطل", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" })[item.status] || item.status || "—";
+          return `<div class="role-invoice-row" ${canView("invoices") ? "onclick=\"go('invoices')\" role=\"link\"" : ""}>
+            <span class="role-invoice-mark">${icon("invoice", 16)}</span><span class="role-invoice-main"><b>${esc(item.invoice_number || "فاکتور")}</b><small>${item.created_at ? faDateTime(item.created_at) : "—"}</small></span>
+            <b class="role-invoice-total">${money(item.total)}</b><span class="badge ${item.status === "PAID" ? "badge-green" : item.status === "VOID" ? "badge-red" : "badge-amber"}">${esc(status)}</span>
+          </div>`;
+        }).join("")
+      : `<div class="role-empty">هنوز فاکتوری در دامنهٔ شخصی شما ثبت نشده است.</div>`;
+    v.innerHTML = `
+      <div class="role-dashboard role-dashboard--seller">
+        <section class="role-hero">
+          <div class="role-hero-copy">
+            <span class="role-eyebrow"><i></i>${dashboardProfileLabel(profile)} · دسترسی شخصی</span>
+            <h2>${greetTxt}، ${greetName}</h2>
+            <p>فروش، فاکتور و وضعیت کاری خودتان؛ اطلاعات فروشگاه و همکاران در این نما نمایش داده نمی‌شود.</p>
+            <div class="role-hero-meta"><span>${icon("clock", 14)} ${Jalali.fromIso(new Date().toISOString())} · ${nowClock}</span><span>${icon("shield", 14)} دامنه: ${d.scope === "self" ? "فروش شخصی" : "حساب محلی"}</span></div>
+          </div>
+          <div class="role-hero-stat"><span>فروش ماه من</span><b>${money(d.sales.month)}</b><small>${fa(d.sales.invoice_count_today)} فاکتور امروز</small></div>
+        </section>
+        <section class="role-kpis">
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-green">${icon("cart", 19)}</span><small>فروش امروز من</small><b>${money(d.sales.today)}</b><i>${trendHtml(pct(d.sales.today, d.sales.yesterday))}</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-purple">${icon("invoice", 19)}</span><small>فاکتورهای امروز</small><b>${fa(d.sales.invoice_count_today)}</b><i>${trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday))}</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-blue">${icon("clock", 19)}</span><small>فروش دیروز من</small><b>${money(d.sales.yesterday)}</b><i>آمار ثبت‌شده</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-amber">${icon("trend", 19)}</span><small>فروش ماه من</small><b>${money(d.sales.month)}</b><i>از ابتدای دوره</i></article>
+        </section>
+        <section class="role-two-col">
+          <article class="role-card role-chart-card">
+            <header class="role-card-head"><div><small>عملکرد شخصی</small><h3>روند فروش من</h3></div><div class="range-chips" id="dash-range"><button class="chip on" data-r="30">۳۰ روز</button><button class="chip" data-r="7">۷ روز</button><button class="chip" data-r="1">امروز</button></div></header>
+            <div id="dash-trend-body">${trendChart(d.trend)}</div>
+          </article>
+          <article class="role-card"><header class="role-card-head"><div><small>امروز</small><h3>روش‌های پرداخت</h3></div><span class="role-card-mark role-tone-green">${icon("cash", 18)}</span></header><div class="role-payments">${payments}</div></article>
+        </section>
+        <section class="og-mine role-card role-personal-card" id="og-mine" style="display:none"><div class="dcard-head"><h3>${icon("user", 15)} شیفت و عملکرد من</h3><span class="muted" id="mine-sub"></span></div><div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div></section>
+        <section class="role-card"><header class="role-card-head"><div><small>آخرین فعالیت</small><h3>فاکتورهای اخیر من</h3></div>${quickAction("invoices", "همهٔ فاکتورها", "invoice", "purple")}</header><div class="role-invoices">${invoiceRows}</div></section>
+        <section class="role-action-area"><div class="role-section-title"><div><small>دسترسی‌های فعال شما</small><h3>عملیات سریع</h3></div></div><div class="role-actions">${quickAction("pos", "فروش جدید", "cart", "green")}${quickAction("customers", "مشتریان", "user", "blue")}${quickAction("products", "جست‌وجوی کالا", "box", "purple")}${quickAction("reports", "گزارش‌های من", "chart", "amber")}</div></section>
+        <p class="role-scope-note">${d.scope === "self" ? "گزارش‌ها براساس فروش‌های منتسب به حساب شما ساخته شده‌اند." : "دادهٔ شخصی فروش هنوز برای این حساب محلی ثبت نشده است."}</p>
+      </div>`;
+    const range = $("#dash-range");
+    if (range) range.querySelectorAll(".chip").forEach((button) => button.addEventListener("click", () => {
+      range.querySelectorAll(".chip").forEach((chip) => chip.classList.remove("on"));
+      button.classList.add("on");
+      dashLoadRange(button.dataset.r);
+    }));
+    if (window.loadMineCard) loadMineCard(d);
+    return;
+  }
+  if (profile === "accountant") {
+    v.dataset.customDashboard = "1";
+    const accountingData = d.accounting && typeof d.accounting === "object" ? d.accounting : {};
+    const bankAndCard = accountingData.bank == null || accountingData.card == null ? null : Number(accountingData.bank) + Number(accountingData.card);
+    const financialActions = `${quickAction("accounting", "دفتر حسابداری", "ledger", "green")}${quickAction("reports", "گزارش‌های مالی", "chart", "purple")}${quickAction("customers", "حساب مشتریان", "user", "blue")}${quickAction("invoices", "فاکتورها", "invoice", "amber")}`;
+    const salesContent = d.scope === "store" ? `
+        <section class="role-two-col">
+          <article class="role-card role-chart-card"><header class="role-card-head"><div><small>شاخص عملیاتی فروشگاه</small><h3>روند فروش</h3></div><span class="role-card-mark role-tone-blue">${icon("chart", 18)}</span></header><div>${trendChart(d.trend)}</div></article>
+          <article class="role-card"><header class="role-card-head"><div><small>عملکرد امروز</small><h3>فروش و فاکتور</h3></div></header><div class="role-summary-list"><div><span>فروش امروز</span><b>${money(d.sales.today)}</b></div><div><span>تعداد فاکتور</span><b>${fa(d.sales.invoice_count_today)}</b></div><div><span>فروش ماه</span><b>${money(d.sales.month)}</b></div><div><span>سود امروز</span><b>${money(d.profit.today)}</b></div></div></article>
+        </section>
+        <section class="role-card"><header class="role-card-head"><div><small>ثبت‌های اخیر</small><h3>فاکتورهای اخیر فروشگاه</h3></div>${quickAction("invoices", "مشاهدهٔ فاکتورها", "invoice", "purple")}</header><div class="role-invoices">${d.recent_invoices.length ? d.recent_invoices.map((item) => `<div class="role-invoice-row" ${canView("invoices") ? "onclick=\"go('invoices')\" role=\"link\"" : ""}><span class="role-invoice-mark">${icon("invoice", 16)}</span><span class="role-invoice-main"><b>${esc(item.invoice_number || "فاکتور")}</b><small>${item.created_at ? faDateTime(item.created_at) : "—"}</small></span><b class="role-invoice-total">${money(item.total)}</b><span class="badge ${item.status === "PAID" ? "badge-green" : item.status === "VOID" ? "badge-red" : "badge-amber"}">${esc(item.status || "—")}</span></div>`).join("") : `<div class="role-empty">فاکتوری برای نمایش وجود ندارد.</div>`}</div></section>` : `
+        <section class="role-card"><header class="role-card-head"><div><small>حریم دسترسی</small><h3>گزارش فروش سراسری در دسترس نیست</h3></div><span class="role-card-mark role-tone-blue">${icon("shield", 18)}</span></header><p class="role-scope-note">مجوز حسابداری، دسترسی به دفتر مالی را فراهم می‌کند؛ مشاهدهٔ فروش و فاکتورهای کل فروشگاه به مجوز گزارش سراسری نیاز دارد.</p></section>`;
+    v.innerHTML = `
+      <div class="role-dashboard role-dashboard--accountant">
+        <section class="role-hero">
+          <div class="role-hero-copy"><span class="role-eyebrow"><i></i>${dashboardProfileLabel(profile)} · ${d.scope === "store" ? "دادهٔ فروشگاه" : "دسترسی مالی مستقل"}</span><h2>${greetTxt}، ${greetName}</h2>
+            <p>مرکز مالی بر پایهٔ دفتر ثبت‌شده؛ مانده‌ها و گزارش‌ها مطابق دسترسی حساب شما نمایش داده می‌شوند.</p>
+            <div class="role-hero-meta"><span>${icon("clock", 14)} ${Jalali.fromIso(new Date().toISOString())} · ${nowClock}</span><span>${icon("shield", 14)} ${d.scope === "store" ? "دامنه: گزارش فروشگاه" : "دامنه: دفتر حسابداری"}</span></div>
+          </div><div class="role-hero-stat"><span>سود خالص ماه</span><b>${money(accountingData.month_net_profit)}</b><small>هزینهٔ ماه ${money(accountingData.month_expenses)}</small></div>
+        </section>
+        <section class="role-kpis role-kpis--finance">
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-green">${icon("cash", 19)}</span><small>صندوق نقدی</small><b>${money(accountingData.cash)}</b><i>ماندهٔ دفتر مالی</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-blue">${icon("ledger", 19)}</span><small>بانک و کارت‌خوان</small><b>${money(bankAndCard)}</b><i>جمع مانده‌ها</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-amber">${icon("user", 19)}</span><small>مطالبات مشتریان</small><b>${money(accountingData.receivables)}</b><i>ماندهٔ دریافتنی</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-purple">${icon("ledger", 19)}</span><small>بدهی فروشگاه</small><b>${money(accountingData.payables)}</b><i>ماندهٔ پرداختنی</i></article>
+        </section>
+        ${salesContent}
+        <section class="role-action-area"><div class="role-section-title"><div><small>دسترسی‌های فعال شما</small><h3>عملیات مالی</h3></div></div><div class="role-actions">${financialActions}</div></section>
+        <p class="role-scope-note">داده‌های مالی از دفتر حسابداری دریافت می‌شوند؛ ${d.scope === "store" ? "آمار فروش سراسری بر اساس مجوز گزارش شما نمایش داده می‌شود." : "گزارش فروش سراسری بدون مجوز reports.view_all نمایش داده نمی‌شود."}</p>
+      </div>`;
+    return;
+  }
   v.innerHTML = `
     <!-- build-485 — چیدمان دقیق تصویر مرجع: ستون اصلی (سلام، KPI، نمودارها، جدول‌ها) + ریل کناری -->
     <div class="og-grid">
@@ -1280,7 +1418,7 @@ RENDER.dashboard = async () => {
               <span class="og-sun">${hh >= 6 && hh < 18 ? "☀️" : "🌙"}</span>
               <h2>${greetTxt}، ${greetName}</h2>
             </div>
-            <p>امروز یک روز عالی برای رشد فروشگاه است</p>
+            <p><span class="role-eyebrow role-eyebrow--inline">${dashboardProfileLabel(profile)}</span> ${profileSummary}</p>
             <div class="greet-when">
               <span class="chip">${icon("clock", 13)} ${Jalali.fromIso(new Date().toISOString())}</span>
               <span class="chip">${icon("clock", 13)} ${nowClock}</span>
@@ -1381,7 +1519,7 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۳ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۵ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>` : ""}
         ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
@@ -1452,7 +1590,7 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>` : ""}
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.494")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.495")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>

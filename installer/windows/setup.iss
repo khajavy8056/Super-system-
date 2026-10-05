@@ -1,4 +1,4 @@
-; Inno Setup script - builds RasaSystem-Setup-<version>.exe
+﻿; Inno Setup script - builds RasaSystem-Setup-<version>.exe
 ; Prerequisite: build the app first with build.ps1 (creates dist\RasaSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.494"
+  #define MyAppVersion "1.0.495"
 #endif
 ; build-485 — شمارهٔ بیلد رابط کاربری (از BUILD، با /DMyAppBuild می‌آید). در نام
 ; نمایشی محصول می‌آید تا کاربر همیشه بداند کدام ساخت نصب است.

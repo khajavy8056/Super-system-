@@ -1,11 +1,11 @@
-/* RASA SYSTEM — Service Worker Cleaner (build-493).
+/* RASA SYSTEM — Service Worker Cleaner (build-495).
  *
  * ویندوز (WebView2) و اندروید (Native) نیازی به کش مرورگری ندارند و کش کردن
  * فایل‌های JS/HTML در Service Worker باعث بالا آمدن نسخهٔ قدیمی پس از آپدیت می‌شد.
  * این فایل در صورت وجود ثبت قدیمی از نسخه‌های پیشین (مانند rasa-shell-v100)،
  * تمام کش‌های Cache Storage را پاک کرده و خودش را لغو ثبت (unregister) می‌کند.
  */
-const CACHE = "rasa-shell-v100-no-sw-v494";
+const CACHE = "rasa-shell-v100-no-sw-v495";
 const PURGE_ASSETS = [
   "/",
   "/index.html",

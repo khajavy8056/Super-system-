@@ -14,16 +14,68 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 def _maybe_redact(user: User, payload):
-    """v3.7 (§34) — costs/profit/valuation leave the server only for users
-    holding ``pricing.view_cost``. Everyone else gets the same shape with
-    those figures nulled (keys stay, so clients keep working)."""
+    """Redact inventory cost/margin data without conflating accounting access.
+
+    ``accounting.view`` and ``pricing.view_cost`` are independent capabilities:
+    the former permits the financial ledger summary, while the latter exposes
+    product costs and margin analytics. ``rep.redact_costs`` is deliberately
+    conservative for callers without user context, so restore the dashboard's
+    accounting block only after checking the separate accounting permission.
+    """
     if has_permission(user, "pricing.view_cost"):
         return payload
-    return rep.redact_costs(payload)
+    redacted = rep.redact_costs(payload)
+    if has_permission(user, "accounting.view") and isinstance(payload, dict) and "accounting" in payload:
+        redacted["accounting"] = payload["accounting"]
+    return redacted
 
 
-_SELF_ONLY_BLOCKS = ("receivables", "accounting", "top_products", "sales_by_category",
+_SELF_ONLY_BLOCKS = ("receivables", "top_products", "sales_by_category",
                      "customers_new", "expiry", "pricing")
+
+
+def dashboard_profile(user: User) -> str:
+    """Select a presentation profile from effective permissions, never from a role label.
+
+    This is display metadata only. Route authorization and data scope remain enforced
+    independently below; a profile can never grant permission or widen a report.
+    """
+    admin = has_permission(user, "users.manage") and has_permission(user, "settings.manage")
+    if admin:
+        return "administrator"
+    supervisor = (
+        has_permission(user, "reports.view_all")
+        and has_permission(user, "shifts.manage")
+        and has_permission(user, "inventory.adjust")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if supervisor:
+        return "supervisor"
+    accountant = (
+        has_permission(user, "accounting.view")
+        and not has_permission(user, "pos.sell")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if accountant:
+        return "accountant"
+    seller = (
+        has_permission(user, "pos.sell")
+        and not has_permission(user, "reports.view_all")
+        and not has_permission(user, "accounting.view")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if seller:
+        return "seller"
+    if has_permission(user, "users.manage") or has_permission(user, "settings.manage"):
+        return "manager"
+    if has_permission(user, "reports.view_all"):
+        return "operations"
+    return "staff"
 
 
 @router.get("/dashboard")
@@ -37,14 +89,22 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require_permis
         scope = "self"
     else:
         scope = "none"
-    uid = user.id if scope == "self" else None
+    # A None user_id means store-wide data in the service layer. For the no-scope
+    # case, use a non-existent id instead so every user-attributed sales query is
+    # empty rather than accidentally widening to the whole store.
+    uid = user.id if scope == "self" else (None if scope == "store" else -1)
     payload = rep.dashboard(db, user_id=uid)
     payload["scope"] = scope
+    payload["dashboard_profile"] = dashboard_profile(user)
     if scope != "store":
         for k in _SELF_ONLY_BLOCKS:
             payload[k] = [] if isinstance(payload.get(k), list) else {}
         payload["inventory"] = {"value": 0, "product_count": 0, "low_stock": [],
                                 "no_stock": [], "low_stock_count": 0, "no_stock_count": 0}
+    # Cost visibility and accounting visibility are independent capabilities:
+    # inventory operators may inspect costs without opening the general ledger.
+    if not has_permission(user, "accounting.view"):
+        payload["accounting"] = None
     return _maybe_redact(user, payload)
 
 

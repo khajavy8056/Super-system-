@@ -69,6 +69,26 @@ def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None 
     return int(row[0]), Decimal(row[1])
 
 
+def _today_by_payment(db: Session, start: datetime, end: datetime,
+                      user_id: int | None = None) -> list[dict]:
+    """Paid sales for one day, scoped to the requested user when applicable."""
+    cond = _paid_filter(start, end)
+    if user_id is not None:
+        cond = and_(cond, Invoice.created_by == user_id)
+    rows = db.execute(
+        select(Invoice.payment_method, func.count(Invoice.id),
+               func.coalesce(func.sum(Invoice.total_amount), 0))
+        .where(cond).group_by(Invoice.payment_method)
+        .order_by(func.sum(Invoice.total_amount).desc())
+    ).all()
+    labels = {"CASH": "نقدی", "CARD": "کارت‌خوان", "TRANSFER": "انتقال بانکی",
+              "ACCOUNT": "اعتباری", "CREDIT": "اعتباری", "MIXED": "ترکیبی",
+              "OTHER": "سایر", "CHEQUE": "چک"}
+    return [{"name": labels.get(method, method or "نامشخص"),
+             "invoice_count": int(count), "sales": float(Decimal(total))}
+            for method, count, total in rows]
+
+
 def _profit_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
     cond = _paid_filter(start, end)
     if user_id is not None:
@@ -191,6 +211,7 @@ def dashboard(db: Session, *, user_id: int | None = None) -> dict:
         # build-485 — داده‌های واقعی چیدمان تصویر مرجع
         "customers_new": _customers_new(db, today),
         "today_by_staff": _today_by_staff(db, t0, t1, user_id=user_id),
+        "today_by_payment": _today_by_payment(db, t0, t1, user_id=user_id),
         "accounting": _accounting_block(db),
     }
 

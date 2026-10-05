@@ -90,6 +90,54 @@ public final class Screens {
                 || "shifts.view".equals(perm) && contains(ps, "shifts.manage");
     }
     private static boolean contains(JSONArray values, String target) { for (int i = 0; i < values.length(); i++) if (target.equals(values.optString(i))) return true; return false; }
+    private static boolean hasPerm(JSONArray values, String target) { return values != null && contains(values, target); }
+    /** Dashboard presentation follows the same effective permission profile returned by Backend.
+     * Offline SQLite falls back to the user's cached permission set; it never widens data scope. */
+    public static String dashboardProfile(JSONObject payload) {
+        String server = payload == null ? "" : payload.optString("dashboard_profile", "");
+        if ("administrator".equals(server) || "supervisor".equals(server) || "accountant".equals(server)
+                || "seller".equals(server) || "manager".equals(server) || "operations".equals(server) || "staff".equals(server)) return server;
+        return dashboardProfileFromPermissions(user == null ? null : user.optJSONArray("permissions"));
+    }
+    public static String dashboardProfileFromPermissions(JSONArray ps) {
+        boolean admin = hasPerm(ps, "users.manage") && hasPerm(ps, "settings.manage");
+        if (admin) return "administrator";
+        boolean supervisor = hasPerm(ps, "reports.view_all") && hasPerm(ps, "shifts.manage")
+                && hasPerm(ps, "inventory.adjust") && !hasPerm(ps, "users.manage") && !hasPerm(ps, "settings.manage");
+        if (supervisor) return "supervisor";
+        boolean accountant = hasPerm(ps, "accounting.view") && !hasPerm(ps, "pos.sell")
+                && !hasPerm(ps, "shifts.manage") && !hasPerm(ps, "users.manage") && !hasPerm(ps, "settings.manage");
+        if (accountant) return "accountant";
+        boolean seller = hasPerm(ps, "pos.sell") && !hasPerm(ps, "reports.view_all")
+                && !hasPerm(ps, "accounting.view") && !hasPerm(ps, "shifts.manage")
+                && !hasPerm(ps, "users.manage") && !hasPerm(ps, "settings.manage");
+        if (seller) return "seller";
+        if (hasPerm(ps, "users.manage") || hasPerm(ps, "settings.manage")) return "manager";
+        if (hasPerm(ps, "reports.view_all")) return "operations";
+        return "staff";
+    }
+    public static String dashboardLabel(String profile) {
+        switch (profile) {
+            case "seller": return "فروشنده";
+            case "accountant": return "حسابدار";
+            case "supervisor": return "سوپروایزر";
+            case "administrator": return "مدیر کل";
+            case "manager": return "مدیر فروشگاه";
+            case "operations": return "عملیات فروشگاه";
+            default: return "کاربر";
+        }
+    }
+    public static String dashboardTitle(String profile) {
+        switch (profile) {
+            case "seller": return "پنل فروش و صندوق";
+            case "accountant": return "پنل حسابداری";
+            case "supervisor": return "پنل سوپروایزر";
+            case "administrator": return "پنل مدیر کل";
+            case "manager": return "پنل مدیریت فروشگاه";
+            case "operations": return "پنل عملیات فروشگاه";
+            default: return "داشبورد";
+        }
+    }
     public static String userName() { String n = user.optString("full_name", ""); return n.isEmpty() ? user.optString("username", "") : n; }
     public static void loadConfig(AppActivity a) {
         try { user = new JSONObject(Prefs.get("user_json", "{}")); } catch (Exception ignore) {}
@@ -142,7 +190,7 @@ public final class Screens {
     /* ---------------- Home / dashboard (12 blocks) ---------------- */
     public static final class Home extends Screen {
         Home(AppActivity a) { super(a); }
-        public String key() { return "home"; } public String title() { return "داشبورد"; }
+        public String key() { return "home"; } public String title() { return Screens.dashboardTitle(Screens.dashboardProfile(null)); }
         public boolean autoRefresh() { return true; }
         private long loadGen = 0;
         public void load() {
@@ -156,7 +204,8 @@ public final class Screens {
             clear();
             LinearLayout hero = Ui.hero(c);
             LinearLayout hr = Ui.row(c); LinearLayout hcol = Ui.col(c); hcol.setLayoutParams(Ui.weight(1));
-            hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, "داشبورد " + roleTitle() + " · امروز یک روز عالی برای رشد فروشگاه است", 13, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه") + " · " + Jalali.todayLong(), 12, 0xDDFFFFFF, false));
+            String profile = Screens.dashboardProfile(null);
+            hcol.addView(Ui.text(c, greeting() + "، " + userName(), 13, 0xDDFFFFFF, false)); hcol.addView(Ui.text(c, Screens.dashboardTitle(profile) + " · نمای متناسب با دسترسی‌های شما", 13, 0xFFFFFFFF, true)); hcol.addView(Ui.text(c, Prefs.get("store_name", "فروشگاه") + " · " + Jalali.todayLong(), 12, 0xDDFFFFFF, false));
             hr.addView(hcol); android.widget.ImageView av = Icons.view(c, "store", 0xFFFFFFFF, 54); int pd = Ui.dp(13); av.setPadding(pd, pd, pd, pd); av.setBackground(Ui.rounded(0x2EFFFFFF, 0x557383EF, 18)); hr.addView(av); hero.addView(hr);
             LinearLayout quick = Ui.row(c); quick.setPadding(0, Ui.dp(14), 0, 0);
             if (allowed("pos")) quick.addView(qb("cart", "فروش جدید", Ui.GREEN, () -> a.route("pos")));
@@ -285,13 +334,6 @@ public final class Screens {
             }
         }
         private String minutesLabel(int minutes) { int h = Math.max(0, minutes) / 60, m = Math.max(0, minutes) % 60; return Ui.fa(h + " ساعت " + m + " دقیقه"); }
-        private boolean cashierDashboard() {
-            return can("pos.sell") && !can("reports.view_all") && !can("accounting.view")
-                    && !can("shifts.manage") && !can("users.manage") && !can("settings.manage");
-        }
-        private boolean accountantDashboard() {
-            return can("accounting.view") && !can("pos.sell") && !can("users.manage") && !can("settings.manage");
-        }
         private void renderCashierDashboard(JSONObject data, double[] local) {
             JSONObject sales = data.optJSONObject("sales");
             double today = d(sales, "today"), month = d(sales, "month");
@@ -319,22 +361,30 @@ public final class Screens {
         }
         private void renderAccountantDashboard(JSONObject data, double[] local) {
             JSONObject accounts = data.optJSONObject("accounting"), sales = data.optJSONObject("sales"), profit = data.optJSONObject("profit");
+            boolean storeScope = "store".equals(data.optString("scope"));
             body.addView(Ui.grid2(c,
                     Ui.kpi(c, "صندوق نقدی", moneyOrDash(accounts, "cash"), "ماندهٔ دفتر مالی", Ui.GREEN),
                     Ui.kpi(c, "حساب‌های بانکی", moneyOrDash(accounts, "bank"), "ماندهٔ بانک", Ui.VIOLET)));
             body.addView(Ui.grid2(c,
                     Ui.kpi(c, "مطالبات مشتریان", moneyOrDash(accounts, "receivables"), "بدهی فروشگاه به دیگران: " + moneyOrDash(accounts, "payables"), Ui.AMBER),
                     Ui.kpi(c, "سود خالص ماه", moneyOrDash(accounts, "month_net_profit"), "هزینهٔ ماه: " + moneyOrDash(accounts, "month_expenses"), Ui.TEAL)));
-            body.addView(Ui.grid2(c,
-                    Ui.kpi(c, "فروش امروز", Ui.money(d(sales, "today")), Ui.num(d(sales, "invoice_count_today")) + " فاکتور", Ui.GREEN),
-                    Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), "سود امروز " + Ui.money(d(profit, "today")), Ui.GOLD)));
+            if (storeScope) {
+                body.addView(Ui.grid2(c,
+                        Ui.kpi(c, "فروش امروز", Ui.money(d(sales, "today")), Ui.num(d(sales, "invoice_count_today")) + " فاکتور", Ui.GREEN),
+                        Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), "سود امروز " + moneyOrDash(profit, "today"), Ui.GOLD)));
+            } else {
+                LinearLayout scope = Ui.card(c, "دامنهٔ گزارش فروش");
+                scope.addView(Ui.muted(c, "دفتر مالی با مجوز حسابداری در دسترس است؛ آمار فروش سراسری به مجوز گزارش فروشگاه نیاز دارد.")); body.addView(scope);
+            }
             LinearLayout actions = Ui.card(c, "دسترسی‌های مالی"); LinearLayout row = Ui.row(c);
             if (allowed("accounting")) row.addView(qb("wallet", "دفتر مالی", Ui.GREEN, () -> a.route("accounting")));
             if (allowed("payroll")) row.addView(qb("users", "حقوق", Ui.VIOLET, () -> a.route("payroll")));
             if (allowed("reports")) row.addView(qb("chart", "گزارش‌ها", Ui.TEAL, () -> a.route("reports")));
             actions.addView(row); body.addView(actions);
-            addTrendChart("روند فروش فروشگاه · ۷ روز", data.optJSONArray("trend"), "sales");
-            addRecentInvoiceCard(data.optJSONArray("recent_invoices"));
+            if (storeScope) {
+                addTrendChart("روند فروش فروشگاه · ۷ روز", data.optJSONArray("trend"), "sales");
+                addRecentInvoiceCard(data.optJSONArray("recent_invoices"));
+            }
             if (local != null && local.length > 2 && local[2] > 0) {
                 LinearLayout queue = Ui.card(c, "همگام‌سازی این گوشی");
                 queue.addView(Ui.kv(c, "فروش‌های صف‌شده", Ui.num(local[2]), Ui.AMBER)); body.addView(queue);
@@ -397,21 +447,6 @@ public final class Screens {
                 } else update.addView(Ui.kv(c, "وضعیت", result.optBoolean("available", true) ? "برنامه به‌روز است" : "بررسی آنلاین انجام نشد", Ui.GREEN));
             }, error -> { if (update.getParent() == body) { update.removeAllViews(); update.addView(Ui.muted(c, "برای بررسی نسخه به اینترنت نیاز است؛ برنامه آفلاین فعال می‌ماند.")); } });
         }
-        private String roleTitle() {
-            if (hasRole("General Manager") || hasRole("Administrator")) return "مدیر کل";
-            if (hasRole("Manager")) return "مدیر فروشگاه";
-            if (hasRole("Supervisor")) return "سوپروایزر";
-            if (hasRole("Accountant")) return "حسابدار";
-            if (hasRole("Cashier")) return "صندوق‌دار";
-            if (hasRole("Salesperson")) return "فروشنده";
-            return can("users.manage") ? "مدیر" : "کاربر";
-        }
-        private boolean hasRole(String name) {
-            JSONArray roles = user == null ? null : user.optJSONArray("roles");
-            for (int i = 0; roles != null && i < roles.length(); i++) if (name.equals(roles.optString(i))) return true;
-            return false;
-        }
-
         static String greeting() { int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY); return h < 12 ? "صبح بخیر" : h < 17 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر"; }
         /** build-484 — کاشی‌های پاستلی «عملیات سریع» (الهام از تصویر مرجع): رنگ روشن + آیکون رنگی. */
         private View qb(String icon, String s, int accent, Runnable r) {
@@ -441,12 +476,29 @@ public final class Screens {
             LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1));
             col.addView(Ui.text(c, value, 17, color, true)); col.addView(Ui.muted(c, label)); return col;
         }
+        private void renderManagementActions(String profile) {
+            LinearLayout panel = Ui.card(c, "مرکز " + ("administrator".equals(profile) ? "مدیریت کل" : "نظارت عملیاتی"));
+            panel.addView(Ui.muted(c, "نمای مدیریتی فروشگاه · میان‌برها فقط برای دسترسی‌های فعال این حساب نمایش داده می‌شوند."));
+            LinearLayout operations = Ui.row(c), governance = Ui.row(c);
+            if (allowed("reports")) operations.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
+            if (allowed("inventory")) operations.addView(qb("box", "موجودی", 0xFF4F8CFF, () -> a.route("inventory")));
+            if (allowed("receive")) operations.addView(qb("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
+            if (allowed("accounting")) operations.addView(qb("wallet", "دفتر مالی", Ui.GREEN, () -> a.route("accounting")));
+            if (allowed("shifts")) governance.addView(qb("clock", "شیفت‌ها", Ui.AMBER, () -> a.route("shifts")));
+            if (allowed("users")) governance.addView(qb("users", "کاربران", Ui.VIOLET, () -> a.route("users")));
+            if (allowed("settings")) governance.addView(qb("gear", "تنظیمات", 0xFF4F8CFF, () -> a.route("settings")));
+            if (operations.getChildCount() > 0) panel.addView(operations);
+            if (governance.getChildCount() > 0) panel.addView(governance);
+            body.addView(panel);
+        }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
+            String profile = Screens.dashboardProfile(d);
             boolean showSales = can("reports.view") && !"none".equals(d.optString("scope", "none"));
             boolean storeScope = can("reports.view_all") && "store".equals(d.optString("scope"));
-            if (accountantDashboard()) { renderAccountantDashboard(d, loc); return; }
-            if (cashierDashboard()) { renderCashierDashboard(d, loc); return; }
+            if ("accountant".equals(profile)) { renderAccountantDashboard(d, loc); return; }
+            if ("seller".equals(profile)) { renderCashierDashboard(d, loc); return; }
+            if ("administrator".equals(profile) || "supervisor".equals(profile)) renderManagementActions(profile);
             // 1-2 sales / invoices
             JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
             double sToday = d(sales, "today"), sYest = d(sales, "yesterday"); int iToday = (int) d(sales, "invoice_count_today"), iYest = (int) d(sales, "invoice_count_yesterday");
@@ -515,10 +567,10 @@ public final class Screens {
                 // v3.0 — store intelligence: measured profit impact of executed suggestions
                 InsightScreens.dashboardCard(this, body, a);
             // 3-4 month / profit
-            body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", Ui.money(d(profit, "today")), Ui.money(d(profit, "month")), Ui.VIOLET)));
+            body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", moneyOrDash(profit, "today"), moneyOrDash(profit, "month"), Ui.VIOLET)));
             // 5-6 inventory / low stock
             int low = inv == null ? 0 : inv.optInt("low_stock_count"), none = inv == null ? 0 : inv.optInt("no_stock_count");
-            body.addView(Ui.grid2(c, Ui.kpi(c, "ارزش موجودی", Ui.money(d(inv, "value")), Ui.num(d(inv, "product_count")) + " کالا", Ui.AMBER), Ui.kpi(c, "کمبود / بدون موجودی", Ui.fa(low + " / " + none), null, low + none > 0 ? Ui.RED : Ui.GREEN)));
+            body.addView(Ui.grid2(c, Ui.kpi(c, "ارزش موجودی", moneyOrDash(inv, "value"), Ui.num(d(inv, "product_count")) + " کالا", Ui.AMBER), Ui.kpi(c, "کمبود / بدون موجودی", Ui.fa(low + " / " + none), null, low + none > 0 ? Ui.RED : Ui.GREEN)));
             // 7 expiry
             LinearLayout ex = Ui.card(c, "انقضا"); int te = 0; String[][] EK = {{"EXPIRED", "منقضی"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "۳ روز"}, {"EXPIRING_7_DAYS", "۷ روز"}, {"EXPIRING_30_DAYS", "۳۰ روز"}};
             LinearLayout er = Ui.row(c); for (String[] k : EK) { int n = exp == null || exp.optJSONArray(k[0]) == null ? 0 : Math.max(exp.optInt("total_" + k[0]), exp.optJSONArray(k[0]).length()); te += n; LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1)); col.addView(Ui.text(c, Ui.fa(String.valueOf(n)), 17, n > 0 ? ("EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER) : Ui.TEXT, true)); col.addView(Ui.muted(c, k[1])); er.addView(col); }
