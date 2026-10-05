@@ -1018,6 +1018,44 @@ public final class Local {
         if (from != null) { w += " AND j.date>=?"; a.add(from); } if (to != null) { w += " AND j.date<=?"; a.add(to + "T23:59:59"); }
         JSONObject r = one("SELECT IFNULL(SUM(l.debit-l.credit),0) AS d FROM journal_lines l JOIN journal j ON j.id=l.jid WHERE j.status='POSTED' AND " + w, a.toArray()); return r == null ? 0 : r.optDouble("d");
     }
+    static JSONArray incomeExpenseTrend() throws Exception {
+        String from = Jalali.daysAgoIso(6), until = Jalali.daysAgoIso(-1);
+        java.util.Map<String, JSONObject> totalsByDay = new java.util.HashMap<>();
+        for (JSONObject row : rows(
+                "SELECT substr(j.date,1,10) AS d, " +
+                "IFNULL(SUM(CASE WHEN l.code LIKE '4%' THEN l.credit-l.debit ELSE 0 END),0) AS income, " +
+                "IFNULL(SUM(CASE WHEN l.code LIKE '5%' OR l.code LIKE '6%' THEN l.debit-l.credit ELSE 0 END),0) AS expenses " +
+                "FROM journal j JOIN journal_lines l ON l.jid=j.id " +
+                "WHERE j.status<>'REVERSED_HIDDEN' AND j.date>=? AND j.date<? " +
+                "GROUP BY substr(j.date,1,10)", from, until)) {
+            totalsByDay.put(row.optString("d"), row);
+        }
+        JSONArray trend = new JSONArray();
+        for (int daysAgo = 6; daysAgo >= 0; daysAgo--) {
+            String day = Jalali.daysAgoIso(daysAgo);
+            JSONObject totals = totalsByDay.get(day), point = new JSONObject();
+            point.put("date", day); point.put("label", Ui.jdate(day));
+            point.put("income", totals == null ? 0 : totals.optDouble("income"));
+            point.put("expenses", totals == null ? 0 : totals.optDouble("expenses"));
+            trend.put(point);
+        }
+        return trend;
+    }
+
+    static JSONArray recentJournalEntries() throws Exception {
+        JSONArray entries = new JSONArray();
+        for (JSONObject entry : rows(
+                "SELECT j.id,j.number,j.date,j.description,j.kind,j.status," +
+                "IFNULL(SUM(l.debit),0) AS total FROM journal j " +
+                "LEFT JOIN journal_lines l ON l.jid=j.id " +
+                "WHERE j.status<>'REVERSED_HIDDEN' " +
+                "GROUP BY j.id,j.number,j.date,j.description,j.kind,j.status " +
+                "ORDER BY j.date DESC,j.number DESC LIMIT 5")) {
+            entries.put(entry);
+        }
+        return entries;
+    }
+
     static JSONObject accountingDashboard(String monthStart) throws Exception {
         JSONObject summary = new JSONObject();
         summary.put("cash", acc("1010", null, null)); summary.put("bank", acc("1020", null, null));
@@ -1026,6 +1064,8 @@ public final class Local {
         double revenue = -acc("4000", monthStart, null), cogs = acc("5000", monthStart, null);
         double expenses = acc("6000", monthStart, null);
         summary.put("month_net_profit", revenue - cogs - expenses); summary.put("month_expenses", expenses);
+        summary.put("income_expense_trend", incomeExpenseTrend());
+        summary.put("recent_entries", recentJournalEntries());
         JSONObject pendingCheques = one("SELECT COUNT(*) AS n FROM cheques WHERE status='PENDING'");
         summary.put("cheques_due", pendingCheques == null ? 0 : pendingCheques.optInt("n"));
         return summary;
@@ -1033,7 +1073,7 @@ public final class Local {
     static Object accounting(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
         String what = seg[1]; String m0 = Jalali.daysAgoIso(30);
         switch (what) {
-            case "overview": { JSONObject o = new JSONObject(); o.put("cash", acc("1010", null, null)); o.put("bank", acc("1020", null, null)); o.put("card", acc("1030", null, null)); o.put("receivables", acc("1100", null, null)); o.put("payables", -acc("2100", null, null) - acc("2200", null, null)); JSONObject mo = new JSONObject(); double rev = -acc("4000", m0, null), cogs = acc("5000", m0, null), exp = acc("6000", m0, null); mo.put("revenue", rev); mo.put("cogs", cogs); mo.put("expenses", exp); mo.put("net_profit", rev - cogs - exp); mo.put("gross_margin_pct", rev > 0 ? Math.round((rev - cogs) * 1000 / rev) / 10.0 : 0); o.put("month", mo); JSONObject iv = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE status='ACTIVE'"); o.put("inventory_value", iv.optDouble("v")); JSONObject cq = new JSONObject(); JSONObject rc = one("SELECT COUNT(*) AS n, IFNULL(SUM(amount),0) AS a FROM cheques WHERE direction='RECEIVED' AND status='PENDING'"); JSONObject ic = one("SELECT COUNT(*) AS n, IFNULL(SUM(amount),0) AS a FROM cheques WHERE direction='ISSUED' AND status='PENDING'"); cq.put("received_count", rc.optInt("n")); cq.put("received_pending", rc.optDouble("a")); cq.put("issued_count", ic.optInt("n")); cq.put("issued_pending", ic.optDouble("a")); cq.put("overdue", arr(rows("SELECT * FROM cheques WHERE status='PENDING' AND due_date<?", Jalali.todayIso()))); o.put("cheques", cq); return o; }
+            case "overview": { JSONObject o = new JSONObject(); o.put("cash", acc("1010", null, null)); o.put("bank", acc("1020", null, null)); o.put("card", acc("1030", null, null)); o.put("receivables", acc("1100", null, null)); o.put("payables", -acc("2100", null, null) - acc("2200", null, null)); JSONObject mo = new JSONObject(); double rev = -acc("4000", m0, null), cogs = acc("5000", m0, null), exp = acc("6000", m0, null); mo.put("revenue", rev); mo.put("cogs", cogs); mo.put("expenses", exp); mo.put("net_profit", rev - cogs - exp); mo.put("gross_margin_pct", rev > 0 ? Math.round((rev - cogs) * 1000 / rev) / 10.0 : 0); o.put("month", mo); JSONObject iv = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE status='ACTIVE'"); o.put("inventory_value", iv.optDouble("v")); JSONObject cq = new JSONObject(); JSONObject rc = one("SELECT COUNT(*) AS n, IFNULL(SUM(amount),0) AS a FROM cheques WHERE direction='RECEIVED' AND status='PENDING'"); JSONObject ic = one("SELECT COUNT(*) AS n, IFNULL(SUM(amount),0) AS a FROM cheques WHERE direction='ISSUED' AND status='PENDING'"); cq.put("received_count", rc.optInt("n")); cq.put("received_pending", rc.optDouble("a")); cq.put("issued_count", ic.optInt("n")); cq.put("issued_pending", ic.optDouble("a")); cq.put("overdue", arr(rows("SELECT * FROM cheques WHERE status='PENDING' AND due_date<?", Jalali.todayIso()))); o.put("cheques", cq); o.put("income_expense_trend", incomeExpenseTrend()); o.put("recent_entries", recentJournalEntries()); return o; }
             case "cash-sessions": {
                 if (seg.length == 2) { if ("GET".equals(method)) return arr(rows("SELECT * FROM cash_sessions ORDER BY id DESC LIMIT 30")); }
                 if (seg.length > 2 && "current".equals(seg[2])) { JSONObject s = one("SELECT * FROM cash_sessions WHERE status='OPEN' ORDER BY id DESC LIMIT 1"); if (s == null) return JSONObject.NULL; JSONObject cs = one("SELECT IFNULL(SUM(total),0) AS t FROM invoices WHERE at>=? AND status<>'VOID' AND payment IN ('CASH','MIXED')", s.optString("opened_at")); s.put("cash_sales", cs.optDouble("t")); s.put("expected_cash", s.optDouble("opening_float") + cs.optDouble("t")); return s; }

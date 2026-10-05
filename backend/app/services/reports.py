@@ -344,6 +344,8 @@ def _accounting_block(db: Session) -> dict:
         return {"cash": ov["cash"], "bank": ov["bank"], "card": ov["card"], "receivables": ov["receivables"],
                 "payables": ov["payables"], "month_net_profit": ov["month"]["net_profit"],
                 "month_expenses": ov["month"]["expenses"],
+                "income_expense_trend": ov["income_expense_trend"],
+                "recent_entries": ov["recent_entries"],
                 "cheques_due": ov["cheques"]["received_count"] + ov["cheques"]["issued_count"]}
     except Exception:  # noqa: BLE001 — dashboard must never fail because of a ledger hiccup
         return {"cash": 0, "bank": 0, "card": 0, "receivables": 0, "payables": 0,

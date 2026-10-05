@@ -1381,6 +1381,20 @@ RENDER.dashboard = async () => {
     const accountingData = d.accounting && typeof d.accounting === "object" ? d.accounting : {};
     const bankAndCard = accountingData.bank == null || accountingData.card == null ? null : Number(accountingData.bank) + Number(accountingData.card);
     const financialActions = `${quickAction("accounting", "دفتر حسابداری", "ledger", "green")}${quickAction("reports", "گزارش‌های مالی", "chart", "purple")}${quickAction("customers", "حساب مشتریان", "user", "blue")}${quickAction("invoices", "فاکتورها", "invoice", "amber")}`;
+    const recentEntries = Array.isArray(accountingData.recent_entries) ? accountingData.recent_entries : [];
+    const entryKindLabels = { SALE: "فروش", SALE_RETURN: "مرجوعی", PURCHASE: "خرید", EXPENSE: "هزینه", SETTLEMENT: "تسویه", MANUAL: "دستی", REVERSAL: "معکوس", CHEQUE: "چک", ADJUSTMENT: "اصلاح", CLOSING: "بستن دوره" };
+    const recentLedgerHtml = recentEntries.length ? recentEntries.map((entry) => {
+      const status = entry.status === "POSTED" ? "ثبت‌شده" : entry.status === "REVERSED" ? "برگشت‌خورده" : (entry.status || "—");
+      const statusClass = entry.status === "POSTED" ? "badge-green" : entry.status === "REVERSED" ? "badge-amber" : "badge-gray";
+      const kind = entryKindLabels[entry.kind] || entry.kind || "ثبت مالی";
+      const entryDate = entry.date ? faDateTime(`${entry.date}T00:00:00Z`, false) : "—";
+      return `<div class="role-ledger-row"><span class="role-invoice-mark">${icon("ledger", 16)}</span><span class="role-invoice-main"><b>#${fa(entry.number || "")} · ${esc(entry.description || kind)}</b><small>${entryDate} · ${esc(kind)}</small></span><b class="role-invoice-total">${money(entry.total)}</b><span class="badge ${statusClass}">${esc(status)}</span></div>`;
+    }).join("") : `<div class="role-empty">سندی برای نمایش وجود ندارد.</div>`;
+    const financialActivity = can("accounting.view") ? `
+      <section class="role-two-col role-accounting-details">
+        <article class="role-card role-chart-card"><header class="role-card-head"><div><small>عملکرد مالی</small><h3>درآمد و هزینه · ۷ روز اخیر</h3></div><span class="role-card-mark role-tone-green">${icon("chart", 18)}</span></header>${incomeExpenseChart(accountingData.income_expense_trend)}</article>
+        <article class="role-card"><header class="role-card-head"><div><small>دفتر روزنامه</small><h3>آخرین ثبت‌های مالی</h3></div>${quickAction("accounting", "دفتر کامل", "ledger", "green")}</header><div class="role-ledger-entries">${recentLedgerHtml}</div></article>
+      </section>` : "";
     const salesContent = d.scope === "store" ? `
         <section class="role-two-col">
           <article class="role-card role-chart-card"><header class="role-card-head"><div><small>شاخص عملیاتی فروشگاه</small><h3>روند فروش</h3></div><span class="role-card-mark role-tone-blue">${icon("chart", 18)}</span></header><div>${trendChart(d.trend)}</div></article>
@@ -1402,6 +1416,7 @@ RENDER.dashboard = async () => {
           <article class="role-kpi"><span class="role-kpi-icon role-tone-amber">${icon("user", 19)}</span><small>مطالبات مشتریان</small><b>${money(accountingData.receivables)}</b><i>ماندهٔ دریافتنی</i></article>
           <article class="role-kpi"><span class="role-kpi-icon role-tone-purple">${icon("ledger", 19)}</span><small>بدهی فروشگاه</small><b>${money(accountingData.payables)}</b><i>ماندهٔ پرداختنی</i></article>
         </section>
+        ${financialActivity}
         ${salesContent}
         <section class="role-action-area"><div class="role-section-title"><div><small>دسترسی‌های فعال شما</small><h3>عملیات مالی</h3></div></div><div class="role-actions">${financialActions}</div></section>
         <p class="role-scope-note">داده‌های مالی از دفتر حسابداری دریافت می‌شوند؛ ${d.scope === "store" ? "آمار فروش سراسری بر اساس مجوز گزارش شما نمایش داده می‌شود." : "گزارش فروش سراسری بدون مجوز reports.view_all نمایش داده نمی‌شود."}</p>
@@ -1774,6 +1789,34 @@ function trendChart(rows) {
     <defs><linearGradient id="ta" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3dd6c4" stop-opacity=".45"/><stop offset="1" stop-color="#3dd6c4" stop-opacity="0"/></linearGradient></defs>
     <g class="grid">${grid}</g><path class="area" d="${area}"/><path class="line sales" d="${path("sales")}"/>${showProfit ? `<path class="line profit" d="${path("profit")}"/>` : ""}<g class="dots">${dots}</g><g class="labels">${labels}</g></svg>
     <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span>${showProfit ? `<span><i style="background:#7c5cff"></i>سود</span>` : ""}</div>`;
+}
+
+function incomeExpenseChart(rows) {
+  const points = Array.isArray(rows) ? rows : [];
+  if (!points.length) return `<div class="role-empty">در این بازه ثبت درآمد یا هزینه‌ای وجود ندارد.</div>`;
+  const values = points.flatMap((point) => [Number(point.income) || 0, Number(point.expenses) || 0]);
+  const upper = Math.max(0, ...values), lower = Math.min(0, ...values);
+  const span = Math.max(1, upper - lower);
+  const W = 640, H = 210, PL = 64, PR = 18, PT = 16, PB = 34;
+  const plotW = W - PL - PR, plotH = H - PT - PB;
+  const y = (value) => PT + ((upper - value) / span) * plotH;
+  const zeroY = y(0);
+  const grid = [0, 1, 2, 3, 4].map((step) => {
+    const value = upper - span * step / 4, py = y(value);
+    return `<line x1="${PL}" x2="${W - PR}" y1="${py}" y2="${py}"/><text x="${PL - 8}" y="${py + 4}" text-anchor="end">${fa(fmt(value))}</text>`;
+  }).join("");
+  const groupW = plotW / points.length, barW = Math.min(18, groupW * 0.27);
+  const bars = points.map((point, index) => {
+    const center = PL + groupW * (index + .5);
+    const income = Number(point.income) || 0, expenses = Number(point.expenses) || 0;
+    const rect = (value, offset, color, title) => {
+      const valueY = y(value), top = Math.min(valueY, zeroY), height = Math.max(1, Math.abs(valueY - zeroY));
+      return `<rect x="${center + offset - barW / 2}" y="${top}" width="${barW}" height="${height}" rx="3" fill="${color}"><title>${esc(point.label || point.date || "")} · ${title}: ${esc(money(value))}</title></rect>`;
+    };
+    const label = esc(point.label || point.date || "");
+    return `${rect(income, -barW * .58, "#3dd6c4", "درآمد")}${rect(expenses, barW * .58, "#f6b34a", "هزینه")}<text x="${center}" y="${H - 9}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  return `<svg class="trend accountant-fin-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="نمودار درآمد و هزینهٔ هفت روز اخیر"><g class="grid">${grid}</g><line class="accountant-fin-zero" x1="${PL}" x2="${W - PR}" y1="${zeroY}" y2="${zeroY}"/>${bars}</svg><div class="legend"><span><i style="background:#3dd6c4"></i>درآمد</span><span><i style="background:#f6b34a"></i>هزینه</span></div>`;
 }
 
 function statCard(label, value, sub) {

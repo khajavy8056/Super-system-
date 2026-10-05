@@ -2,10 +2,12 @@
 
 ## نسخهٔ جاری: 1.0.496 (بیلد 49600)
 
-- APK امضاشده: `releases/android/RasaSystemMobile-1.0.496.apk`، 1,492,443 بایت؛ SHA-256 در فایل کناری `.sha256`.
+- APK امضاشده: `releases/android/RasaSystemMobile-1.0.496.apk`، 1,496,539 بایت؛ SHA-256 `61efaf4a3edf6425f96a89d903076e3a557a34f66f28fc9eef8e4f869f007f05` (همچنین در فایل کناری `.sha256`).
 - زنجیرهٔ ساخت SDK-less (ECJ/D8/aapt2/apksigner) و `scripts/android/verify-apk.py` install-preflight موفق‌اند؛ این **تست runtime روی گوشی نیست**.
-- Backend کامل: **770 پاس، 1 پرش**؛ تست‌های sync آفلاین POS، coupon-code reconciliation و role dashboard اجرا شدند.
+- Backend کامل: **772 پاس، 1 پرش**؛ شامل تست نمودار درآمد/هزینه و دفتر اخیر حسابدار، sync آفلاین POS، coupon-code reconciliation و role dashboard.
 - بیلد 496: POS مستقل از مسیر `Local.handle(..., "/pos/checkout", ...)` اعتبارسنجی/ذخیره می‌شود؛ tax، کمپین و کوپن در pull فقط به دارندهٔ `pos.sell` می‌رسند؛ سفارش POS از payload فاکتور ذخیره‌شده صف می‌شود.
+- داشبورد حسابدار: نمودار درآمد در برابر هزینه برای ۷ روز و پنج ثبت اخیر دفتر روزنامه از دادهٔ مجاز `accounting.view` تغذیه می‌شوند؛ snapshot محلی همین موارد را در Android آفلاین نگه می‌دارد و `redactDashboardPermissions()` همچنان کل بلوک را بدون آن مجوز حذف می‌کند.
+- GitHub Release `v1.0.496` منتشر شده، اما فایل‌های باینری به‌علت نبود اتصال به میزبان upload در Release ضمیمه نیستند؛ لینک‌های مستقیم به آرتیفکت‌های commit‌شده در متن انتشار آمده‌اند.
 - در محیط حاضر Android device/emulator و Windows واقعی نداریم؛ login/offline/sync روی دستگاه، لمس‌پذیری واقعی و Setup.exe ویندوز **تأیید نشده‌اند**.
 
 ### نگاشت پنل‌های نقش‌محور: Windows → Android بومی
@@ -16,7 +18,7 @@
 | شیفت، حضور و فعالیت | نوار حضور، تیم، رخدادها | `ShiftScreens.Roster`, `ShiftScreens.Attendance`, `HrScreens`؛ نمای شخصی/تیمی متناسب با مجوز | کارمند فقط رکورد خودش؛ مدیریت شیفت با `shifts.manage`؛ حسابرسی با `audit.view` |
 | صندوقدار: فروش، تخفیف، کوپن/کمپین، نگه‌داشتن و بازیابی فاکتور | صندوق و پنل نگه‌داشته‌ها | `SalesScreens.Pos`, `SalesScreens.Held`; فهرست‌های لمسی/برگهٔ انتخاب | `pos.sell`; پیشنهادهای POS از snapshot مجاز؛ مدیریت کمپین جداست و به POS حق ویرایش نمی‌دهد |
 | صندوقدار: فاکتور، مشتری/کالا، پرداخت، مرجوعی و موجودی | فاکتورها، مشتریان، کالاها، انبار و گزارش شخصی | `SalesScreens.Invoices/Customers`, `StockScreens.Products/Inventory`; جزئیات و فرم موبایل | `reports.view`, `customers.*`, `products.view`, `inventory.view`, `pos.return`; فروش فقط به `user_id` خود |
-| حسابدار: دفتر، درآمد/هزینه، سود، دریافت/پرداخت، حساب، چک و گزارش مالی | نمای حسابداری، دفتر روزنامه/کل، صورت‌ها و تنظیمات دوره | `Screens.Dashboard` مالی + `AdminScreens.Accounting` و `AdminScreens.Reports`; هر فهرست روی صفحهٔ جدا | `accounting.view`; ثبت/برگشت/بستن دوره بر اساس `accounting.post/close`; فروش سراسری جداگانه به `reports.view_all` |
+| حسابدار: دفتر، درآمد/هزینه، سود، دریافت/پرداخت، حساب، چک و گزارش مالی | نمای حسابداری، دفتر روزنامه/کل، صورت‌ها و تنظیمات دوره | `Screens.Dashboard` مالی با نمودار ۷روزهٔ درآمد/هزینه و پنج سند اخیر + `AdminScreens.Accounting` و `AdminScreens.Reports`; هر فهرست روی صفحهٔ جدا | `accounting.view`; دادهٔ نمودار و دفتر از مجوز مالی می‌آید؛ ثبت/برگشت/بستن دوره بر اساس `accounting.post/close`; فروش سراسری جداگانه به `reports.view_all` |
 | همهٔ نقش‌ها: offline و Sync | دادهٔ backend/desktop | SQLite بومی `Db`, مسیرهای محلی `Local`, صف `Sync`; Sync پس‌زمینه است و ورود را مسدود نمی‌کند | کش/صف کاربرمحور؛ مجوز cache از حساب جاری؛ `Local.personalDashboard()` و `redactDashboardPermissions()` پیش از نمایش محلی |
 
 این نگاشت مقصدهای اصلی و مرز دسترسی را ثبت می‌کند؛ فهرست کامل صفحه‌ها/endpointها در بخش «بخش‌ها» پایین‌تر است. وجود مسیر، به‌تنهایی اثبات برابری runtime نیست.

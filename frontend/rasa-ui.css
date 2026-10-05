@@ -1420,6 +1420,15 @@ html[data-theme="dark"] .og-title-light { display: none; }
   align-items: center; gap: 10px; padding: 10px 3px; border-bottom: 1px solid var(--border-soft);
 }
 .role-invoice-row:last-child { border-bottom: 0; }
+.accountant-fin-chart { width: 100%; height: 205px; display: block; overflow: visible; }
+.accountant-fin-chart .grid line { stroke: color-mix(in srgb, var(--border) 78%, transparent); stroke-width: 1; }
+.accountant-fin-chart .grid text, .accountant-fin-chart > text { fill: var(--muted); font-size: 10px; }
+.accountant-fin-zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 4; opacity: .75; }
+.role-ledger-entries { display: flex; flex-direction: column; }
+.role-ledger-row { display: grid; grid-template-columns: 34px minmax(90px, 1fr) minmax(95px, auto) auto; align-items: center; gap: 10px; padding: 10px 3px; border-bottom: 1px solid var(--border-soft); }
+.role-ledger-row:last-child { border-bottom: 0; }
+.role-ledger-row .role-invoice-main b { overflow-wrap: anywhere; white-space: normal; }
+.role-ledger-row .role-invoice-total { text-align: end; }
 .role-invoice-row[role="link"] { cursor: pointer; border-radius: 11px; }
 .role-invoice-row[role="link"]:hover { background: var(--surface-2); }
 .role-invoice-mark { width: 32px; height: 32px; display: inline-flex; justify-content: center; align-items: center; border-radius: 10px; color: var(--role-accent); background: var(--role-tint); }
@@ -1471,7 +1480,8 @@ html[data-theme="dark"] .og-title-light { display: none; }
   .role-card-head { align-items: flex-start; }
   .role-card-head .range-chips { width: 100%; justify-content: flex-start; }
   .role-invoice-row { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 7px; }
-  .role-invoice-row .badge { grid-column: 2 / -1; justify-self: start; }
+  .role-invoice-row .badge, .role-ledger-row .badge { grid-column: 2 / -1; justify-self: start; }
+  .role-ledger-row { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 7px; }
   .role-invoice-total { font-size: 11px; }
   .role-card-head > .role-action { max-width: 136px; }
 }

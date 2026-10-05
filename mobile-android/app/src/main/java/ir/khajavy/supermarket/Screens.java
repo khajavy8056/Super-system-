@@ -390,6 +390,10 @@ public final class Screens {
             body.addView(Ui.grid2(c,
                     Ui.kpi(c, "مطالبات مشتریان", moneyOrDash(accounts, "receivables"), "بدهی فروشگاه به دیگران: " + moneyOrDash(accounts, "payables"), Ui.AMBER),
                     Ui.kpi(c, "سود خالص ماه", moneyOrDash(accounts, "month_net_profit"), "هزینهٔ ماه: " + moneyOrDash(accounts, "month_expenses"), Ui.TEAL)));
+            if (Screens.can("accounting.view")) {
+                addIncomeExpenseChart(accounts == null ? null : accounts.optJSONArray("income_expense_trend"));
+                addRecentLedgerCard(accounts == null ? null : accounts.optJSONArray("recent_entries"));
+            }
             if (storeScope) {
                 body.addView(Ui.grid2(c,
                         Ui.kpi(c, "فروش امروز", Ui.money(d(sales, "today")), Ui.num(d(sales, "invoice_count_today")) + " فاکتور", Ui.GREEN),
@@ -442,6 +446,72 @@ public final class Screens {
                 card.addView(Ui.kv(c, Ui.fa(item.optString("invoice_number", "فاکتور")) + (time.isEmpty() ? "" : " · " + time), Ui.money(item.optDouble("total")), stColor(item.optString("status", "PAID"))));
             }
             if (allowed("invoices")) card.addView(Ui.small(c, "مشاهدهٔ همهٔ فاکتورها", () -> a.route("invoices")));
+            body.addView(card);
+        }
+        private void addIncomeExpenseChart(JSONArray trend) {
+            LinearLayout card = Ui.card(c, "درآمد و هزینه · ۷ روز اخیر");
+            LinearLayout legend = Ui.row(c);
+            View incomeSwatch = new View(c); incomeSwatch.setBackground(Ui.rounded(Ui.GREEN, 0, 3));
+            incomeSwatch.setLayoutParams(Ui.lp(Ui.dp(10), Ui.dp(10))); legend.addView(incomeSwatch);
+            TextView incomeLabel = Ui.muted(c, "درآمد"); incomeLabel.setPadding(Ui.dp(5), 0, Ui.dp(12), 0); legend.addView(incomeLabel);
+            View expenseSwatch = new View(c); expenseSwatch.setBackground(Ui.rounded(Ui.AMBER, 0, 3));
+            expenseSwatch.setLayoutParams(Ui.lp(Ui.dp(10), Ui.dp(10))); legend.addView(expenseSwatch);
+            TextView expenseLabel = Ui.muted(c, "هزینه"); expenseLabel.setPadding(Ui.dp(5), 0, 0, 0); legend.addView(expenseLabel);
+            card.addView(legend);
+            if (trend == null || trend.length() == 0) {
+                card.addView(Ui.muted(c, "دادهٔ مالی برای نمایش موجود نیست."));
+                body.addView(card);
+                return;
+            }
+            double max = 1;
+            for (int i = 0; i < trend.length(); i++) {
+                JSONObject point = trend.optJSONObject(i); if (point == null) continue;
+                max = Math.max(max, Math.max(Math.abs(point.optDouble("income")), Math.abs(point.optDouble("expenses"))));
+            }
+            LinearLayout days = Ui.row(c); days.setGravity(android.view.Gravity.BOTTOM);
+            days.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(112)));
+            for (int i = 0; i < trend.length(); i++) {
+                JSONObject point = trend.optJSONObject(i); if (point == null) continue;
+                LinearLayout column = Ui.col(c);
+                column.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+                LinearLayout.LayoutParams columnParams = Ui.weight(1);
+                columnParams.height = ViewGroup.LayoutParams.MATCH_PARENT; column.setLayoutParams(columnParams);
+                LinearLayout pair = Ui.row(c); pair.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+                pair.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(78)));
+                double income = point.optDouble("income"), expenses = point.optDouble("expenses");
+                int incomeHeight = Math.max(Ui.dp(3), (int) (Ui.dp(66) * Math.abs(income) / max));
+                int expenseHeight = Math.max(Ui.dp(3), (int) (Ui.dp(66) * Math.abs(expenses) / max));
+                View incomeBar = new View(c);
+                incomeBar.setBackground(Ui.rounded(income < 0 ? Ui.RED : Ui.GREEN, 0, 4));
+                incomeBar.setContentDescription("درآمد " + Ui.money(income));
+                incomeBar.setLayoutParams(Ui.lp(Ui.dp(8), incomeHeight)); pair.addView(incomeBar);
+                View expenseBar = new View(c);
+                expenseBar.setBackground(Ui.rounded(expenses < 0 ? Ui.VIOLET : Ui.AMBER, 0, 4));
+                expenseBar.setContentDescription("هزینه " + Ui.money(expenses));
+                expenseBar.setLayoutParams(Ui.lp(Ui.dp(8), expenseHeight)); pair.addView(expenseBar);
+                column.addView(pair);
+                String label = point.optString("label", point.optString("date"));
+                if (label.length() > 5) label = label.substring(label.length() - 5);
+                TextView day = Ui.muted(c, Ui.fa(label)); day.setTextSize(9); column.addView(day);
+                days.addView(column);
+            }
+            card.addView(days); body.addView(card);
+        }
+        private void addRecentLedgerCard(JSONArray entries) {
+            LinearLayout card = Ui.card(c, "آخرین ثبت‌های دفتر روزنامه");
+            if (entries == null || entries.length() == 0) {
+                card.addView(Ui.muted(c, "سندی برای نمایش وجود ندارد."));
+            } else {
+                for (int i = 0; i < Math.min(5, entries.length()); i++) {
+                    JSONObject entry = entries.optJSONObject(i); if (entry == null) continue;
+                    String description = entry.optString("description", "ثبت مالی");
+                    if (description.isEmpty()) description = "ثبت مالی";
+                    String subtitle = Ui.jdate(entry.optString("date")) + " · " + entry.optString("kind", "") + " · " + entry.optString("status", "");
+                    String title = "#" + Ui.fa(String.valueOf(entry.optInt("number"))) + " · " + description;
+                    card.addView(Ui.item(c, title, subtitle, Ui.money(entry.optDouble("total")), stColor(entry.optString("status")), null));
+                }
+            }
+            if (allowed("accounting")) card.addView(Ui.small(c, "دفتر حسابداری", () -> a.route("accounting")));
             body.addView(card);
         }
         private void addAnnouncementsAndUpdates() {
