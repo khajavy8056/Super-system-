@@ -38,6 +38,8 @@ class CartIn(BaseModel):
     coupon_code: str | None = None
     customer_id: int | None = None
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 — cashier-selected campaign (validated server-side, §25)
+    campaign_id: int | None = None
 
 
 class PaymentIn(BaseModel):
@@ -60,6 +62,11 @@ class CheckoutIn(BaseModel):
     coupon_code: str | None = None
     #: §12 whole-invoice discount (absolute amount in base currency)
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 (§24) — festival picked from the POS list; the server re-validates
+    campaign_id: int | None = None
+    #: build-496 — offline terminals reserve their locally issued next-purchase code
+    #: so queued checkouts can create the exact same coupon on the server.
+    client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
 
@@ -72,7 +79,8 @@ def kiosk_config(db: Session = Depends(get_db),
     """Config the POS terminal needs to enter kiosk mode (any logged-in user)."""
     shortcut = pos_svc.get_setting(db, "pos.kiosk_shortcut", "Ctrl+Shift+L")
     store = pos_svc.get_setting(db, "printer.header", "") or "فروشگاه"
-    return {"shortcut": shortcut, "store_name": store.split("\n")[0]}
+    return {"shortcut": shortcut, "store_name": store.split("\n")[0],
+            "tax_rate": pos_svc.get_setting(db, "pos.tax_rate", "0")}
 
 
 class KioskUnlockIn(BaseModel):
@@ -119,6 +127,32 @@ def batch_options(product_id: int, db: Session = Depends(get_db), user: User = D
                                 "options": [o.as_dict() for o in options]})
 
 
+class CampaignListIn(BaseModel):
+    amount: Decimal = Field(ge=0)
+    product_ids: list[int] | None = None
+    line_amounts: dict[int, Decimal] | None = None
+    customer_id: int | None = None
+    include_auto_apply: bool = True
+
+
+@router.post("/campaigns/eligible")
+def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("pos.sell"))):
+    """build-481 (§24) — the structured festival list a cashier chooses from.
+
+    Returns ONLY campaigns whose conditions already hold for this basket —
+    active, inside their window, over the minimum purchase, usage slots left.
+    Selecting one is a convenience; checkout re-validates everything (§25).
+    """
+    from ..services import coupons as coupon_svc
+    rows = coupon_svc.eligible_campaigns(
+        db, amount=Decimal(str(body.amount)), product_ids=body.product_ids,
+        line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
+        customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
+    )
+    return {"campaigns": rows, "count": len(rows)}
+
+
 @router.post("/cart/validate")
 def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     try:
@@ -154,7 +188,29 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depe
             except coupon_svc.CouponError as exc:
                 coupon = {"code": body.coupon_code, "ok": False,
                           "error_code": exc.code, "message": exc.message}
-        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon})
+        campaign = None
+        if body.campaign_id:
+            from ..services import coupons as camp_svc
+            line_amounts: dict[int, Decimal] = {}
+            for i in items:
+                line_amounts[i.product_id] = line_amounts.get(i.product_id, Decimal("0")) + (
+                    (i.unit_sell_price or Decimal("0")) * i.quantity - i.discount)
+            try:
+                ev = camp_svc.evaluate_campaign(
+                    db, campaign_id=body.campaign_id,
+                    amount=Decimal(str(totals["subtotal"])),
+                    product_ids=[i.product_id for i in items], line_amounts=line_amounts,
+                    customer_id=body.customer_id)
+                campaign = {"campaign_id": ev["campaign_id"], "name": ev["name"],
+                            "discount": float(ev["discount"]), "ok": True,
+                            "stackable": ev["stackable"]}
+                totals["campaign_discount"] = float(ev["discount"])
+                totals["subtotal"] = float(Decimal(str(totals["subtotal"])) - ev["discount"])
+            except camp_svc.CampaignError as exc:
+                campaign = {"campaign_id": body.campaign_id, "ok": False,
+                            "error_code": exc.code, "message": exc.message}
+        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals,
+                                    "coupon": coupon, "campaign": campaign})
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -201,6 +257,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             tax_rate=body.tax_rate,
             coupon_code=body.coupon_code,
             invoice_discount=body.invoice_discount,
+            campaign_id=body.campaign_id,
         )
 
         # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
@@ -210,7 +267,8 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
 
         customer = db.get(_C, customer_id) if customer_id else None
         issued = coupon_svc.issue_next_purchase_coupon(
-            db, invoice=invoice, customer=customer, user=user)
+            db, invoice=invoice, customer=customer, user=user,
+            preferred_codes=body.client_issued_coupon_codes)
 
         from ..services import sms as sms_svc
         # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
@@ -251,6 +309,9 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             ok, msg = hw_svc.open_cash_drawer(db)
             out["drawer"] = {"ok": ok, "message": msg}
         out["coupon_code"] = body.coupon_code
+        # build-481: do NOT echo body.campaign_id over the applied one — for an
+        # auto-applied threshold festival the request carries None while the
+        # invoice really was discounted by a campaign.
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
                                  if issued.valid_until else None} if issued else None)
@@ -303,6 +364,12 @@ def _invoice_out(inv) -> dict:
         "status": inv.status,
         "print_status": inv.print_status,
         "customer_id": inv.customer_id,
+        # build-481 (§26) — which festival/coupon granted what, frozen at sale time
+        "campaign_id": getattr(inv, "campaign_id", None),
+        "campaign_name": getattr(inv, "campaign_name", None),
+        "benefit_source": getattr(inv, "benefit_source", "NONE"),
+        "benefit_amount": float(getattr(inv, "benefit_amount", 0) or 0),
+        "applied_coupon_code": getattr(inv, "applied_coupon_code", None),
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": float(it.qty),
              "qty_display": float(it.qty),

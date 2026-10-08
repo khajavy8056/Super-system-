@@ -18,11 +18,13 @@
   document.documentElement.classList.add("m-shell");
 
   const $ = (s) => document.querySelector(s);
-  const TABS = [["dashboard", "خانه"], ["pos", "فروش"], ["products", "کالاها"], ["inventory", "انبار"], ["__more", "بیشتر"]];
+  /* build-483 — نوار پایین موبایل مطابق درخواست مالک: داشبورد، فروش/صندوق، موجودی،
+     خرید/دریافت، بیشتر (بقیهٔ بخش‌ها داخل کشوی «بیشتر»). */
+  const TABS = [["dashboard", "داشبورد"], ["pos", "فروش"], ["inventory", "موجودی"], ["batches", "دریافت"], ["__more", "بیشتر"]];
   const GROUPS = [
     ["فروش و مشتری", ["pos", "invoices", "customers", "marketing"]],
     ["کالا و انبار", ["products", "batches", "inventory"]],
-    ["مدیریت", ["dashboard", "reports", "accounting", "users", "audit"]],
+    ["مدیریت", ["dashboard", "reports", "insights", "accounting", "users", "audit"]],
     ["سیستم", ["settings", "hardware", "diagnostics", "support"]],
   ];
   const ICON_MORE = '<path d="M4 6h16M4 12h16M4 18h16"/>';
@@ -66,9 +68,9 @@
   function renderTabs() {
     const nav = $("#m-tabbar"); if (!nav) return;
     const perm = Object.fromEntries(NAV.map((n) => [n[0], n[2]]));
-    nav.innerHTML = TABS.map(([k, l]) => {
-      if (k !== "__more" && !can(perm[k])) return `<button class="m-tab" disabled style="opacity:.3">${tabIcon(k)}<span>${l}</span></button>`;
-      const active = k === "__more" ? !TABS.some((t) => t[0] === state.view) : state.view === k;
+    const vis = TABS.filter(([k]) => k === "__more" || (typeof canView === "function" ? canView(k) : canNav(perm[k])));
+    nav.innerHTML = vis.map(([k, l]) => {
+      const active = k === "__more" ? !vis.some((t) => t[0] === state.view) : state.view === k;
       return `<button class="m-tab ${active ? "active" : ""}" data-k="${k}">${tabIcon(k)}<span>${l}</span>${k === "__more" ? `<i class="m-badge hidden" id="m-more-badge"></i>` : ""}</button>`;
     }).join("");
     nav.querySelectorAll(".m-tab[data-k]").forEach((b) => b.onclick = () => (b.dataset.k === "__more" ? drawer(true) : go(b.dataset.k)));
@@ -80,7 +82,7 @@
     dr.innerHTML = `
       <div class="m-drawer-head"><img src="/icons/logo.svg" alt=""><div><b>${esc(store)}</b><span>${esc(state.user ? state.user.full_name || state.user.username : "")}</span></div></div>
       <div class="m-drawer-list">
-        ${GROUPS.map(([title, keys]) => { const items = keys.filter((k) => by[k] && can(by[k][2])); return items.length ? `<div class="m-sec">${title}</div>` + items.map((k) => `<button class="nav-item ${state.view === k ? "active" : ""}" data-k="${k}">${icon(by[k][3], 20)}<span>${esc(by[k][1])}</span>${k === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}</button>`).join("") : ""; }).join("")}
+        ${GROUPS.map(([title, keys]) => { const items = keys.filter((k) => by[k] && (typeof canView === "function" ? canView(k) : canNav(by[k][2]))); return items.length ? `<div class="m-sec">${title}</div>` + items.map((k) => `<button class="nav-item ${state.view === k ? "active" : ""}" data-k="${k}">${icon(by[k][3], 20)}<span>${esc(by[k][1])}</span>${k === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}</button>`).join("") : ""; }).join("")}
         <div class="m-sec">گوشی</div>
         <button class="nav-item" data-act="phone"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">${ICON_PHONE}</svg><span>حالت سریع گوشی (آفلاین / شمارش)</span></button>
         ${NATIVE ? `<button class="nav-item" data-act="unpair">${icon("scanner", 20)}<span>اتصال دوباره به رایانه (QR)</span></button>` : ""}

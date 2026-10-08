@@ -12,7 +12,9 @@
   const iconOf = (i) => KIND_ICON[i.kind] || GROUP_ICON[i.group] || "chart";
   const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
   const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"], 4: ["نکته", "badge-gray"] };
-  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
+  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده",
+                   RESOLVED: "خودکار بسته شد", SUPERSEDED: "جایگزین‌شده",
+                   DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
   const ico = (k, s) => (typeof ICONS !== "undefined" && ICONS[k]) ? icon(k, s) : icon("chart", s);
 
   // ---------------------------------------------------------------- nav registration
@@ -32,15 +34,44 @@
 
   // ---------------------------------------------------------------- shared card
   function gainLine(i) {
+    const r = i.result || {};
+    const verdict = r.verdict || r.outcome_class || "";
+    // build-489 (§۳۶–۳۷) — «تاثیر» باید صادقانه برچسب بخورد: فرصت ازدست‌رفته هرگز
+    // ضرر/منفی نشان داده نمی‌شود؛ «منفی» فقط برای ضرر واقعیِ مستند (NEGATIVE_OUTCOME).
+    if (verdict === "MISSED_OPPORTUNITY" || (r.missed_gain != null && i.measured_gain == null)) {
+      return `<span class="ins-gain muted" title="فرصت ازدست‌رفته ضرر نیست و امتیاز منفی ندارد (§۳۷)">◇ فرصت ازدست‌رفته${r.missed_gain != null ? ` — سود ممکن: ${money(r.missed_gain)}` : ""} (ضرر نیست)</span>`;
+    }
     if (i.status === "MEASURED" || (i.status === "ACCEPTED" && i.measured_gain != null)) {
-      const g = Number(i.measured_gain || 0), r = i.result || {}, gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
-      return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}اثر واقعی: ${money(Math.abs(g))}</span>`;
+      const g = Number(i.measured_gain || 0), gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
+      if (g < 0 && verdict !== "NEGATIVE_OUTCOME") {
+        return `<span class="ins-gain muted">◇ بدون نتیجهٔ منفی قابل انتساب — در انتظار شواهد ضرر</span>`;
+      }
+      if (g < 0) {
+        return `<span class="ins-gain err" title="ضرر واقعی، قابل اندازه‌گیری و قابل انتساب — با شواهد (§۳۷)">▼ ضرر واقعی (مستند): ${money(Math.abs(g))}${gr != null ? ` · رشد سود ${pctTxt(gr)}` : ""}</span>`;
+      }
+      return `<span class="ins-gain ok">▲ ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}سود واقعی: ${money(g)}</span>`;
+    }
+    if (verdict === "NEGATIVE_OUTCOME") {
+      return `<span class="ins-gain err">▼ ضرر واقعی (مستند): ${money(Math.abs(r.adjusted_gain || 0))}</span>`;
     }
     const fc = (i.evidence || {}).forecast;
     if (fc && Number(fc.gain_month) > 0) return `<span class="ins-gain muted">پیش‌بینی سود ماهانه: <b>${money(fc.gain_month)}</b> <span class="ins-band">(${money(fc.low_month)} تا ${money(fc.high_month)}) · اطمینان ${CONF[fc.confidence] || "—"}</span>`;
     return Number(i.expected_gain) > 0 ? `<span class="ins-gain muted">برآورد اثر: ${money(i.expected_gain)} / ماه</span>` : "";
   }
 
+  // build-490 (§۶) — تصویر واقعی محصول: اگر Insight به کالای مشخصی مربوط باشد، تصویر واقعی
+  // همان کالا (از رکورد Product با شناسهٔ واقعی) جایگزین آیکون عمومی می‌شود؛ بدون تصویر → Fallback.
+  function prodImgs(i) {
+    const ps = (i.products || []).filter((p) => p && (p.image_url || p.gallery));
+    return ps.map((p) => {
+      let src = String(p.image_url || "").trim();
+      if (!src && p.gallery) {
+        try { const g = JSON.parse(p.gallery); src = Array.isArray(g) && g.length ? String(g[0]) : ""; } catch (_) {}
+      }
+      if (!src || src.startsWith("pack://")) return "";
+      return `<img class="ins-prod-img" src="${esc(src)}" alt="${esc(p.name || "")}" loading="lazy" onerror="this.remove()">`;
+    }).filter(Boolean).slice(0, 3);
+  }
   function card(i, compact) {
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
     /* v1.0.0 (RASA) — «چرا این پیشنهاد آمد؟» — مالک باید بداند چه چیزی دیده شده و
@@ -49,7 +80,7 @@
     const why = String(i.narrative || (i.evidence && (i.evidence.summary || i.evidence.reason)) || "").trim();
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
-      <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
+      <header><span class="ins-ic">${prodImgs(i).join("") || ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}
@@ -101,10 +132,13 @@
       { name: "سود روزانه — قبل", color: "#8a94a6", points: [...bef, ...aft.map(() => null)], area: true },
       { name: "سود روزانه — بعد از اجرا", color: g >= 0 ? "#2f9e6b" : "#e5484d", points: [...bef.map(() => null), ...aft], area: true, width: 2.6 },
     ], { labels: [...bef.map((_, k) => (k === 0 ? "قبل" : null)), ...aft.map((_, k) => (k === 0 ? "اجرا ▶" : k === aft.length - 1 ? "امروز" : null))], height: 150 }) : "";
-    return `<div class="ab2 ${pending ? "" : g >= 0 ? "ok" : "err"}">
+    const vdict = r.verdict || r.outcome_class || "";
+    const missed = vdict === "MISSED_OPPORTUNITY" || (pending && r.missed_gain != null);
+    const realLoss = vdict === "NEGATIVE_OUTCOME";
+    return `<div class="ab2 ${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">
       <div class="ab2-kpis">
         <div><span class="muted">رشد سود</span><b class="${growth == null ? "" : growth >= 0 ? "ok" : "err"}">${pending ? "…" : pctTxt(growth)}</b><span class="muted">${r.control_ratio && r.control_ratio !== 1 ? `پس از حذف روند فروشگاه (${fa(Math.round((r.control_ratio - 1) * 100))}٪)` : "نسبت به قبل از اجرا"}</span></div>
-        <div><span class="muted">اثر بر سود</span><b class="${pending ? "" : g >= 0 ? "ok" : "err"}">${pending ? "در حال سنجش" : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
+        <div><span class="muted">اثر بر سود</span><b class="${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">${missed ? "فرصت ازدست‌رفته (ضرر نیست)" : pending ? "در حال سنجش" : (realLoss && g < 0) ? "−" + money(Math.abs(g)) : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — قبل</span><b>${f(b.value)}</b><span class="muted">${fa(b.window_days || b.days || 28)} روز · ${money(Math.round(r.base_profit_per_day || 0))}/روز</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — بعد</span><b>${f(r.value)}</b><span class="muted">${fa(r.elapsed_days || 0)} روز · ${money(Math.round(r.post_profit_per_day || 0))}/روز${r.change_pct != null ? ` · ${pctTxt(r.change_pct)}` : ""}</span></div>
       </div>
@@ -252,7 +286,13 @@
       <div class="ins-kpi"><span class="muted">سود ماهانهٔ پایه (روند فعلی)</span><b>${money(b.profit_month)}</b><span class="muted">روند ${m.trend_pct_per_week >= 0 ? "+" : ""}${fa(m.trend_pct_per_week)}٪ در هفته · ${fa(m.weeks_of_history)} هفته سابقه</span></div>
       <div class="ins-kpi"><span class="muted">با اجرای ${fa(pl.open)} پیشنهاد باز</span><b class="ok">${money(pl.profit_month)}</b><span class="muted">+${money(pl.gain_month)} (${pl.growth_pct != null ? fa(pl.growth_pct) + "٪" : "—"}) در ماه</span></div>
       <div class="ins-kpi"><span class="muted">بازهٔ اطمینان ماهانه</span><b>${money(pl.low_month)} – ${money(pl.high_month)}</b><span class="muted">۹۰ روز: +${money(pl.gain_horizon)}</span></div>
-      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>`;
+      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>
+      ${m.outcomes ? `<div class="outcome-strip" title="ارزیابی صادقانهٔ مدل (§۳۶–۳۷): فرصت ازدست‌رفته ضرر نیست">
+        <span class="oc oc-pos">سود واقعی <b>${fa(m.outcomes.positive || 0)}</b></span>
+        <span class="oc oc-neu">بدون اثر <b>${fa(m.outcomes.neutral || 0)}</b></span>
+        <span class="oc oc-miss">فرصت ازدست‌رفته <b>${fa(m.outcomes.missed || 0)}</b></span>
+        <span class="oc oc-neg">ضرر واقعی <b>${fa(m.outcomes.negative || 0)}</b></span>
+      </div>` : ""}`;
     const wk = p.history_weeks.slice(-14), fc = p.forecast;
     const labels = [...wk.map((w, i) => (i % 2 ? "" : faMonthDay(w.week_start))), ...fc.map((f, i) => (i % 2 ? "" : faMonthDay(f.day)))];
     const hist = [...wk.map((w) => w.profit), ...fc.map(() => null)], base = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_baseline)], plan = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_plan)];
@@ -326,7 +366,39 @@
         const failed = (r.executed || []).filter((x) => !x.ok);
         toast(failed.length ? `اجرا شد؛ ${fa(failed.length)} اقدام ناموفق: ${failed.map((x) => x.error).join("، ")}` : "اجرا شد — اندازه‌گیری آغاز شد", failed.length ? "err" : "ok");
         if (window.Sfx) Sfx.play("success");
-        closeModal(); refreshCurrent();
+        // build-481 — «اجرا» باید نتیجهٔ واقعی بگوید، نه فقط تیک سبز: هر اقدام
+        // با وضعیت اجرا و بازبینی‌اش نمایش داده می‌شود، و اگر ادامهٔ کار در
+        // صفحه‌ای است (مثلاً ورود کالا برای محصول کم‌موجودی) همان‌جا می‌رود.
+        const nav = (r.executed || []).map((x) => (x.result && x.result.navigate) || null).find(Boolean);
+        const done = (r.executed || []).filter((x) => x.ok && x.status !== "SKIPPED");
+        if (done.length && done.every((x) => x.verify || x.status === "EXECUTED_UNVERIFIED")) {
+          const rows = (r.executed || []).map((x) => `<tr>
+            <td>${esc(x.type)}</td>
+            <td><span class="badge ${x.ok ? (x.status === "SKIPPED" ? "badge-amber" : "badge-green") : "badge-red"}">${esc(x.status)}</span></td>
+            <td class="muted">${esc(x.verify || x.error || "")}</td></tr>`).join("");
+          openModal(`<h3>نتیجهٔ اجرا</h3>
+            <div class="table-wrap"><table><thead><tr><th>اقدام</th><th>وضعیت</th><th>بازبینی</th></tr></thead>
+            <tbody>${rows}</tbody></table></div>
+            ${nav ? `<p class="muted" style="margin-top:10px">ادامهٔ کار: فرم ${nav.screen === "inventory_receive" ? "ورود کالا" : esc(nav.screen)} با کالاهای موردنظر از پیش انتخاب می‌شود.</p>` : ""}
+            <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+              ${nav && nav.screen === "inventory_receive" ? `<button class="btn btn-primary" id="ins-nav-go">رفتن به ورود کالا</button>` : ""}
+              <button class="btn" onclick="closeModal()">بستن</button></div>`);
+          const nb = $("#ins-nav-go");
+          if (nb) nb.onclick = () => {
+            closeModal();
+            // مسیر واقعیِ «تدارک کالا»: انبار ← ورود کالا، با محصول از پیش انتخاب‌شده
+            if (window.go) { window.go("inventory"); }
+            setTimeout(() => {
+              if (typeof window.showGoodsReceive === "function") {
+                window.showGoodsReceive((nav.product_ids || []).slice(0, 5));
+              } else {
+                window.__pendingReceiveProducts = (nav.product_ids || []).slice(0, 5);
+              }
+            }, 250);
+          };
+        } else {
+          closeModal(); refreshCurrent();
+        }
       } catch (e) { toast(e.message, "err"); $("#ins-go").disabled = false; }
     };
   }

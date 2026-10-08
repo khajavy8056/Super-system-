@@ -967,6 +967,45 @@ ANALYZERS.update(_pro.ANALYZERS_PRO)
 KIND_LABELS.update(_pro.KIND_LABELS_PRO)
 GROUPS = _pro.GROUPS
 
+# build-489 — دیدن هر پیشنهاد به دسترسی شغلی کاربر گره می‌خورد (§۳۰ «هوش در‌خور عنوان»):
+# صندوق‌دار/فروشنده نباید پیشنهادهای مالی، قیمت‌گذاری و عملکرد پرسنلی را ببیند.
+# پیش‌فرض باز است؛ فقط kindهای زیر محدودند (هر کدام یکی از دسترسی‌ها کافی است).
+KIND_PERMS: dict[str, tuple[str, ...]] = {
+    "CASHFLOW": ("accounting.view",),
+    "EXPENSE_SPIKE": ("accounting.view",),
+    "LOSS_PREV": ("accounting.view",),
+    "RECEIVABLES_AGING": ("accounting.view", "customers.ledger"),
+    "PRICE_GAP": ("pricing.manage", "pricing.view_cost"),
+    "PROFIT_PARETO": ("pricing.manage", "pricing.view_cost"),
+    "NEGATIVE_MARGIN": ("pricing.manage", "pricing.view_cost"),
+    "DISCOUNT_LEAK": ("pricing.manage", "marketing.manage"),
+    "PRICE_ROUNDING": ("pricing.manage",),
+    "ELASTICITY": ("pricing.manage", "pricing.view_cost"),
+    "CATEGORY_MARGIN": ("pricing.manage", "pricing.view_cost"),
+    "CASHIER_PERF": ("performance.view_all",),
+    "CASH_DIFF": ("performance.view_all", "pos.void_paid"),
+    "DATA_HYGIENE": ("settings.manage", "audit.view"),
+    "SMS_ROI": ("marketing.manage", "accounting.view"),
+    "RETURNS_PRODUCT": ("inventory.adjust", "reports.view_all"),
+    "CREDIT_RISK": ("customers.ledger", "accounting.view"),
+}
+
+#: build-490 (§۵) — پیش‌فرض گروه‌ها: kindهای بدون ورودی صریح از اینجا تصمیم می‌گیرند
+#: (انبار = کار عملیات انبار؛ قیمت/سود = دید قیمت/سود) — توسعه‌پذیر برای kindهای آینده.
+GROUP_PERMS: dict[str, tuple[str, ...]] = {
+    "stock": ("inventory.adjust", "batches.manage", "inventory.stocktake"),
+    "price": ("pricing.manage", "pricing.view_cost"),
+}
+
+
+def kind_visible(kind: str, codes: set[str]) -> bool:
+    """آیا این kind برای کاربری با این مجموعه دسترسی‌ها دیدنی است؟ (§۵ — هوش در‌خور شغل)"""
+    need = KIND_PERMS.get(kind)
+    if need is None:
+        need = GROUP_PERMS.get(group_of(kind), ())
+    return (not need) or any(p in codes for p in need)
+
+
 
 # ----------------------------------------------------------------------------- run / upsert
 def _safe_gain(value) -> tuple[float, str | None]:
@@ -1010,6 +1049,42 @@ def _dq_audit_transition(db: Session, verdict: str, summary: dict) -> None:
                                  description="last data-quality verdict seen by insights.run"))
 
 
+#: build-481 (steps 14–15/41–42) — «کمتر پیشنهاد بده، اما درست‌تر».  Before a
+#: draft is allowed to become a NEW card it must clear these gates.  A draft the
+#: manager cannot act on, or one whose impact cannot justify a minute of their
+#: attention, is noise — and noise is what makes people ignore the whole screen.
+#: ``insights.min_gain`` (SystemSetting) adds a store-specific money floor.
+def _quality_gate(db: Session, d: Draft, gain: float, confidence: str) -> str | None:
+    """Return a skip-reason (never shown as a card) or None to publish."""
+    # Informational cards (dashboard facts like «امروز می‌دانستید؟») ship by design:
+    # they ask the shop for nothing and have no measurable gain — the suggestion
+    # quality rules do not govern content. Everything else is a suggestion and
+    # must pass every rule below.
+    if d.kind in ("SURPRISE",):
+        return None
+    if not d.actions:
+        return "no_action"          # advice without an executable next step
+    if not (d.evidence or {}).get("rows") and not [k for k in (d.evidence or {})
+                                                   if k not in ("forecast", "dq", "expected_gain_raw")]:
+        return "no_evidence"        # a claim the manager cannot check
+    try:
+        min_gain = float(_setting(db, "insights.min_gain", "0") or 0)
+    except (TypeError, ValueError):
+        min_gain = 0.0
+    if min_gain and gain < min_gain:
+        return "below_min_gain"
+    # a nice-to-have with zero measurable impact is chatter, not advice
+    if d.priority >= 4 and gain <= 0:
+        return "zero_impact_low_priority"
+    return None
+
+
+def _setting(db: Session, key: str, default: str = "") -> str:
+    from ..models import SystemSetting
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+    return row.value if row else default
+
+
 def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     from . import data_quality as dq
     dq_report = dq.run_all(db)
@@ -1028,6 +1103,8 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     created = refreshed = 0
     errors: dict[str, str] = {}
     seen: set[tuple[str, str]] = set()
+    ran_ok: set[str] = set()      # kinds that completed this run (auto-resolve safety)
+    suppressed: dict[str, int] = {}
     from . import forecast   # v3.1 — learned per-kind calibration of the expected gain
     cal = forecast._load_cal(db)
     for kind, fn in ANALYZERS.items():
@@ -1075,8 +1152,16 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
                                        .order_by(Insight.id)).scalars().all()
                     row = dupes[0] if dupes else None
                     for extra in dupes[1:]:
-                        extra.status = "EXPIRED"
+                        # build-481 — a twin row is not «expired», it is absorbed
+                        # by the surviving card: SUPERSEDED says exactly that.
+                        extra.status = "SUPERSEDED"
+                        extra.resolved_at = ctx.now_utc
+                        extra.resolution = json.dumps({"reason": "superseded_by", "detail": row.id if row else None,
+                                                       "at": ctx.now_utc.isoformat()}, ensure_ascii=False, default=str)
                     if row:
+                        # An existing open card is never killed by the quality
+                        # gate (it was good enough when created) and the feed
+                        # hygiene above runs regardless of the gate.
                         if row.status == "NEW":
                             row.title, row.body, row.priority = d.title, d.body, d.priority
                             row.evidence, row.actions = json.dumps(d.evidence, ensure_ascii=False, default=str), json.dumps(d.actions, ensure_ascii=False)
@@ -1084,21 +1169,48 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
                         row.last_seen_at = ctx.now_utc
                         refreshed += 1
                     else:
+                        # build-481 (step 15) — quality gate for BRAND-NEW cards:
+                        # publish-or-drop. «کمتر پیشنهاد بده، اما درست‌تر».
+                        skip = _quality_gate(db, d, float(c["gain"]), c.get("confidence", ""))
+                        if skip:
+                            suppressed[skip] = suppressed.get(skip, 0) + 1
+                            continue
                         db.add(Insight(kind=d.kind, dedupe_key=d.dedupe_key, title=d.title, body=d.body, priority=d.priority,
                                        evidence=json.dumps(d.evidence, ensure_ascii=False, default=str), actions=json.dumps(d.actions, ensure_ascii=False),
                                        expected_gain=Decimal(str(round(d.expected_gain))), metric=json.dumps(d.metric, ensure_ascii=False),
                                        status="NEW", last_seen_at=ctx.now_utc))
                         created += 1
+                ran_ok.add(kind)   # the whole loop finished ⇒ this kind may resolve cards
 
         except Exception as exc:
             log.exception("analyzer %s failed", kind)
             errors[kind] = str(exc)
             continue
-    # auto-close stale NEW insights that no analyzer re-confirmed
+    # build-481 (steps 6–9) — AUTO-RESOLVE: the analyzer for this card ran to
+    # completion in THIS run and did not re-confirm it ⇒ the underlying condition
+    # no longer exists.  The manager stocked the shelf in Inventory without ever
+    # opening the card; the product sold; the customer became eligible again —
+    # the card leaves the active list *now*, not three days later, with a
+    # machine-readable reason.  A kind that did not run (filtered run, crashed
+    # analyzer) must NEVER resolve its cards — silence is not evidence.
+    for row in db.execute(select(Insight).where(Insight.status.in_(["NEW", "SNOOZED"]))).scalars():
+        if (row.kind, row.dedupe_key) in seen or (kinds and row.kind not in kinds):
+            continue
+        if row.kind in ran_ok:
+            row.status = "RESOLVED"
+            row.resolved_at = ctx.now_utc
+            row.resolution = json.dumps(
+                {"reason": "condition_cleared",
+                 "detail": "analyzer re-ran and the problem this card described no longer holds",
+                 "at": ctx.now_utc.isoformat()}, ensure_ascii=False, default=str)
+    # stale fallback: cards whose kind never ran again (filtered runs, old rows)
     stale_before = ctx.now_utc - timedelta(days=STALE_DAYS)
     for row in db.execute(select(Insight).where(Insight.status == "NEW", Insight.last_seen_at < stale_before)).scalars():
-        if (row.kind, row.dedupe_key) not in seen and (not kinds or row.kind in kinds):
+        if (row.kind, row.dedupe_key) not in seen and (not kinds or row.kind in kinds) and row.kind not in ran_ok:
             row.status = "EXPIRED"
+            row.resolved_at = ctx.now_utc
+            row.resolution = json.dumps({"reason": "stale", "at": ctx.now_utc.isoformat()},
+                                        ensure_ascii=False, default=str)
     # wake snoozed
     for row in db.execute(select(Insight).where(Insight.status == "SNOOZED", Insight.snoozed_until <= ctx.now_utc)).scalars():
         row.status = "NEW"
@@ -1109,7 +1221,7 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
     except Exception:  # pragma: no cover - defensive
         log.exception("measure_all failed after a successful run")
     return {"created": created, "refreshed": refreshed, "errors": errors, "invoices_analyzed": len(ctx.invoices), "window_days": days,
-            "status": "DEGRADED" if dq_degraded else "OK", "dq": dq_summary}
+            "suppressed": suppressed, "status": "DEGRADED" if dq_degraded else "OK", "dq": dq_summary}
 
 
 # ----------------------------------------------------------------------------- metrics / A-B
@@ -1173,13 +1285,20 @@ MEASUREMENT_SPECS: dict[str, dict] = {
 }
 
 
-def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None) -> str:
-    """Terminal, honest verdict for one measurement.
+def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None,
+                        realized_cost: float = 0.0) -> str:
+    """Terminal, honest verdict for one measurement (§۳۶–۳۷ — build-488).
 
     NOT_MEASURABLE — no contract for this metric (never invent a gain).
     INSUFFICIENT_DATA — window too short to say anything yet.
-    NEGATIVE_OUTCOME / POSITIVE_OUTCOME / NEUTRAL_OUTCOME — decided by the
-    sign of the adjusted gain once the data is sufficient.
+    POSITIVE_OUTCOME — measurable, evidenced positive result.
+    NO_IMPACT — nothing moved either way; NOT a negative score (§۳۷ Neutral).
+    MISSED_OPPORTUNITY — سودی که می‌توانست اتفاق بیفتد ولی نیفتاد (پیش‌بینی
+        مشتری محقق نشد، اقدام اجرا نشد …). طبق دستور صریح مالک **ضرر نیست** و
+        هیچ امتیاز منفی برای مدل ثبت نمی‌شود (§۳۷).
+    NEGATIVE_OUTCOME — فقط ضرر واقعی، قابل اندازه‌گیری و قابل انتساب به تصمیم
+        AI: یعنی در پنجرهٔ اندازه‌گیری واقعاً تخفیف/هزینه‌ای داده شده باشد
+        (realized_cost > 0) و نتیجهٔ خالص منفی باشد — با Evidence.
     """
     if spec is None:
         return "NOT_MEASURABLE"
@@ -1189,9 +1308,46 @@ def measurement_verdict(gain: float | None, *, enough: bool, spec: dict | None) 
         return "NOT_MEASURABLE"
     if gain > 0:
         return "POSITIVE_OUTCOME"
-    if gain < 0:
-        return "NEGATIVE_OUTCOME"
-    return "NEUTRAL_OUTCOME"
+    if gain == 0:
+        return "NO_IMPACT"
+    # gain < 0: فقط وقتی «ضرر واقعی» است که هزینه/تخفیف واقعی پرداخت شده باشد؛
+    # وگرنه «فرصت ازدست‌رفته» است، نه ضرر (مثال مالک: مشتری پیش‌بینی‌شده نیامد).
+    return "NEGATIVE_OUTCOME" if realized_cost > 0 else "MISSED_OPPORTUNITY"
+
+
+def _realized_action_cost(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
+    """تخفیف/هزینهٔ واقعاً داده‌شده در پنجرهٔ اندازه‌گیری روی دامنهٔ اقدام (§۳۷).
+
+    منبع: تخفیف ردیف فاکتور + استفاده از کوپن/کمپین — همه از دادهٔ واقعی (§۵۲).
+    خروجی: {items, coupons, campaigns, total} — برای Evidence ضرر.
+    """
+    from ..models import CampaignRedemption, CouponRedemption
+    paid = and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
+    pids = spec.get("product_ids") or ([spec["product_id"]] if spec.get("product_id") else None)
+    cids = spec.get("customer_ids")
+    item_q = select(func.coalesce(func.sum(InvoiceItem.discount), 0)).join(
+        Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid)
+    if pids:
+        item_q = item_q.where(InvoiceItem.product_id.in_(pids))
+    if cids:
+        item_q = item_q.where(Invoice.customer_id.in_(cids))
+    items = _f(db.execute(item_q).scalar_one())
+    # «قابل انتساب» (§۳۷): هزینه/تخفیف فقط در دامنهٔ همین اقدام شمرده می‌شود،
+    # نه کل فروشگاه. برای دامنهٔ محصول: تخفیف همان محصول؛ برای دامنهٔ مشتری:
+    # تخفیف/کوپن/کمپین همان مشتری‌ها؛ برای دامنهٔ فروشگاه: همه.
+    coupons = campaigns = 0.0
+    if not pids:
+        coup_q = select(func.coalesce(func.sum(CouponRedemption.amount), 0)).where(
+            CouponRedemption.created_at >= start, CouponRedemption.created_at < end)
+        camp_q = select(func.coalesce(func.sum(CampaignRedemption.amount), 0)).where(
+            CampaignRedemption.created_at >= start, CampaignRedemption.created_at < end)
+        if cids:
+            coup_q = coup_q.where(CouponRedemption.customer_id.in_(cids))
+            camp_q = camp_q.where(CampaignRedemption.customer_id.in_(cids))
+        coupons = _f(db.execute(coup_q).scalar_one())
+        campaigns = _f(db.execute(camp_q).scalar_one())
+    return {"items": round(items), "coupons": round(coupons),
+            "campaigns": round(campaigns), "total": round(items + coupons + campaigns)}
 
 
 def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
@@ -1414,14 +1570,25 @@ def measure(db: Session, insight: Insight) -> dict | None:
             verdict = "INSUFFICIENT_DATA"
         elif improvement > 0:
             verdict = "POSITIVE_OUTCOME"
-        elif improvement < 0:
-            verdict = "NEGATIVE_OUTCOME"
+        elif improvement == 0:
+            verdict = "NO_IMPACT"
         else:
-            verdict = "NEUTRAL_OUTCOME"
+            # §۳۷ — نرخ بدتر شده ولی ضرر مالی قابل اندازه‌گیری نیست؛ این
+            # «فرصت ازدست‌رفته» است و امتیاز منفی ثبت نمی‌شود.
+            verdict = "MISSED_OPPORTUNITY"
         money_gain = None
     else:
         money_gain = adj_gain if enough else None
-        verdict = measurement_verdict(adj_gain, enough=enough, spec=mspec)
+        cost_info = _realized_action_cost(db, spec, start, end)
+        realized_cost = cost_info["total"] if enough else 0.0
+        verdict = measurement_verdict(adj_gain, enough=enough, spec=mspec,
+                                      realized_cost=realized_cost)
+        if verdict == "MISSED_OPPORTUNITY":
+            # نه ضرر است نه سود: measured_gain عمداً NULL می‌ماند تا هیچ‌جا
+            # (کالیبراسیون، امتیاز مدل، گزارش) به‌عنوان ضرر دیده نشود (§۳۷).
+            money_gain = None
+        elif verdict == "NO_IMPACT":
+            money_gain = 0.0 if enough else None
     gain = money_gain if money_gain is not None else 0.0
     # v3.2 — growth in percent (what managers actually quote): profit rate after vs. before,
     # and the same after removing the store-wide trend (the honest number).
@@ -1434,6 +1601,10 @@ def measure(db: Session, insight: Insight) -> dict | None:
                                  "base_profit_per_day": round(base_rate), "post_profit_per_day": round(post_rate),
                                  "daily": _daily_series(db, spec, start, end, base),
                                  "raw_gain": round(raw_gain), "adjusted_gain": round(adj_gain),
+                                 "outcome_class": verdict,
+                                 "realized_action_cost": (cost_info if mspec.get("gain_source") != "none" else {"items": 0, "coupons": 0, "campaigns": 0, "total": 0}),
+                                 "missed_gain": (round(abs(adj_gain)) if verdict == "MISSED_OPPORTUNITY" and enough else None),
+                                 "loss_evidence": ({"realized_cost": cost_info, "adjusted_gain": round(adj_gain)} if verdict == "NEGATIVE_OUTCOME" else None),
                                  "verdict": verdict, "gain_basis": mspec.get("gain_basis", "measured"),
                                  "projected_month": round(adj_gain / elapsed * 30) if enough else None,
                                  "base_rate_per_day": round(base_rate, 2), "post_rate_per_day": round(post_rate, 2), **post}, ensure_ascii=False)
@@ -1513,6 +1684,59 @@ def group_of(kind: str) -> str:
     return "growth"
 
 
+def product_ids_of(r: Insight) -> list[int]:
+    """build-490 (§۶) — شناسهٔ واقعی کالاهای یک پیشنهاد (از metric/shواهد/اقدام‌ها)؛
+    ارتباط فقط با ID — هرگز با نام. برای نمایش «تصویر واقعی محصول» به‌جای آیکون عمومی."""
+    ids: list[int] = []
+
+    def _add(v):
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return
+        if n > 0 and n not in ids:
+            ids.append(n)
+
+    try:
+        spec = json.loads(r.metric or "{}")
+        _add(spec.get("product_id"))
+        for v in (spec.get("product_ids") or []):
+            _add(v)
+        _add(spec.get("a"))
+        _add(spec.get("b"))
+        ev = json.loads(r.evidence or "{}")
+        for row in (ev.get("rows") or ev.get("table") or []):
+            if isinstance(row, dict):
+                _add(row.get("product_id"))
+        for act in json.loads(r.actions or "[]"):
+            if not isinstance(act, dict):
+                continue
+            params = act.get("params") or {}
+            _add(params.get("product_id"))
+            for v in (params.get("product_ids") or params.get("products") or []):
+                _add(v)
+    except Exception:
+        pass
+    return ids[:8]
+
+
+def attach_products(db, rows: list[dict]) -> list[dict]:
+    """build-490 (§۶) — تصویر واقعی محصول: ردیف‌ها را با رکورد Product (id/name/image_url/gallery)
+    از همان پایگاه‌داده پر می‌کند؛ اگر محصول تصویر نداشته باشد UI به آیکون برمی‌گردد (Fallback)."""
+    ids = sorted({pid for r in rows for pid in (r.get("product_ids") or [])})
+    if not ids:
+        return rows
+    from sqlalchemy import select as _sel
+    from ..models import Product as _P
+    prods = db.execute(_sel(_P.id, _P.name, _P.image_url, _P.gallery, _P.barcode)
+                       .where(_P.id.in_(ids))).all()
+    by = {int(p[0]): {"id": int(p[0]), "name": p[1], "image_url": p[2], "gallery": p[3], "barcode": p[4]}
+          for p in prods}
+    for r in rows:
+        r["products"] = [by[i] for i in (r.get("product_ids") or []) if i in by]
+    return rows
+
+
 def to_dict(r: Insight) -> dict:
     from .insight_guides import guide_for   # v4.6.0 — plain-language guide per kind
     return {
@@ -1523,6 +1747,9 @@ def to_dict(r: Insight) -> dict:
         "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None, "baseline": json.loads(r.baseline) if r.baseline else None,
         "result": json.loads(r.result) if r.result else None, "measured_gain": _f(r.measured_gain) if r.measured_gain is not None else None,
         "narrative": r.narrative, "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        "product_ids": product_ids_of(r),
+        "resolved_at": r.resolved_at.isoformat() if getattr(r, "resolved_at", None) else None,
+        "resolution": json.loads(r.resolution) if getattr(r, "resolution", None) else None,
     }
 
 

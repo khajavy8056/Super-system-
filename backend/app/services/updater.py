@@ -42,11 +42,24 @@ from .. import __version__
 from ..config import get_settings
 from ..models import SystemSetting
 
-GITHUB_REPO = "khajavy8056/Super-system-"
-GITHUB_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+#: build-488 (§۴۱) — مخزن عمومی «فقط انتشار»: khajavy8056/Rasasys
+#: (فایل‌های نصبی، بدون Source Code). مالک خودش بسته‌ها را آنجا می‌گذارد؛
+#: این سرویس فقط بررسی می‌کند. قابل بازنویسی با SystemSetting.update.github_repo.
+GITHUB_REPO = "khajavy8056/Rasasys"
+GITHUB_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
 
-#: file name pattern of the Windows installer asset
-ASSET_PATTERN = re.compile(r"Supermarket-System-v?[\d.]+-Setup\.exe$", re.I)
+#: الگوی فایل نصبی ویندوز
+ASSET_PATTERN = re.compile(r"(setup|install|desktop|windows).*(\.exe|\.zip)$|Supermarket-System-v?[\d.]+-Setup\.exe$", re.I)
+#: الگوی بستهٔ اندروید (§۴۳ — هر Client فقط پلتفرم خودش را می‌بیند)
+APK_PATTERN = re.compile(r"\.apk$", re.I)
+
+
+def current_release_tag() -> str:
+    """نسخهٔ فعلی نصب‌شده از اطلاعات داخلی خود برنامه (§۴۱).
+
+    build-490 (§۸–۹) — ساختار نسخه Major.Minor.Build شد («1.0.490»)؛
+    رقم سوم همان Build Number است و «1.0.0-build.489» بازنشسته شد."""
+    return __version__
 
 
 class UpdateError(Exception):
@@ -59,15 +72,27 @@ class UpdateError(Exception):
 # version comparison
 # ---------------------------------------------------------------------------
 def parse_version(text: str) -> tuple[int, ...]:
-    """'v1.2.3' -> (1, 2, 3). Non-numeric suffixes are ignored."""
+    """'v1.2.3' -> (1, 2, 3). Non-numeric suffixes are ignored.
+
+    build-490 (§۸–۱۰) — ساختار جدید «Major.Minor.Build» (رقم سوم = Build):
+      '1.0.490'          -> (1, 0, 490)
+      'v1.0.0-build.489' -> (1, 0, 489)   # ساختار قدیمی هم نرمال می‌شود
+      '1.0.0-build489'   -> (1, 0, 489)
+    تا مقایسه بین نسخه‌های قدیمی و جدید همیشه درست بماند (هیچ به‌روزرسانی
+    به‌خاطر تغییر فرمت، اشتباه تشخیص داده یا نادیده گرفته نمی‌شود)."""
     cleaned = (text or "").strip().lstrip("vV")
+    legacy = re.search(r"-build\.?(\d+)", cleaned, re.I)
+    cleaned = re.sub(r"-.*$", "", cleaned)  # هر پسوندی (build/RC/...) کنار می‌رود
     parts: list[int] = []
-    for chunk in cleaned.split(".")[:4]:
+    for chunk in cleaned.split(".")[:3]:
         match = re.match(r"(\d+)", chunk)
         parts.append(int(match.group(1)) if match else 0)
     while len(parts) < 3:
         parts.append(0)
-    return tuple(parts)
+    if legacy:
+        # '1.0.0-build.489' -> (1, 0, 489): در ساختار قدیمی، رقم سومِ «Build» از پسوند می‌آید
+        return (parts[0], parts[1], int(legacy.group(1)))
+    return (parts[0], parts[1], parts[2])
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -110,8 +135,14 @@ class UpdateChannel:
 
 
 class GitHubChannel(UpdateChannel):
-    def __init__(self, url: str = GITHUB_LATEST):
-        self.url = url
+    def __init__(self, url: str | None = None, platform: str = "windows"):
+        self.url = url or GITHUB_RELEASES
+        self.platform = (platform or "windows").lower()
+
+    def _asset_match(self, name: str) -> bool:
+        if self.platform == "android":
+            return bool(APK_PATTERN.search(name))
+        return bool(ASSET_PATTERN.search(name)) and not APK_PATTERN.search(name)
 
     def fetch_latest(self, timeout: float = 8.0) -> ReleaseInfo:
         headers = {"Accept": "application/vnd.github+json"}
@@ -130,6 +161,16 @@ class GitHubChannel(UpdateChannel):
             raise UpdateError("CHANNEL_ERROR", f"HTTP {resp.status_code}")
 
         data = resp.json()
+        # فهرست releaseها: جدیدترین نسخه‌ای که فایلِ «پلتفرم همین Client» را دارد (§۴۳)
+        releases = data if isinstance(data, list) else [data]
+        chosen = None
+        for rel in releases:
+            if any(self._asset_match(a.get("name", "")) for a in rel.get("assets") or []):
+                chosen = rel
+                break
+        if chosen is None:
+            raise UpdateError("NO_RELEASE", "نسخه‌ای برای این پلتفرم منتشر نشده است")
+        data = chosen
         info = ReleaseInfo(
             version=(data.get("tag_name") or "").lstrip("vV"),
             name=data.get("name") or "",
@@ -140,9 +181,9 @@ class GitHubChannel(UpdateChannel):
         sums_url = None
         for asset in data.get("assets") or []:
             name = asset.get("name", "")
-            if name.upper().startswith("SHA256SUMS"):
-                sums_url = asset.get("browser_download_url")
-            elif info.asset_name is None and ASSET_PATTERN.search(name):
+            if name.upper().startswith("SHA256SUMS") or name.lower().endswith(".sha256") or name.lower().startswith("sha256-"):
+                sums_url = sums_url or asset.get("browser_download_url")
+            elif info.asset_name is None and self._asset_match(name):
                 info.asset_name = name
                 info.asset_url = asset.get("browser_download_url")
                 info.asset_size = int(asset.get("size") or 0)
@@ -211,7 +252,10 @@ def channel_from_settings(db) -> UpdateChannel:
         if not url:
             raise UpdateError("CONFIG_MISSING", "update.server_url تنظیم نشده است")
         return UpdateServerChannel(url, token=get("update.server_token", "") or None)
-    return GitHubChannel()
+    repo = (get("update.github_repo", "") or GITHUB_REPO).strip()
+    platform = (get("update.platform", "") or "windows").strip().lower()
+    return GitHubChannel(url=f"https://api.github.com/repos/{repo}/releases?per_page=10",
+                         platform=platform)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +265,7 @@ def check_for_update(channel: UpdateChannel | None = None,
                      current: str | None = None) -> dict:
     """Ask the channel what the newest release is. Never raises for 'offline'."""
     channel = channel or GitHubChannel()
-    current = current or __version__
+    current = current or current_release_tag()
     try:
         release = channel.fetch_latest()
     except UpdateError as exc:

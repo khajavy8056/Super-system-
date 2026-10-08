@@ -75,10 +75,36 @@ def test_head_revision_is_v37_catchup(migrated_url):
     heads = ScriptDirectory.from_config(cfg).get_heads()
     # v4.6.0 note: the head moved again (Business Brain REMOVED — its six
     # tables dropped); the intent stays: ONE head, DB stamped exactly at it.
-    assert heads == ["c9e1f2a4b6d8"]
+    # build-481 note: the head moved again (campaign benefits that reach the
+    # invoice + insight auto-resolution — four additive invoice columns).
+    # build-482 note: the head moved again (users.local_only — «دسترسی فقط به
+    # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
+    # build-488 introduced the HR layer; build-493 adds the independent,
+    # administrator-controlled permission for cached/offline mobile sign-in.
+    assert heads == ["d4930f0f4930"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
+
+
+def test_build493_migration_backfills_the_existing_local_login_policy():
+    """The new flag is independent but preserves existing non-local-only users."""
+    d = tempfile.mkdtemp(prefix="mig493policy_")
+    url = f"sqlite:///{d}/policy.db"
+    cfg = _cfg(url)
+    command.upgrade(cfg, "c488e1a0b7d5")
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("""INSERT INTO users
+            (username, full_name, email, password_hash, is_active, local_only)
+            VALUES ('legacy_online', 'Legacy Online', NULL, 'test', 1, 0)"""))
+        conn.execute(text("""INSERT INTO users
+            (username, full_name, email, password_hash, is_active, local_only)
+            VALUES ('legacy_shop_only', 'Legacy Shop', NULL, 'test', 1, 1)"""))
+    command.upgrade(cfg, "head")
+    with eng.connect() as conn:
+        rows = dict(conn.execute(text("SELECT username, offline_allowed FROM users WHERE username LIKE 'legacy_%'")).all())
+    assert rows == {"legacy_online": 1, "legacy_shop_only": 0}
 
 
 def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
@@ -115,9 +141,21 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # the -1 step is the brain removal: one step down, its tables are back…
-    assert "brain_decisions" in tables and "brain_followups" in tables
+    # build-493 is now the HEAD step: rolling back one revision removes only
+    # the independent offline-login flag; build-488 HR/profile data stays put.
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    assert "local_only" in user_cols               # build-482 — survives
+    assert "offline_allowed" not in user_cols      # build-493 — rolled back
+    for col in ("phone", "job_title", "avatar_path", "hire_date", "store"):
+        assert col in user_cols, col
+    for tbl in ("hr_shifts", "hr_payroll", "announcements", "announcement_reads",
+                "hr_achievements", "hr_score_events", "user_widget_layouts",
+                "user_permissions"):
+        assert tbl in tables, tbl
+    inv_cols = {c["name"] for c in insp.get_columns("invoices")}
+    assert "campaign_id" in inv_cols and "benefit_source" in inv_cols
     # …and everything an earlier revision created stays put
+    assert "brain_decisions" not in tables          # still removed (v4.6)
     assert "experiments" in tables
     assert "product_bank" in tables
     hw_cols = {c["name"] for c in insp.get_columns("hardware_devices")}

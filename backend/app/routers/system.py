@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import __version__
 from ..config import settings
 from ..database import get_db
-from ..models import Notification, User
+from ..models import Notification, SystemSetting, User
 from ..security import get_current_user, require_permission
 from ..services import expiry as expiry_svc
 from ..services.audit import write_audit
@@ -181,11 +181,31 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
     upgrade_schema()
     heal = heal_schema()
 
-    write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
-                reference=getattr(file, "filename", None),
-                after={"columns_added": len(heal["columns_added"]),
-                       "indexes_ensured": len(heal["indexes_ensured"])})
-    db.commit()
+    # build-488 — یک پشتیبان قدیمی می‌تواند ردیف‌های پایهٔ نسخهٔ جدید را نداشته باشد
+    # (دسترسی‌های تازه مثل dev.mode، نقش‌های استاندارد، ادمین). درست مثل اولین اجرای
+    # برنامه بعد از بازیابی، پایه را افزودنی-محور دوباره می‌نشانیم؛ هیچ دادهٔ بازیابی‌شده‌ای
+    # پاک نمی‌شود. (این الگویی است که هر بازیابیِ نسخهٔ قدیمی روی نسخهٔ جدید به آن نیاز دارد.)
+    # build-489 — فایل DB زیر پای برنامه عوض شده؛ session درخواست ممکن است تراکنشی از
+    # «پیش از تعویض» را نگه داشته باشد و دو نمای ناسازگار ببیند (خطای UNIQUE در bootstrap).
+    # الگوی درست: اتصال‌های قدیمی بسته و engine بازنشسته می‌شود؛ بقیهٔ کار با session تازه.
+    from ..database import SessionLocal as _FreshSession, engine as _engine
+    from ..bootstrap import bootstrap
+    try:
+        db.close()
+    except Exception:
+        pass
+    _engine.dispose()
+    fresh = _FreshSession()
+    try:
+        bootstrap(fresh)
+        fresh.commit()
+        write_audit(fresh, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
+                    reference=getattr(file, "filename", None),
+                    after={"columns_added": len(heal["columns_added"]),
+                           "indexes_ensured": len(heal["indexes_ensured"])})
+        fresh.commit()
+    finally:
+        fresh.close()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
             "safety_backup": str(safety),
             "columns_added": heal["columns_added"], "indexes_ensured": len(heal["indexes_ensured"])}
@@ -321,19 +341,75 @@ def shutdown(body: ShutdownIn, db: Session = Depends(get_db), user: User = Depen
 
 
 @update_router.get("/update/check")
-def check_update(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+def check_update(platform: str = "windows", db: Session = Depends(get_db),
+                 _: User = Depends(get_current_user)):
     """Report whether a newer release exists. Read-only and side-effect free.
-    Channel = GitHub (§269) or the configured update server (§270)."""
+
+    build-488 (§۴۱–۴۴):
+    - Update Check ≠ License Validation (§۴۲) — هر کاربر واردشده می‌تواند بررسی
+      کند؛ اعمال به‌روزرسانی همچنان فقط مالک + رمز عبور (§۲۸) است.
+    - هر Client فقط پلتفرم خودش را می‌بیند (§۴۳): platform=windows|android
+    - اعلانِ «نسخهٔ جدید» فقط یک بار برای هر نسخه (§۴۴): notify=True فقط وقتی
+      نسخه از آخرین نسخهٔ اعلام‌شده جدیدتر باشد؛ POST /update/ack آن را ثبت می‌کند.
+    - مخزن انتشار: khajavy8056/Rasasys (فقط فایل نصبی، §۴۱).
+    """
     from ..services.updater import UpdateError, channel_from_settings, check_for_update
 
+    def _get(key, default=""):
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+        return row.value if row and row.value is not None else default
+
+    def _set(key, value):
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+        if row is None:
+            db.add(SystemSetting(key=key, value=value))
+            db.flush()  # همان‌جا ثبت؛ وگرنه add دوم در commit با UNIQUE می‌خورد
+        else:
+            row.value = value
+
+    # platform را برای این درخواست موقتاً در تنظیمات می‌گذاریم تا channel درست بسازد
+    prev_platform = _get("update.platform", "")
+    _set("update.platform", "android" if platform == "android" else "windows")
+    channel = None
     try:
         channel = channel_from_settings(db)
+        out = check_for_update(channel)
     except UpdateError as exc:
-        return {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
-                "detail": str(exc), "message": str(exc)}
-    out = check_for_update(channel)
-    out["channel"] = type(channel).__name__.replace("Channel", "").lower()
+        out = {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
+               "detail": str(exc), "message": str(exc)}
+    finally:
+        if not prev_platform:
+            _set("update.platform", "")
+        elif prev_platform != ("android" if platform == "android" else "windows"):
+            _set("update.platform", prev_platform)
+    out["channel"] = type(channel).__name__.replace("Channel", "").lower() if channel is not None else "github"
+    out["platform"] = "android" if platform == "android" else "windows"
+    latest = (out.get("latest") or {}).get("version") or ""
+    notified = _get("update.notified_version", "")
+    out["notified_version"] = notified
+    # §۴۴ — یک نسخه فقط یک بار اعلان می‌شود
+    out["notify"] = bool(out.get("update_available") and latest and latest != notified)
+    db.commit()
     return out
+
+
+@update_router.post("/update/ack")
+def ack_update(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """اعلان نسخهٔ جدید دیده شد — دیگر برای همین نسخه تکرار نمی‌شود (§۴۴)."""
+    from ..services.updater import UpdateError, channel_from_settings, check_for_update
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == "update.notified_version")).scalar_one_or_none()
+    try:
+        out = check_for_update(channel_from_settings(db))
+        latest = (out.get("latest") or {}).get("version") or ""
+    except UpdateError:
+        latest = ""
+    if row is None:
+        db.add(SystemSetting(key="update.notified_version", value=latest))
+        db.flush()
+    else:
+        row.value = latest
+    db.commit()
+    return {"ok": True, "acknowledged": latest}
 
 
 @update_router.post("/update/prepare")

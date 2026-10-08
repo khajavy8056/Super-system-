@@ -66,14 +66,31 @@ def learn(db: Session) -> dict:
     Deterministic (re-computed from scratch each time, chronological EWMA) so that a restore
     or a re-run yields the same numbers.  Returns the calibration table.
 
-    v3.8 honesty contract: every completed measurement counts exactly as measured —
-    Positive, Neutral and Negative. No clamps, no floors: a kind whose actions lost
-    money shows a negative ratio and a low/negative confidence story, which is what
-    the manager must see before accepting the next card of that kind.
+    v3.8 honesty contract: every completed measurement counts exactly as measured.
+    build-488 (§۳۶–۳۷): «فرصت ازدست‌رفته» (MISSED_OPPORTUNITY — سودی که می‌توانست
+    اتفاق بیفتد ولی نیفتاد، مثل نیامدن مشتریِ پیش‌بینی‌شده) **ضرر نیست** و در
+    measured_gain هم NULL می‌ماند؛ accuracy جهت‌دار فقط روی نتایج «تصمیم‌گیری‌شده»
+    (سود واقعی / ضرر واقعی) حساب می‌شود تا عملکرد خوب مدل منفی نشان داده نشود.
     """
     rows = db.execute(select(Insight).where(Insight.status == "MEASURED", Insight.measured_gain.isnot(None))
                       .order_by(Insight.measured_at.asc(), Insight.id.asc())).scalars().all()
+    # فرصت‌های ازدست‌رفته: هر ردیفی که یک بار اندازه‌گیری معنادار داشته (result
+    # ثبت شده)، حتی اگر پنجره هنوز کامل نشده — برای شفافیت «عملکرد مدل».
+    missed_rows = db.execute(select(Insight).where(Insight.result.isnot(None))
+                             .order_by(Insight.id.asc())).scalars().all()
     cal: dict[str, dict] = {}
+
+    def _verdict_of(r) -> str:
+        try:
+            v = (json.loads(r.result or "{}") or {}).get("verdict")
+            if v in ("POSITIVE_OUTCOME", "NEGATIVE_OUTCOME", "NEUTRAL_OUTCOME",
+                     "NO_IMPACT", "MISSED_OPPORTUNITY"):
+                return v
+        except Exception:
+            pass
+        m = _f(r.measured_gain)
+        return "POSITIVE_OUTCOME" if m > 0 else ("NEGATIVE_OUTCOME" if m < 0 else "NO_IMPACT")
+
     for r in rows:
         exp = _f(r.expected_gain)
         ev = json.loads(r.evidence or "{}")
@@ -81,11 +98,16 @@ def learn(db: Session) -> dict:
         if raw <= 0:
             continue
         measured = _f(r.measured_gain)
+        verdict = _verdict_of(r)
+        if verdict == "MISSED_OPPORTUNITY":
+            continue                                     # هرگز ضرر حساب نمی‌شود (§۳۷)
         ratio = measured / raw                           # raw, unclamped — see module note
         err = measured - raw                             # signed error in toman
         c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0,
-                                    "n_positive": 0, "n_zero": 0, "n_negative": 0,
+                                    "n_positive": 0, "n_zero": 0, "n_negative": 0, "n_missed": 0,
                                     "sum_err": 0.0, "sum_abs_err": 0.0})
+        if verdict == "NO_IMPACT":
+            c["n_missed"] = c.get("n_missed", 0)  # ردیف خنثی — نه امتیاز منفی
         if c["n"] == 0:
             c["ratio"], c["var"] = ratio, 0.25
         else:
@@ -96,22 +118,37 @@ def learn(db: Session) -> dict:
         c["abs_err"] = DECAY * c["abs_err"] + (1 - DECAY) * abs(err) if c["n"] > 1 else abs(err)
         c["sum_err"] += err
         c["sum_abs_err"] += abs(err)
-        if measured > 0:
+        if verdict == "POSITIVE_OUTCOME":
             c["n_positive"] += 1
-        elif measured < 0:
+            if raw > 0:
+                c["hits"] += 1
+        elif verdict == "NEGATIVE_OUTCOME":
             c["n_negative"] += 1
+            if raw < 0:
+                c["hits"] += 1
         else:
             c["n_zero"] += 1
-        if (measured > 0) == (raw > 0):
-            c["hits"] += 1
+    # فرصت‌های ازدست‌رفته — برای شفافیت شمرده می‌شوند اما هیچ جریمه‌ای ندارند
+    for r in missed_rows:
+        try:
+            res = json.loads(r.result or "{}") or {}
+        except Exception:
+            res = {}
+        if res.get("verdict") == "MISSED_OPPORTUNITY":
+            c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0,
+                                        "n_positive": 0, "n_zero": 0, "n_negative": 0, "n_missed": 0,
+                                        "sum_err": 0.0, "sum_abs_err": 0.0})
+            c["n_missed"] += 1
     for c in cal.values():
         n = c["n"]
+        decided = c["n_positive"] + c["n_negative"]     # فقط نتایج قطعی (§۳۷)
         sd = math.sqrt(max(0.0, c["var"]))
         c["ratio"] = round(c["ratio"], 3)
         c["sd"] = round(sd, 3)
-        c["direction_accuracy"] = round(c["hits"] / n, 2) if n else None
+        c["direction_accuracy"] = round(c["hits"] / decided, 2) if decided else None
         c["pos_rate"] = round(c["n_positive"] / n, 3) if n else None
         c["neg_rate"] = round(c["n_negative"] / n, 3) if n else None
+        c["missed_rate"] = round(c["n_missed"] / max(1, n + c["n_missed"]), 3)
         c["mean_error"] = round(c["sum_err"] / n) if n else None
         c["mae"] = round(c["sum_abs_err"] / n) if n else None
         # 95 % CI of the mean ratio (normal approx): the band predictions honestly live in
@@ -282,12 +319,29 @@ def plan(db: Session, horizon: int = 90, history_days: int = 182) -> dict:
                     "measured": round(_f(r.measured_gain)), "measured_at": r.measured_at.isoformat() if r.measured_at else None})
     hits = sum(1 for a in acc if (a["measured"] > 0) == (a["predicted"] > 0))
     mape = [abs(a["measured"] - a["calibrated"]) / abs(a["calibrated"]) for a in acc if a["calibrated"]]
+    # build-488 (§۳۶–۳۷) — تفکیک شفاف نتایج مدل: سود واقعی / بدون اثر /
+    # فرصت ازدست‌رفته (ضرر نیست) / ضرر واقعی — فقط عدد واقعی، قابل ردیابی.
+    outcomes = {"positive": 0, "neutral": 0, "missed": 0, "negative": 0}
+    for r in db.execute(select(Insight).where(Insight.result.isnot(None))).scalars():
+        try:
+            v = (json.loads(r.result or "{}") or {}).get("verdict")
+        except Exception:
+            v = None
+        if v == "POSITIVE_OUTCOME":
+            outcomes["positive"] += 1
+        elif v == "NEGATIVE_OUTCOME":
+            outcomes["negative"] += 1
+        elif v == "MISSED_OPPORTUNITY":
+            outcomes["missed"] += 1
+        elif v in ("NO_IMPACT", "NEUTRAL_OUTCOME"):
+            outcomes["neutral"] += 1
     return {
         "generated_at": _now().isoformat(), "horizon_days": horizon,
         "model": {"weeks_of_history": fit["weeks"], "trend_pct_per_week": round(fit["slope_per_day"] * 7 / fit["level"] * 100, 2) if fit["level"] else 0,
                   "fit_r2": fit["r2"], "weekday_index": [round(i, 2) for i in fit["weekday"]],
                   "calibration": [{"kind": k, "label": KIND_LABELS.get(k, k), **v} for k, v in sorted(cal.items())],
                   "measured_count": len(acc), "direction_accuracy": round(hits / len(acc), 2) if acc else None,
+                  "outcomes": outcomes,
                   "mean_abs_pct_error": round(sum(mape) / len(mape) * 100) if mape else None},
         "baseline": {"profit_per_day": round(fit["level"]), "profit_month": month_base, "profit_horizon": round(cum_b)},
         "plan": {"open": len(items), "gain_month": plan_month, "low_month": round(low_day * 30), "high_month": round(high_day * 30),

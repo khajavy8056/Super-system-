@@ -18,10 +18,10 @@ import string
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from ..models import Campaign, Coupon, CouponRedemption, Customer, User
+from ..models import Campaign, CampaignRedemption, Coupon, CouponRedemption, Customer, User
 from .audit import write_audit
 
 ZERO = Decimal("0")
@@ -142,6 +142,252 @@ def compute_discount(coupon: Coupon, amount: Decimal) -> Decimal:
     return max(ZERO, raw.quantize(CENT, ROUND_HALF_UP))
 
 
+# ============================================================================ build-481 — campaign benefits at the till (§21–26)
+#
+# A campaign is no longer just a label coupons hang off: it is an executable
+# benefit the checkout can apply.  The rules below are the ONLY place the
+# benefit is computed — the cashier selects among campaigns whose conditions
+# already hold and can never bend one (§25).
+
+class CampaignError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _campaign_targets(campaign: Campaign) -> list[int]:
+    import json as _json
+    try:
+        ids = _json.loads(campaign.target_ids or "[]")
+    except ValueError:
+        ids = []
+    return [int(x) for x in ids if x is not None]
+
+
+def compute_campaign_discount(campaign: Campaign, amount: Decimal) -> Decimal:
+    """Same honesty rules as coupon math: percent/fixed, capped, never negative."""
+    amount = Decimal(amount)
+    if str(campaign.discount_type).upper() == "PERCENT":
+        raw = amount * Decimal(campaign.discount_value) / Decimal("100")
+    else:
+        raw = Decimal(campaign.discount_value)
+    if campaign.max_discount is not None and campaign.max_discount > 0:
+        raw = min(raw, Decimal(campaign.max_discount))
+    raw = min(raw, amount)
+    return max(ZERO, raw.quantize(CENT, ROUND_HALF_UP))
+
+
+def campaign_scope_amount(campaign: Campaign, *, amount: Decimal, product_ids: list[int] | None,
+                          line_amounts: dict[int, Decimal] | None) -> Decimal:
+    """For product-targeted campaigns only the covered lines count as the base.
+
+    ``line_amounts`` maps product_id → net line total.  Without line detail the
+    whole amount is assumed covered (the API validates this before checkout).
+    """
+    if str(campaign.target_type).upper() != "PRODUCTS":
+        return Decimal(amount)
+    targets = set(_campaign_targets(campaign))
+    if not targets or not line_amounts:
+        return ZERO
+    return sum((Decimal(v) for pid, v in line_amounts.items() if int(pid) in targets), ZERO)
+
+
+def _campaign_purchases_count(db: Session, campaign: Campaign, customer_id: int | None) -> int:
+    if not customer_id:
+        return 0
+    return db.execute(
+        select(func.count(CampaignRedemption.id)).where(
+            CampaignRedemption.campaign_id == campaign.id,
+            CampaignRedemption.customer_id == customer_id,
+        )
+    ).scalar_one()
+
+
+def _customer_purchase_count(db: Session, customer_id: int | None) -> int:
+    if not customer_id:
+        return 0
+    from ..models import Invoice
+    return db.execute(
+        select(func.count(Invoice.id)).where(
+            Invoice.customer_id == customer_id, Invoice.status == "PAID"
+        )
+    ).scalar_one()
+
+
+def evaluate_campaign(
+    db: Session,
+    *,
+    campaign_id: int,
+    amount: Decimal,
+    product_ids: list[int] | None = None,
+    line_amounts: dict[int, Decimal] | None = None,
+    customer_id: int | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Validate EVERY condition and return the benefit a campaign would grant.
+
+    Read-only: nothing is written.  Raises :class:`CampaignError` with a
+    machine-readable code whenever the campaign must not apply — the POS shows
+    the exact reason instead of a silent no-op (§25).
+    """
+    now = now or datetime.utcnow()
+    amount = Decimal(amount)
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise CampaignError("CAMPAIGN_NOT_FOUND", "جشنواره یافت نشد")
+    if campaign.status != "ACTIVE":
+        raise CampaignError("CAMPAIGN_INACTIVE", "این جشنواره فعال نیست")
+    if campaign.valid_from and campaign.valid_from > now:
+        raise CampaignError("CAMPAIGN_NOT_STARTED", "زمان این جشنواره هنوز نرسیده است")
+    if campaign.valid_until and campaign.valid_until < now:
+        raise CampaignError("CAMPAIGN_EXPIRED", "مهلت این جشنواره تمام شده است")
+    if amount <= 0:
+        raise CampaignError("EMPTY_CART", "سبد خرید خالی است")
+
+    if campaign.min_purchase and amount < campaign.min_purchase:
+        raise CampaignError(
+            "MIN_PURCHASE_NOT_MET",
+            f"حداقل خرید برای این جشنواره {campaign.min_purchase:,.0f} است",
+        )
+    if campaign.max_purchase is not None and campaign.max_purchase > 0 and amount > campaign.max_purchase:
+        raise CampaignError(
+            "MAX_PURCHASE_EXCEEDED",
+            f"این جشنواره تا سقف خرید {campaign.max_purchase:,.0f} اعمال می‌شود",
+        )
+
+    base = campaign_scope_amount(campaign, amount=amount, product_ids=product_ids,
+                                 line_amounts=line_amounts)
+    if str(campaign.target_type).upper() == "PRODUCTS":
+        targets = _campaign_targets(campaign)
+        if not targets:
+            raise CampaignError("CAMPAIGN_NO_TARGETS", "کالای مشخص‌شده‌ای برای این جشنواره ثبت نشده است")
+        if base <= 0:
+            raise CampaignError("PRODUCT_NOT_IN_CAMPAIGN", "هیچ‌کدام از کالاهای این سبد مشمول جشنواره نیستند")
+
+    if campaign.usage_limit is not None and campaign.used_count >= campaign.usage_limit:
+        raise CampaignError("CAMPAIGN_LIMIT_REACHED", "سقف استفادهٔ این جشنواره پر شده است")
+    if campaign.first_purchase_only and customer_id and _customer_purchase_count(db, customer_id) > 0:
+        raise CampaignError("CAMPAIGN_FIRST_PURCHASE_ONLY", "این جشنواره فقط برای نخستین خرید است")
+    if campaign.per_customer_limit is not None and customer_id:
+        used = _campaign_purchases_count(db, campaign, customer_id)
+        if used >= campaign.per_customer_limit:
+            raise CampaignError("CAMPAIGN_CUSTOMER_LIMIT", "سقف استفادهٔ شما از این جشنواره پر شده است")
+
+    discount = compute_campaign_discount(campaign, base)
+    if discount <= 0:
+        raise CampaignError("NO_DISCOUNT", "این جشنواره برای این سبد تخفیفی ایجاد نمی‌کند")
+
+    return {
+        "campaign_id": campaign.id,
+        "name": campaign.name,
+        "discount": discount,
+        "discount_type": campaign.discount_type,
+        "discount_value": campaign.discount_value,
+        "min_purchase": campaign.min_purchase,
+        "max_discount": campaign.max_discount,
+        "scope_amount": base,
+        "target_type": campaign.target_type,
+        "stackable": bool(campaign.stackable),
+        "auto_apply": bool(campaign.auto_apply),
+        "priority": campaign.priority,
+    }
+
+
+def eligible_campaigns(
+    db: Session,
+    *,
+    amount: Decimal,
+    product_ids: list[int] | None = None,
+    line_amounts: dict[int, Decimal] | None = None,
+    customer_id: int | None = None,
+    now: datetime | None = None,
+    include_auto_apply: bool = True,
+    limit: int = 20,
+) -> list[dict]:
+    """The structured list a cashier chooses from (§24).
+
+    Only campaigns whose conditions ALREADY hold for this basket are returned —
+    the till never receives a campaign the server would reject at checkout.
+    """
+    now = now or datetime.utcnow()
+    rows = db.execute(
+        select(Campaign).where(Campaign.status == "ACTIVE").order_by(Campaign.priority.asc(), Campaign.id.desc())
+    ).scalars().all()
+    out: list[dict] = []
+    for c in rows:
+        if not include_auto_apply and c.auto_apply:
+            continue
+        if c.valid_from and c.valid_from > now:
+            continue
+        if c.valid_until and c.valid_until < now:
+            continue
+        if c.auto_issue_threshold is not None and c.discount_value == 0:
+            continue   # issue-only festival: its benefit is the future coupon, not a till discount
+        try:
+            ev = evaluate_campaign(
+                db, campaign_id=c.id, amount=amount, product_ids=product_ids,
+                line_amounts=line_amounts, customer_id=customer_id, now=now,
+            )
+        except CampaignError:
+            continue
+        out.append(ev)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def consume_campaign(
+    db: Session,
+    *,
+    campaign_id: int,
+    amount: Decimal,
+    invoice_id: int | None,
+    customer_id: int | None = None,
+    user: User | None = None,
+    source: str = "CAMPAIGN",
+) -> CampaignRedemption:
+    """Burn one usage of the campaign inside the checkout transaction.
+
+    Same concurrency guard as coupons: a conditional UPDATE on
+    ``used_count < usage_limit`` so two terminals can never exceed the limit.
+    A failed checkout rolls the whole row back with the sale.
+    """
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise CampaignError("CAMPAIGN_NOT_FOUND", "جشنواره یافت نشد")
+    if campaign.usage_limit is not None:
+        res = db.execute(
+            update(Campaign)
+            .where(
+                Campaign.id == campaign_id,
+                Campaign.status == "ACTIVE",
+                func.coalesce(Campaign.used_count, 0) < campaign.usage_limit,
+            )
+            .values(used_count=Campaign.used_count + 1)
+        )
+        if res.rowcount != 1:
+            raise CampaignError("CAMPAIGN_LIMIT_REACHED", "این جشنواره هم‌زمان توسط صندوق دیگری استفاده شد")
+    else:
+        campaign.used_count = (campaign.used_count or 0) + 1
+
+    red = CampaignRedemption(
+        campaign_id=campaign_id, invoice_id=invoice_id, customer_id=customer_id,
+        amount=Decimal(amount), source=source, created_at=datetime.utcnow(),
+        created_by=user.id if user else None,
+    )
+    db.add(red)
+    write_audit(
+        db, action="CAMPAIGN_APPLIED", user_id=user.id if user else None,
+        entity_type="Campaign", entity_id=campaign_id,
+        after={"campaign": campaign.name, "amount": float(amount), "invoice_id": invoice_id,
+               "customer_id": customer_id, "used_count": (campaign.used_count or 0) + (1 if campaign.usage_limit is None else 0),
+               "source": source},
+    )
+    db.flush()
+    return red
+
+
 def consume(
     db: Session,
     *,
@@ -191,6 +437,7 @@ def issue_next_purchase_coupon(
     invoice,
     customer: Customer | None,
     user: User | None = None,
+    preferred_codes: dict[str, str] | None = None,
 ) -> Coupon | None:
     """Auto-issue a coupon for the NEXT purchase when a campaign threshold is
     reached (§36). Returns the coupon, or None when no campaign applies."""
@@ -209,8 +456,22 @@ def issue_next_purchase_coupon(
             continue
         if Decimal(invoice.total_amount) < Decimal(c.auto_issue_threshold):
             continue
+        # build-481 idempotency: the same invoice must never issue the same
+        # future benefit twice (double-click on checkout, a retried request, …).
+        already = db.execute(
+            select(Coupon).where(Coupon.campaign_id == c.id, Coupon.note == f"صادر شده پس از فاکتور {invoice.invoice_number}")
+        ).scalars().first()
+        if already is not None:
+            return already
+        requested_code = (preferred_codes or {}).get(str(c.id), "").strip().upper()
+        safe_local_code = (
+            requested_code.startswith("NEXT-")
+            and len(requested_code) == len("NEXT-") + 8
+            and all(character in _ALPHABET for character in requested_code[len("NEXT-"):])
+            and get_by_code(db, requested_code) is None
+        )
         coupon = Coupon(
-            code=generate_code("NEXT"),
+            code=requested_code if safe_local_code else generate_code("NEXT"),
             campaign_id=c.id,
             customer_id=customer.id if customer else None,
             customer_phone=customer.phone if customer else None,

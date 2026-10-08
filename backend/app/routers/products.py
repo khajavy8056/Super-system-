@@ -123,6 +123,21 @@ def list_products(
     if q:
         pattern = "%" + search.literal_like(q) + "%"
         stmt = stmt.where(search.name_column(Product.name).like(pattern, escape="\\") | Product.barcode.ilike(pattern, escape="\\"))
+
+        # build-481 (§12) — multi-word search where the words are NOT adjacent
+        # («کفیر دماوند» for «کفیر پرچرب یک‌لیتری دماوند»): plain LIKE needs the
+        # words in sequence, so a no-hit query falls back to all-words matching
+        # over the same normalized column. Same engine as the till's keyword
+        # fallback — one source of truth for search quality.
+        rows_total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar() or 0
+        if rows_total == 0:
+            tokens = [t for t in q.split(" ") if len(t) >= 2]
+            if len(tokens) >= 2:
+                stmt = select(Product).where(Product.deleted_at.is_(None))
+                for t in tokens:
+                    tpat = "%" + search.literal_like(t) + "%"
+                    stmt = stmt.where(search.name_column(Product.name).like(tpat, escape="\\")
+                                      | Product.barcode.ilike(tpat, escape="\\"))
     total = int(db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one())
 
     # Sellable stock per product, computed in the database. "Sellable" mirrors

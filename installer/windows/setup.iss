@@ -1,4 +1,4 @@
-﻿; Inno Setup script - builds RasaSystem-Setup-<version>.exe
+; Inno Setup script - builds RasaSystem-Setup-<version>.exe
 ; Prerequisite: build the app first with build.ps1 (creates dist\RasaSystem.exe)
 ;
 ; STATUS (honest): this script is maintained and syntax-reviewed, but building
@@ -15,7 +15,12 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.496"
+#endif
+; build-485 — شمارهٔ بیلد رابط کاربری (از BUILD، با /DMyAppBuild می‌آید). در نام
+; نمایشی محصول می‌آید تا کاربر همیشه بداند کدام ساخت نصب است.
+#ifndef MyAppBuild
+  #define MyAppBuild "0"
 #endif
 #define MyAppExeName "RasaSystem.exe"
 #define MyAppPublisher "RASA SYSTEM"
@@ -29,7 +34,7 @@
 AppId={{B1969066-0725-5BAD-AC99-E4201ADBDE6B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion} (build {#MyAppBuild})
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
@@ -96,5 +101,5 @@ Type: filesandordirs; Name: "{app}"
 
 [Messages]
 ; Notes shown on the final page (English; Farsi.isl ships its own when present)
-FinishedLabelNoIcons=Setup has installed [name]. Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.
-FinishedLabel=Setup has installed [name]. Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.
+FinishedLabelNoIcons=Setup has installed [name]. Check the build number at the bottom of the app dashboard (footer shows Rasa System v{#MyAppVersion}). Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.
+FinishedLabel=Setup has installed [name]. Check the build number at the bottom of the app dashboard (footer shows Rasa System v{#MyAppVersion}). Your data is stored in your user profile folder (RasaSystem) and is kept when you update or uninstall.

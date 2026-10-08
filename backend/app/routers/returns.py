@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Invoice, InvoiceItem, User
-from ..security import get_current_user, require_permission
+from ..security import has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import PosError
 
@@ -29,6 +29,8 @@ def create_return(body: ReturnIn, db: Session = Depends(get_db),
     inv = db.get(Invoice, body.invoice_id)
     item = db.get(InvoiceItem, body.invoice_item_id)
     if not inv or not item or item.invoice_id != inv.id:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    if not has_permission(user, "reports.view_all") and inv.created_by != user.id:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
     try:
         ret = pos_svc.process_return(db, invoice=inv, invoice_item=item, qty=body.qty,

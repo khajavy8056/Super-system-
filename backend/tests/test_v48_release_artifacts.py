@@ -29,17 +29,21 @@ def _sha_matches(path: Path) -> bool:
 
 
 def test_version_is_the_single_source_of_truth_everywhere():
-    """v1.0.0 build 480 — همهٔ کانال‌ها (بک‌اند، نصب‌کننده، اندروید) یک نسخه می‌گویند."""
-    assert VERSION == "1.0.0", VERSION
+    """Build 496 — همهٔ کانال‌ها (بک‌اند، نصب‌کننده، اندروید) یک نسخه می‌گویند.
+
+    build-490 (§۸–۱۰) — ساختار نسخه Major.Minor.Build شد («1.0.491»): رقم سوم
+    همان Build Number است. این pin مثل migration-head با انتشار جلو می‌رود.
+    """
+    assert VERSION == "1.0.496", VERSION
     setup = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8")
     assert f'#define MyAppVersion "{VERSION}"' in setup, "نسخهٔ نصب‌کنندهٔ ویندوز با بک‌اند یکی نیست"
     assert "RASA SYSTEM" in setup and "RasaSystem" in setup, "نام برند در نصب‌کننده نیست"
-    # بیلد ۴۸۰ = 48000 است و کد نسخهٔ اندروید هرگز نباید از نسخهٔ معنایی عقب بماند
+    # بیلد ۴۹۶ = 49600 و از نسخهٔ قبلی (49500) بزرگ‌تر است (INSTALL_FAILED_VERSION_DOWNGRADE)
     build = (ROOT / "mobile-android" / "BUILD").read_text(encoding="utf-8").strip()
-    assert build.isdigit() and int(build) == 48000, build
-    major, minor, patch = (int(x) for x in VERSION.split("."))
-    semver_code = major * 10000 + minor * 100 + patch
-    assert max(int(build), semver_code) == 48000
+    assert build.isdigit() and int(build) == 49600, build
+    major, minor, build_no = (int(x) for x in VERSION.split("."))
+    assert build_no == int(build) // 100, "در ساختار جدید، رقم سوم Version = Build"
+    assert int(build) > 49500
     strings = (ROOT / "mobile-android" / "app" / "src" / "main" / "res" / "values"
                / "strings.xml").read_text(encoding="utf-8")
     assert 'name="app_name">رسا سیستم<' in strings, "نام برند اندروید به‌روز نیست"

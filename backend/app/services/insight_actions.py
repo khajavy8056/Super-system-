@@ -87,7 +87,11 @@ def act_reorder_note(db, insight, p, user):
     notify(db, type="INSIGHT_TASK", title="به لیست سفارش اضافه شد", body="، ".join(names.values()), severity="INFO", reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
     # v4.8.0 — شناسهٔ کالاهایی که این اقدام در فهرست گذاشت، تا بازبینی بعدی روی
     # «همان کالاها» بررسی کند و با هر خط جدیدِ بینش‌های دیگر، دروغ هشدار ندهد.
-    return {"reorder_list": len(lst), "added_ids": [int(x) for x in ids]}
+    # build-481 (step 1) — مسیر اجرای واقعی: بعد از «اجرا کن»، فرم ورود کالا با
+    # همین محصولات از پیش انتخاب می‌شود؛ مدیر مقدار را وارد می‌کند، Batch واقعی
+    # ثبت می‌شود، موجودی بالا می‌رود و بازبینی بعدی خودکار پیشنهاد را می‌بندد.
+    return {"reorder_list": len(lst), "added_ids": [int(x) for x in ids],
+            "navigate": {"screen": "inventory_receive", "product_ids": [int(x) for x in ids]}}
 
 
 def act_set_min_stock(db, insight, p, user):
@@ -248,9 +252,26 @@ def _coupon(db, *, code_prefix: str, customer: Customer, percent: int, days: int
     return c
 
 
-def _campaign(db, name: str, percent: int, days: int, user, description: str) -> Campaign:
+def _campaign(db, name: str, percent: int, days: int, user, description: str, owner=None) -> Campaign:
+    """Create the campaign this action promises — or hand back the one it already made.
+
+    build-481 (step 35): executing the same action twice must never leave two
+    live festivals granting the same benefit.  When the owner already created
+    this campaign (same source insight + name, still active), that row is
+    returned instead — the second «اجرا» is a verified no-op, not a twin.
+    """
+    src_id = getattr(owner, "id", None) if getattr(owner, "reference_type", "Insight") == "Insight" else None
+    if src_id is not None:
+        existing = db.execute(
+            select(Campaign).where(Campaign.source_insight_id == src_id,
+                                   Campaign.name == name,
+                                   Campaign.status == "ACTIVE")
+        ).scalars().first()
+        if existing is not None:
+            return existing
     c = Campaign(name=name, description=description, discount_type="PERCENT", discount_value=Decimal(percent), min_purchase=Decimal(0),
                  valid_from=_now(), valid_until=_now() + timedelta(days=days), status="ACTIVE",
+                 source_insight_id=src_id,
                  created_by=user.id if user else None)
     db.add(c)
     db.flush()
@@ -259,7 +280,7 @@ def _campaign(db, name: str, percent: int, days: int, user, description: str) ->
 
 
 def act_vip_coupons(db, insight, p, user):
-    camp = _campaign(db, "باشگاه VIP", p["percent"], p["days"], user, "کوپن ماهانهٔ مشتریان برتر — ساخته‌شده توسط هوش فروشگاه")
+    camp = _campaign(db, "باشگاه VIP", p["percent"], p["days"], user, "کوپن ماهانهٔ مشتریان برتر — ساخته‌شده توسط هوش فروشگاه", owner=insight)
     sent = issued = 0
     for cust in db.execute(select(Customer).where(Customer.id.in_(p["customer_ids"]))).scalars():
         c = _coupon(db, code_prefix="VIP", customer=cust, percent=p["percent"], days=p["days"], campaign_id=camp.id, user=user)
@@ -273,7 +294,7 @@ def act_vip_coupons(db, insight, p, user):
 
 
 def act_winback_sms(db, insight, p, user):
-    camp = _campaign(db, "بازگشت مشتری", p["percent"], p["days"], user, "کوپن بازگشت برای مشتریان غایب — هوش فروشگاه")
+    camp = _campaign(db, "بازگشت مشتری", p["percent"], p["days"], user, "کوپن بازگشت برای مشتریان غایب — هوش فروشگاه", owner=insight)
     sent = issued = 0
     for cust in db.execute(select(Customer).where(Customer.id.in_(p["customer_ids"]))).scalars():
         c = _coupon(db, code_prefix="BACK", customer=cust, percent=p["percent"], days=p["days"], campaign_id=camp.id, user=user)
@@ -292,7 +313,7 @@ def act_visit_sms(db, insight, p, user):
     if not _sms_enabled(db):
         return {"sms": 0, "skipped": "sms_disabled"}
     for row in p.get("customers", []):
-        cust = db.get(Customer, row.get("customer_id"))
+        cust = db.get(Customer, _row_id(row))
         if not cust or not cust.phone:
             continue
         item = (row.get("item") or "").strip()
@@ -326,29 +347,48 @@ def act_sms_buyers(db, insight, p, user):
 
 
 def act_bundle_campaign(db, insight, p, user):
+    """build-481 — one source of truth for the promised discount (step 46).
+
+    Before, the batch was silently marked down AND an inert festival row was
+    created — two channels for one promise, neither of them showing «چرا تخفیف»
+    at the till.  Now the campaign IS the discount: scoped to the dead-stock
+    product, auto-applied at checkout, recorded on the invoice with its name so
+    the receipt and the audit both say «باندل …».
+    """
     pr = db.get(Product, p["product_id"])
     partner = db.get(Product, p["partner_id"]) if p.get("partner_id") else None
     name = f"باندل {pr.name if pr else ''}" + (f" + {partner.name}" if partner else "")
-    camp = _campaign(db, name, p["percent"], 21, user, "باندل کالای راکد با کالای پرفروش — هوش فروشگاه")
-    # markdown on the dead stock's batches
-    for b in db.execute(select(ProductBatch).where(ProductBatch.product_id == p["product_id"], ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).scalars():
-        before = float(b.sell_price)
-        from . import pricing_law
-        new_price = max(float(b.buy_price) * 1.01, round(before * (1 - p["percent"] / 100) / 100) * 100)
-        # the cost floor above can itself sit over the printed consumer price — never charge it
-        new_price = pricing_law.clamp_sell(b, new_price)
-        b.sell_price = Decimal(str(round(new_price)))
-        b.discount = Decimal(str(round(before - new_price)))
-    notify(db, type="INSIGHT_TASK", title="باندل ساخته شد", body=f"{name} — {p['percent']}٪ تخفیف روی کالای راکد؛ آن را کنار کالای پرفروش بچینید.",
+    camp = _campaign(db, name, p["percent"], 21, user, "باندل کالای راکد با کالای پرفروش — هوش فروشگاه", owner=insight)
+    camp.target_type = "PRODUCTS"
+    camp.target_ids = json.dumps([int(p["product_id"])] + ([int(p["partner_id"])] if p.get("partner_id") else []))
+    camp.auto_apply = True
+    db.flush()
+    notify(db, type="INSIGHT_TASK", title="باندل ساخته شد",
+           body=f"{name} — {p['percent']}٪ تخفیف روی کالای راکد؛ صندوق هنگام فروش همان کالا به‌صورت خودکار اعمال می‌کند. آن را کنار کالای پرفروش بچینید.",
            severity="INFO", reference_type="Campaign", reference_id=camp.id)
-    return {"campaign_id": camp.id}
+    return {"campaign_id": camp.id, "auto_applied": True, "target_products": camp.target_ids}
 
 
 def act_flash_sale(db, insight, p, user):
-    camp = _campaign(db, "فروش ویژهٔ نقدینگی", p["percent"], p["days"], user, "فروش ویژهٔ کوتاه برای آزادسازی نقدینگی — هوش فروشگاه")
-    notify(db, type="INSIGHT_TASK", title="فروش ویژه فعال شد", body=f"{p['days']} روز، {p['percent']}٪ روی کالاهای راکد (از بخش جشنواره قابل ویرایش است).",
+    """build-481 — the festival must be applicable at the till, not just exist in a table.
+
+    A flash sale is a *human* decision at the moment of sale (which basket, which
+    customer), so it is offered to the cashier as a SELECTABLE campaign (§24)
+    instead of silently discounting every basket in its window.  When the
+    analyzer knows WHICH products the sale is about (``products`` param), the
+    benefit is scoped to those lines.
+    """
+    camp = _campaign(db, "فروش ویژهٔ نقدینگی", p["percent"], p["days"], user, "فروش ویژهٔ کوتاه برای آزادسازی نقدینگی — هوش فروشگاه", owner=insight)
+    if p.get("products"):
+        camp.target_type = "PRODUCTS"
+        camp.target_ids = json.dumps([int(x) for x in p["products"]])
+    if p.get("min_purchase"):
+        camp.min_purchase = Decimal(str(int(p["min_purchase"])))
+    db.flush()
+    notify(db, type="INSIGHT_TASK", title="فروش ویژه فعال شد",
+           body=f"{p['days']} روز، {p['percent']}٪ تخفیف — صندوق‌دار هنگام فروش می‌تواند این جشنواره را انتخاب و اعمال کند (از بخش جشنواره قابل ویرایش است).",
            severity="INFO", reference_type="Campaign", reference_id=camp.id)
-    return {"campaign_id": camp.id}
+    return {"campaign_id": camp.id, "selectable_at_pos": True}
 
 
 def act_debt_reminders(db, insight, p, user):
@@ -403,7 +443,7 @@ def act_personal_sms(db, insight, p, user):
         return {"sms": 0, "skipped": "sms_disabled"}
     sent = 0
     for row in p.get("customers", []):
-        cust = db.get(Customer, row.get("customer_id"))
+        cust = db.get(Customer, _row_id(row))
         txt = (row.get("text") or "").strip()
         if not cust or not cust.phone or not txt:
             continue
@@ -419,7 +459,7 @@ def act_personal_coupons(db, insight, p, user):
     if not rows:
         return {"coupons": 0}
     pct = int(rows[0].get("percent", 5)); days = int(rows[0].get("days", 7))
-    camp = _campaign(db, f"کوپن شخصی — {insight.title[:40]}", pct, days, user, f"کوپن‌های شخصی هوش فروشگاه (پیشنهاد #{insight.id})")
+    camp = _campaign(db, f"کوپن شخصی — {insight.title[:40]}", pct, days, user, f"کوپن‌های شخصی هوش فروشگاه (پیشنهاد #{insight.id})", owner=insight)
     issued = sent = 0
     for row in rows:
         cust = db.get(Customer, _row_id(row))
@@ -510,11 +550,25 @@ def act_set_prices_bulk(db, insight, p, user):
 
 
 def act_threshold_campaign(db, insight, p, user):
-    camp = _campaign(db, f"خرید بالای {_fa(p['min_purchase'])} = {p['percent']}٪", p["percent"], p["days"], user, "کمپین آستانهٔ سبد — هوش فروشگاه")
+    """build-481 (§21) — «خرید بالای X → تخفیف» must really reach the till.
+
+    Before: the campaign row was created and the manager was told to «یک برگهٔ
+    کوچک روی صندوق بگذارید» — the POS itself never applied anything.  Now the
+    campaign is auto-apply: checkout validates the threshold and grants the
+    benefit on the invoice, with campaign provenance for the audit trail.
+    """
+    camp = _campaign(db, f"خرید بالای {_fa(p['min_purchase'])} = {p['percent']}٪", p["percent"], p["days"], user, "کمپین آستانهٔ سبد — هوش فروشگاه", owner=insight)
     camp.min_purchase = Decimal(str(int(p["min_purchase"])))
-    notify(db, type="INSIGHT_TASK", title="کمپین آستانهٔ سبد فعال شد", body=f"خرید بالای {_fa(p['min_purchase'])} تومان = {p['percent']}٪ تخفیف تا {p['days']} روز. یک برگهٔ کوچک روی صندوق بگذارید.",
+    if p.get("max_purchase") is not None:
+        camp.max_purchase = Decimal(str(int(p["max_purchase"])))
+    if p.get("products"):
+        camp.target_type = "PRODUCTS"
+        camp.target_ids = json.dumps([int(x) for x in p["products"]])
+    camp.auto_apply = True
+    db.flush()
+    notify(db, type="INSIGHT_TASK", title="کمپین آستانهٔ سبد فعال شد", body=f"خرید بالای {_fa(p['min_purchase'])} تومان = {p['percent']}٪ تخفیف تا {p['days']} روز. صندوق به‌صورت خودکار روی فاکتورهای واجد شرایط اعمال می‌کند.",
            severity="INFO", reference_type="Campaign", reference_id=camp.id)
-    return {"campaign_id": camp.id}
+    return {"campaign_id": camp.id, "auto_applied": True}
 
 
 def act_set_setting(db, insight, p, user):

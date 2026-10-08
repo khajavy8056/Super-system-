@@ -21,6 +21,8 @@ from .routers import (
     accounting,
     audit,
     auth,
+    dev,
+    hr,
     batches,
     customers,
     diagnostics,
@@ -154,6 +156,7 @@ for r in (
     hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
+    hr.router, dev.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -310,6 +313,20 @@ async def security_headers(request: Request, call_next):
         "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
         "script-src 'self' 'unsafe-inline'; connect-src 'self';" + frame_ancestors,
     )
+    return response
+
+
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """build-485/492 — جلوگیری کامل از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
+    جدید، ظاهر قدیمی»). WebView2/Edge فایل‌های JS/CSS را با کش تهاجمی نگه می‌داشت؛
+    حالا همهٔ پاسخ‌های غیر از /media با `no-store, no-cache, must-revalidate` ارسال می‌شوند."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/media/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 

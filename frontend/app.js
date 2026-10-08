@@ -5,9 +5,10 @@ const $ = (sel) => document.querySelector(sel);
 const API = (window.SM_SERVER || "") + "/api";
 
 const state = {
-  token: localStorage.getItem("token") || localStorage.getItem("m_token") || "",   // m_token = phone pairing token
+  token: localStorage.getItem("token") || "",   // build-489: m_token (جفت‌سازی گوشی) هرگز نشست دسکتاپ نمی‌سازد
   user: null,
   view: "dashboard",
+  renderSeq: 0,
   kiosk: localStorage.getItem("kiosk") === "1",
   kioskShortcut: "Ctrl+Shift+L",
   currency: { code: "IRT", label: "تومان" },
@@ -52,16 +53,17 @@ function toast(msg, kind = "ok") {
  * app NO page starts from an empty "در حال بارگذاری…". One-shot per key:
  * the second visit is a fresh request as before. */
 const WARM_KEYS = [
-  "/reports/dashboard",
-  "/products?limit=1000",        // what the products view actually fetches
-  "/inventory/stock",            // inventory view's first call
-  "/reports/expiry",             // expiry report
-  "/insights/summary",
+  ["/reports/dashboard", "reports.view"],
+  ["/products?limit=1000", "products.view"],        // what the products view actually fetches
+  ["/inventory/stock", "inventory.view"],            // inventory view's first call
+  ["/reports/expiry", "reports.view_all"],           // expiry report (store-wide only)
+  ["/insights/summary", "reports.view"],
 ];
 const warm = {};
 async function warmup() {
-  if (!state.token) return;
-  await Promise.allSettled(WARM_KEYS.map(async (k) => {
+  if (!state.token || !state.user) return;
+  const allowedKeys = WARM_KEYS.filter(([, perm]) => !perm || canNav(perm)).map(([k]) => k);
+  await Promise.allSettled(allowedKeys.map(async (k) => {
     try { warm[k] = await api(k); } catch (_) { /* offline keys warm lazily */ }
   }));
 }
@@ -169,27 +171,51 @@ $("#login-form").addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(body.detail || "ورود ناموفق");
     state.token = body.access_token;
     localStorage.setItem("token", state.token);
-    const me = await api("/auth/me");
-    state.user = me;
-    if (window.Onboarding) await Onboarding.afterLogin();   // v1.5: licence recheck + loading
-    await loadRuntimeConfig();
-    await warmup();   // v4.3.1 — the loading screen prepares the data too
-    showApp();
-    buildNav();
-    await applyTheme();
-    startStatusBar();
-    if (window.Onboarding) Onboarding.alertsStack();
-    if (window.Sfx) Sfx.play("welcome");
-    if (state.kiosk) enterKiosk(); else go("dashboard");
+    await initAuthenticatedSession(true);
   } catch (err) {
     $("#login-error").textContent = err.message;
     $("#login-error").classList.remove("hidden");
   }
 });
 
+async function initAuthenticatedSession(fromLogin = false) {
+  const me = await api("/auth/me");
+  state.user = me;
+  if (window.Onboarding) await Onboarding.afterLogin();
+  await loadRuntimeConfig().catch(() => {});
+  await warmup().catch(() => {});
+  showApp();
+  buildNav();
+  await applyTheme().catch(() => {});
+  startStatusBar();
+  if (window.updatePresence) updatePresence(true);   // build-492 — تشخیص خودکار حضور در شیفت
+  if (window.Onboarding) Onboarding.alertsStack();
+  if (fromLogin && window.Sfx) Sfx.play("welcome");
+  const startView = canView("dashboard") ? "dashboard" : firstAllowedView();
+  if (state.kiosk && canView("pos")) enterKiosk(); else go(startView);
+}
+
 function doLogout() {
   localStorage.removeItem("token");
-  state.token = ""; state.user = null;
+  localStorage.removeItem("sm.loading.done");
+  state.token = ""; state.user = null; state.view = "dashboard";
+  if (typeof posState === "object" && posState) {
+    posState.cart = []; posState.customer = null; posState.coupon = null;
+    posState.couponInfo = null; posState.invoiceDiscount = 0;
+    posState.campaign = null; posState.campaignInfo = null;
+  }
+  Object.keys(warm).forEach((k) => { delete warm[k]; });
+  clearInterval(window._presenceTimer);
+  clearInterval(window._sbTimer);
+  // build-489/492 — کش‌های نشست و نمای فعال باید همراه کاربر پاک شوند (نشت بین حساب‌ها ممنوع)
+  ["_rolesCache", "_permsCache", "_widgetLayout", "_updateInfo", "_updateChecked",
+   "_mineLoaded", "_dashData", "_presence"].forEach((k) => { try { delete window[k]; } catch (_) {} });
+  if ($("#view")) $("#view").innerHTML = "";
+  if ($("#nav")) $("#nav").innerHTML = "";
+  ["#tb-presence", "#tb-bell", "#tb-cal"].forEach((sel) => { const el = $(sel); if (el) el.classList.add("hidden"); });
+  const aiBtn = document.querySelector(".ai-assist");
+  if (aiBtn) aiBtn.classList.add("hidden");
+  try { sessionStorage.clear(); } catch (_) {}
   showLogin();
 }
 $("#logout").addEventListener("click", () => exitPrompt());
@@ -300,63 +326,510 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   sms: '<path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.4-4.4A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>',
   tag: '<path d="M20 12l-8 8-9-9V4h7z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
+
+/* ui-build-496 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+   راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
+   واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
+const UI_BUILD = 496;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
      stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 
+/* build-485 — ترتیب و نام‌ها دقیقاً مطابق تصویر مرجع؛ بخش‌های اضافهٔ محصول
+   (فاکتورها، هوش مصنوعی، حسابداری، …) بدون حذف بعد از فهرست مرجع می‌آیند. */
+/* build-490/492 (§۱–۵) — منبع واحد حقیقت (Single Source of Truth) برای مجوزهای هر بخش.
+   تنها Permission تعیین می‌کند که آیا منو، آیکون، دکمه و مسیر (Route) برای کاربر فعال است یا خیر. */
+const VIEW_PERMS = {
+  dashboard: "reports.view",
+  pos: "pos.sell",
+  batches: "batches.manage",
+  inventory: "inventory.adjust||inventory.stocktake||inventory.approve_stocktake",
+  products: "products.manage||batches.manage||pricing.manage",
+  customers: "pos.sell||customers.manage||customers.ledger",
+  marketing: "marketing.view||marketing.manage",
+  reports: "reports.view_all",
+  invoices: "reports.view",
+  insights: "reports.view",
+  insightsPlan: "reports.view_all",
+  insightsCustomers: "reports.view_all||customers.manage",
+  accounting: "accounting.view",
+  hardware: "settings.manage",
+  users: "users.manage",
+  settings: "settings.manage",
+  diagnostics: "settings.manage",
+  support: "pos.sell||settings.manage||users.manage",
+  audit: "audit.view",
+  staff: "users.manage||payroll.view||payroll.manage||shifts.manage||shifts.view||performance.view_all||announcements.manage||announcements.publish",
+  profile: null,
+};
+
 const NAV = [
   ["dashboard", "داشبورد", "reports.view", "dashboard"],
-  ["pos", "صندوق (POS)", "pos.sell", "pos"],
-  ["products", "کالاها", "products.view", "box"],
-  ["batches", "ورود کالا", "batches.manage", "inbox"],
-  ["inventory", "انبار و انبارگردانی", "inventory.view", "warehouse"],
+  ["pos", "فروش و صندوق", "pos.sell", "pos"],
+  ["batches", "خرید و دریافت", "batches.manage", "inbox"],
+  ["inventory", "موجودی و انبار", "inventory.adjust||inventory.stocktake||inventory.approve_stocktake", "warehouse"],
+  ["products", "محصولات", "products.manage||batches.manage||pricing.manage", "box"],
+  ["customers", "مشتریان", "pos.sell||customers.manage||customers.ledger", "user"],
+  ["marketing", "تخفیف‌ها و کمپین‌ها", "marketing.view", "gift"],
+  ["reports", "گزارش‌ها", "reports.view_all", "chart"],
   ["invoices", "فاکتورها", "reports.view", "invoice"],
-  ["customers", "مشتریان", "pos.sell", "user"],
-  ["marketing", "جشنواره و کوپن", "reports.view", "gift"],
-  ["reports", "گزارش‌ها", "reports.view", "chart"],
+  ["insights", "هوش مصنوعی", "reports.view", "star"],
   ["accounting", "حسابداری", "accounting.view", "ledger"],
   ["hardware", "سخت‌افزار", "settings.manage", "printer"],
   ["users", "کاربران", "users.manage", "users"],
   ["settings", "تنظیمات", "settings.manage", "gear"],
   ["diagnostics", "تست اتصالات", "settings.manage", "stethoscope"],
-  ["support", "درخواست پشتیبانی", "pos.sell", "lifebuoy"],
+  ["support", "درخواست پشتیبانی", "pos.sell||settings.manage||users.manage", "lifebuoy"],
   ["audit", "لاگ‌ها", "audit.view", "shield"],
+  ["staff", "کارکنان و سازمان", "users.manage||payroll.view||payroll.manage||shifts.manage||shifts.view||performance.view_all||announcements.manage||announcements.publish", "users"],
 ];
+
+/** build-490 — «perm» می‌تواند چند مجوز با جداکنندهٔ || (هر کدام کافی است). */
+function canNav(perm) {
+  if (!perm) return true;
+  return String(perm).split("||").some((p) => can(p.trim()));
+}
 
 function can(perm) {
   if (!state.user) return false;
   return (state.user.permissions || []).includes(perm);
 }
 
+/* Presentation profile mirrors Backend's effective-permission classification.
+   It never grants access; every action and payload is still permission-checked. */
+function dashboardProfileFromPermissions(permissions) {
+  const ps = Array.isArray(permissions) ? permissions : [];
+  const has = (permission) => ps.includes(permission);
+  if (has("users.manage") && has("settings.manage")) return "administrator";
+  if (has("reports.view_all") && has("shifts.manage") && has("inventory.adjust")
+      && !has("users.manage") && !has("settings.manage")) return "supervisor";
+  if (has("accounting.view") && !has("pos.sell") && !has("shifts.manage")
+      && !has("users.manage") && !has("settings.manage")) return "accountant";
+  if (has("pos.sell") && !has("reports.view_all") && !has("accounting.view")
+      && !has("shifts.manage") && !has("users.manage") && !has("settings.manage")) return "seller";
+  if (has("users.manage") || has("settings.manage")) return "manager";
+  if (has("reports.view_all")) return "operations";
+  return "staff";
+}
+function dashboardProfileFor(data) {
+  const valid = ["administrator", "supervisor", "accountant", "seller", "manager", "operations", "staff"];
+  if (data && valid.includes(data.dashboard_profile)) return data.dashboard_profile;
+  return dashboardProfileFromPermissions(state.user ? state.user.permissions : []);
+}
+function dashboardProfileLabel(profile) {
+  return ({ administrator: "مدیر کل", supervisor: "سوپروایزر", accountant: "حسابدار",
+    seller: "فروشنده / صندوق‌دار", manager: "مدیر فروشگاه", operations: "عملیات فروشگاه", staff: "کاربر" })[profile] || "کاربر";
+}
+function dashboardProfileTitle(profile) {
+  return ({ administrator: "پنل مدیر کل", supervisor: "پنل سوپروایزر", accountant: "پنل حسابداری",
+    seller: "پنل فروش و صندوق", manager: "پنل مدیریت فروشگاه", operations: "پنل عملیات فروشگاه", staff: "داشبورد" })[profile] || "داشبورد";
+}
+
+function canView(view) {
+  if (!state.user) return false;
+  if (view === "profile") return true;
+  if (Array.isArray(state.user.allowed_views) && state.user.allowed_views.length && Object.prototype.hasOwnProperty.call(VIEW_PERMS, view)) {
+    return state.user.allowed_views.includes(view);
+  }
+  if (!Object.prototype.hasOwnProperty.call(VIEW_PERMS, view)) return false;
+  return canNav(VIEW_PERMS[view]);
+}
+
+function firstAllowedView() {
+  for (const [k] of NAV) {
+    if (canView(k)) return k;
+  }
+  return "profile";
+}
+
+window.can = can;
+window.canNav = canNav;
+window.canView = canView;
+window.firstAllowedView = firstAllowedView;
+
 /* v2.9 — sidebar grouped into sections (icon badge + label), like a premium back-office. */
 const NAV_GROUPS = [
   ["فروش", ["pos", "customers", "invoices"]],
   ["کالا و انبار", ["products", "batches", "inventory"]],
-  ["رشد و تحلیل", ["dashboard", "marketing", "reports", "accounting"]],
+  ["رشد و تحلیل", ["dashboard", "marketing", "reports", "insights", "accounting"]],
   ["سامانه", ["hardware", "users", "settings", "diagnostics", "support", "audit"]],
+  ["کارکنان و سازمان", ["staff"]],
 ];
 function buildNav() {
+  // build-485/492 — سایدبار و آیکون‌های نوار بالا فقط بخش‌های مجاز را نمایش می‌دهند (منبع واحد حقیقت)
   const nav = $("#nav");
+  if (!nav) return;
   nav.innerHTML = "";
-  const byKey = Object.fromEntries(NAV.map((n) => [n[0], n]));
-  NAV_GROUPS.forEach(([title, keys]) => {
-    const items = keys.map((k) => byKey[k]).filter((n) => n && can(n[2]));
-    if (!items.length) return;
-    const h = el("div", { class: "nav-sec" }); h.textContent = title; nav.append(h);
-    items.forEach(([key, label, perm, ico]) => {
-      const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
-      btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
-      nav.append(btn);
-    });
+  NAV.forEach(([key, label, , ico]) => {
+    if (!canView(key)) return;
+    const btn = el("button", { class: "nav-item" + (state.view === key ? " active" : ""), title: label, "aria-label": label, onclick: () => go(key) });
+    btn.innerHTML = `<span class="nav-ic">${icon(ico, 17)}</span><span>${esc(label)}</span>${key === "insights" ? `<i class="nav-new">جدید</i>` : ""}${key === "support" ? `<i class="nav-badge hidden" id="nav-sup-badge"></i>` : ""}`;
+    nav.append(btn);
   });
+  // مخفی‌سازی کامل آیکون‌ها و میان‌برهای غیرمجاز در نوار بالا و سایدبار (§۴)
+  const calBtn = $("#tb-cal");
+  if (calBtn) calBtn.classList.toggle("hidden", !canView("reports"));
+  const bellBtn = $("#tb-bell");
+  if (bellBtn) bellBtn.classList.toggle("hidden", !canView("insights"));
+  const aiAssist = document.querySelector(".ai-assist");
+  if (aiAssist) aiAssist.classList.toggle("hidden", !canView("insights"));
+
   $("#whoami").textContent = state.user ? `${state.user.full_name} (${state.user.roles.join(", ")})` : "";
   // نام واقعی فروشگاه در بلوک برند (پیش‌تر فقط هنگام ذخیرهٔ پروفایل به‌روز می‌شد)
   const bs = $("#brand-store");
   if (bs) bs.textContent = (state.store && state.store.name) ? state.store.name : "مدیریت سوپرمارکت";
+  const bs2 = $("#brand-store2");
+  if (bs2) bs2.textContent = (state.store && state.store.name) ? state.store.name : "مدیریت سوپرمارکت";
+  // build-484 — کارت کاربر در نوار بالای سراسری (الهام از تصویر مرجع)
+  const un = $("#tb-user-name"), ur = $("#tb-user-role"), ua = $("#tb-user-av");
+  if (un) un.textContent = state.user ? state.user.full_name : "";
+  if (ur) ur.textContent = state.user && state.user.roles ? state.user.roles.join("، ") : "";
+  if (ua) ua.textContent = state.user && state.user.full_name ? state.user.full_name.trim().slice(0, 1) : "؟";
+  bindGlobalBar();
 }
+/* build-484 — رفتار نوار بالای سراسری: جست‌وجو، اعلان‌ها، تقویم، پوسته، کارت کاربر */
+function bindGlobalBar() {
+  if (document.body.dataset.gbar === "1") return;
+  document.body.dataset.gbar = "1";
+  const gs = $("#gsearch");
+  if (gs) {
+    gs.addEventListener("focus", () => { gs.blur(); if (window.openQuickPalette) openQuickPalette(); });
+    gs.addEventListener("click", () => { if (window.openQuickPalette) openQuickPalette(); });
+  }
+  const bell = $("#tb-bell"); if (bell) bell.addEventListener("click", () => go("insights"));
+  const cal = $("#tb-cal"); if (cal) cal.addEventListener("click", () => go("reports"));
+  // build-487 — دکمهٔ پوسته باید واقعاً روشن/تیره را عوض کند (باگ مالک: کلیک بی‌اثر).
+  // cycleTheme خودش auto→light→dark را می‌چرخاند و روی سرور هم ذخیره می‌کند.
+  const th = $("#tb-theme"); if (th) th.addEventListener("click", () => {
+    if (window.cycleTheme) window.cycleTheme();
+    else { const t2 = $("#sb-theme"); if (t2) t2.click(); }
+  });
+  // build-487 — کارت کاربر «پروفایل کاربر» را باز می‌کند، نه پروفایل فروشگاه
+  const us = $("#tb-user"); if (us) us.addEventListener("click", () => go("profile"));
+  if (window.checkUpdateOnce) checkUpdateOnce();
+  if (window.updatePresence) updatePresence();   // build-491 — نوار حضور
+}
+
+/* build-489 — «داشبورد من» (§۳۰ نقش داشبوردها): فروش/شیفت/عملکرد خودِ کاربر از
+   داده‌های واقعی (today_by_staff + /hr/performance/me) — نه دادهٔ ساختگی. */
+window.loadMineCard = async function (dashData) {
+  const host = $("#og-mine"), body = $("#mine-body"), sub = $("#mine-sub");
+  if (!host || !body) return;
+  const parts = [];
+  // ۱) فروش امروز من — از payload داشبورد (همان ردیف «گزارش فروش روزانه»)
+  const meName = (state.user && state.user.full_name) || "";
+  const staff = Array.isArray(dashData && dashData.today_by_staff) ? dashData.today_by_staff : [];
+  const myId = Number((state.user || {}).id || 0);
+  const myRow = staff.find((s) => myId > 0 && Number(s.user_id) === myId)
+    || staff.find((s) => s.name && meName && String(s.name).trim() === String(meName).trim());
+  if (myRow) parts.push(`<div class="mine-kpi"><span>فروش امروز من</span><b>${money(myRow.sales != null ? myRow.sales : myRow.total || 0)}</b><small>${fa(myRow.invoice_count != null ? myRow.invoice_count : 0)} فاکتور</small></div>`);
+  // ۲) عملکرد من — هر کاربر خودش (performance/me عمومی است)
+  try {
+    const pr = await api("/hr/performance/me");
+    const sc = pr && (pr.score != null ? pr.score : (pr.summary && pr.summary.score));
+    if (sc != null) parts.push(`<div class="mine-kpi"><span>امتیاز عملکرد من</span><b>${fa(sc)}</b><small>${pr.period_label ? esc(pr.period_label) : "دورهٔ اخیر"}</small></div>`);
+  } catch (_) {}
+  // ۳) حضور امروز + شیفت (build-491/492) — با تشخیص خودکار حضور در شیفت فعال
+  try {
+    const st = await api("/hr/attendance/status?auto=1"); window._presence = st;
+    if (st.has_shift && st.present) {
+      parts.push(`<div class="mine-kpi"><span class="pres-on">● حضور امروز</span><b>${presenceClock(st.since)}</b><small>حاضر در شیفت — ${fa(st.minutes || 0)} دقیقه</small></div>`);
+    } else if (st.shift_state === "COMPLETED") {
+      parts.push(`<div class="mine-kpi"><span class="pres-on">✓ شیفت امروز</span><b>تکمیل شد</b><small>ورود ${presenceClock(st.since)} · خروج ${presenceClock(st.ended_at)}</small></div>`);
+    } else if (st.shift_state === "OUT_OF_SHIFT") {
+      parts.push(`<div class="mine-kpi"><span>وضعیت شیفت</span><b>خارج از ساعت شیفت</b><small>بازهٔ شیفت: ${fa(st.start_time)} تا ${fa(st.end_time)} · <button class="btn btn-xs btn-ghost" id="pres-in-card">ثبت حضور</button></small></div>`);
+    } else if (st.has_shift) {
+      parts.push(`<div class="mine-kpi"><span class="pres-off">● حضور امروز</span><b>غایب</b><small>${st.late_minutes ? fa(st.late_minutes) + " دقیقه تأخیر · " : ""}<button class="btn btn-xs btn-primary" id="pres-in-card">ثبت حضور</button></small></div>`);
+    } else {
+      parts.push(`<div class="mine-kpi"><span>حضور امروز</span><b>—</b><small>شیفتی برای امروز ثبت نشده</small></div>`);
+    }
+    if (st.has_shift) {
+      const multi = Array.isArray(st.shifts_today) && st.shifts_today.length > 1
+        ? ` (${fa(st.shifts_today.length)} شیفت امروز)`
+        : "";
+      parts.push(`<div class="mine-kpi"><span>شیفت امروز${multi}</span><b>${esc(st.shift_name || "—")}</b><small>${fa(st.start_time)} تا ${fa(st.end_time)}</small></div>`);
+    }
+  } catch (_) {}
+  if (!body.isConnected) return;
+  if (!parts.length) { host.style.display = "none"; return; }
+  host.style.display = "";
+  body.innerHTML = parts.join("");
+  const pic = body.querySelector("#pres-in-card");
+  if (pic) pic.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
+      toast("حضور ثبت شد", "ok"); updatePresence(); loadMineCard(window._dashData);
+    } catch (e) { toast(e.message, "err"); }
+  });
+  if (sub) sub.textContent = meName;
+};
+
+/* build-491/492 (دستور مالک) — پنجره‌های فرم داخلی به‌جای prompt() مرورگر + تنظیم کامل شیفت برای هر کاربر. */
+async function openShiftCreate(onDone) {
+  let users = [];
+  if (can("shifts.manage")) {
+    try { users = await api("/hr/roster-users"); } catch (_) { users = []; }
+  }
+  const dayNames = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"];
+  openModal(`<h3>تعریف شیفت کاری جدید</h3>
+    <label>نام شیفت</label><input id="shf-name" placeholder="مثلاً «شیفت صبح» یا «شیفت ویژه»">
+    <div class="form-row">
+      <div><label>ساعت شروع (HH:MM)</label><input id="shf-start" value="08:00" placeholder="08:00"></div>
+      <div><label>ساعت پایان (HH:MM)</label><input id="shf-end" value="14:00" placeholder="14:00"></div>
+    </div>
+    <label>بخش / واحد (اختیاری)</label><input id="shf-dept" placeholder="مثلاً صندوق، انبار، فروش">
+    <label>روزهای تکرار در هفته (خالی = همه روزها)</label>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin:6px 0" id="shf-days">
+      ${dayNames.map((dn, idx) => `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${idx}" checked style="margin-inline-end:4px">${dn}</label>`).join("")}
+    </div>
+    ${users.length ? `
+      <label style="margin-top:8px">تخصیص مستقیم به شخص (اختیاری)</label>
+      <select id="shf-user">
+        <option value="">— بدون تخصیص فوری (بعداً تخصیص می‌دهم) —</option>
+        ${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}${u.job_title ? " — " + esc(u.job_title) : ""}</option>`).join("")}
+      </select>
+    ` : ""}
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="shf-save">ذخیره شیفت</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  $("#shf-save").addEventListener("click", async () => {
+    const name = $("#shf-name").value.trim();
+    const start = $("#shf-start").value.trim();
+    const end = $("#shf-end").value.trim();
+    const department = ($("#shf-dept") ? $("#shf-dept").value.trim() : "");
+    const checkedDays = [...document.querySelectorAll("#shf-days input:checked")].map((el) => Number(el.value));
+    const workdays = checkedDays.length === 7 ? [] : checkedDays;
+    const uid = $("#shf-user") && $("#shf-user").value ? Number($("#shf-user").value) : null;
+    if (!name) return toast("نام شیفت لازم است", "err");
+    if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return toast("ساعت را درست وارد کنید (HH:MM)", "err");
+    try {
+      await api("/hr/shifts", { method: "POST", body: JSON.stringify({
+        name, start_time: start, end_time: end, department, workdays, user_id: uid, day: "",
+      }) });
+      toast("شیفت ساخته شد", "ok"); closeModal(); if (onDone) onDone();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+async function openShiftAssign(s, onDone) {
+  let users = [];
+  try { users = await api("/hr/roster-users"); } catch (e) { return toast(e.message, "err"); }
+  const today = new Date().toISOString().slice(0, 10);
+  openModal(`<h3>تخصیص شیفت «${esc(s.name)}» به شخص</h3>
+    <label>انتخاب شخص</label>
+    <select id="sa-user">${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}${u.job_title ? " — " + esc(u.job_title) : ""}</option>`).join("")}</select>
+    <label style="margin-top:8px">نوع برنامهٔ شیفت</label>
+    <select id="sa-mode">
+      <option value="recurring">تکرارشونده (برنامهٔ ثابت در روزهای کاری شیفت)</option>
+      <option value="date">روز مشخص (فقط یک تاریخ خاص)</option>
+    </select>
+    <div id="sa-day-wrap" style="margin-top:8px">
+      <label>روز مشخص</label><input id="sa-day" type="date" value="${today}">
+    </div>
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="sa-save">تخصیص شیفت</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  const modeEl = $("#sa-mode"), dayWrap = $("#sa-day-wrap");
+  const syncMode = () => { if (dayWrap && modeEl) dayWrap.style.display = modeEl.value === "date" ? "" : "none"; };
+  if (modeEl) { modeEl.addEventListener("change", syncMode); syncMode(); }
+  $("#sa-save").addEventListener("click", async () => {
+    const dayVal = (modeEl && modeEl.value === "recurring") ? "" : ($("#sa-day") ? $("#sa-day").value : today);
+    try {
+      await api(`/hr/shifts/${s.id}/assign`, { method: "POST", body: JSON.stringify({ user_id: Number($("#sa-user").value), day: dayVal }) });
+      toast("شیفت به شخص تخصیص یافت", "ok"); closeModal(); if (onDone) onDone();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
+function openTextPrompt(title, label, def, onOk) {
+  openModal(`<h3>${esc(title)}</h3>
+    <label>${esc(label)}</label><textarea id="tp-val" rows="4">${esc(def || "")}</textarea>
+    <div class="prof-actions" style="margin-top:14px">
+      <button class="btn btn-primary" id="tp-ok">تأیید</button>
+      <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+    </div>`);
+  $("#tp-ok").addEventListener("click", () => { const v = $("#tp-val").value; closeModal(); if (onOk) onOk(v); });
+}
+
+/* build-491/492 (دستور مالک) — نوار حضور: زیر کارت پروفایل (نوار بالا) + داشبورد.
+   هنگامی که کاربر در بازهٔ شیفت خودش وارد برنامه می‌شود، سیستم به‌طور خودکار حضور او را در شیفت فعال ثبت می‌کند. */
+window.updatePresence = async function (autoEnter = true) {
+  const strip = $("#tb-presence");
+  if (!strip || !state.user) return;
+  let st = null;
+  try { st = await api(autoEnter ? "/hr/attendance/status?auto=1" : "/hr/attendance/status"); } catch (e) { return; }
+  window._presence = st;
+  strip.innerHTML = presenceHtml(st, true);
+  strip.style.display = "";
+  const pin = $("#pres-in"), pout = $("#pres-out");
+  if (pin) pin.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-in", { method: "POST", body: JSON.stringify({}) });
+      toast("حضور ثبت شد", "ok"); updatePresence(false);
+      if (state.view === "dashboard") go("dashboard");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  if (pout) pout.addEventListener("click", async () => {
+    try {
+      await api("/hr/attendance/clock-out", { method: "POST", body: JSON.stringify({}) });
+      toast("خروج ثبت شد", "ok"); updatePresence(false);
+      if (state.view === "dashboard") go("dashboard");
+    } catch (e) { toast(e.message, "err"); }
+  });
+};
+function presenceClock(iso) {
+  try { const d = new Date(iso); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); } catch (_) { return ""; }
+}
+function presenceHtml(st, withBtn) {
+  if (!st || !st.has_shift) return `<span class="pres pres-none">شیفت امروز ثبت نشده</span>`;
+  const win = st.start_time ? ` (${fa(st.start_time)} تا ${fa(st.end_time)})` : "";
+  if (st.present) {
+    const shLabel = st.shift_name ? `در شیفت «${esc(st.shift_name)}» — ` : "";
+    return `<span class="pres pres-on" title="حضور از ${presenceClock(st.since)}">● ${shLabel}حضور از ${presenceClock(st.since)} · ${fa(st.minutes || 0)} دقیقه</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-out">خروج</button>` : ""}`;
+  }
+  if (st.shift_state === "COMPLETED") {
+    return `<span class="pres pres-on" title="شیفت تکمیل شده">✓ شیفت «${esc(st.shift_name || "")}» تکمیل شد (${presenceClock(st.since)} تا ${presenceClock(st.ended_at)})</span>`;
+  }
+  if (st.shift_state === "OUT_OF_SHIFT") {
+    return `<span class="pres pres-none" title="خارج از ساعت شیفت">◔ خارج از ساعت شیفت${st.shift_name ? " — «" + esc(st.shift_name) + "»" : ""}${win}</span>${withBtn ? `<button class="btn btn-sm btn-ghost pres-btn" id="pres-in">ثبت حضور</button>` : ""}`;
+  }
+  const late = st.late_minutes ? ` · ${fa(st.late_minutes)} دقیقه تأخیر` : "";
+  return `<span class="pres pres-off" title="حضور ثبت نشده">● غایب${st.shift_name ? " — شیفت «" + esc(st.shift_name) + "»" : ""}${win}${late}</span>${withBtn ? `<button class="btn btn-sm btn-primary pres-btn" id="pres-in">ثبت حضور</button>` : ""}`;
+}
+setInterval(() => { if (state.user && window.updatePresence) updatePresence(true); }, 60000);   // هر دقیقه بررسی و همگام‌سازی حضور با بازهٔ شیفت
+
+/* build-488 — داشبورد پویا (§۴–۱۳): Widgetهای مجاز هر کاربر از /hr/widgets می‌آید؛
+   مخفی/ترتیب/Pin/اندازه روی همان کارت‌های فعلی اعمال می‌شود (ظاهر تغییر نمی‌کند).
+   فعال‌کردن Widget غیرمجاز در backend رد می‌شود (§۸). */
+window.applyDashboardWidgets = async function () {
+  let data = null;
+  try { data = await api("/hr/widgets"); } catch (e) { return; }  // بدون دسترسی/آفلاین: همان چیدمان فعلی
+  window._widgetLayout = data;
+  // build-489 — اول: کارت‌هایی که Widgetشان برای این کاربر مجاز نیست واقعاً مخفی می‌شوند
+  // (باگ مالک: داشبورد صندوق‌دار مثل مدیر کامل بود). نشت دید = ممنوع.
+  (data.hide_cards || []).forEach((sel) => {
+    document.querySelectorAll(sel).forEach((n) => { n.style.display = "none"; n.dataset.wLocked = "1"; });
+  });
+  const hidden = new Set((data.all_allowed || []).filter((w) => w.hidden).map((w) => w.id));
+  (data.all_allowed || []).forEach((w, i) => {
+    if (!w.card) return;
+    document.querySelectorAll(w.card).forEach((node) => {
+      if (node.dataset.wLocked === "1") return;
+      node.dataset.w = w.id;
+      if (hidden.has(w.id)) { node.style.display = "none"; return; }
+      node.style.display = "";
+      // Preserve the existing hero → personal shift/performance card → dashboard cards hierarchy.
+      // Pinning changes order only within the card area; it can never lift content above the welcome hero.
+      node.style.order = node.classList.contains("og-mine") ? "1" : String(Math.max(2, w.pinned ? -100 + i : i));
+      node.classList.remove("w-sm", "w-md", "w-lg");
+      node.classList.add("w-" + (w.size || "md"));
+      if (w.pinned) node.classList.add("w-pinned"); else node.classList.remove("w-pinned");
+    });
+  });
+  const btn = $("#dash-layout-btn");
+  if (btn) btn.onclick = () => openDashLayout();
+  if (window.loadMineCard && !window._mineLoaded) loadMineCard(window._dashData);
+  if (window.loadFinCard && can("accounting.view")) loadFinCard();
+};
+
+/* build-490 (§۳) — کارت مالی داشبورد حسابدار/مدیر: بدهکاران + دریافت/پرداخت از /accounting/overview */
+window.loadFinCard = async function () {
+  const host = $("#og-fin"), body = $("#fin-body");
+  if (!host || !body) return;
+  try {
+    const ov = await api("/accounting/overview");
+    const ch = ov.cheques || {};
+    body.innerHTML = `
+      <div class="mine-kpi"><span>مطالبات (بدهکاران)</span><b>${money(ov.receivables || 0)}</b><small>چک دریافتی در انتظار: ${money(ch.received_pending || 0)}</small></div>
+      <div class="mine-kpi"><span>بدهکاران (بستانکاران)</span><b>${money(ov.payables || 0)}</b><small>چک صادره در انتظار: ${money(ch.issued_pending || 0)}</small></div>
+      <div class="mine-kpi"><span>نقد / بانک / کارت</span><b>${money(ov.cash || 0)}</b><small>بانک ${money(ov.bank || 0)} · کارت ${money(ov.card || 0)}</small></div>
+      <div class="mine-kpi"><span>سود خالص این ماه</span><b>${money((ov.month || {}).net_profit || 0)}</b><small>درآمد ${money((ov.month || {}).revenue || 0)} · هزینه ${money((ov.month || {}).expenses || 0)}</small></div>`;
+    host.style.display = "";
+  } catch (e) { host.style.display = "none"; }
+};
+window.openDashLayout = function () {
+  const data = window._widgetLayout;
+  if (!data) return;
+  // build-489 — چیدمان فقط کارت‌های واقعی داشبورد را مرتب می‌کند (ویجت‌های مفهومیِ بدون کارت اینجا جایی ندارند)
+  const items = [...(data.all_allowed || [])].filter((w) => w.card);
+  const overlay = el("div", { class: "modal-overlay" });
+  const render = () => {
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="dcard-head"><h3>چیدمان داشبورد من</h3>
+          <button class="btn btn-sm btn-ghost" id="mdl-close">بستن</button></div>
+        <p class="muted">Widgetها را جابه‌جا، مخفی یا ثابت (Pin) کنید — فقط در محدودهٔ دسترسی شما.</p>
+        <div class="wd-list">
+          ${items.map((w, i) => `
+            <div class="wd-row">
+              <b>${esc(w.title)}</b>
+              <span class="muted">${esc(w.group_title || "")}</span>
+              <span class="wd-acts">
+                <button class="btn btn-sm btn-ghost" data-up="${w.id}">▲</button>
+                <button class="btn btn-sm btn-ghost" data-down="${w.id}">▼</button>
+                <button class="btn btn-sm ${w.pinned ? "btn-primary" : "btn-ghost"}" data-pin="${w.id}">${w.pinned ? "پین شده" : "پین"}</button>
+                <button class="btn btn-sm ${w.hidden ? "btn-primary" : "btn-ghost"}" data-hide="${w.id}">${w.hidden ? "مخفی" : "نمایش"}</button>
+              </span>
+            </div>`).join("")}
+        </div>
+        <div class="prof-actions" style="margin-top:12px">
+          <button class="btn btn-primary" id="wd-save">ذخیرهٔ چیدمان</button>
+          <button class="btn btn-ghost" id="wd-reset">بازنشانی</button>
+        </div>
+      </div>`;
+    overlay.querySelectorAll("[data-up]").forEach((b) => b.addEventListener("click", () => {
+      const i = items.findIndex((x) => x.id === b.dataset.up);
+      if (i > 0) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; render(); }
+    }));
+    overlay.querySelectorAll("[data-down]").forEach((b) => b.addEventListener("click", () => {
+      const i = items.findIndex((x) => x.id === b.dataset.down);
+      if (i >= 0 && i < items.length - 1) { [items[i + 1], items[i]] = [items[i], items[i + 1]]; render(); }
+    }));
+    overlay.querySelectorAll("[data-pin]").forEach((b) => b.addEventListener("click", () => {
+      const w = items.find((x) => x.id === b.dataset.pin); w.pinned = !w.pinned; render();
+    }));
+    overlay.querySelectorAll("[data-hide]").forEach((b) => b.addEventListener("click", () => {
+      const w = items.find((x) => x.id === b.dataset.hide); w.hidden = !w.hidden; render();
+    }));
+    const close = () => overlay.remove();
+    overlay.querySelector("#mdl-close").addEventListener("click", close);
+    overlay.querySelector("#wd-reset").addEventListener("click", async () => {
+      try { await api("/hr/widgets/layout", { method: "PUT", body: JSON.stringify({ order: [], pinned: [], hidden: [], sizes: {} }) }); } catch (e) {}
+      close(); applyDashboardWidgets();
+    });
+    overlay.querySelector("#wd-save").addEventListener("click", async () => {
+      try {
+        await api("/hr/widgets/layout", { method: "PUT", body: JSON.stringify({
+          order: items.map((x) => x.id), pinned: items.filter((x) => x.pinned).map((x) => x.id),
+          hidden: items.filter((x) => x.hidden).map((x) => x.id), sizes: {} }) });
+        toast("چیدمان ذخیره شد", "ok");
+        close(); applyDashboardWidgets();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  };
+  render();
+  document.body.append(overlay);
+};
+
+/* build-488 (§۴۱–۴۴) — بررسی به‌روزرسانی: یک بار در ورود؛ اعلان تکرار نمی‌شود؛
+   خطا/آفلاین بودن هرگز UI را مختل نمی‌کند. */
+window.checkUpdateOnce = async function () {
+  if (window._updateChecked) return;
+  window._updateChecked = true;
+  try {
+    const r = await api("/system/update/check?platform=windows");
+    window._updateInfo = r;
+    if (r && r.notify && r.latest) {
+      const v = esc(r.latest.version || "");
+      toast(`نسخهٔ جدید ${v} در دسترس است — از تنظیمات «به‌روزرسانی» ببینید`, "info");
+      await api("/system/update/ack", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+    }
+  } catch (e) { /* آفلاین یا مخزن خالی — بی‌صدا */ }
+};
 
 /* v1.0.0 (RASA) — زیرعنوان هر صفحه: کاربر تازه بفهمد این صفحه به چه کار می‌آید. */
 const VIEW_SUBS = {
@@ -378,32 +851,431 @@ const VIEW_SUBS = {
   audit: "ردیابی کارهای انجام‌شده",
   insights: "پیشنهاد، اجرا و سنجش نتیجه",
   insightsPlan: "پیش‌بینی سود و برنامهٔ اقدام",
+  profile: "پروفایل کاربری — مشخصات حساب شما",
+  staff: "عملکرد، شیفت‌ها، اطلاعیه‌ها و حقوق کارکنان",
 };
 async function go(view) {
+  if (!RENDER[view]) view = firstAllowedView();
+  if (state.user && !canView(view)) {
+    const fallback = firstAllowedView();
+    if (fallback && fallback !== view && state.view !== fallback) {
+      toast("دسترسی به این بخش برای نقش کاربری شما فعال نیست", "err");
+      return go(fallback);
+    }
+    toast("دسترسی به این بخش برای نقش کاربری شما فعال نیست", "err");
+    return;
+  }
+  const seq = ++state.renderSeq;
   state.view = view;
   buildNav();
   const titles = Object.fromEntries(NAV.map(([k, v]) => [k, v]));
-  $("#view-title").textContent = titles[view] || view;
+  titles.profile = "پروفایل من";
+  titles.staff = "کارکنان و سازمان";
+  const vt = $("#view-title"); if (vt) vt.textContent = titles[view] || view;
   const sub = $("#view-sub"); if (sub) sub.textContent = VIEW_SUBS[view] || "";
-  $("#topbar-actions").innerHTML = "";
+  const tba = $("#topbar-actions"); if (tba) tba.innerHTML = "";
   const viewEl = $("#view");
+  if (!viewEl) return;
+  viewEl.dataset.renderSeq = String(seq);
   viewEl.className = "view view-" + view;
   viewEl.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
   try {
-    await RENDER[view]();
+    await RENDER[view](seq);
+    if (seq !== state.renderSeq) return;
+    if (view === "dashboard" && window.applyDashboardWidgets && viewEl.dataset.customDashboard !== "1") applyDashboardWidgets();
     Jalali.attachAll(viewEl);
     if (window.Tour && state.view === view) Tour.onView(view);  // v1.8 guided tour (auto on first visit + «راهنما» button)
   } catch (err) {
-    viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${err.message}</p></div>`;
+    if (seq !== state.renderSeq) return;
+    viewEl.innerHTML = `<div class="card"><p class="error">خطا: ${esc(err && err.message ? err.message : String(err))}</p></div>`;
   }
 }
 
 /* ---------- views ---------- */
 const RENDER = {};
 
+/* build-487 — «پروفایل من»: مشخصات همین کاربرِ واردشده (نه پروفایل فروشگاه).
+   همه از state.user — بدون فراخوانی جدید؛ خروج از حساب هم همین‌جا. */
+/* build-488 — «کارکنان و سازمان» (§۱۴–۲۷): عملکرد/شیفت/اطلاعیه/حقوق در یک
+   فضای کاری با زبانه؛ هر زبانه فقط با Permission مربوطه دیده می‌شود (§۵۰) و
+   همهٔ اعداد از API واقعی می‌آیند (§۵۲). */
+RENDER.staff = async () => {
+  const tabs = [];
+  if (can("performance.view") || can("performance.view_all")) tabs.push(["perf", "عملکرد"]);
+  if (can("shifts.view") || can("shifts.manage")) tabs.push(["shifts", "شیفت‌ها"]);
+  if (can("announcements.publish") || can("announcements.manage")) tabs.push(["ann", "اطلاعیه‌ها"]);
+  if (can("payroll.view") || can("payroll.manage")) tabs.push(["payroll", "حقوق"]);
+  if (!tabs.length) { $("#view").innerHTML = '<div class="card"><p class="muted">دسترسی‌ای در این بخش ندارید</p></div>'; return; }
+  const moneyFa = (n) => fa((Number(n) || 0).toLocaleString("en-US"));
+  $("#view").innerHTML = `
+    <div class="og-profile" style="max-width:1100px">
+      <div class="range-chips" id="staff-tabs">
+        ${tabs.map(([k, lb], i) => `<button class="chip ${i === 0 ? "on" : ""}" data-t="${k}">${lb}</button>`).join("")}
+      </div>
+      <section class="dcard" id="staff-body"><span class="muted">در حال بارگذاری…</span></section>
+    </div>`;
+  const body = $("#staff-body");
+  const renderTab = async (key) => {
+    if (!body || !body.isConnected) return;
+    if (key === "perf") {
+      let rows = [];
+      try { rows = await api("/hr/performance/team"); } catch (e) { if (body.isConnected) body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      if (!body.isConnected) return;
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("trend", 15)} عملکرد کارکنان (۳۰ روز اخیر)</h3>
+          ${can("reports.export") ? `<button class="btn btn-sm" id="staff-pdf">خروجی PDF</button>` : ""}</div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>نام</th><th>عنوان شغلی</th><th>فروش</th><th>فاکتور</th><th>میانگین فاکتور</th>
+          <th>داخل شیفت</th><th>خارج از شیفت</th><th>تأخیر (دقیقه)</th><th>امتیاز</th></tr></thead><tbody>
+        ${(Array.isArray(rows) ? rows : []).map((r) => `<tr>
+          <td><b>${esc(r.full_name)}</b></td><td class="muted">${esc(r.job_title || "—")}</td>
+          <td><b>${moneyFa(r.sales_total)}</b></td><td>${fa(r.invoice_count)}</td>
+          <td>${moneyFa(r.avg_invoice)}</td><td>${moneyFa(r.sales_in_shift)}</td>
+          <td class="muted">${moneyFa(r.sales_out_of_shift)}</td>
+          <td class="${r.late_minutes_total ? "err" : ""}">${fa(r.late_minutes_total)}</td>
+          <td>${fa(r.score_total)}</td></tr>`).join("") || '<tr><td colspan="9" class="muted">داده‌ای نیست</td></tr>'}
+        </tbody></table></div>`;
+      const pdf = $("#staff-pdf");
+      if (pdf) pdf.addEventListener("click", () => {
+        const u = rows[0];
+        if (u) window.open(API + `/hr/performance/pdf/${u.user_id}`, "_blank");
+      });
+      return;
+    }
+    if (key === "shifts") {
+      let shifts = [];
+      try { shifts = await api("/hr/shifts"); } catch (e) { if (body.isConnected) body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      let att = [];
+      try { att = await api("/hr/attendance/today"); } catch (_) { att = []; }
+      if (!body.isConnected) return;
+      const attMap = {};
+      (Array.isArray(att) ? att : []).forEach((a) => { attMap[a.user_id] = a; });
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("clock", 15)} شیفت‌های کاری — تخصیص به اشخاص</h3>
+          <span class="muted tiny">● حاضر — ✕ غایب — ○ بدون شیفت امروز</span>
+          ${can("shifts.manage") ? `<button class="btn btn-sm btn-primary" id="shf-new">شیفت جدید</button>` : ""}</div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>نام شیفت</th><th>ساعت</th><th>روزها</th><th>بخش</th><th>اعضا (حضور امروز)</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>
+        ${(Array.isArray(shifts) ? shifts : []).map((s) => `<tr>
+          <td><b>${esc(s.name)}</b></td>
+          <td>${fa(s.start_time)} تا ${fa(s.end_time)}</td>
+          <td class="muted">${(s.workdays || []).length ? s.workdays.map((d) => ["ش", "ی", "د", "س", "چ", "پ", "ج"][d]).join(" ") : "هر روز"}</td>
+          <td>${esc(s.department || "—")}</td>
+          <td>${(s.roster || []).map((r) => {
+            const a = attMap[r.user_id];
+            const dot = !a ? "○" : (a.present ? "●" : "✕");
+            const cls = !a ? "mem-none" : (a.present ? "mem-on" : "mem-off");
+            const dayTag = r.day ? ` (${fa(r.day)})` : " (ثابت)";
+            const tip = a ? (a.present ? `حضور از ${presenceClock(a.since)}` : "غایب") : "شیفت امروز ندارد";
+            return `<span class="member ${cls}" title="${tip}">${dot} ${esc(r.full_name || r.username || ("#" + r.user_id))}<small class="muted">${dayTag}</small></span>`;
+          }).join("، ") || "—"}
+          ${can("shifts.manage") ? (s.roster || []).map((r) => (r.assignment_id ? `<button class="btn btn-xs btn-ghost mem-x" data-aid="${r.assignment_id}" title="لغو تخصیص">✕</button>` : "")).join("") : ""}</td>
+          <td><span class="badge ${s.status === "ACTIVE" ? "ok" : ""}">${s.status === "ACTIVE" ? "فعال" : "بایگانی"}</span></td>
+          <td>${can("shifts.manage") ? `<button class="btn btn-sm btn-primary shf-assign" data-id="${s.id}" data-name="${esc(s.name)}">تخصیص به شخص</button>` : ""}</td>
+          </tr>`).join("") || '<tr><td colspan="7" class="muted">شیفتی تعریف نشده</td></tr>'}
+        </tbody></table></div>`;
+      const shn = $("#shf-new");
+      if (shn) shn.addEventListener("click", () => openShiftCreate(() => renderTab("shifts")));
+      body.querySelectorAll(".shf-assign").forEach((b) => b.addEventListener("click", () =>
+        openShiftAssign({ id: Number(b.dataset.id), name: b.dataset.name }, () => renderTab("shifts"))));
+      body.querySelectorAll(".mem-x").forEach((b) => b.addEventListener("click", async () => {
+        if (!confirm("تخصیص این شیفت از این شخص لغو شود؟")) return;
+        try {
+          await api(`/hr/shifts/assignments/${b.dataset.aid}`, { method: "DELETE" });
+          toast("تخصیص لغو شد", "ok"); renderTab("shifts");
+        } catch (e) { toast(e.message, "err"); }
+      }));
+      return;
+    }
+    if (key === "ann") {
+      let anns = [];
+      try { anns = await api("/hr/announcements"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("megaphone", 15)} اطلاعیه‌های داخلی</h3>
+          ${can("announcements.publish") ? `<button class="btn btn-sm btn-primary" id="ann-new">اطلاعیه جدید</button>` : ""}</div>
+        ${anns.map((a) => `
+          <div class="ann-row ${a.is_read ? "" : "ann-unread"}" data-id="${a.id}">
+            <div class="ann-top">
+              <b>${esc(a.title)}</b>
+              <span class="badge ${a.priority <= 2 ? "err" : ""}">${["", "فوری", "مهم", "عادی", "اطلاعی", "خبری"][a.priority] || "عادی"}</span>
+              <span class="muted">${a.created_at ? faDateTime(a.created_at) : ""} — ${esc(a.created_by_name || "")}</span>
+            </div>
+            <p class="muted">${esc(a.body || "")}</p>
+            <div class="ann-foot muted">مخاطب: ${a.target_kind === "ALL" ? "همهٔ کارکنان" : a.target_kind === "ROLES" ? (a.target_roles_titles || []).join("، ") : a.target_kind === "USERS" ? "کاربران مشخص‌شده" : esc(a.target_store || "فروشگاه")}
+              ${!a.is_read ? `<button class="btn btn-sm btn-ghost ann-read">خواندم</button>` : `<span class="ok">✓ خوانده‌شده</span>`}</div>
+          </div>`).join("") || '<p class="muted">اطلاعیه‌ای نیست</p>'}`;
+      body.querySelectorAll(".ann-read").forEach((b) => b.addEventListener("click", async () => {
+        const id = b.closest(".ann-row").dataset.id;
+        await api(`/hr/announcements/${id}/read`, { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+        renderTab("ann");
+      }));
+      const annn = $("#ann-new");
+      if (annn) annn.addEventListener("click", async () => {
+        // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+        openModal(`<h3>اطلاعیه جدید</h3>
+          <label>عنوان</label><input id="an-title">
+          <label>متن</label><textarea id="an-body" rows="4"></textarea>
+          <label>مخاطب</label>
+          <select id="an-kind"><option value="ALL">همهٔ کارکنان</option><option value="ROLES">نقش‌های مشخص</option></select>
+          <label>نقش‌ها (با ویرگول، برای مخاطب نقش‌ها)</label><input id="an-roles" placeholder="مثلاً Salesperson,Cashier">
+          <div class="prof-actions" style="margin-top:14px">
+            <button class="btn btn-primary" id="an-save">انتشار اطلاعیه</button>
+            <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+          </div>`);
+        $("#an-save").addEventListener("click", async () => {
+          const title = $("#an-title").value.trim();
+          if (!title) return toast("عنوان لازم است", "err");
+          const kind = $("#an-kind").value;
+          const roles = kind === "ROLES" ? $("#an-roles").value.split(",").map((x) => x.trim()).filter(Boolean) : [];
+          try {
+            await api("/hr/announcements", { method: "POST", body: JSON.stringify({
+              title, body: $("#an-body").value, target_kind: kind, target_roles: roles, target_users: [], priority: 3 }) });
+            toast("اطلاعیه منتشر شد", "ok"); closeModal(); renderTab("ann");
+          } catch (e) { toast(e.message, "err"); }
+        });
+      });
+      return;
+    }
+    if (key === "payroll") {
+      let rows = [];
+      try { rows = await api("/hr/payroll"); } catch (e) { body.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+      body.innerHTML = `
+        <div class="dcard-head"><h3>${icon("cash", 15)} حقوق و دستمزد</h3></div>
+        <div class="table-scroll"><table class="dtable"><thead><tr>
+          <th>دوره</th><th>کاربر</th><th>خالص پرداختی</th><th>وضعیت</th><th>سند مالی</th></tr></thead><tbody>
+        ${rows.map((r) => `<tr>
+          <td>${esc(r.period)}</td><td>${fa(r.user_id)}</td>
+          <td><b>${moneyFa(r.total)}</b></td>
+          <td><span class="badge ${r.status === "PAID" ? "ok" : ""}">${r.status === "PAID" ? "پرداخت‌شده" : r.status === "APPROVED" ? "تأییدشده" : "پیش‌نویس"}</span></td>
+          <td class="muted">${esc(r.payment_ref || "—")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">ردیفی ثبت نشده</td></tr>'}
+        </tbody></table></div>`;
+    }
+  };
+  $("#staff-tabs").querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
+    $("#staff-tabs").querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
+    c.classList.add("on");
+    renderTab(c.dataset.t);
+  }));
+  await renderTab(tabs[0][0]);
+};
+
+RENDER.profile = async () => {
+  /* build-488 (§۱) — پروفایل کامل کاربر: تصویر (انتخاب/تغییر/حذف)، شماره تماس،
+     عنوان شغلی، نقش‌ها، دسترسی‌ها، وضعیت حساب، تاریخ‌ها، دستاوردها/مدال/نشان،
+     شیفت امروز، و حقوق فقط با Permission لازم (§۵۰). */
+  let me = state.user || {};
+  try { me = await api("/users/me"); state.user = { ...(state.user || {}), ...me }; } catch (e) { /* آفلاین: همان state */ }
+  const perms = me.permissions || [];
+  const name = (me.full_name || me.username || "؟").trim();
+  const av = me.avatar_url
+    ? `<img class="prof-av-img" src="${esc(me.avatar_url)}" alt="">`
+    : `<span class="prof-av">${esc(name.slice(0, 1))}</span>`;
+  const ach = (me.achievements && me.achievements.achievements) || [];
+  const medal = (lvl) => ["", "🥉", "🥈", "🥇"][lvl] || "🏅";
+  const moneyFa = (n) => fa((Number(n) || 0).toLocaleString("en-US"));
+  $("#view").innerHTML = `
+    <div class="og-profile">
+      <section class="dcard prof-head">
+        <label class="prof-av-wrap" title="تغییر تصویر پروفایل">
+          ${av}
+          <input type="file" id="prof-file" accept="image/png,image/jpeg,image/webp" hidden>
+          <span class="prof-av-edit">${icon("edit", 13)}</span>
+        </label>
+        <div class="prof-id">
+          <h2>${esc(me.full_name || "")}</h2>
+          <p class="muted">@${esc(me.username || "")} · ${esc((me.roles_titles || me.roles || []).join("، ") || "—")}${me.job_title ? " · " + esc(me.job_title) : ""}</p>
+        </div>
+        <div class="prof-actions">
+          <button class="btn" id="prof-edit">ویرایش مشخصات</button>
+          ${can("users.manage") ? `<button class="btn btn-ghost" onclick="go('users')">مدیریت کاربران</button>` : ""}
+          <button class="btn btn-ghost" id="prof-logout">خروج از حساب</button>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>اطلاعات حساب</h3>
+        <div class="acc-mini">
+          <div><span class="muted">نام کامل</span><b>${esc(me.full_name || "—")}</b></div>
+          <div><span class="muted">نام کاربری</span><b>${esc(me.username || "—")}</b></div>
+          <div><span class="muted">شماره تماس</span><b>${esc(me.phone || "—")}</b></div>
+          <div><span class="muted">عنوان شغلی</span><b>${esc(me.job_title || "—")}</b></div>
+          <div><span class="muted">نقش‌ها</span><b>${esc((me.roles_titles || me.roles || []).join("، ") || "—")}</b></div>
+          <div><span class="muted">وضعیت</span><b class="${me.is_active ? "ok" : "err"}">${me.is_active ? "فعال" : "غیرفعال"}</b></div>
+          <div><span class="muted">تاریخ ایجاد حساب</span><b>${me.created_at ? faDateTime(me.created_at) : "—"}</b></div>
+          <div><span class="muted">آخرین ورود</span><b>${me.last_login_at ? faDateTime(me.last_login_at) : "—"}</b></div>
+          <div class="span2"><span class="muted">فروشگاه</span><b>${esc(me.store || (state.store && state.store.name) || "—")}</b></div>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>${icon("star", 15)} دستاوردها، مدال و نشان‌ها</h3>
+        ${ach.length ? `<div class="prof-perms">${ach.map((a) => `<span class="badge badge-gold" title="${esc(a.description || "")}">${medal(a.level)} ${esc(a.title)}</span>`).join("")}</div>` : '<span class="muted">هنوز نشانی ثبت نشده — نشان‌ها با فعالیت واقعی اعطا می‌شوند</span>'}
+        <div class="acc-mini" style="margin-top:10px">
+          <div><span class="muted">امتیاز کل</span><b>${moneyFa((me.achievements && me.achievements.score_total) || 0)}</b></div>
+          <div><span class="muted">رویدادهای امتیاز</span><b>${fa(((me.achievements && me.achievements.recent_events) || []).length)}</b></div>
+        </div>
+      </section>
+      <section class="dcard">
+        <h3>دسترسی‌های این حساب</h3>
+        <div class="prof-perms">${perms.map((x) => `<span class="badge badge-blue">${esc(x)}</span>`).join("") || '<span class="muted">—</span>'}</div>
+      </section>
+      ${can("payroll.view") ? `
+      <section class="dcard">
+        <h3>${icon("cash", 15)} حقوق و مزایا</h3>
+        ${(me.payroll || []).length ? `<table class="dtable"><thead><tr><th>دوره</th><th>خالص پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+          ${me.payroll.map((r) => `<tr><td>${esc(r.period)}</td><td><b>${moneyFa(r.total)}</b></td><td><span class="badge">${esc(r.status)}</span></td></tr>`).join("")}
+        </tbody></table>` : '<span class="muted">ردیف حقوقی ثبت نشده است</span>'}
+      </section>` : ""}
+      <section class="dcard">
+        <h3>${icon("clock", 15)} شیفت و حضور من</h3>
+        <div id="prof-shift"><span class="muted">در حال بارگذاری…</span></div>
+      </section>
+    </div>`;
+  const lo = $("#prof-logout");
+  if (lo) lo.addEventListener("click", () => { if (window.doLogout) window.doLogout(); });
+  const pf = $("#prof-file");
+  if (pf) pf.addEventListener("change", async () => {
+    const f = pf.files && pf.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const r = await fetch(API + "/users/me/avatar", { method: "POST",
+        headers: { "Authorization": "Bearer " + state.token }, body: fd });
+      if (!r.ok) throw new Error("بارگذاری تصویر ناموفق بود");
+      await RENDER.profile();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  const pe = $("#prof-edit");
+  if (pe) pe.addEventListener("click", () => {
+    // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+    openModal(`<h3>ویرایش پروفایل</h3>
+      <label>نام کامل</label><input id="pe-name" value="${esc(me.full_name || "")}">
+      <label>شماره تماس</label><input id="pe-phone" value="${esc(me.phone || "")}" placeholder="09xxxxxxxxx">
+      <div class="prof-actions" style="margin-top:14px">
+        <button class="btn btn-primary" id="pe-save">ذخیره</button>
+        <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+      </div>`);
+    $("#pe-save").addEventListener("click", async () => {
+      try {
+        await api("/users/me", { method: "PATCH", body: JSON.stringify({
+          full_name: $("#pe-name").value.trim(), phone: $("#pe-phone").value.trim() }) });
+        toast("پروفایل ذخیره شد", "ok"); closeModal();
+        await RENDER.profile();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  });
+  const ps = $("#prof-shift");
+  if (ps) {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const [mySh, perf] = await Promise.all([
+        api("/hr/shifts/my").catch(() => null),
+        api(`/hr/shifts/performance/${me.id}/${today}`).catch(() => ({})),
+      ]);
+      if (!ps.isConnected) return;
+      const windows = (perf.shift_windows || []).map(([a, b]) => `${fa(new Date(a).toTimeString().slice(0, 5))} تا ${fa(new Date(b).toTimeString().slice(0, 5))}`).join("، ");
+      const assigns = Array.isArray(mySh && mySh.assignments) ? mySh.assignments : [];
+      const assignBadges = assigns.map((a) => `<span class="badge">${esc(a.name)} (${fa(a.start_time)} تا ${fa(a.end_time)}${a.recurring ? " · ثابت" : " · " + fa(a.day)})</span>`).join(" ");
+      ps.innerHTML = `<div class="acc-mini">
+        <div><span class="muted">برنامهٔ امروز</span><b>${windows || "شیفتی ثبت نشده"}</b></div>
+        <div><span class="muted">حضور امروز / موظفی</span><b>${fa(perf.worked_minutes || 0)} از ${fa(perf.planned_minutes || 0)} دقیقه${perf.overtime_minutes ? " (+" + fa(perf.overtime_minutes) + " اضافه)" : ""}</b></div>
+        <div><span class="muted">فروش داخل شیفت</span><b>${moneyFa(perf.sales_in_shift)}</b></div>
+        <div><span class="muted">فروش خارج از شیفت</span><b>${moneyFa(perf.sales_out_of_shift)}</b></div>
+        <div><span class="muted">مجموع امروز</span><b>${moneyFa(perf.sales_total)}</b></div>
+        ${assignBadges ? `<div class="span2"><span class="muted">شیفت‌های اختصاصی من</span><div class="prof-perms" style="margin-top:4px">${assignBadges}</div></div>` : ""}
+      </div>`;
+    } catch (e) { if (ps.isConnected) ps.innerHTML = '<span class="muted">در دسترس نیست</span>'; }
+  }
+};
+
+function normalizeDashboardData(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const sales = r.sales && typeof r.sales === "object" ? r.sales : {};
+  const inv = r.inventory && typeof r.inventory === "object" ? r.inventory : {};
+  const exp = r.expiry && typeof r.expiry === "object" ? r.expiry : {};
+  const prc = r.pricing && typeof r.pricing === "object" ? r.pricing : {};
+  const rec = r.receivables && typeof r.receivables === "object" ? r.receivables : {};
+  const acc = r.accounting && typeof r.accounting === "object" ? r.accounting : {};
+  const profit = r.profit && typeof r.profit === "object" ? r.profit : {};
+  const cust = r.customers_new && typeof r.customers_new === "object" ? r.customers_new : {};
+  const sms = r.sms && typeof r.sms === "object" ? r.sms : {};
+  const sys = r.system && typeof r.system === "object" ? r.system : {};
+  return {
+    scope: r.scope || "self",
+    dashboard_profile: typeof r.dashboard_profile === "string" ? r.dashboard_profile : "",
+    sales: {
+      today: Number(sales.today || 0),
+      yesterday: Number(sales.yesterday || 0),
+      week: Number(sales.week || 0),
+      month: Number(sales.month || 0),
+      invoice_count_today: Number(sales.invoice_count_today || 0),
+      invoice_count_yesterday: Number(sales.invoice_count_yesterday || 0),
+      avg_invoice_today: Number(sales.avg_invoice_today || 0),
+    },
+    inventory: {
+      product_count: Number(inv.product_count || 0),
+      low_stock_count: Number(inv.low_stock_count || 0),
+      no_stock_count: Number(inv.no_stock_count || 0),
+      low_stock: Array.isArray(inv.low_stock) ? inv.low_stock : [],
+    },
+    expiry: {
+      EXPIRED: Array.isArray(exp.EXPIRED) ? exp.EXPIRED : [],
+      EXPIRING_TODAY: Array.isArray(exp.EXPIRING_TODAY) ? exp.EXPIRING_TODAY : [],
+      EXPIRING_3_DAYS: Array.isArray(exp.EXPIRING_3_DAYS) ? exp.EXPIRING_3_DAYS : [],
+      EXPIRING_7_DAYS: Array.isArray(exp.EXPIRING_7_DAYS) ? exp.EXPIRING_7_DAYS : [],
+      EXPIRING_30_DAYS: Array.isArray(exp.EXPIRING_30_DAYS) ? exp.EXPIRING_30_DAYS : [],
+    },
+    pricing: {
+      price_conflict_count: Number(prc.price_conflict_count || 0),
+      price_conflicts: Array.isArray(prc.price_conflicts) ? prc.price_conflicts : [],
+    },
+    receivables: {
+      customer_debt: Number(rec.customer_debt || 0),
+      debtor_count: Number(rec.debtor_count || 0),
+      pending_amount: Number(rec.pending_amount || 0),
+      pending_count: Number(rec.pending_count || 0),
+      top_debtors: Array.isArray(rec.top_debtors) ? rec.top_debtors : [],
+    },
+    accounting: acc,
+    profit: {
+      today: profit.today == null ? null : Number(profit.today),
+      month: profit.month == null ? null : Number(profit.month),
+    },
+    customers_new: {
+      today: Number(cust.today || 0),
+      yesterday: Number(cust.yesterday || 0),
+      week: Number(cust.week || 0),
+      month: Number(cust.month || 0),
+      total: Number(cust.total || 0),
+      latest_name: cust.latest_name || null,
+    },
+    sms: {
+      configured: Boolean(sms.configured),
+      provider: sms.provider || "",
+      sent: Number(sms.sent || 0),
+      pending: Number(sms.pending || 0),
+      failed: Number(sms.failed || 0),
+      last_error: sms.last_error || "",
+    },
+    system: sys,
+    top_products: Array.isArray(r.top_products) ? r.top_products : [],
+    sales_by_category: Array.isArray(r.sales_by_category) ? r.sales_by_category : [],
+    weekday_sales: Array.isArray(r.weekday_sales) ? r.weekday_sales : [],
+    trend: Array.isArray(r.trend) ? r.trend : [],
+    payment_breakdown: Array.isArray(r.payment_breakdown) ? r.payment_breakdown : [],
+    recent_invoices: Array.isArray(r.recent_invoices) ? r.recent_invoices : [],
+    today_by_payment: Array.isArray(r.today_by_payment) ? r.today_by_payment : [],
+    today_by_staff: Array.isArray(r.today_by_staff) ? r.today_by_staff : [],
+  };
+}
+
 RENDER.dashboard = async () => {
-  const d = await api("/reports/dashboard");
+  const rawDash = await api("/reports/dashboard");
+  const d = normalizeDashboardData(rawDash);
+  window._dashData = d;   // build-489 — «داشبورد من» از همین payload واقعی می‌خواند
   const v = $("#view");
+  if (!v) return;
+  const isStore = d.scope === "store";
+  const wLocked = (key) => !isStore || (d.hide_cards || []).includes(key);
   const fa = (n) => String(n).replace(/\d/g, (x) => "۰۱۲۳۴۵۶۷۸۹"[x]);
   const delta = d.sales.yesterday ? Math.round((d.sales.today - d.sales.yesterday) / d.sales.yesterday * 100) : (d.sales.today ? 100 : 0);
   const monthTarget = Math.max(d.sales.month, d.sales.today * 30, 1);
@@ -413,47 +1285,270 @@ RENDER.dashboard = async () => {
      مالک باید در چند ثانیه بفهمد «امروز چه خبر است»: اول عددهای اول، بعد هشدارها،
      بعد تحلیل، و آخر سامانه. همهٔ این‌ها از همان پاسخ `/reports/dashboard` ساخته
      می‌شوند (هیچ درخواست شبکه‌ای اضافه نمی‌شود) تا داشبورد سنگین نشود. */
-  const expiryBuckets = d.expiry || {};
-  const expSoon = (expiryBuckets.EXPIRING_3_DAYS || []).length + (expiryBuckets.EXPIRING_TODAY || []).length;
-  const expExpired = (expiryBuckets.EXPIRED || []).length;
+  const expiryBuckets = d.expiry;
+  const expSoon = expiryBuckets.EXPIRING_3_DAYS.length + expiryBuckets.EXPIRING_TODAY.length;
+  const expExpired = expiryBuckets.EXPIRED.length;
   const lowCount = d.inventory.low_stock_count || 0, zeroCount = d.inventory.no_stock_count || 0;
-  const priceConf = (d.pricing || {}).price_conflict_count || 0;
+  const priceConf = d.pricing.price_conflict_count || 0;
   const sysOk = (d.system || {}).status === "ok" || (d.system || {}).ok === true;
-  const alerts = [
-    expExpired ? { sev: "err", ic: "clock", text: `${fa(expExpired)} بچ منقضی روی قفسه`, go: "insights" } : null,
-    expSoon ? { sev: "err", ic: "clock", text: `${fa(expSoon)} کالا تا ۳ روز آینده منقضی می‌شود`, go: "inventory" } : null,
-    zeroCount ? { sev: "amber", ic: "box", text: `${fa(zeroCount)} کالا بدون موجودی`, go: "inventory" } : null,
-    lowCount ? { sev: "amber", ic: "warehouse", text: `${fa(lowCount)} کالا زیر حد سفارش`, go: "inventory" } : null,
-    priceConf ? { sev: "info", ic: "tag", text: `${fa(priceConf)} کالا با چند قیمت فعال`, go: "products" } : null,
-    (d.sms || {}).failed ? { sev: "amber", ic: "sms", text: `${fa(d.sms.failed)} پیامک ناموفق در صف`, go: "settings" } : null,
-    !sysOk ? { sev: "amber", ic: "stethoscope", text: "سلامت سیستم نیاز به بررسی دارد", go: "diagnostics" } : null,
-  ].filter(Boolean);
-  const kpi = (label, value, sub, cls) => `
-      <div class="kpi-tile ${cls || ""}">
-        <span class="kpi-label">${label}</span>
+  const kpi = (ico, tone, label, value, trendHtml) => `
+      <div class="kpi-tile">
+        <div class="kpi-head"><span class="kpi-ic ${tone}">${icon(ico, 19)}</span><span class="kpi-label">${label}</span></div>
         <b class="kpi-value">${value}</b>
-        <span class="kpi-sub">${sub}</span>
+        <span class="kpi-sub">${trendHtml}</span>
       </div>`;
+  /* build-485 — روند واقعی نسبت به دیروز (هرگز عدد ساختگی) */
+  const pct = (cur, prev) => prev > 0 ? Math.round((cur - prev) / prev * 100) : null;
+  const trendHtml = (p, label = "نسبت به دیروز") => p === null
+      ? `<span class="muted">ثبت امروز</span>`
+      : `<span class="trend-chip ${p >= 0 ? "up" : "down"}">${p >= 0 ? "▲" : "▼"} ${fa(Math.abs(p))}٪</span> ${label}`;
+  /* build-485 — نوار سلام (الهام از تصویر مرجع) */
+  const greetName = esc((state.user && (state.user.full_name || state.user.username)) || "");
+  const hh = new Date().getHours();
+  const greetTxt = hh < 12 ? "صبح بخیر" : hh < 17 ? "ظهر بخیر" : hh < 20 ? "عصر بخیر" : "شب بخیر";
+  const nowClock = `${fa(String(new Date().getHours()).padStart(2, "0"))}:${fa(String(new Date().getMinutes()).padStart(2, "0"))}`;
+  const profile = dashboardProfileFor(d);
+  for (const oldProfile of ["seller", "accountant", "supervisor", "administrator", "manager", "operations", "staff"]) {
+    v.classList.remove("dashboard-profile--" + oldProfile);
+  }
+  v.classList.add("dashboard-profile", "dashboard-profile--" + profile);
+  v.dataset.customDashboard = "0";
+  const viewTitle = $("#view-title");
+  if (viewTitle) viewTitle.textContent = dashboardProfileTitle(profile);
+  const profileSummary = profile === "administrator"
+    ? "مرکز مدیریت کل فروشگاه؛ دسترسی‌ها و عملیات مدیریتی بر اساس مجوزهای حساب شما فعال است."
+    : profile === "supervisor"
+      ? "نمای نظارتی فروش، موجودی و عملیات روزانهٔ فروشگاه؛ هر اقدام مطابق دسترسی شماست."
+      : "نمای زندهٔ فروشگاه و کارهای مجاز امروز شما.";
+  const quickAction = (view, label, ico, tone) => canView(view)
+    ? `<button class="role-action role-action--${tone}" onclick="go('${view}')"><span>${icon(ico, 19)}</span><b>${label}</b><i>›</i></button>`
+    : "";
+  if (profile === "seller") {
+    v.dataset.customDashboard = "1";
+    const paymentLabels = { CASH: "نقدی", CARD: "کارت‌خوان", TRANSFER: "انتقال بانکی", ACCOUNT: "اعتباری", CREDIT: "اعتباری", CHEQUE: "چک", MIXED: "ترکیبی", OTHER: "سایر" };
+    const payments = d.today_by_payment.length
+      ? d.today_by_payment.map((item) => `<div class="role-payment-row"><span>${esc(paymentLabels[item.name] || item.name || "پرداخت")}</span><b>${money(item.sales)}</b><small>${fa(item.invoice_count || 0)} فاکتور</small></div>`).join("")
+      : `<div class="role-empty">امروز پرداختی ثبت نشده است.</div>`;
+    const invoiceRows = d.recent_invoices.length
+      ? d.recent_invoices.map((item) => {
+          const status = ({ PAID: "تسویه‌شده", PENDING: "در انتظار", VOID: "باطل", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" })[item.status] || item.status || "—";
+          return `<div class="role-invoice-row" ${canView("invoices") ? "onclick=\"go('invoices')\" role=\"link\"" : ""}>
+            <span class="role-invoice-mark">${icon("invoice", 16)}</span><span class="role-invoice-main"><b>${esc(item.invoice_number || "فاکتور")}</b><small>${item.created_at ? faDateTime(item.created_at) : "—"}</small></span>
+            <b class="role-invoice-total">${money(item.total)}</b><span class="badge ${item.status === "PAID" ? "badge-green" : item.status === "VOID" ? "badge-red" : "badge-amber"}">${esc(status)}</span>
+          </div>`;
+        }).join("")
+      : `<div class="role-empty">هنوز فاکتوری در دامنهٔ شخصی شما ثبت نشده است.</div>`;
+    v.innerHTML = `
+      <div class="role-dashboard role-dashboard--seller">
+        <section class="role-hero">
+          <div class="role-hero-copy">
+            <span class="role-eyebrow"><i></i>${dashboardProfileLabel(profile)} · دسترسی شخصی</span>
+            <h2>${greetTxt}، ${greetName}</h2>
+            <p>فروش، فاکتور و وضعیت کاری خودتان؛ اطلاعات فروشگاه و همکاران در این نما نمایش داده نمی‌شود.</p>
+            <div class="role-hero-meta"><span>${icon("clock", 14)} ${Jalali.fromIso(new Date().toISOString())} · ${nowClock}</span><span>${icon("shield", 14)} دامنه: ${d.scope === "self" ? "فروش شخصی" : "حساب محلی"}</span></div>
+          </div>
+          <div class="role-hero-stat"><span>فروش ماه من</span><b>${money(d.sales.month)}</b><small>${fa(d.sales.invoice_count_today)} فاکتور امروز</small></div>
+        </section>
+        <section class="role-kpis">
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-green">${icon("cart", 19)}</span><small>فروش امروز من</small><b>${money(d.sales.today)}</b><i>${trendHtml(pct(d.sales.today, d.sales.yesterday))}</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-purple">${icon("invoice", 19)}</span><small>فاکتورهای امروز</small><b>${fa(d.sales.invoice_count_today)}</b><i>${trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday))}</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-blue">${icon("clock", 19)}</span><small>فروش دیروز من</small><b>${money(d.sales.yesterday)}</b><i>آمار ثبت‌شده</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-amber">${icon("trend", 19)}</span><small>فروش ماه من</small><b>${money(d.sales.month)}</b><i>از ابتدای دوره</i></article>
+        </section>
+        <section class="role-two-col">
+          <article class="role-card role-chart-card">
+            <header class="role-card-head"><div><small>عملکرد شخصی</small><h3>روند فروش من</h3></div><div class="range-chips" id="dash-range"><button class="chip on" data-r="30">۳۰ روز</button><button class="chip" data-r="7">۷ روز</button><button class="chip" data-r="1">امروز</button></div></header>
+            <div id="dash-trend-body">${trendChart(d.trend)}</div>
+          </article>
+          <article class="role-card"><header class="role-card-head"><div><small>امروز</small><h3>روش‌های پرداخت</h3></div><span class="role-card-mark role-tone-green">${icon("cash", 18)}</span></header><div class="role-payments">${payments}</div></article>
+        </section>
+        <section class="og-mine role-card role-personal-card" id="og-mine" style="display:none"><div class="dcard-head"><h3>${icon("user", 15)} شیفت و عملکرد من</h3><span class="muted" id="mine-sub"></span></div><div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div></section>
+        <section class="role-card"><header class="role-card-head"><div><small>آخرین فعالیت</small><h3>فاکتورهای اخیر من</h3></div>${quickAction("invoices", "همهٔ فاکتورها", "invoice", "purple")}</header><div class="role-invoices">${invoiceRows}</div></section>
+        <section class="role-action-area"><div class="role-section-title"><div><small>دسترسی‌های فعال شما</small><h3>عملیات سریع</h3></div></div><div class="role-actions">${quickAction("pos", "فروش جدید", "cart", "green")}${quickAction("customers", "مشتریان", "user", "blue")}${quickAction("products", "جست‌وجوی کالا", "box", "purple")}${quickAction("reports", "گزارش‌های من", "chart", "amber")}</div></section>
+        <p class="role-scope-note">${d.scope === "self" ? "گزارش‌ها براساس فروش‌های منتسب به حساب شما ساخته شده‌اند." : "دادهٔ شخصی فروش هنوز برای این حساب محلی ثبت نشده است."}</p>
+      </div>`;
+    const range = $("#dash-range");
+    if (range) range.querySelectorAll(".chip").forEach((button) => button.addEventListener("click", () => {
+      range.querySelectorAll(".chip").forEach((chip) => chip.classList.remove("on"));
+      button.classList.add("on");
+      dashLoadRange(button.dataset.r);
+    }));
+    if (window.loadMineCard) loadMineCard(d);
+    return;
+  }
+  if (profile === "accountant") {
+    v.dataset.customDashboard = "1";
+    const accountingData = d.accounting && typeof d.accounting === "object" ? d.accounting : {};
+    const bankAndCard = accountingData.bank == null || accountingData.card == null ? null : Number(accountingData.bank) + Number(accountingData.card);
+    const financialActions = `${quickAction("accounting", "دفتر حسابداری", "ledger", "green")}${quickAction("reports", "گزارش‌های مالی", "chart", "purple")}${quickAction("customers", "حساب مشتریان", "user", "blue")}${quickAction("invoices", "فاکتورها", "invoice", "amber")}`;
+    const recentEntries = Array.isArray(accountingData.recent_entries) ? accountingData.recent_entries : [];
+    const entryKindLabels = { SALE: "فروش", SALE_RETURN: "مرجوعی", PURCHASE: "خرید", EXPENSE: "هزینه", SETTLEMENT: "تسویه", MANUAL: "دستی", REVERSAL: "معکوس", CHEQUE: "چک", ADJUSTMENT: "اصلاح", CLOSING: "بستن دوره" };
+    const recentLedgerHtml = recentEntries.length ? recentEntries.map((entry) => {
+      const status = entry.status === "POSTED" ? "ثبت‌شده" : entry.status === "REVERSED" ? "برگشت‌خورده" : (entry.status || "—");
+      const statusClass = entry.status === "POSTED" ? "badge-green" : entry.status === "REVERSED" ? "badge-amber" : "badge-gray";
+      const kind = entryKindLabels[entry.kind] || entry.kind || "ثبت مالی";
+      const entryDate = entry.date ? faDateTime(`${entry.date}T00:00:00Z`, false) : "—";
+      return `<div class="role-ledger-row"><span class="role-invoice-mark">${icon("ledger", 16)}</span><span class="role-invoice-main"><b>#${fa(entry.number || "")} · ${esc(entry.description || kind)}</b><small>${entryDate} · ${esc(kind)}</small></span><b class="role-invoice-total">${money(entry.total)}</b><span class="badge ${statusClass}">${esc(status)}</span></div>`;
+    }).join("") : `<div class="role-empty">سندی برای نمایش وجود ندارد.</div>`;
+    const financialActivity = can("accounting.view") ? `
+      <section class="role-two-col role-accounting-details">
+        <article class="role-card role-chart-card"><header class="role-card-head"><div><small>عملکرد مالی</small><h3>درآمد و هزینه · ۷ روز اخیر</h3></div><span class="role-card-mark role-tone-green">${icon("chart", 18)}</span></header>${incomeExpenseChart(accountingData.income_expense_trend)}</article>
+        <article class="role-card"><header class="role-card-head"><div><small>دفتر روزنامه</small><h3>آخرین ثبت‌های مالی</h3></div>${quickAction("accounting", "دفتر کامل", "ledger", "green")}</header><div class="role-ledger-entries">${recentLedgerHtml}</div></article>
+      </section>` : "";
+    const salesContent = d.scope === "store" ? `
+        <section class="role-two-col">
+          <article class="role-card role-chart-card"><header class="role-card-head"><div><small>شاخص عملیاتی فروشگاه</small><h3>روند فروش</h3></div><span class="role-card-mark role-tone-blue">${icon("chart", 18)}</span></header><div>${trendChart(d.trend)}</div></article>
+          <article class="role-card"><header class="role-card-head"><div><small>عملکرد امروز</small><h3>فروش و فاکتور</h3></div></header><div class="role-summary-list"><div><span>فروش امروز</span><b>${money(d.sales.today)}</b></div><div><span>تعداد فاکتور</span><b>${fa(d.sales.invoice_count_today)}</b></div><div><span>فروش ماه</span><b>${money(d.sales.month)}</b></div><div><span>سود امروز</span><b>${money(d.profit.today)}</b></div></div></article>
+        </section>
+        <section class="role-card"><header class="role-card-head"><div><small>ثبت‌های اخیر</small><h3>فاکتورهای اخیر فروشگاه</h3></div>${quickAction("invoices", "مشاهدهٔ فاکتورها", "invoice", "purple")}</header><div class="role-invoices">${d.recent_invoices.length ? d.recent_invoices.map((item) => `<div class="role-invoice-row" ${canView("invoices") ? "onclick=\"go('invoices')\" role=\"link\"" : ""}><span class="role-invoice-mark">${icon("invoice", 16)}</span><span class="role-invoice-main"><b>${esc(item.invoice_number || "فاکتور")}</b><small>${item.created_at ? faDateTime(item.created_at) : "—"}</small></span><b class="role-invoice-total">${money(item.total)}</b><span class="badge ${item.status === "PAID" ? "badge-green" : item.status === "VOID" ? "badge-red" : "badge-amber"}">${esc(item.status || "—")}</span></div>`).join("") : `<div class="role-empty">فاکتوری برای نمایش وجود ندارد.</div>`}</div></section>` : `
+        <section class="role-card"><header class="role-card-head"><div><small>حریم دسترسی</small><h3>گزارش فروش سراسری در دسترس نیست</h3></div><span class="role-card-mark role-tone-blue">${icon("shield", 18)}</span></header><p class="role-scope-note">مجوز حسابداری، دسترسی به دفتر مالی را فراهم می‌کند؛ مشاهدهٔ فروش و فاکتورهای کل فروشگاه به مجوز گزارش سراسری نیاز دارد.</p></section>`;
+    v.innerHTML = `
+      <div class="role-dashboard role-dashboard--accountant">
+        <section class="role-hero">
+          <div class="role-hero-copy"><span class="role-eyebrow"><i></i>${dashboardProfileLabel(profile)} · ${d.scope === "store" ? "دادهٔ فروشگاه" : "دسترسی مالی مستقل"}</span><h2>${greetTxt}، ${greetName}</h2>
+            <p>مرکز مالی بر پایهٔ دفتر ثبت‌شده؛ مانده‌ها و گزارش‌ها مطابق دسترسی حساب شما نمایش داده می‌شوند.</p>
+            <div class="role-hero-meta"><span>${icon("clock", 14)} ${Jalali.fromIso(new Date().toISOString())} · ${nowClock}</span><span>${icon("shield", 14)} ${d.scope === "store" ? "دامنه: گزارش فروشگاه" : "دامنه: دفتر حسابداری"}</span></div>
+          </div><div class="role-hero-stat"><span>سود خالص ماه</span><b>${money(accountingData.month_net_profit)}</b><small>هزینهٔ ماه ${money(accountingData.month_expenses)}</small></div>
+        </section>
+        <section class="role-kpis role-kpis--finance">
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-green">${icon("cash", 19)}</span><small>صندوق نقدی</small><b>${money(accountingData.cash)}</b><i>ماندهٔ دفتر مالی</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-blue">${icon("ledger", 19)}</span><small>بانک و کارت‌خوان</small><b>${money(bankAndCard)}</b><i>جمع مانده‌ها</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-amber">${icon("user", 19)}</span><small>مطالبات مشتریان</small><b>${money(accountingData.receivables)}</b><i>ماندهٔ دریافتنی</i></article>
+          <article class="role-kpi"><span class="role-kpi-icon role-tone-purple">${icon("ledger", 19)}</span><small>بدهی فروشگاه</small><b>${money(accountingData.payables)}</b><i>ماندهٔ پرداختنی</i></article>
+        </section>
+        ${financialActivity}
+        ${salesContent}
+        <section class="role-action-area"><div class="role-section-title"><div><small>دسترسی‌های فعال شما</small><h3>عملیات مالی</h3></div></div><div class="role-actions">${financialActions}</div></section>
+        <p class="role-scope-note">داده‌های مالی از دفتر حسابداری دریافت می‌شوند؛ ${d.scope === "store" ? "آمار فروش سراسری بر اساس مجوز گزارش شما نمایش داده می‌شود." : "گزارش فروش سراسری بدون مجوز reports.view_all نمایش داده نمی‌شود."}</p>
+      </div>`;
+    return;
+  }
   v.innerHTML = `
-    <div id="dash-alarms"></div>
-    <section class="dash-hero">
-      <div class="hero-kpis">
-        ${kpi("فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`,
-              `<span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪</span> نسبت به دیروز`, "kpi-primary")}
-        ${kpi("فاکتور امروز", fa(d.sales.invoice_count_today), `میانگین هر فاکتور ${money(d.sales.avg_invoice_today)}`)}
-        ${kpi("سود امروز", can("pricing.view_cost") ? money(d.profit.today) : "—",
-              can("pricing.view_cost") ? `این ماه ${money(d.profit.month)}` : "بدون دسترسی به بهای تمام‌شده")}
-        ${kpi("ارزش موجودی", money(d.inventory.value), `${fa(d.inventory.product_count)} کالا در فهرست`)}
+    <!-- build-485 — چیدمان دقیق تصویر مرجع: ستون اصلی (سلام، KPI، نمودارها، جدول‌ها) + ریل کناری -->
+    <div class="og-grid">
+      <div class="og-main">
+        <section class="og-hero">
+          <div class="og-hero-txt">
+            <div class="og-hero-head">
+              <span class="og-sun">${hh >= 6 && hh < 18 ? "☀️" : "🌙"}</span>
+              <h2>${greetTxt}، ${greetName}</h2>
+            </div>
+            <p><span class="role-eyebrow role-eyebrow--inline">${dashboardProfileLabel(profile)}</span> ${profileSummary}</p>
+            <div class="greet-when">
+              <span class="chip">${icon("clock", 13)} ${Jalali.fromIso(new Date().toISOString())}</span>
+              <span class="chip">${icon("clock", 13)} ${nowClock}</span>
+              <button class="chip" style="cursor:pointer" onclick="openQuickPalette && openQuickPalette()" title="جست‌وجوی سریع">${icon("barcode", 13)} جست‌وجوی سریع · <span class="kbd">Ctrl+K</span></button>
+            </div>
+          </div>
+          <div class="greet-art" aria-hidden="true">${SHOP_ART}</div>
+        </section>
+        <section class="dcard og-fin" id="og-fin" style="display:none">
+          <div class="dcard-head"><h3>${icon("cash", 15)} مالی — بدهکاران و دریافت/پرداخت</h3></div>
+          <div class="fin-kpis" id="fin-body"><span class="muted">در حال آماده‌سازی…</span></div>
+        </section>
+        <section class="dcard og-mine" id="og-mine" style="display:none">
+          <div class="dcard-head"><h3>${icon("user", 15)} داشبورد من</h3>
+            <span class="muted" id="mine-sub"></span></div>
+          <div class="mine-kpis" id="mine-body"><span class="muted">در حال آماده‌سازی…</span></div>
+        </section>
+        <div class="og-kpis">
+          ${(() => { const mine = !isStore; return `
+          ${kpi("cart", "i-green", mine ? "فروش امروز من" : "فروش امروز", fmt(d.sales.today) + ` <small>${esc(state.currency.label)}</small>`, trendHtml(pct(d.sales.today, d.sales.yesterday)))}
+          ${kpi("invoice", "i-violet", mine ? "فاکتورهای امروز من" : "تعداد فاکتورها", fa(d.sales.invoice_count_today), trendHtml(pct(d.sales.invoice_count_today, d.sales.invoice_count_yesterday)))}
+          ${kpi("users", "i-amber", "مشتریان امروز", fa(d.customers_new.today || 0), mine ? `<span class="muted">ثبت‌شده در فروشگاه</span>` : trendHtml(pct(d.customers_new.today || 0, d.customers_new.yesterday || 0)))}
+          ${kpi("box", "i-blue", "موجودی کل محصولات", mine ? "—" : fa(d.inventory.product_count), `<span class="muted">${mine ? "در دسترس مدیریت" : "در حال حاضر"}</span>`)}`; })()}
+        </div>
+        <div class="og-row">
+          <section class="dcard og-trend">
+            <div class="dcard-head">
+              <h3>${icon("chart", 18)} روند فروش</h3>
+              <div class="range-chips" id="dash-range">
+                <button class="chip on" data-r="30">۳۰ روز اخیر</button>
+                <button class="chip" data-r="7">۷ روز اخیر</button>
+                <button class="chip" data-r="1">امروز</button>
+              </div>
+            </div>
+            <div id="dash-trend-body">${trendChart(d.trend)}</div>
+          </section>
+          ${isStore ? `<section class="dcard og-donut">
+            <h3>${icon("chart", 18)} توزیع فروش بر اساس دسته‌بندی</h3>
+            <div class="donut-wrap">${dashDonut(d.sales_by_category)}</div>
+          </section>` : ""}
+        </div>
+        <div class="og-row">
+          <section class="dcard og-inv">
+            <div class="dcard-head">
+              <h3>${icon("invoice", 18)} فاکتورهای اخیر</h3>
+              ${canView("invoices") ? `<button class="btn btn-sm btn-ghost" onclick="go('invoices')">مشاهده همه</button>` : ""}
+            </div>
+            <div class="table-scroll">${dashInvoicesTable(d.recent_invoices)}</div>
+          </section>
+          ${isStore ? `<section class="dcard og-daily">
+            <div class="dcard-head">
+              <h3>${icon("chart", 18)} گزارش فروش روزانه</h3>
+              <span class="chip on static-chip">امروز</span>
+            </div>
+            <div class="table-scroll">${dashStaffTable(d.today_by_staff, d.sales.today)}</div>
+          </section>` : ""}
+        </div>
       </div>
-      <aside class="alert-rail ${alerts.length ? "" : "all-clear"}">
-        <div class="rail-head"><span>${alerts.length ? `${icon("bell", 16)} ${fa(alerts.length)} مورد نیاز به توجه` : `${icon("check", 16)} همه‌چیز مرتب است`}</span>
-          <button class="btn btn-sm btn-ghost" onclick="go('insights')">هوش فروشگاه</button></div>
-        ${alerts.slice(0, 5).map((a) => `<button class="alert-row ${a.sev}" onclick="go('${a.go}')">
-            <span class="alert-ic">${icon(a.ic, 15)}</span><span class="alert-tx">${a.text}</span><span class="alert-go">بررسی</span></button>`).join("")
-          || `<div class="muted rail-empty">هشدار فعالی نیست: موجودی، انقضا و سلامت سیستم در محدودهٔ نرمال‌اند.</div>`}
+      <aside class="og-rail">
+        <section class="dcard og-sug">
+          <div class="dcard-head">
+            <h3 class="og-title-dark">${icon("bell", 17)} اطلاعیه‌ها و هشدارها</h3>
+            <h3 class="og-title-light">${icon("star", 17)} پیشنهادات هوشمند</h3>
+            ${canView("insights") ? `<button class="btn btn-sm btn-ghost" onclick="go('insights')" title="هوش فروشگاه">${icon("star", 14)}</button>` : ""}
+          </div>
+          <div id="dash-sug" class="og-sug-list">
+            ${(() => {
+              const rows = [];
+              if (isStore && (lowCount + zeroCount) && canView("inventory")) rows.push({ ic: "box", tone: "amber", t: `موجودی ${fa(lowCount + zeroCount)} محصول در حال اتمام است`, s: d.inventory.low_stock.slice(0, 3).map((x) => x.name).join("، ") || "بررسی قفسه‌ها", go: "inventory" });
+              if (isStore && (expExpired + expSoon) && canView("inventory")) rows.push({ ic: "clock", tone: "red", t: `${fa(expExpired + expSoon)} بچ نزدیک انقضا یا منقضی`, s: expExpired ? `${fa(expExpired)} بچ منقضی روی قفسه است` : "پیش از ضرر بررسی کنید", go: "inventory" });
+              if (d.customers_new.week && canView("customers")) rows.push({ ic: "user", tone: "blue", t: `مشتری وفادار جدید: ${fa(d.customers_new.week)} نفر در ۷ روز اخیر`, s: d.customers_new.latest_name ? `آخرین: ${esc(d.customers_new.latest_name)}` : "ثبت‌نام‌های تازه", go: "customers" });
+              if (isStore && priceConf && canView("products")) rows.push({ ic: "tag", tone: "violet", t: `پیشنهاد قیمت‌گذاری: ${fa(priceConf)} کالا با چند قیمت فعال`, s: "یکسان‌سازی قیمت پیش از فروش", go: "products" });
+              return rows.map((r) => `<button class="og-sug-row" onclick="go('${r.go}')">
+                <span class="og-sug-ic ${r.tone}">${icon(r.ic, 15)}</span>
+                <span class="og-sug-tx"><b>${r.t}</b><small>${r.s}</small></span>
+                <span class="og-chev">‹</span></button>`).join("") || `<div class="muted rail-empty">هشدار فعالی نیست؛ وضعیت در محدودهٔ نرمال است.</div>`;
+            })()}
+          </div>
+        </section>
+        <section class="dcard og-quick">
+          <h3>${icon("gear", 18)} عملیات سریع</h3>
+          <div class="quick-grid">
+            ${canView("pos") ? `<button class="qa qa-green" onclick="go('pos')">${icon("cart", 20)}<span>فاکتور جدید</span></button>` : ""}
+            ${canView("batches") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("truck", 20)}<span>دریافت کالا</span></button>` : ""}
+            ${canView("inventory") ? `<button class="qa qa-teal" onclick="go('inventory')">${icon("box", 20)}<span>موجودی کالا</span></button>` : ""}
+            ${canView("customers") ? `<button class="qa qa-red" onclick="go('customers')">${icon("user", 20)}<span>ثبت مشتری</span></button>` : ""}
+            ${can("marketing.manage") ? `<button class="qa qa-amber" onclick="go('marketing')">${icon("gift", 20)}<span>کمپین جدید</span></button>` : ""}
+            ${canView("reports") ? `<button class="qa qa-violet" onclick="go('reports')">${icon("chart", 20)}<span>گزارش فروش</span></button>` : ""}
+          </div>
+        </section>
+        ${isStore ? `<section class="dcard og-status">
+          <div class="dcard-head">
+            <h3>${icon("stethoscope", 17)} وضعیت فروشگاه</h3>
+            <span class="og-online"><i></i> آنلاین</span>
+          </div>
+          <div class="status-gauges">
+            <div class="sg"><div class="sg-ring" style="--p:${sysOk ? 96 : 42};--c:#22c55e"><span>${sysOk ? "سالم" : "بررسی"}</span></div><b>وضعیت سامانه</b></div>
+            <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
+            <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
+          </div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۶ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+        </section>` : ""}
+        ${can("audit.view") ? `<section class="dcard og-acts">
+          <div class="dcard-head">
+            <h3>${icon("clock", 17)} فعالیت‌های اخیر</h3>
+            <button class="btn btn-sm btn-ghost" onclick="go('audit')">مشاهده همه</button>
+          </div>
+          <div id="dash-acts" class="og-act-list"><div class="muted">در حال بارگذاری…</div></div>
+        </section>` : ""}
       </aside>
-    </section>
+    </div>
     <div class="dash">
+      <div class="dash-band"><span>جزئیات عملیاتی</span><i></i>
+        <button class="btn btn-sm btn-ghost" id="dash-layout-btn" title="شخصی‌سازی چیدمان داشبورد">${icon("edit", 13)} چیدمان</button>
+      </div>
       <section class="dcard dcard-ins" id="dash-ins"><h3>هوش فروشگاه</h3><div class="muted">…</div></section>
       <section class="dcard dcard-gauge">
         <h3>${icon("trend", 18)} فروش امروز</h3>
@@ -465,9 +1560,9 @@ RENDER.dashboard = async () => {
         <div class="gauge-foot"><span class="${delta >= 0 ? "ok" : "err"}">${delta >= 0 ? "▲" : "▼"} ${fa(Math.abs(delta))}٪ نسبت به دیروز</span><span class="muted">${fa(d.sales.invoice_count_today)} فاکتور · میانگین ${money(d.sales.avg_invoice_today)}</span></div>
       </section>
 
-      <section class="dcard dcard-top">
+      ${isStore ? `<section class="dcard dcard-top">
         <h3>${icon("box", 18)} پرفروش‌ترین کالاها <span class="muted">۳۰ روز</span></h3>
-        <div class="toplist">${(d.top_products || []).map((t, i) => `
+        <div class="toplist">${d.top_products.map((t, i) => `
           <div class="topitem">
             <div class="ring ring-sm" style="--p:${t.share_pct};--c:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"><span>${fa(Math.round(t.share_pct))}٪</span></div>
             <div class="topinfo"><b>${esc(t.name)}</b><span class="muted">${qty(t.qty)} فروش${t.profit === null || t.profit === undefined ? "" : ` · سود ${money(t.profit)}`}</span><div class="topbar"><i style="width:${t.share_pct}%;background:${["#3dd6c4", "#ffb547", "#7c5cff", "#ff5c6c", "#4f8cff"][i % 5]}"></i></div></div>
@@ -475,35 +1570,18 @@ RENDER.dashboard = async () => {
           </div>`).join("") || `<div class="muted">هنوز فروشی ثبت نشده است</div>`}</div>
       </section>
 
-      <div class="dash-band"><span>عملیات فروشگاه</span><i></i></div>
       <section class="dcard dcard-low">
         <div class="lowhead"><span class="lowicon">${icon("warehouse", 26)}</span><div><h3>کالاهای کم‌موجودی</h3><b class="lownum">${fa(d.inventory.low_stock_count)}</b></div></div>
-        <div class="lowlist">${(d.inventory.low_stock || []).slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
+        <div class="lowlist">${d.inventory.low_stock.slice(0, 4).map((x) => `<div class="lowrow"><span>${esc(x.name)}</span><b>${qty(x.qty)}</b></div>`).join("")}
           ${d.inventory.no_stock_count ? `<div class="lowrow err"><span>بدون موجودی</span><b>${fa(d.inventory.no_stock_count)}</b></div>` : ""}</div>
-      </section>
-
-      <section class="dcard dcard-trend">
-        <h3>${icon("chart", 18)} ${can("pricing.view_cost") ? "روند فروش و سود" : "روند فروش"} <span class="muted">۷ روز اخیر</span></h3>
-        ${trendChart(d.trend || [])}
-      </section>
+      </section>` : ""}
 
       <section class="dcard dcard-recent">
         <h3>${icon("invoice", 18)} تراکنش‌های اخیر</h3>
-        <table class="recent"><tbody>${(d.recent_invoices || []).map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
+        <table class="recent"><tbody>${d.recent_invoices.map((i) => `<tr onclick="go('invoices')"><td class="ltr">${esc(i.invoice_number)}</td><td>${faDateTime(i.created_at)}</td><td><b>${money(i.total)}</b></td><td><span class="badge ${i.status === "PAID" ? "badge-green" : i.status === "VOID" ? "badge-red" : "badge-amber"}">${{ PAID: "کامل", VOID: "باطل", PENDING: "معلق", REFUNDED: "مرجوع", PARTIALLY_REFUNDED: "مرجوع جزئی" }[i.status] || i.status}</span></td></tr>`).join("") || `<tr><td class="muted">—</td></tr>`}</tbody></table>
       </section>
 
-      <section class="dcard dcard-quick">
-        <h3>${icon("gear", 18)} اقدام سریع</h3>
-        <div class="quick-grid">
-          ${can("products.manage") ? `<button class="qa qa-green" onclick="go('products')">${icon("box", 20)}<span>افزودن کالای جدید</span></button>` : ""}
-          ${can("batches.manage") ? `<button class="qa qa-blue" onclick="go('batches')">${icon("inbox", 20)}<span>ورود کالا</span></button>` : ""}
-          ${can("accounting.post") ? `<button class="qa qa-violet" onclick="AccountingUI.expenseModal()">${icon("cash", 20)}<span>ثبت هزینه</span></button>` : ""}
-          ${can("pos.sell") ? `<button class="qa qa-amber" onclick="go('pos')">${icon("pos", 20)}<span>صندوق فروش</span></button>` : ""}
-        </div>
-      </section>
-
-      <div class="dash-band"><span>مالی و تسویه</span><i></i></div>
-      ${can("accounting.view") ? `
+      ${isStore && can("accounting.view") ? `
       <section class="dcard dcard-acc">
         <h3>${icon("ledger", 18)} وضعیت مالی</h3>
         <div class="acc-mini">
@@ -516,16 +1594,172 @@ RENDER.dashboard = async () => {
         ${acc.cheques_due ? `<div class="muted" style="margin-top:8px">${fa(acc.cheques_due)} چک در جریان</div>` : ""}
       </section>` : ""}
 
-      <section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
+      ${isStore ? `<section class="dcard dcard-expiry">${expiryCard("انقضا", d.expiry).innerHTML}</section>
       <section class="dcard dcard-recv">${receivCard("مطالبات و بدهی", d.receivables).innerHTML}</section>
-      <div class="dash-band"><span>سامانه و پیام‌رسانی</span><i></i></div>
       <section class="dcard dcard-sms">${smsCard("وضعیت پیامک", d.sms).innerHTML}</section>
       <section class="dcard dcard-sys">${systemCard("سلامت سیستم", d.system).innerHTML}</section>
-      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>
-    </div>`;
-  renderStocktakeAlarms("#dash-alarms");
-  if (window.InsightsDash) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
+      <section class="dcard dcard-price">${priceCard("تعارض قیمت (قدیم/جدید)", d.pricing).innerHTML}</section>` : ""}
+    </div>
+    ${canView("insights") ? `<div class="ai-line">
+      <span class="ai-line-ic">${icon("star", 17)}</span>
+      <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
+      <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
+    </div>` : ""}
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.496")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
+      <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
+      <span>هوش فروشگاه</span>
+    </button>` : ""}`;
+  if (window.InsightsDash && canView("insights")) InsightsDash.mount($("#dash-ins"));   // v3.0 measured impact of executed suggestions
+  mountDashWidgets(d);   // build-484 — ویجت‌های زندهٔ چیدمان مرجع (پیشنهاد، فعالیت، بازه، جدول)
 };
+
+/* build-484 — تصویر فروشگاه (SVG، بدون فایل تصویری): قفسه، صندوق، رول رسید، رنگ‌های پاستلی. */
+const SHOP_ART = `
+<svg viewBox="0 0 220 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="112" cy="132" rx="92" ry="12" fill="#7c5cff" opacity=".10"/>
+  <rect x="16" y="34" width="58" height="88" rx="7" fill="#ffffff" opacity=".92"/>
+  <rect x="24" y="46" width="42" height="9" rx="4.5" fill="#ffd6a5"/>
+  <rect x="24" y="61" width="42" height="9" rx="4.5" fill="#a5d8ff"/>
+  <rect x="24" y="76" width="42" height="9" rx="4.5" fill="#b2f2bb"/>
+  <rect x="24" y="91" width="42" height="9" rx="4.5" fill="#ffc9c9"/>
+  <rect x="24" y="106" width="42" height="9" rx="4.5" fill="#ffe066"/>
+  <rect x="82" y="58" width="76" height="64" rx="7" fill="#ffffff" opacity=".92"/>
+  <rect x="92" y="70" width="56" height="10" rx="5" fill="#7c5cff" opacity=".35"/>
+  <rect x="92" y="86" width="34" height="8" rx="4" fill="#22c55e" opacity=".45"/>
+  <rect x="92" y="100" width="46" height="8" rx="4" fill="#f59e0b" opacity=".45"/>
+  <rect x="150" y="24" width="42" height="52" rx="7" fill="#ffffff" opacity=".92"/>
+  <path d="M160 60 l0 -22 a11 11 0 0 1 22 0 l0 22 z" fill="#ffd6a5"/>
+  <rect x="163" y="44" width="16" height="5" rx="2.5" fill="#e8590c"/>
+  <rect x="163" y="52" width="16" height="8" rx="2" fill="#fff" opacity=".8"/>
+  <circle cx="52" cy="18" r="10" fill="#ffe066"/>
+  <rect x="176" y="88" width="26" height="34" rx="6" fill="#a5d8ff"/>
+  <rect x="181" y="80" width="16" height="12" rx="4" fill="#4c6ef5"/>
+  <rect x="184" y="96" width="10" height="22" rx="3" fill="#ffffff" opacity=".85"/>
+</svg>`;
+
+/* build-484 — دونات «توزیع فروش بر اساس دسته‌بندی» (SVG از دادهٔ واقعی sales_by_category). */
+function dashDonut(cats) {
+  if (!cats.length) return `<div class="muted">هنوز فروشی در ۳۰ روز اخیر ثبت نشده است</div>`;
+  const COLORS = ["#22c55e", "#7c5cff", "#f59e0b", "#4f8cff", "#ef5da8", "#14b8a6"];
+  const total = cats.reduce((s, c) => s + (c.sales || 0), 0) || 1;
+  let accP = 0;
+  const segs = cats.map((c, i) => {
+    const p = (c.sales || 0) / total * 100;
+    const seg = `<circle cx="60" cy="60" r="44" fill="none" stroke="${COLORS[i % COLORS.length]}" stroke-width="17"
+      transform="rotate(-90 60 60)"
+      stroke-dasharray="${Math.max(0.4, p * 2.764)} ${Math.max(0.4, (100 - p) * 2.764)}" stroke-dashoffset="${-accP * 2.764}" />`;
+    accP += p;
+    return seg;
+  }).join("");
+  return `
+    <div class="donut">
+      <svg viewBox="0 0 120 120" class="donut-svg">${segs}<circle cx="60" cy="60" r="27" fill="var(--surface)"/>
+        <text x="60" y="56" text-anchor="middle" class="donut-num">${fmt(total)}</text>
+        <text x="60" y="70" text-anchor="middle" class="donut-cap">${esc(state.currency.label)}</text>
+      </svg>
+      <div class="donut-legend">
+        ${cats.map((c, i) => `<div class="dl"><i style="background:${COLORS[i % COLORS.length]}"></i>
+          <span>${esc(c.name || "سایر")}</span><b>${fa((c.share_pct != null ? c.share_pct : (c.sales / total * 100)).toFixed(1))}٪</b>
+          <small>${money(c.sales)}</small></div>`).join("")}
+      </div>
+    </div>`;
+}
+
+/* build-485 — جدول «فاکتورهای اخیر» (ستون‌های دقیق تصویر مرجع، دادهٔ واقعی). */
+function dashInvoicesTable(items) {
+  if (!items || !items.length) return `<div class="muted">هنوز فاکتوری ثبت نشده است</div>`;
+  const stMap = { PAID: ["تسویه شده", "badge-green"], PENDING: ["در انتظار پرداخت", "badge-amber"],
+    VOID: ["لغو شده", "badge-red"], PARTIAL: ["پرداخت بخشی", "badge-amber"],
+    REFUNDED: ["مرجوع شده", "badge-gray"], PARTIALLY_REFUNDED: ["مرجوع جزئی", "badge-gray"] };
+  return `<table class="recent dtable og-table"><thead><tr>
+      <th>نام محصول</th><th>تعداد</th><th>مبلغ فاکتور</th><th>مشتری</th><th>تاریخ</th><th>وضعیت</th></tr></thead><tbody>
+    ${items.map((i) => {
+      const [stLabel, stCls] = stMap[i.status] || [i.status, "badge-gray"];
+      const prod = i.top_product || i.invoice_number || "—";
+      const thumb = `<span class="og-thumb">${esc(String(prod).trim().slice(0, 1))}</span>`;
+      return `<tr onclick="go('invoices')" style="cursor:pointer">
+        <td>${thumb} ${esc(prod)}</td>
+        <td>${fa(i.item_count || 0)}</td>
+        <td><b>${money(i.total)}</b></td>
+        <td>${esc(i.customer_name || "مشتری آزاد")}</td>
+        <td class="muted">${i.created_at ? faDateTime(i.created_at) : "—"}</td>
+        <td><span class="badge ${stCls}">${stLabel}</span></td></tr>`;
+    }).join("")}
+  </tbody></table>`;
+}
+
+/* build-485 — جدول «گزارش فروش روزانه»: فروش امروز به تفکیک صندوق‌دار + ردیف «جمع کل». */
+function dashStaffTable(rows, total) {
+  const body = rows.length ? rows.map((r) => `<tr>
+      <td>${esc(r.name)}</td><td>${fa(r.invoice_count)}</td><td><b>${money(r.sales)}</b></td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">امروز هنوز فروشی ثبت نشده است</td></tr>`;
+  return `<table class="recent dtable og-table"><thead><tr>
+      <th>نام صندوق‌دار</th><th>تعداد فاکتور</th><th>مبلغ فروش</th></tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr class="og-total"><td>جمع کل</td><td>${fa(rows.reduce((s, r) => s + (r.invoice_count || 0), 0))}</td><td><b>${money(total)}</b></td></tr></tfoot>
+  </table>`;
+}
+
+/* build-484 — چیپ‌های بازهٔ واقعی: /reports/sales با گروه روزانه (هرگز دادهٔ جعلی). */
+function dashLoadRange(r) {
+  const body = $("#dash-trend-body");
+  if (!body) return;
+  body.innerHTML = `<div class="muted">در حال بارگذاری…</div>`;
+  const end = new Date();
+  const start = new Date(end);
+  if (r === "30") start.setDate(end.getDate() - 29);
+  else if (r === "7") start.setDate(end.getDate() - 6);
+  else start.setHours(0, 0, 0, 0);
+  const iso = (x) => x.toISOString().slice(0, 10);
+  api(`/reports/sales?start=${iso(start)}&end=${iso(end)}&group=daily`).then((res) => {
+    const rows = (res.groups || []).map((g) => ({ label: (g.date || "").slice(5), sales: g.total, profit: null, invoices: g.invoice_count }));
+    body.innerHTML = rows.length ? trendChart(rows) : `<div class="muted">در این بازه فروشی ثبت نشده است</div>`;
+  }).catch((e) => { body.innerHTML = `<div class="muted">خطا در دریافت: ${esc(e.message)}</div>`; });
+}
+
+/* build-485 — ویجت‌های زنده: پیشنهادهای هوش (به ردیف‌های واقعی افزوده می‌شوند)،
+   فعالیت‌های اخیر از تاریخچه، و چیپ‌های بازهٔ نمودار. */
+function mountDashWidgets(d) {
+  const sug = $("#dash-sug");
+  if (sug && window.api && canView("insights")) {
+    api("/insights?status=OPEN&limit=3").then((res) => {
+      if (!sug.isConnected) return;
+      const items = (Array.isArray(res) ? res : ((res && res.items) || [])).slice(0, 3);
+      if (!items.length) return;
+      const extra = items.map((x) => `
+        <button class="og-sug-row" onclick="go('insights')">
+          <span class="og-sug-ic violet">${icon("star", 15)}</span>
+          <span class="og-sug-tx"><b>${esc(x.title || x.group || "پیشنهاد هوشمند")}</b><small>${esc((x.recommended_action || x.evidence || "").toString().slice(0, 90))}</small></span>
+          <span class="og-chev">‹</span></button>`).join("");
+      sug.insertAdjacentHTML("beforeend", extra);
+      const badge = $("#tb-bell-badge");
+      if (badge) {
+        const n = (res && res.total != null ? res.total : items.length);
+        if (n > 0) { badge.textContent = fa(n); badge.classList.remove("hidden"); }
+      }
+    }).catch(() => {});
+  }
+  const acts = $("#dash-acts");
+  if (acts && window.api && can("audit.view")) {
+    api("/audit?limit=5").then((res) => {
+      if (!acts.isConnected) return;
+      const items = ((res && res.items) || []).slice(0, 5);
+      acts.innerHTML = items.length ? items.map((x) => `
+        <div class="og-act-row">
+          <span class="og-sug-ic blue">${icon("clock", 13)}</span>
+          <span class="og-act-tx">${esc((x.action || "activity") + (x.entity ? " · " + x.entity : ""))}</span>
+          <span class="act-when muted">${x.created_at ? faDateTime(x.created_at) : ""}</span>
+        </div>`).join("") : `<div class="muted">هنوز فعالیتی ثبت نشده است.</div>`;
+    }).catch(() => { if (acts.isConnected) acts.innerHTML = `<div class="muted">تاریخچه در دسترس نیست.</div>`; });
+  }
+  const range = $("#dash-range");
+  if (range) range.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => {
+    range.querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+    dashLoadRange(b.dataset.r);
+  }));
+}
 
 /* Smooth SVG area chart: sales + profit for the last N days. */
 function trendChart(rows) {
@@ -557,6 +1791,34 @@ function trendChart(rows) {
     <div class="legend"><span><i style="background:#3dd6c4"></i>فروش</span>${showProfit ? `<span><i style="background:#7c5cff"></i>سود</span>` : ""}</div>`;
 }
 
+function incomeExpenseChart(rows) {
+  const points = Array.isArray(rows) ? rows : [];
+  if (!points.length) return `<div class="role-empty">در این بازه ثبت درآمد یا هزینه‌ای وجود ندارد.</div>`;
+  const values = points.flatMap((point) => [Number(point.income) || 0, Number(point.expenses) || 0]);
+  const upper = Math.max(0, ...values), lower = Math.min(0, ...values);
+  const span = Math.max(1, upper - lower);
+  const W = 640, H = 210, PL = 64, PR = 18, PT = 16, PB = 34;
+  const plotW = W - PL - PR, plotH = H - PT - PB;
+  const y = (value) => PT + ((upper - value) / span) * plotH;
+  const zeroY = y(0);
+  const grid = [0, 1, 2, 3, 4].map((step) => {
+    const value = upper - span * step / 4, py = y(value);
+    return `<line x1="${PL}" x2="${W - PR}" y1="${py}" y2="${py}"/><text x="${PL - 8}" y="${py + 4}" text-anchor="end">${fa(fmt(value))}</text>`;
+  }).join("");
+  const groupW = plotW / points.length, barW = Math.min(18, groupW * 0.27);
+  const bars = points.map((point, index) => {
+    const center = PL + groupW * (index + .5);
+    const income = Number(point.income) || 0, expenses = Number(point.expenses) || 0;
+    const rect = (value, offset, color, title) => {
+      const valueY = y(value), top = Math.min(valueY, zeroY), height = Math.max(1, Math.abs(valueY - zeroY));
+      return `<rect x="${center + offset - barW / 2}" y="${top}" width="${barW}" height="${height}" rx="3" fill="${color}"><title>${esc(point.label || point.date || "")} · ${title}: ${esc(money(value))}</title></rect>`;
+    };
+    const label = esc(point.label || point.date || "");
+    return `${rect(income, -barW * .58, "#3dd6c4", "درآمد")}${rect(expenses, barW * .58, "#f6b34a", "هزینه")}<text x="${center}" y="${H - 9}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  return `<svg class="trend accountant-fin-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="نمودار درآمد و هزینهٔ هفت روز اخیر"><g class="grid">${grid}</g><line class="accountant-fin-zero" x1="${PL}" x2="${W - PR}" y1="${zeroY}" y2="${zeroY}"/>${bars}</svg><div class="legend"><span><i style="background:#3dd6c4"></i>درآمد</span><span><i style="background:#f6b34a"></i>هزینه</span></div>`;
+}
+
 function statCard(label, value, sub) {
   return el("div", { class: "card stat" },
     el("span", { class: "label", text: label }),
@@ -566,15 +1828,17 @@ function statCard(label, value, sub) {
 }
 
 function expiryCard(title, buckets) {
+  const safeBuckets = buckets && typeof buckets === "object" ? buckets : {};
   const rows = [];
   const map = { EXPIRED: ["منقضی", "badge-red"], EXPIRING_TODAY: ["امروز", "badge-red"],
     EXPIRING_3_DAYS: ["کمتر از ۳ روز", "badge-amber"], EXPIRING_7_DAYS: ["کمتر از ۷ روز", "badge-amber"],
     EXPIRING_30_DAYS: ["کمتر از ۳۰ روز", "badge-blue"] };
-  for (const [k, items] of Object.entries(buckets)) {
+  for (const [k, items] of Object.entries(safeBuckets)) {
     const [label, cls] = map[k] || [k, "badge-gray"];
+    const arr = Array.isArray(items) ? items : [];
     rows.push(el("tr", {},
       el("td", {}, el("span", { class: "badge " + cls, text: label })),
-      el("td", { text: items.length + " مورد" }),
+      el("td", { text: arr.length + " مورد" }),
     ));
   }
   return el("div", { class: "card" },
@@ -584,10 +1848,13 @@ function expiryCard(title, buckets) {
 }
 
 function priceCard(title, pricing) {
-  const rows = pricing.price_conflicts.map((p) =>
-    el("tr", {}, el("td", { text: p.name }), el("td", { text: p.prices.map(fmt).join(" / ") })));
+  const safePricing = pricing && typeof pricing === "object" ? pricing : {};
+  const conflicts = Array.isArray(safePricing.price_conflicts) ? safePricing.price_conflicts : [];
+  const count = Number(safePricing.price_conflict_count || conflicts.length || 0);
+  const rows = conflicts.map((p) =>
+    el("tr", {}, el("td", { text: p.name || "—" }), el("td", { text: (Array.isArray(p.prices) ? p.prices : []).map(fmt).join(" / ") })));
   return el("div", { class: "card" },
-    el("h3", { text: title + ` (${pricing.price_conflict_count})` }),
+    el("h3", { text: title + ` (${count})` }),
     el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "کالا" }), el("th", { text: "قیمت‌ها" }))),
       el("tbody", {}, ...rows)),
   );
@@ -654,7 +1921,7 @@ function systemCard(title, sys) {
   );
 }
 
-const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null };
+const posState = { cart: [], customer: null, coupon: null, couponInfo: null, invoiceDiscount: 0, heldId: null, campaign: null, campaignInfo: null };
 window.posState = posState;   // v3.0: shared with insights.js (POS whisper-suggestions)
 
 /* ---------------------------------------------------------------------------
@@ -664,15 +1931,30 @@ window.posState = posState;   // v3.0: shared with insights.js (POS whisper-sugg
  * Up to 10 at once; persisted in localStorage so a crash/exit never loses them.
  * ------------------------------------------------------------------------ */
 const HELD_MAX = 10;
-function heldInvoices() { try { return JSON.parse(localStorage.getItem("sm.held") || "[]"); } catch (_) { return []; } }
-function saveHeld(list) { localStorage.setItem("sm.held", JSON.stringify(list.slice(0, HELD_MAX))); renderHeldDock(); }
+function heldStorageKey() {
+  return state.user && state.user.id ? `sm.held.u_${state.user.id}` : "sm.held";
+}
+function heldInvoices() {
+  try {
+    const raw = localStorage.getItem(heldStorageKey()) || localStorage.getItem("sm.held") || "[]";
+    return JSON.parse(raw);
+  } catch (_) { return []; }
+}
+function saveHeld(list) {
+  const data = JSON.stringify(list.slice(0, HELD_MAX));
+  localStorage.setItem(heldStorageKey(), data);
+  localStorage.setItem("sm.held", data);
+  renderHeldDock();
+}
 function posSnapshot() {
   return { cart: JSON.parse(JSON.stringify(posState.cart)), customer: posState.customer, coupon: posState.coupon,
-           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount };
+           couponInfo: posState.couponInfo, invoiceDiscount: posState.invoiceDiscount,
+           campaign: posState.campaign, campaignInfo: posState.campaignInfo };
 }
 function posRestore(snap) {
   posState.cart = snap.cart || []; posState.customer = snap.customer || null; posState.coupon = snap.coupon || null;
   posState.couponInfo = snap.couponInfo || null; posState.invoiceDiscount = snap.invoiceDiscount || 0;
+  posState.campaign = snap.campaign || null; posState.campaignInfo = snap.campaignInfo || null;
 }
 function posHold(label) {
   if (!posState.cart.length) { toast("سبد خالی است؛ چیزی برای نگه‌داشتن نیست", "err"); return false; }
@@ -685,6 +1967,7 @@ function posHold(label) {
   const idx = list.findIndex((h) => h.id === entry.id);
   if (idx >= 0) list[idx] = entry; else list.unshift(entry);
   posState.cart = []; posState.customer = null; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; posState.heldId = null;
+  posState.campaign = null; posState.campaignInfo = null;
   saveHeld(list);
   renderPosCart(); if (window.Sfx) Sfx.play("hold");
   toast(`فاکتور «${entry.label}» نگه داشته شد`);
@@ -749,7 +2032,9 @@ function renderPosCart() {
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const count = posState.cart.reduce((a, it) => a + Number(it.quantity), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
-  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon));
+  // build-481: a selected festival grants a real benefit in the total (validated at checkout)
+  const camp = posState.campaignInfo && posState.campaignInfo.ok ? posState.campaignInfo.discount : 0;
+  const invDisc = Math.min(Number(posState.invoiceDiscount || 0), Math.max(0, gross - disc - coupon - camp));
   // v1.7.1: the register never shows profit/cost (management figures live in reports)
   $("#pos-totals").innerHTML = `
     <div class="row"><span class="muted">تعداد کالا</span><strong>${count}</strong></div>
@@ -757,7 +2042,8 @@ function renderPosCart() {
     ${disc ? `<div class="row"><span class="muted">تخفیف</span><span class="err">−${money(disc)}</span></div>` : ""}
     ${invDisc ? `<div class="row"><span class="muted">تخفیف فاکتور <a href="#" onclick="posState.invoiceDiscount=0;renderPosCart();return false;" class="muted">✕</a></span><span class="err">−${money(invDisc)}</span></div>` : ""}
     ${coupon ? `<div class="row"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
-    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon)}</span></div>`;
+    ${camp ? `<div class="row"><span class="muted">جشنواره ${esc(posState.campaignInfo.name)} <a href="#" onclick="posClearCampaign();return false;" class="muted">✕</a></span><span class="err">−${money(camp)}</span></div>` : ""}
+    <div class="row grand"><span>قابل پرداخت</span><span>${money(gross - disc - invDisc - coupon - camp)}</span></div>`;
   const cpEl = $("#pos-coupon-state");
   if (cpEl) {
     cpEl.innerHTML = posState.couponInfo
@@ -767,6 +2053,16 @@ function renderPosCart() {
           : `<span class="badge badge-red">${esc(posState.couponInfo.message || "کوپن نامعتبر")}</span>
              <button class="btn btn-sm" onclick="posClearCoupon()">✕</button>`)
       : `<span class="muted">بدون کوپن (F9)</span>`;
+  }
+  const cmEl = $("#pos-campaign-state");
+  if (cmEl) {
+    cmEl.innerHTML = posState.campaignInfo
+      ? (posState.campaignInfo.ok
+          ? `<span class="badge badge-green">${icon("gift", 14)} جشنواره ${esc(posState.campaignInfo.name)} — ${money(posState.campaignInfo.discount)}</span>
+             <button class="btn btn-sm" onclick="posClearCampaign()">✕</button>`
+          : `<span class="badge badge-red">${esc(posState.campaignInfo.message || "جشنواره نامعتبر")}</span>
+             <button class="btn btn-sm" onclick="posClearCampaign()">✕</button>`)
+      : `<span class="muted">بدون جشنواره (F10)</span>`;
   }
   if (window.PosNudges) PosNudges.refresh();   // v3.0 whisper-suggestions (only when enabled in settings)
   $("#pos-customer").innerHTML = posState.customer
@@ -851,15 +2147,17 @@ RENDER.pos = async () => {
         <div class="pos-side">
           <div class="scan-field pos-scan-wrap">${icon("barcode", 22)}<input id="pos-scan" class="pos-scan scan-input" placeholder="اسکن بارکد یا جستجوی نام کالا…" autocomplete="off" autofocus /><span class="scan-state" id="pos-scan-state" title="بارکدخوان">${icon("scanner", 18)}</span></div>
           <div id="pos-suggest" class="pos-suggest hidden"></div>
-          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
+          <div class="pos-hint muted"><span class="kbd">Enter</span> افزودن · <span class="kbd">F2</span> پرداخت · <span class="kbd">F4</span> تخفیف · <span class="kbd">F8</span> مشتری · <span class="kbd">F9</span> کوپن · <span class="kbd">F10</span> جشنواره · <span class="kbd">Del</span> حذف آخرین · <span class="kbd">Esc</span> خالی کردن</div>
           <div id="pos-customer" class="pos-customer"></div>
           <div id="pos-nudge" class="pos-nudge hidden"></div>
           <div id="pos-coupon-state" class="pos-customer"></div>
+          <div id="pos-campaign-state" class="pos-customer"></div>
           <div id="pos-totals" class="pos-totals"></div>
           <div class="pos-actions">
             <button class="pos-btn pos-btn-pay" id="pos-pay">${icon("cash", 22)} پرداخت <span class="kbd">F2</span></button>
             <button class="pos-btn pos-btn-blue" id="pos-customer-btn">${icon("user", 18)} مشتری <span class="kbd">F8</span></button>
             <button class="pos-btn pos-btn-violet" id="pos-coupon-btn">${icon("gift", 18)} کوپن <span class="kbd">F9</span></button>
+            <button class="pos-btn pos-btn-violet" id="pos-campaign-btn">${icon("gift", 18)} جشنواره <span class="kbd">F10</span></button>
             <button class="pos-btn pos-btn-amber" id="pos-discount-btn">تخفیف <span class="kbd">F4</span></button>
             <button class="pos-btn pos-btn-hold" id="pos-hold-btn">نگه‌داشتن فاکتور <span class="kbd">F6</span></button>
             <button class="pos-btn pos-btn-danger" id="pos-clear-btn">لغو کردن <span class="kbd">Esc</span></button>
@@ -898,8 +2196,10 @@ RENDER.pos = async () => {
   $("#pos-discount-btn").addEventListener("click", () => posDiscountModal());
   $("#pos-customer-btn").addEventListener("click", () => posCustomerModal());
   $("#pos-coupon-btn").addEventListener("click", () => posCouponModal());
+  $("#pos-campaign-btn").addEventListener("click", () => posCampaignModal());
   $("#pos-clear-btn").addEventListener("click", () => {
-    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0; renderPosCart();
+    posState.cart = []; posState.coupon = null; posState.couponInfo = null; posState.invoiceDiscount = 0;
+    posState.campaign = null; posState.campaignInfo = null; renderPosCart();
   });
   $("#pos-kiosk-btn").addEventListener("click", () => (state.kiosk ? exitKioskPrompt() : enterKiosk()));
   posClock();
@@ -1095,6 +2395,58 @@ async function posRevalidateCoupon(announce) {
   renderPosCart();
 }
 
+/* ---------- POS campaigns (build-481, §21–26) ----------
+ * جشنواره‌های فعال که شرایطشان برای همین سبد برقرار است، با دادهٔ ساختاریافته از
+ * سرور می‌آیند؛ صندوق‌دار فقط انتخاب می‌کند و سرور هنگام ثبت، همهٔ شرایط را دوباره
+ * اعتبارسنجی می‌کند (دور زدن شرایط ممکن نیست). */
+window.posClearCampaign = () => { posState.campaign = null; posState.campaignInfo = null; renderPosCart(); };
+
+async function posCampaignModal() {
+  if (!posState.cart.length) { toast("سبد خالی است؛ ابتدا کالا اضافه کنید", "err"); return; }
+  const gross = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
+  let rows = [];
+  try {
+    const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+      amount: gross,
+      product_ids: posState.cart.map((i) => i.product_id),
+      customer_id: posState.customer ? posState.customer.id : null,
+      include_auto_apply: true }) });
+    rows = r.campaigns || [];
+  } catch (e) { toast(e.message, "err"); return; }
+  const list = rows.map((c) => `
+    <label class="row" style="gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--shell-border, #333)">
+      <input type="radio" name="camp-pick" value="${c.campaign_id}" ${posState.campaign === c.campaign_id ? "checked" : ""} />
+      <span style="flex:1">
+        <b>${esc(c.name)}</b> ${c.auto_apply ? '<span class="badge badge-green">خودکار</span>' : ""}
+        <div class="muted">${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)} تخفیف
+          ${c.min_purchase ? ` · حداقل خرید ${money(c.min_purchase)}` : ""}</div>
+      </span>
+      <b class="err">−${money(c.discount)}</b>
+    </label>`).join("") || `<p class="muted">فعلاً جشنوارهٔ واجد شرایطی برای این سبد فعال نیست.</p>`;
+  openModal(`<h3>جشنواره‌های قابل اعمال</h3>
+    <p class="muted">فقط جشنواره‌هایی که شرایطشان برای همین سبد برقرار است نمایش داده می‌شوند؛
+      سرور هنگام ثبت فروش دوباره بررسی می‌کند.</p>
+    <div id="camp-list">${list}</div>
+    <button id="camp-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال جشنواره</button>
+    ${posState.campaign ? `<button id="camp-clear" class="btn btn-block" style="margin-top:8px">حذف جشنوارهٔ انتخابی</button>` : ""}`);
+  const apply = () => {
+    const pick = document.querySelector('input[name="camp-pick"]:checked');
+    if (!pick) { toast("جشنواره‌ای انتخاب نشده", "err"); return; }
+    const c = rows.find((x) => x.campaign_id === Number(pick.value));
+    if (!c) return;
+    posState.campaign = c.campaign_id;
+    posState.campaignInfo = { ok: true, name: c.name, discount: c.discount, stackable: c.stackable };
+    closeModal();
+    if (c.stackable === false && posState.couponInfo && posState.couponInfo.ok) {
+      toast("این جشنواره با کوپن قابل ترکیب نیست — کوپن هنگام ثبت فروش رد می‌شود", "err");
+    }
+    renderPosCart();
+  };
+  $("#camp-apply").addEventListener("click", apply);
+  const cl = $("#camp-clear");
+  if (cl) cl.addEventListener("click", () => { posClearCampaign(); closeModal(); });
+}
+
 /* POS: discount (line or whole cart, split proportionally) */
 function posDiscountModal() {
   if (!posState.cart.length) { toast("سبد خالی است", "err"); return; }
@@ -1162,9 +2514,11 @@ function posCheckoutModal() {
   const gross = posState.cart.reduce((a, it) => a + posGross(it), 0);
   const disc = posState.cart.reduce((a, it) => a + (it.discount || 0), 0);
   const coupon = posState.couponInfo && posState.couponInfo.ok ? posState.couponInfo.discount : 0;
-  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon;
+  const camp = posState.campaignInfo && posState.campaignInfo.ok ? posState.campaignInfo.discount : 0;
+  const total = gross - disc - (posState.invoiceDiscount || 0) - coupon - camp;
   openModal(`<h3>پرداخت</h3>
     ${coupon ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">کوپن ${esc(posState.coupon)}</span><span class="err">−${money(coupon)}</span></div>` : ""}
+    ${camp ? `<div class="row" style="display:flex;justify-content:space-between"><span class="muted">جشنواره ${esc(posState.campaignInfo.name)}</span><span class="err">−${money(camp)}</span></div>` : ""}
     <div class="row" style="display:flex;justify-content:space-between"><span>قابل پرداخت</span><strong style="font-size:20px">${money(total)}</strong></div>
     <label>روش پرداخت</label>
     <select id="pay-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option><option value="MIXED">ترکیبی</option>${
@@ -1228,10 +2582,12 @@ async function doCheckout(total) {
         // v3.1: a phone typed only for the SMS is enough — the backend files it in the customer book
         customer_phone: !posState.customer && $("#pay-phone") && $("#pay-phone").value.trim() ? $("#pay-phone").value.trim() : null,
         invoice_discount: posState.invoiceDiscount || 0,
-        coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null }),
+        coupon_code: posState.couponInfo && posState.couponInfo.ok ? posState.coupon : null,
+        campaign_id: posState.campaignInfo && posState.campaignInfo.ok ? posState.campaign : null }),
     });
     posState.cart = []; posState.customer = null; posState.invoiceDiscount = 0;
-    posState.coupon = null; posState.couponInfo = null; posState.heldId = null; renderHeldDock();
+    posState.coupon = null; posState.couponInfo = null; posState.heldId = null;
+    posState.campaign = null; posState.campaignInfo = null; renderHeldDock();
     if (inv.drawer && !inv.drawer.ok && inv.drawer.message !== "CASH_DRAWER_UNAVAILABLE")
       toast("کشوی پول: " + inv.drawer.message, "err");
     closeModal(); renderPosCart();
@@ -1239,6 +2595,9 @@ async function doCheckout(total) {
     toast(inv.payment_status === "ON_ACCOUNT"
       ? `ثبت شد (نسیه): ${inv.invoice_number}`
       : `فروش ثبت شد: ${inv.invoice_number}`);
+    if (inv.campaign_name) {
+      toast(`جشنواره «${inv.campaign_name}» روی فاکتور اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
+    }
     if (inv.issued_coupon) {
       openModal(`<h3>🎁 کوپن خرید بعدی</h3>
         <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
@@ -1322,6 +2681,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "F4") { e.preventDefault(); if (!modalOpen) posDiscountModal(); }
   else if (e.key === "F8") { e.preventDefault(); if (!modalOpen) posCustomerModal(); }
   else if (e.key === "F9") { e.preventDefault(); if (!modalOpen) posCouponModal(); }
+  else if (e.key === "F10") { e.preventDefault(); if (!modalOpen) posCampaignModal(); }
   else if (e.key === "F6") { e.preventDefault(); if (!modalOpen) posHold(); }
   else if (e.key === "Delete" && !modalOpen) { posState.cart.pop(); renderPosCart(); }
   else if (e.key === "Escape" && !modalOpen) {
@@ -1781,7 +3141,16 @@ window.showProductDetail = async function showProductDetail(productId) {
   } catch (e) { toast(e.message, "err"); }
 };
 
-/* ---------- batches (receiving) ---------- */
+/* ---------- batches (receiving) ----------
+ * build-481 (step 1) — مسیر واقعی «اجرا کن» برای کمبود موجودی: پیشنهاد ← فرم
+ * ورود کالا با محصول از پیش انتخاب‌شده ← ثبت Batch واقعی ← افزایش موجودی ←
+ * بازبینی بعدی، پیشنهاد را خودکار می‌بندد. */
+window.showGoodsReceive = (productIds) => {
+  window.__pendingReceiveProducts = (productIds || []).map(Number).filter(Boolean);
+  if (window.go) window.go("batches");
+  else RENDER.batches();
+};
+
 /* v1.3: one purchase price + one consumer price + sell price. The separate
  * "supplier price" box was a duplicate of the purchase price and is gone from
  * the UI (the column stays nullable in the DB for old rows). The barcode box
@@ -1862,6 +3231,38 @@ RENDER.batches = async () => {
     }
   });
 
+  // build-481 — اگر از «اجرا کن»ِ پیشنهاد آمده‌ایم، محصول هدف از پیش انتخاب می‌شود
+  const pending = window.__pendingReceiveProducts || [];
+  if (pending.length) {
+    window.__pendingReceiveProducts = [];
+    try {
+      const r = await api(`/products?ids=${pending.join(",")}&limit=${pending.length}`);
+      const items = r.items || [];
+      const map = (o) => ({ product_id: o.id, name: o.name, barcode: o.barcode, image_url: o.image_url,
+                            unit: o.unit, available_qty: o.stock_qty ?? o.available_qty ?? 0, batches: [] });
+      const first = items.find((o) => o.id === pending[0]) || items[0];
+      if (first) {
+        pick(map(first));
+        toast("کالای پیشنهاد انتخاب شد — مقدار ورود را وارد و ثبت کنید");
+      }
+      const rest = items.filter((o) => !first || o.id !== first.id);
+      if (rest.length) {
+        const box = document.createElement("div");
+        box.className = "card";
+        box.style.margin = "10px 0";
+        box.innerHTML = `<div class="card-head"><h3>کالاهای دیگر همین پیشنهاد</h3></div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">${rest.map((o) =>
+            `<button class="btn btn-sm rq-item" data-id="${o.id}">${esc(o.name)}</button>`).join("")}</div>`;
+        const grid = document.querySelector(".recv-grid");
+        if (grid && grid.parentElement) grid.parentElement.insertBefore(box, grid.nextSibling);
+        box.querySelectorAll(".rq-item").forEach((n) => n.addEventListener("click", () => {
+          const o = items.find((x) => String(x.id) === n.dataset.id);
+          if (o) { pick(map(o)); }
+        }));
+      }
+    } catch (e) { toast("انتخاب خودکار کالا انجام نشد: " + e.message, "err"); }
+  }
+
   if (can("accounting.view")) api("/accounting/suppliers").then((sups) => {
     const sel = $("#b-supplier"); if (sel) sups.forEach((x) => sel.insertAdjacentHTML("beforeend", `<option value="${x.id}">${esc(x.name)}</option>`));
   }).catch(() => {});
@@ -1935,7 +3336,7 @@ RENDER.inventory = async () => {
       <label class="inline" style="margin-top:8px"><input type="checkbox" id="st-zero" checked /> بچ‌های با موجودی صفر هم شمرده شوند</label>
       <button id="st-create" class="btn btn-primary btn-block" style="margin-top:12px">ایجاد جلسهٔ انبارگردانی</button>
     </div>
-    <div class="card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
+    <div class="card" id="st-list-card"><div class="card-head"><h3>جلسه‌های انبارگردانی</h3></div><div id="st-list"></div></div>
   </div>`;
   Jalali.attachAll(v);
 
@@ -1966,7 +3367,13 @@ RENDER.inventory = async () => {
     (whs.items || whs).forEach((w) => $("#st-wh").append(el("option", { value: w.id, text: w.name })));
   } catch (_) {}
 
-  $("#st-create").addEventListener("click", async () => {
+  // build-489 — انبارگردانی فقط با inventory.stocktake؛ صفحهٔ موجودی بدون آن نباید
+  // به API انبارگردانی دست بزند (باگ مالک: خطای «Missing permission inventory.stocktake»).
+  const stOk = can("inventory.stocktake");
+  if (!stOk) {
+    v.querySelectorAll(".st-plan, #st-list-card, #st-alarms").forEach((n) => { n.style.display = "none"; });
+  }
+  if (stOk) $("#st-create").addEventListener("click", async () => {
     try {
       const body = { name: $("#st-name").value.trim() || "انبارگردانی", include_zero: $("#st-zero").checked,
         scheduled_for: $("#st-date").value || null, reminder_note: $("#st-note").value.trim() || null,
@@ -1977,6 +3384,7 @@ RENDER.inventory = async () => {
     } catch (e) { toast(e.message, "err"); }
   });
   await renderWarehousesCard();
+  if (!stOk) return;
   await renderStocktakeAlarms();
   const list = await api("/inventory/stocktakes");
   const box = $("#st-list");
@@ -1997,6 +3405,7 @@ RENDER.inventory = async () => {
 async function renderStocktakeAlarms(targetSel = "#st-alarms") {
   const host = $(targetSel);
   if (!host) return;
+  if (!can("inventory.stocktake")) { host.innerHTML = ""; return; }  // build-489
   let list = [];
   try { list = await api("/inventory/stocktakes-upcoming?horizon_days=14"); } catch (_) { return; }
   const alarms = list.filter((a) => a.days_left !== null || a.status === "IN_PROGRESS");
@@ -2170,7 +3579,9 @@ RENDER.invoices = async () => {
         if (p.ok && typeof p.message === "string") openModal(`<pre class="receipt">${p.message}</pre>`);
         else toast(p.message, p.ok ? "ok" : "err");
       } }),
-      el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })));
+      (i.status !== "VOID" && (i.status === "PAID" ? can("pos.void_paid") : can("pos.void_unpaid")))
+        ? el("button", { class: "btn btn-sm btn-danger", text: "ابطال", onclick: () => voidInvoiceModal(i) })
+        : null));
   const t = $("#inv-table");
   t.innerHTML = "";
   const tb = el("tbody", {});
@@ -2252,13 +3663,13 @@ const REPORT_TABS = [
   ["daily", "فروش روزانه", "reports.view"],
   ["weekly", "فروش هفتگی", "reports.view"],
   ["monthly", "فروش ماهانه (شمسی)", "reports.view"],
-  ["cashiers", "صندوق‌دارها", "reports.view"],
+  ["cashiers", "صندوق‌دارها", "reports.view_all"],
   ["profit", "سود به تفکیک Batch", "pricing.view_cost"],
-  ["inventory", "ارزش موجودی", "reports.view"],
+  ["inventory", "ارزش موجودی", "reports.view_all"],
   ["purchase", "تاریخچه بهای خرید", "pricing.view_cost"],
-  ["expiry", "انقضا", "reports.view"],
-  ["adjustments", "اصلاحات و ضایعات", "reports.view"],
-  ["movements", "گردش کالا", "reports.view"],
+  ["expiry", "انقضا", "reports.view_all"],
+  ["adjustments", "اصلاحات و ضایعات", "reports.view_all"],
+  ["movements", "گردش کالا", "reports.view_all"],
 ];
 
 RENDER.reports = async () => {
@@ -2485,32 +3896,159 @@ RENDER.hardware = async () => {
 
 /* ---------- users ---------- */
 RENDER.users = async () => {
+  /* build-488 (§۱–۳) — چندنقشی + دسترسی مستقیم + عناوین استاندارد فروشگاه.
+     Role فقط مجموعهٔ Permission می‌سازد؛ UI از Permission تصمیم می‌گیرد. */
   const v = $("#view");
+  let roles = [], allPerms = [];
+  try {
+    roles = await api("/users/roles");
+    allPerms = await api("/users/permissions");
+    window._rolesCache = roles; window._permsCache = allPerms;
+  } catch (e) { /* کاربر بدون users.manage */ }
+  // build-489 — هر نقش باید «کدام بخش‌ها را باز می‌کند» را هنگام hover (دسکتاپ) و
+  // لمس/کلیک ⓘ (موبایل) توضیح دهد (درخواست صریح مالک).
+  const PERM_SECTIONS = [["pos.", "فروش و صندوق"], ["products.", "محصولات"], ["inventory.", "موجودی و انبار"],
+    ["batches.", "خرید و دریافت"], ["customers.", "مشتریان"], ["marketing.", "تخفیف‌ها و کمپین‌ها"],
+    ["pricing.", "قیمت‌گذاری"], ["reports.", "گزارش‌ها"], ["accounting.", "حسابداری"], ["users.", "کاربران"],
+    ["staff.", "کارکنان و سازمان"], ["shifts.", "شیفت‌ها"], ["performance.", "عملکرد و کارکرد"],
+    ["payroll.", "حقوق و دستمزد"], ["announcements.", "اطلاعیه‌ها"], ["profile.", "پروفایل"],
+    ["settings.", "تنظیمات"], ["audit.", "لاگ‌ها"], ["dev.", "حالت توسعه‌دهنده"]];
+  const roleSections = (r) => {
+    const codes = r.permissions || [];
+    const secs = PERM_SECTIONS.filter(([pre]) => codes.some((c) => c.startsWith(pre))).map(([, label]) => label);
+    return secs.length ? secs : ["(فقط مشاهدهٔ پایه)"];
+  };
+  window._roleSecs = roleSections;
+  const roleTipText = (r) => `بخش‌های در دسترس: ${roleSections(r).join("، ")} — ${fa((r.permissions || []).length)} دسترسی`;
+  const roleBoxes = (selected = []) => roles.map((r, ri) => `
+    <label class="check role-pick" style="display:flex;gap:6px;align-items:center;cursor:pointer" title="${esc(roleTipText(r))}">
+      <input type="checkbox" class="u-role-cb" value="${esc(r.name)}" ${selected.includes(r.name) ? "checked" : ""}>
+      <span>${esc(r.title_fa || r.name)}</span>
+      <button type="button" class="role-info" data-role-info="${ri}" aria-label="دسترسی‌های نقش">ⓘ</button>
+    </label>
+    <div class="role-tip" id="role-tip-${ri}" style="display:none">${esc(roleTipText(r))}</div>`).join("");
+  const permChips = (selected = []) => allPerms.map((p) => `
+    <label class="check" style="display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin:2px">
+      <input type="checkbox" class="u-perm-cb" value="${esc(p.code)}" ${selected.includes(p.code) ? "checked" : ""}>
+      <span class="badge badge-blue">${esc(p.code)}</span>
+    </label>`).join("");
   v.innerHTML = `<div class="grid grid-2">
-    <div class="card"><h3>کاربران</h3><table id="u-table"></table></div>
+    <div class="card"><h3>کاربران</h3>
+      <p class="muted">«فقط شبکهٔ فروشگاه» و «اجازهٔ ورود آفلاین با دادهٔ محلی» دو سیاست جدا هستند. ورود آفلاین به‌طور پیش‌فرض خاموش است؛ مدیر اصلی همیشه دسترسی مستقل دارد. هر کاربر می‌تواند چند نقش و دسترسی مستقیم داشته باشد (§۲).</p>
+      <table id="u-table"></table></div>
     <div class="card"><h3>افزودن کاربر</h3>
       <label>نام کاربری</label><input id="u-username" />
       <label>رمز</label><input id="u-password" type="password" />
       <label>نام کامل</label><input id="u-fullname" />
-      <label>نقش</label><select id="u-role"><option>Cashier</option><option>Manager</option><option>Inventory Operator</option><option>Viewer</option></select>
+      <label>شماره تماس</label><input id="u-phone" />
+      <label>عنوان شغلی</label><input id="u-job" placeholder="مثلاً فروشندهٔ ارشد" />
+      <label>نقش‌ها (یک یا چند)</label>
+      <div id="u-roles" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">${roleBoxes([])}</div>
+      <label>دسترسی مستقیم (اختیاری — مستقل از نقش)</label>
+      <div id="u-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">${permChips([])}</div>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="u-local-only" checked /> دسترسی فقط به صورت بومی (فقط داخل شبکهٔ فروشگاه)</label>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="u-offline-allowed" /> اجازهٔ ورود با دادهٔ محلی هنگام قطع شبکه</label>
       <button id="u-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
     </div>
   </div>`;
-  const users = await api("/users");
-  const rows = users.map((u) => el("tr", {},
-    el("td", { text: u.username }), el("td", { text: u.full_name }), el("td", { text: u.roles.join(", ") }),
-    el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" }))));
-  const t = $("#u-table");
-  t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
-    el("th", { text: "نقش‌ها" }), el("th", { text: "وضعیت" }))), el("tbody", {}, ...rows));
+  const checkedVals = (cls, scope) => [...document.querySelectorAll(`#${scope} .${cls}:checked`)].map((x) => x.value);
+  const draw = async () => {
+    const users = await api("/users");
+    const rows = users.map((u) => el("tr", {},
+      el("td", { text: u.username }), el("td", { text: u.full_name }),
+      el("td", { text: (u.roles_titles && u.roles_titles.length ? u.roles_titles : u.roles).join("، ") }),
+      el("td", { text: u.job_title || "—" }),
+      el("td", {}, el("span", { class: "badge " + (u.local_only ? "badge-blue" : "badge-green"), text: u.local_only ? "شبکهٔ فروشگاه" : "هر شبکه" }), " ", el("span", { class: "badge " + (u.offline_allowed ? "badge-green" : "badge-red"), text: u.offline_allowed ? "آفلاین مجاز" : "آفلاین ممنوع" })),
+      el("td", {}, el("span", { class: "badge " + (u.is_active ? "badge-green" : "badge-red"), text: u.is_active ? "فعال" : "غیرفعال" })),
+      el("td", {}, el("button", { class: "btn btn-sm", text: "ویرایش", onclick: () => openUserEdit(u, draw) }))));
+    const t = $("#u-table");
+    t.innerHTML = "";
+    t.append(el("thead", {}, el("tr", {}, el("th", { text: "کاربر" }), el("th", { text: "نام" }),
+      el("th", { text: "نقش‌ها" }), el("th", { text: "عنوان شغلی" }), el("th", { text: "سیاست ورود" }), el("th", { text: "وضعیت" }), el("th", { text: "عملیات" }))),
+      el("tbody", {}, ...rows));
+  };
+  await draw();
+  // build-489 — باز/بسته کردن توضیح دسترسی نقش‌ها با کلیک/لمس ⓘ
+  if (!document.body.dataset.roleTipBound) { document.body.dataset.roleTipBound = "1";
+  document.body.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest(".role-info");
+    if (!b) return;
+    e.preventDefault();
+    const tip = document.getElementById("role-tip-" + b.dataset.roleInfo);
+    if (tip) tip.style.display = tip.style.display === "none" ? "" : "none";
+  }); }
   $("#u-add").addEventListener("click", async () => {
     try {
-      await api("/users", { method: "POST", body: JSON.stringify({ username: $("#u-username").value.trim(),
-        password: $("#u-password").value, full_name: $("#u-fullname").value, roles: [$("#u-role").value] }) });
-      toast("کاربر ساخته شد"); RENDER.users();
+      await api("/users", { method: "POST", body: JSON.stringify({
+        username: $("#u-username").value.trim(), password: $("#u-password").value,
+        full_name: $("#u-fullname").value, phone: $("#u-phone").value || null,
+        job_title: $("#u-job").value || null,
+        roles: checkedVals("u-role-cb", "u-roles"), permissions: checkedVals("u-perm-cb", "u-perms"),
+        local_only: $("#u-local-only").checked,
+        offline_allowed: $("#u-offline-allowed").checked }) });
+      toast("کاربر ساخته شد"); draw();
     } catch (e) { toast(e.message, "err"); }
   });
 };
+
+function openUserEdit(u, refresh) {
+  const overlay = el("div", { class: "modal-overlay" });
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <div class="dcard-head"><h3>ویرایش ${esc(u.full_name || u.username)}</h3>
+        <button class="btn btn-sm btn-ghost" id="ue-close">بستن</button></div>
+      <label>نام کامل</label><input id="ue-name" value="${esc(u.full_name || "")}">
+      <label>شماره تماس</label><input id="ue-phone" value="${esc(u.phone || "")}">
+      <label>عنوان شغلی</label><input id="ue-job" value="${esc(u.job_title || "")}">
+      <label>نقش‌ها (چند انتخابی — §۲)</label>
+      <div id="ue-roles" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">
+        ${window._rolesCache ? "" : ""}${(window._rolesCache || []).map((r, ri) => `
+        <label class="check role-pick" style="display:flex;gap:6px;align-items:center;cursor:pointer" title="بخش‌های در دسترس: ${esc((r.permissions || []).length ? (window._roleSecs ? window._roleSecs(r).join("، ") : (r.permissions || []).join("، ")) : "—")}">
+          <input type="checkbox" class="ue-role-cb" value="${esc(r.name)}" ${(u.roles || []).includes(r.name) ? "checked" : ""}>
+          <span>${esc(r.title_fa || r.name)}</span>
+          <button type="button" class="role-info" data-role-info="ue-${ri}" aria-label="دسترسی‌های نقش">ⓘ</button></label>
+        <div class="role-tip" id="role-tip-ue-${ri}" style="display:none">بخش‌های در دسترس: ${esc((window._roleSecs ? window._roleSecs(r).join("، ") : (r.permissions || []).join("، ")))}</div>`).join("")}
+      </div>
+      <label>دسترسی مستقیم (§۲)</label>
+      <div id="ue-perms" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:6px;margin:6px 0">
+        ${(window._permsCache || []).map((p) => `
+        <label class="check" style="display:inline-flex;gap:4px;align-items:center;cursor:pointer;margin:2px">
+          <input type="checkbox" class="ue-perm-cb" value="${esc(p.code)}" ${(u.direct_permissions || []).includes(p.code) ? "checked" : ""}>
+          <span class="badge badge-blue">${esc(p.code)}</span></label>`).join("")}
+      </div>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="ue-local-only" ${u.local_only ? "checked" : ""}> فقط ورود از شبکهٔ فروشگاه</label>
+      <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="ue-offline-allowed" ${u.offline_allowed ? "checked" : ""}> اجازهٔ ورود با دادهٔ محلی هنگام قطع شبکه</label>
+      <div class="prof-actions" style="margin-top:12px">
+        <button class="btn btn-primary" id="ue-save">ذخیره</button>
+        <button class="btn btn-ghost" id="ue-toggle">${u.is_active ? "غیرفعال کردن" : "فعال کردن"}</button>
+      </div>
+    </div>`;
+  document.body.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector("#ue-close").addEventListener("click", close);
+  overlay.querySelector("#ue-save").addEventListener("click", async () => {
+    const roles = [...overlay.querySelectorAll(".ue-role-cb:checked")].map((x) => x.value);
+    const permissions = [...overlay.querySelectorAll(".ue-perm-cb:checked")].map((x) => x.value);
+    try {
+      await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({
+        full_name: overlay.querySelector("#ue-name").value, phone: overlay.querySelector("#ue-phone").value || null,
+        job_title: overlay.querySelector("#ue-job").value || null, roles, permissions,
+        local_only: overlay.querySelector("#ue-local-only").checked,
+        offline_allowed: overlay.querySelector("#ue-offline-allowed").checked }) });
+      toast("ذخیره شد", "ok"); close(); refresh();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  overlay.querySelector("#ue-toggle").addEventListener("click", async () => {
+    try {
+      await api(`/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ is_active: !u.is_active }) });
+      toast("وضعیت تغییر کرد", "ok"); close(); refresh();
+    } catch (e) { toast(e.message, "err"); }
+  });
+}
 
 /* ---------- settings ---------- */
 /* §36 — the settings page used to be one undifferentiated key/value dump.
@@ -2632,6 +4170,7 @@ const SET_CATEGORIES = [
   { id: "cloud",    label: "همگام‌سازی ابری (اینترنت)", prefixes: ["cloud."], panel: "cloud" },
   { id: "ai",       label: "هوش فروشگاه",     prefixes: ["insights.", "ai."], panel: "ai" },
   { id: "about",    label: "درباره",          prefixes: [], panel: "about" },
+  { id: "dev",      label: "حالت توسعه‌دهنده", prefixes: [], panel: "dev" },
 ];
 
 RENDER.settings = async () => {
@@ -2641,6 +4180,7 @@ RENDER.settings = async () => {
   v.innerHTML = `<div class="set-tabs" id="set-tabs"></div><div id="set-body"></div>`;
   const tabsEl = $("#set-tabs");
   SET_CATEGORIES.forEach((cat, i) => {
+    if (cat.id === "dev" && !can("dev.mode")) return;  // §۳۸ — از UI معمولی پنهان
     const b = el("button", { class: "set-tab" + (i === 0 ? " active" : ""), text: cat.label, "data-cat": cat.id,
       onclick: () => {
         tabsEl.querySelectorAll(".set-tab").forEach((x) => x.classList.remove("active"));
@@ -2823,6 +4363,14 @@ async function renderSettingsPanel(cat, allRows) {
   if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
   if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
   if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
+  if (cat.panel === "dev") {
+    // build-488 (§۳۸) — Developer Mode: فقط با دسترسی dev.mode؛ برای کاربران عادی نامرئی
+    const card = el("div", { class: "card", id: "dev-card" });
+    card.innerHTML = `<h3>حالت توسعه‌دهنده</h3><div id="dev-box" class="muted">در حال بارگذاری…</div>`;
+    body.append(card);
+    await renderDevBox();
+    return;
+  }
   if (cat.panel === "about") {
     const card = el("div", { class: "card" });
     card.innerHTML = `<h3>درباره سامانه</h3><div id="about-box" class="muted">…</div>`;
@@ -3228,12 +4776,45 @@ async function renderAbout() {
     <div class="muted">طراحی و توسعه توسط <strong>${esc(a.developer)}</strong></div>`;
 }
 
+/* build-488 (§۳۸–۴۰) — Developer Mode: لاگ‌های ساختاریافته، API/DB، شبکه و Sync */
+async function renderDevBox() {
+  const box = $("#dev-box");
+  if (!box) return;
+  if (!can("dev.mode")) { box.innerHTML = '<span class="err">دسترسی dev.mode ندارید</span>'; return; }
+  try {
+    const [ov, logs, net, dbs] = await Promise.all([
+      api("/dev/overview"), api("/dev/logs?limit=25"), api("/dev/network"), api("/dev/db/tables"),
+    ]);
+    box.innerHTML = `
+      <div class="acc-mini">
+        <div><span class="muted">نسخه / بیلد</span><b>${esc(ov.version)} · ${fa(ov.build)}</b></div>
+        <div><span class="muted">زمان اجرا</span><b>${fa(Math.round(ov.uptime_seconds / 60))} دقیقه</b></div>
+        <div><span class="muted">جداول دیتابیس</span><b>${fa(ov.db_tables)} جدول · ~${fa(ov.db_rows_estimate)} ردیف</b></div>
+        <div><span class="muted">مخزن به‌روزرسانی</span><b dir="ltr">${esc(ov.version ? net.update_repo : "")}</b></div>
+        <div><span class="muted">اتصال GitHub</span><b class="${net.github_reachable ? "ok" : "err"}">${net.github_reachable ? "متصل" : "در دسترس نیست"}</b></div>
+        <div><span class="muted">Python</span><b dir="ltr">${esc(ov.python || "")}</b></div>
+      </div>
+      <h3 style="margin-top:14px">لاگ‌های اخیر (ساختاریافته)</h3>
+      <div class="table-scroll"><table class="dtable"><thead><tr><th>دسته</th><th>عملیات</th><th>کاربر</th><th>زمان</th></tr></thead><tbody>
+        ${(logs.items || []).map((l) => `<tr><td><span class="badge">${esc(l.category)}</span></td><td>${esc(l.action)}</td><td>${fa(l.user_id || "—")}</td><td class="muted">${l.created_at ? faDateTime(l.created_at) : "—"}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">لاگی نیست</td></tr>'}
+      </tbody></table></div>
+      <h3 style="margin-top:14px">جداول پایگاه‌داده</h3>
+      <div class="muted" style="max-height:160px;overflow:auto">${(dbs || []).map((t2) => `<code dir="ltr">${esc(t2.table)}</code> (${fa(t2.rows ?? 0)})`).join(" · ")}</div>`;
+  } catch (e) {
+    box.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
 async function renderUpdateBox() {
   const box = $("#upd-box");
+  const checkBtn = el("button", { class: "btn btn-sm btn-ghost", text: "بررسی به‌روزرسانی", onclick: () => renderUpdateBox() });
   try {
-    const r = await api("/system/update/check");
+    // build-488 (§۴۱–۴۴): منبع = مخزن عمومی Rasasys (فقط بستهٔ نصبی)؛ هر Client
+    // پلتفرم خودش را می‌بیند؛ بررسی وابسته به لایسنس نیست؛ اعلان تکرار نمی‌شود.
+    const r = await api("/system/update/check?platform=windows");
     const chan = r.channel === "updateserver" || r.channel === "server"
-      ? "سرور به‌روزرسانی داخلی" : "GitHub Releases";
+      ? "سرور به‌روزرسانی داخلی" : "مخزن انتشار Rasasys (GitHub)";
+    if (r.update_available) api("/system/update/ack", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
     const chanLine = `<div class="muted" style="margin-top:6px">کانال: ${chan} — در تنظیمات همین بخش
       (<code>update.channel</code> = github | server، <code>update.server_url</code>) قابل تغییر است.
       بستهٔ دریافتی همیشه با SHA-256 اعلام‌شده تطبیق داده می‌شود.</div>`;
@@ -3249,12 +4830,14 @@ async function renderUpdateBox() {
     if (!r.update_available) {
       box.innerHTML = `<span class="badge badge-green">به‌روز</span>
         نسخهٔ فعلی <strong>${esc(r.current_version)}</strong> آخرین نسخه است.${chanLine}`;
+      box.append(checkBtn);
       return;
     }
     box.innerHTML = `<span class="badge badge-amber">نسخهٔ جدید</span>
       نسخهٔ <strong>${esc(r.latest.version)}</strong> منتشر شده است
       <span class="muted">(فعلی: ${esc(r.current_version)})</span>
       <p class="muted" style="margin:8px 0">${esc((r.latest.notes || "").slice(0, 400))}</p>
+      ${r.latest.html_url ? `<a class="btn btn-sm btn-ghost" href="${esc(r.latest.html_url)}" target="_blank" rel="noopener">مشاهدهٔ نسخهٔ جدید</a> ` : ""}
       ${r.installable ? `<button class="btn btn-primary" id="upd-go">دریافت و آماده‌سازی نصب</button>`
         : `<span class="muted">فایل نصب ویندوز برای این نسخه منتشر نشده است.</span>`}
       <p class="muted" style="margin-top:8px">پیش از هر به‌روزرسانی، به‌صورت خودکار از
@@ -3494,11 +5077,13 @@ RENDER.audit = async () => {
 /* ---------- Marketing: campaigns & coupons (§31–38) ---------- */
 RENDER.marketing = async () => {
   const v = $("#view");
+  if (!v) return;
+  const canManage = can("marketing.manage");
   v.innerHTML = `<div class="grid grid-4" id="mk-stats"></div>
     <div class="grid grid-2" style="margin-top:14px">
       <div class="card">
         <div class="card-head"><h3>کوپن‌ها</h3>
-          <button class="btn btn-primary btn-sm" id="mk-new-coupon">+ کوپن جدید</button></div>
+          ${canManage ? `<button class="btn btn-primary btn-sm" id="mk-new-coupon">+ کوپن جدید</button>` : ""}</div>
         <div class="toolbar"><input id="mk-q" placeholder="جستجوی کد یا شماره موبایل…" />
           <select id="mk-status"><option value="">همه وضعیت‌ها</option>
             <option value="ACTIVE">فعال</option><option value="USED">مصرف‌شده</option>
@@ -3507,67 +5092,103 @@ RENDER.marketing = async () => {
       </div>
       <div class="card">
         <div class="card-head"><h3>جشنواره‌ها (کمپین)</h3>
-          <button class="btn btn-primary btn-sm" id="mk-new-camp">+ کمپین جدید</button></div>
+          ${canManage ? `<button class="btn btn-primary btn-sm" id="mk-new-camp">+ کمپین جدید</button>` : ""}</div>
         <div class="table-wrap"><table id="mk-camps"></table></div>
       </div>
     </div>`;
-  $("#mk-new-coupon").addEventListener("click", couponModal);
-  $("#mk-new-camp").addEventListener("click", campaignModal);
-  $("#mk-q").addEventListener("input", debounce(loadCoupons, 300));
-  $("#mk-status").addEventListener("change", loadCoupons);
-  await Promise.all([loadMarketingStats(), loadCoupons(), loadCampaigns()]);
+  const btnCoupon = $("#mk-new-coupon");
+  if (btnCoupon) btnCoupon.addEventListener("click", couponModal);
+  const btnCamp = $("#mk-new-camp");
+  if (btnCamp) btnCamp.addEventListener("click", campaignModal);
+  const qEl = $("#mk-q");
+  if (qEl) qEl.addEventListener("input", debounce(loadCoupons, 300));
+  const stEl = $("#mk-status");
+  if (stEl) stEl.addEventListener("change", loadCoupons);
+  await Promise.allSettled([loadMarketingStats(), loadCoupons(), loadCampaigns()]);
 };
 
 async function loadMarketingStats() {
-  const s = await api("/marketing/stats");
-  const by = s.by_status || {};
-  $("#mk-stats").innerHTML = "";
-  $("#mk-stats").append(
-    statCard("کل کوپن‌ها", fmt(s.total_coupons), `${s.campaigns} کمپین`),
-    statCard("فعال", fmt(by.ACTIVE || 0), ""),
-    statCard("مصرف‌شده", fmt(by.USED || 0), ""),
-    statCard("ارزش تخفیف داده‌شده", money(s.redeemed_value), ""),
-  );
+  const statsEl = $("#mk-stats");
+  if (!statsEl || !statsEl.isConnected) return;
+  try {
+    const s = await api("/marketing/stats");
+    const target = $("#mk-stats");
+    if (!target || !target.isConnected) return;
+    const by = (s && s.by_status) || {};
+    target.innerHTML = "";
+    target.append(
+      statCard("کل کوپن‌ها", fmt(s ? s.total_coupons : 0), `${(s && s.campaigns) || 0} کمپین`),
+      statCard("فعال", fmt(by.ACTIVE || 0), ""),
+      statCard("مصرف‌شده", fmt(by.USED || 0), ""),
+      statCard("ارزش تخفیف داده‌شده", money(s ? s.redeemed_value : 0), ""),
+    );
+  } catch (e) {
+    const target = $("#mk-stats");
+    if (target && target.isConnected) target.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p></div>`;
+  }
 }
 
 const COUPON_BADGE = { ACTIVE: "green", USED: "blue", EXPIRED: "amber", BLOCKED: "red" };
 
 async function loadCoupons() {
+  const tableEl = $("#mk-coupons");
+  if (!tableEl || !tableEl.isConnected) return;
   const params = new URLSearchParams();
-  if ($("#mk-q").value.trim()) params.set("q", $("#mk-q").value.trim());
-  if ($("#mk-status").value) params.set("status", $("#mk-status").value);
-  const rows = await api("/marketing/coupons?" + params.toString());
-  const body = rows.map((c) => `<tr>
-      <td><code>${esc(c.code)}</code>${c.customer_phone ? `<div class="muted">${esc(c.customer_phone)}</div>` : ""}</td>
-      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}
-        ${c.max_discount ? `<div class="muted">سقف ${money(c.max_discount)}</div>` : ""}</td>
-      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-      <td>${c.used_count}/${c.usage_limit}</td>
-      <td><span class="badge badge-${COUPON_BADGE[c.status] || "blue"}">${esc(c.status)}</span></td>
-      <td>${c.valid_until ? esc(c.valid_until.slice(0, 10)) : "—"}</td>
-      <td>${c.status === "ACTIVE" ? `<button class="btn btn-sm btn-danger" onclick="window._blockCoupon(${c.id})">مسدود</button>` : ""}</td>
-    </tr>`).join("");
-  $("#mk-coupons").innerHTML = `<thead><tr><th>کد</th><th>تخفیف</th><th>حداقل خرید</th>
-      <th>مصرف</th><th>وضعیت</th><th>اعتبار تا</th><th></th></tr></thead>
-    <tbody>${body || `<tr><td colspan="7" class="muted empty">کوپنی ثبت نشده است</td></tr>`}</tbody>`;
+  const qEl = $("#mk-q"), stEl = $("#mk-status");
+  if (qEl && qEl.value.trim()) params.set("q", qEl.value.trim());
+  if (stEl && stEl.value) params.set("status", stEl.value);
+  try {
+    const raw = await api("/marketing/coupons?" + params.toString());
+    const target = $("#mk-coupons");
+    if (!target || !target.isConnected) return;
+    const rows = Array.isArray(raw) ? raw : [];
+    const canManage = can("marketing.manage");
+    const body = rows.map((c) => `<tr>
+        <td><code>${esc(c.code)}</code>${c.customer_phone ? `<div class="muted">${esc(c.customer_phone)}</div>` : ""}</td>
+        <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}
+          ${c.max_discount ? `<div class="muted">سقف ${money(c.max_discount)}</div>` : ""}</td>
+        <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+        <td>${c.used_count}/${c.usage_limit}</td>
+        <td><span class="badge badge-${COUPON_BADGE[c.status] || "blue"}">${esc(c.status)}</span></td>
+        <td>${c.valid_until ? esc(c.valid_until.slice(0, 10)) : "—"}</td>
+        <td>${canManage && c.status === "ACTIVE" ? `<button class="btn btn-sm btn-danger" onclick="window._blockCoupon(${c.id})">مسدود</button>` : ""}</td>
+      </tr>`).join("");
+    target.innerHTML = `<thead><tr><th>کد</th><th>تخفیف</th><th>حداقل خرید</th>
+        <th>مصرف</th><th>وضعیت</th><th>اعتبار تا</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="7" class="muted empty">کوپنی ثبت نشده است</td></tr>`}</tbody>`;
+  } catch (e) {
+    const target = $("#mk-coupons");
+    if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
+  }
 }
 
 window._blockCoupon = async (id) => {
+  if (!can("marketing.manage")) return;
   try { await api(`/marketing/coupons/${id}/block`, { method: "POST" });
     toast("کوپن مسدود شد"); loadCoupons(); loadMarketingStats();
   } catch (e) { toast(e.message, "err"); }
 };
 
 async function loadCampaigns() {
-  const rows = await api("/marketing/campaigns");
-  const body = rows.map((c) => `<tr>
-      <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
-      <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
-      <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-      <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
-    </tr>`).join("");
-  $("#mk-camps").innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
-    <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+  const tableEl = $("#mk-camps");
+  if (!tableEl || !tableEl.isConnected) return;
+  try {
+    const raw = await api("/marketing/campaigns");
+    const target = $("#mk-camps");
+    if (!target || !target.isConnected) return;
+    const rows = Array.isArray(raw) ? raw : [];
+    const body = rows.map((c) => `<tr>
+        <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
+        <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
+        <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
+        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
+      </tr>`).join("");
+    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+  } catch (e) {
+    const target = $("#mk-camps");
+    if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
+  }
 }
 
 function couponModal() {
@@ -3619,14 +5240,26 @@ function campaignModal() {
       <div><label>مقدار</label><input id="cm-value" type="number" value="10" /></div>
     </div>
     <div class="form-row">
-      <div><label>حداقل خرید بعدی</label><input id="cm-min" type="number" value="400000" /></div>
+      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="400000" /></div>
+      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" placeholder="بدون سقف" /></div>
+    </div>
+    <div class="form-row">
       <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="1000000" /></div>
+      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" placeholder="نامحدود" /></div>
     </div>
     <div class="form-row">
       <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="1000000" /></div>
       <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="30" /></div>
     </div>
-    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.</p>
+    <div class="form-row">
+      <div><label>نوع اعمال در صندوق</label><select id="cm-apply">
+        <option value="SELECT">انتخاب توسط صندوق‌دار (F10)</option>
+        <option value="AUTO">اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
+      <div><label>ترکیب با کوپن</label><select id="cm-stack">
+        <option value="0">خیر</option><option value="1">بله</option></select></div>
+    </div>
+    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.
+      جشنواره‌های «اعمال خودکار» هنگام ثبت فروش، به‌شرط برقراری شرایط، روی فاکتور اعمال و ثبت می‌شوند.</p>
     <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کمپین</button>`);
   $("#cm-save").addEventListener("click", async () => {
     try {
@@ -3636,6 +5269,10 @@ function campaignModal() {
         discount_value: Number($("#cm-value").value || 0),
         min_purchase: Number($("#cm-min").value || 0),
         max_discount: Number($("#cm-max").value || 0) || null,
+        max_purchase: Number($("#cm-maxpurchase").value || 0) || null,
+        usage_limit: Number($("#cm-usage").value || 0) || null,
+        auto_apply: $("#cm-apply") ? $("#cm-apply").value === "AUTO" : false,
+        stackable: $("#cm-stack") ? $("#cm-stack").value === "1" : false,
         auto_issue_threshold: Number($("#cm-thr").value || 0) || null,
         auto_issue_validity_days: Number($("#cm-days").value || 30),
       }) });
@@ -3647,14 +5284,18 @@ function campaignModal() {
 /* ---------- Customers phone book (§30) ---------- */
 RENDER.customers = async () => {
   const v = $("#view");
+  if (!v) return;
+  const canManage = can("customers.manage");
   v.innerHTML = `<div class="card">
       <div class="card-head"><h3>دفترچه مشتریان</h3>
-        <button class="btn btn-primary btn-sm" id="cu-new">+ مشتری جدید</button></div>
+        ${canManage ? `<button class="btn btn-primary btn-sm" id="cu-new">+ مشتری جدید</button>` : ""}</div>
       <div class="toolbar"><input id="cu-q" placeholder="جستجوی نام یا شماره تماس…" /></div>
       <div class="table-wrap"><table id="cu-table"></table></div>
     </div>`;
-  $("#cu-q").addEventListener("input", debounce(loadCustomers, 300));
-  $("#cu-new").addEventListener("click", () => {
+  const qEl = $("#cu-q");
+  if (qEl) qEl.addEventListener("input", debounce(loadCustomers, 300));
+  const newBtn = $("#cu-new");
+  if (newBtn) newBtn.addEventListener("click", () => {
     openModal(`<h3>مشتری جدید</h3>
       <div class="form-grid">
         <div><label>نام</label><input id="nc-name" /></div>
@@ -3683,10 +5324,16 @@ RENDER.customers = async () => {
 };
 
 async function loadCustomers() {
+  const tableEl = $("#cu-table");
+  if (!tableEl || !tableEl.isConnected) return;
   const q = $("#cu-q") ? $("#cu-q").value.trim() : "";
   const params = new URLSearchParams({ with_debt: "true" });
   if (q) params.set("q", q);
-  const rows = await api("/customers?" + params.toString());
+  const raw = await api("/customers?" + params.toString());
+  const target = $("#cu-table");
+  if (!target || !target.isConnected) return;
+  const rows = Array.isArray(raw) ? raw : [];
+  const canLedger = can("customers.ledger");
   const body = rows.map((c) => {
     const bal = Number(c.balance || 0);
     return `<tr>
@@ -3695,30 +5342,30 @@ async function loadCustomers() {
       <td class="${bal > 0 ? "ledger-amount debit" : "muted"}">
         ${bal > 0 ? money(bal) : "تسویه"}</td>
       <td>
-        <button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>
+        ${canLedger ? `<button class="btn btn-sm" onclick="showCustomerLedger(${c.id})">حساب دفتری</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="window._custHistory(${c.id}, '${esc(c.name)}')">سوابق خرید</button>
       </td>
     </tr>`;
   }).join("");
-  $("#cu-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
+  target.innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>مانده حساب</th><th></th></tr></thead>
     <tbody>${body || `<tr><td colspan="4" class="muted empty">مشتری‌ای ثبت نشده است</td></tr>`}</tbody>`;
 }
 
 window._custHistory = async (id, name) => {
   const invoices = await api("/invoices?customer_id=" + id).catch(() => ({ items: [] }));
   const list = (invoices.items || invoices || []).filter((i) => i.customer_id === id);
-  const coupons = await api("/marketing/coupons?customer_id=" + id).catch(() => []);
+  const coupons = can("marketing.view") ? await api("/marketing/coupons?customer_id=" + id).catch(() => []) : [];
   openModal(`<h3>سوابق ${esc(name)}</h3>
     <h4>فاکتورها</h4>
     <table><thead><tr><th>شماره</th><th>مبلغ</th><th>وضعیت</th></tr></thead><tbody>
       ${list.map((i) => `<tr><td>${esc(i.invoice_number)}</td><td>${money(i.total_amount)}</td><td>${esc(i.status)}</td></tr>`).join("")
         || `<tr><td colspan="3" class="muted">فاکتوری ثبت نشده</td></tr>`}
     </tbody></table>
-    <h4 style="margin-top:14px">کوپن‌ها</h4>
+    ${can("marketing.view") ? `<h4 style="margin-top:14px">کوپن‌ها</h4>
     <table><thead><tr><th>کد</th><th>وضعیت</th></tr></thead><tbody>
       ${coupons.map((c) => `<tr><td><code>${esc(c.code)}</code></td><td>${esc(c.status)}</td></tr>`).join("")
         || `<tr><td colspan="2" class="muted">کوپنی ندارد</td></tr>`}
-    </tbody></table>`);
+    </tbody></table>` : ""}`);
 };
 
 /* ---------- Connection diagnostics (§42–44) ---------- */
@@ -3726,6 +5373,7 @@ const DIAG_BADGE = { PASS: "green", FAIL: "red", WARN: "amber", SKIPPED: "blue" 
 
 RENDER.diagnostics = async () => {
   const v = $("#view");
+  if (!v) return;
   v.innerHTML = `<div class="card">
       <div class="card-head"><h3>تست اتصالات سیستم</h3>
         <div>
@@ -3741,30 +5389,34 @@ RENDER.diagnostics = async () => {
     </div>
     <div class="card" style="margin-top:14px"><h3>صف همگام‌سازی آفلاین</h3><div id="dg-sync"></div></div>
     <div class="card" style="margin-top:14px"><h3>تاریخچه تست‌ها</h3><div id="dg-history"></div></div>`;
-  $("#dg-run").addEventListener("click", runDiagnostics);
-  await Promise.all([loadSyncPanel(), loadDiagHistory()]);
+  const runBtn = $("#dg-run");
+  if (runBtn) runBtn.addEventListener("click", runDiagnostics);
+  await Promise.allSettled([loadSyncPanel(), loadDiagHistory()]);
 };
 
 async function runDiagnostics() {
-  const btn = $("#dg-run");
+  const btn = $("#dg-run"), resEl = $("#dg-results");
+  if (!btn || !resEl) return;
   btn.disabled = true; btn.textContent = "در حال اجرا…";
-  $("#dg-results").innerHTML = `<p class="muted">در حال تست اتصال‌ها…</p>`;
+  resEl.innerHTML = `<p class="muted">در حال تست اتصال‌ها…</p>`;
   try {
-    const ext = $("#dg-ext").checked;
+    const ext = $("#dg-ext") ? $("#dg-ext").checked : true;
     const r = await api(`/diagnostics/run?include_external=${ext}`, { method: "POST" });
     renderDiagnostics(r);
     await loadDiagHistory();
-  } catch (e) { toast(e.message, "err"); $("#dg-results").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
-  btn.disabled = false; btn.textContent = "▶ اجرای تست کامل";
+  } catch (e) { toast(e.message, "err"); if (resEl.isConnected) resEl.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  if (btn.isConnected) { btn.disabled = false; btn.textContent = "▶ اجرای تست کامل"; }
 }
 
 function renderDiagnostics(r) {
-  $("#dg-summary").innerHTML = `<div class="diag-summary">
+  const sumEl = $("#dg-summary"), resEl = $("#dg-results");
+  if (!sumEl || !resEl || !r) return;
+  sumEl.innerHTML = `<div class="diag-summary">
       <span class="badge badge-green">موفق ${r.passed}</span>
       <span class="badge badge-red">ناموفق ${r.failed}</span>
       <span class="badge badge-blue">رد/هشدار ${r.skipped}</span>
       <span class="muted">مجموع ${r.total} تست</span></div>`;
-  $("#dg-results").innerHTML = r.checks.map((c) => `
+  resEl.innerHTML = (r.checks || []).map((c) => `
     <div class="diag-row">
       <div class="diag-head">
         <span class="badge badge-${DIAG_BADGE[c.status] || "blue"}">${esc(c.status)}</span>
@@ -3778,16 +5430,20 @@ function renderDiagnostics(r) {
 }
 
 async function loadSyncPanel() {
+  const syncEl = $("#dg-sync");
+  if (!syncEl || !syncEl.isConnected) return;
   const s = await api("/diagnostics/sync/stats");
   const jobs = await api("/diagnostics/sync/jobs?limit=20");
-  $("#dg-sync").innerHTML = `
+  const target = $("#dg-sync");
+  if (!target || !target.isConnected) return;
+  target.innerHTML = `
     <div class="diag-summary">
       <span class="badge badge-amber">در انتظار ${s.pending}</span>
       <span class="badge badge-red">ناموفق ${s.failed}</span>
       <button class="btn btn-sm" onclick="window._runSync()">اجرای صف</button>
     </div>
     <div class="table-wrap"><table><thead><tr><th>نوع</th><th>وضعیت</th><th>تلاش</th><th>خطا</th><th></th></tr></thead>
-      <tbody>${jobs.map((j) => `<tr><td>${esc(j.job_type)}</td>
+      <tbody>${(Array.isArray(jobs) ? jobs : []).map((j) => `<tr><td>${esc(j.job_type)}</td>
         <td><span class="badge badge-${j.status === "COMPLETED" ? "green" : j.status === "FAILED" ? "red" : "amber"}">${esc(j.status)}</span></td>
         <td>${j.attempts}/${j.max_attempts}</td><td class="muted">${esc((j.last_error || "").slice(0, 60))}</td>
         <td>${j.status === "FAILED" ? `<button class="btn btn-sm" onclick="window._retryJob(${j.id})">تلاش مجدد</button>` : ""}</td></tr>`).join("")
@@ -3806,10 +5462,14 @@ window._retryJob = async (id) => {
 };
 
 async function loadDiagHistory() {
+  const histEl = $("#dg-history");
+  if (!histEl || !histEl.isConnected) return;
   const h = await api("/diagnostics/history");
-  $("#dg-history").innerHTML = `<div class="table-wrap"><table>
+  const target = $("#dg-history");
+  if (!target || !target.isConnected) return;
+  target.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>زمان</th><th>موفق</th><th>ناموفق</th><th>رد شده</th><th></th></tr></thead>
-    <tbody>${h.map((r) => `<tr><td>${esc(r.started_at.slice(0, 16).replace("T", " "))}</td>
+    <tbody>${(Array.isArray(h) ? h : []).map((r) => `<tr><td>${esc(r.started_at.slice(0, 16).replace("T", " "))}</td>
       <td class="ok">${r.passed}</td><td class="error">${r.failed}</td><td>${r.skipped}</td>
       <td><button class="btn btn-sm" onclick="window._showRun(${r.id})">مشاهده</button></td></tr>`).join("")
       || `<tr><td colspan="5" class="muted empty">هنوز تستی اجرا نشده است</td></tr>`}</tbody></table></div>`;
@@ -3921,6 +5581,7 @@ async function refreshSupportBadge() {
   } catch (_) {}
 }
 function startStatusBar() {
+  if (window.updatePresence) updatePresence();   // build-491 — نوار حضور (همهٔ مسیرهای ورود)
   refreshSupportBadge(); clearInterval(window._supTimer); window._supTimer = setInterval(refreshSupportBadge, 30000);
   const btn = $("#sb-theme");
   if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", cycleTheme); }
@@ -3959,6 +5620,24 @@ window.showCustomerLedger = async (id) => {
     </tr>`;
   }).join("");
 
+  // build-481 (§27–28) — future-purchase benefits on the customer's profile:
+  // condition, discount, deadline and lifecycle state, straight from the rows
+  // the POS redeems (never a copy). A broken fetch must not hide the ledger.
+  let benefits = { benefits: [] };
+  try { benefits = await api(`/customers/${id}/benefits`); } catch (_) {}
+  const BEN_L = { ACTIVE: ["فعال", "badge-green"], USED: ["استفاده‌شده", "badge-gray"],
+                  EXPIRED: ["منقضی", "badge-red"], BLOCKED: ["مسدود", "badge-red"] };
+  const benRows = (benefits.benefits || []).map((b) => {
+    const st = BEN_L[b.status] || [b.status, "badge-gray"];
+    return `<tr>
+      <td>${esc(b.benefit)} ${b.discount_type === "PERCENT" ? "" : ""}</td>
+      <td class="muted">${esc(b.condition)}</td>
+      <td class="muted">${b.valid_until ? esc(String(b.valid_until).slice(0, 10)) : "—"}</td>
+      <td><span class="badge ${st[1]}">${st[0]}</span>${b.eligible_now ? ' <span class="badge badge-green">قابل استفاده</span>' : ""}</td>
+      <td class="muted">${esc(b.campaign || (b.source === "NEXT_PURCHASE" ? "مزیت خرید بعدی" : "پیشنهاد شخصی"))}</td>
+    </tr>`;
+  }).join("");
+
   openModal(`<h3>حساب دفتری — ${esc(c.name)} ${esc(c.last_name || "")}</h3>
     <div class="balance-hero ${bal > 0 ? "debt" : "clear"}">
       <span class="muted">مانده حساب</span>
@@ -3975,7 +5654,12 @@ window.showCustomerLedger = async (id) => {
       <button class="btn btn-sm" onclick="doSettle(${id}, true)">تسویه کامل (${money(bal)})</button>
       <button class="btn btn-ghost btn-sm" onclick="smsDebtReminder(${id})">پیامک یادآوری</button>
     </div>` : ""}
+    <h4 style="margin-top:14px">مزیت‌های خرید (کوپن‌ها و جشنواره‌ها)</h4>
     <div class="table-wrap"><table>
+      <thead><tr><th>مزیت</th><th>شرط</th><th>مهلت</th><th>وضعیت</th><th>منبع</th></tr></thead>
+      <tbody>${benRows || `<tr><td colspan="5" class="empty">مزیت فعالی ثبت نشده است</td></tr>`}</tbody>
+    </table></div>
+    <div class="table-wrap" style="margin-top:14px"><table>
       <thead><tr><th>تاریخ</th><th>نوع</th><th>مبلغ</th><th>مانده</th><th>توضیح</th></tr></thead>
       <tbody>${rows || `<tr><td colspan="5" class="empty">تراکنشی ثبت نشده است</td></tr>`}</tbody>
     </table></div>
@@ -4015,18 +5699,129 @@ async function boot() {
   if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {
-    state.user = await api("/auth/me");
-    if (window.Onboarding) await Onboarding.afterLogin();
-    await loadRuntimeConfig();
-    showApp();
-    buildNav();
-    await applyTheme();
-    startStatusBar();
-    if (window.Onboarding) Onboarding.alertsStack();
-    go("dashboard");
+    await initAuthenticatedSession(false);
   } catch (e) {
-    localStorage.removeItem("token"); state.token = "";
-    showLogin();
+    if (!state.user) {
+      localStorage.removeItem("token"); state.token = "";
+      showLogin();
+    }
   }
 }
 if (!window.__NO_AUTOBOOT) boot();
+
+/* build-483 — جعبهٔ فرمان سراسری (Ctrl+K): جابه‌جایی سریع بین بخش‌ها و اقدام‌های
+   پرتکرار، بدون گشتن در منو. فقط لایهٔ UX است؛ هیچ منطق کسب‌وکاری اجرا نمی‌کند
+   جز همان مسیرهای موجود (`go(...)`) و دکمه‌های امروز. */
+(function () {
+  let bg = null, inputEl = null, listEl = null, selIdx = 0, visible = [];
+
+  function paletteItems() {
+    const acts = [
+      canView("pos") ? { ico: "cart", label: "فاکتور جدید (صندوق)", hint: "اقدام", run: () => go("pos") } : null,
+      canView("batches") ? { ico: "inbox", label: "دریافت کالا", hint: "اقدام", run: () => go("batches") } : null,
+      can("accounting.post") ? { ico: "cash", label: "ثبت هزینه", hint: "اقدام", run: () => window.AccountingUI && AccountingUI.expenseModal() } : null,
+      canView("insights") ? { ico: "chart", label: "هوش فروشگاه", hint: "اقدام", run: () => go("insights") } : null,
+      { ico: "gear", label: "تغییر پوسته (روشن/تیره)", hint: "تنظیم", run: () => { const b = document.getElementById("sb-theme"); if (b) b.click(); } },
+    ].filter(Boolean);
+    const navs = NAV.filter(([key]) => canView(key)).map(([key, label, , ico]) => ({
+      ico, label, hint: "بخش", run: () => go(key),
+    }));
+    return [...acts, ...navs];
+  }
+
+  let searchTok = 0;
+  function draw(q) {
+    const items = paletteItems();
+    const qq = (q || "").trim();
+    visible = qq ? items.filter((it) => it.label.includes(qq)) : items;
+    selIdx = 0;
+    paint();
+    // build-484 — «جست‌وجوی هوشمند» واقعی: کالا/مشتری/فاکتور از API کنار بخش‌ها و اقدام‌ها
+    const tok = ++searchTok;
+    if (qq.length >= 2 && state.user) {
+      if (can("products.view")) {
+        api("/products?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
+          if (tok !== searchTok) return;
+          const its = ((res && res.items) || []).map((p) => ({
+            ico: "box", label: p.name + (p.barcode ? " · " + p.barcode : ""), hint: "کالا",
+            run: () => go(canView("products") ? "products" : "pos"),
+          }));
+          pushEntities(its);
+        }).catch(() => {});
+      }
+      if (canView("customers")) {
+        api("/customers?q=" + encodeURIComponent(qq) + "&limit=6").then((res) => {
+          if (tok !== searchTok) return;
+          const its = ((res && res.items) || []).map((c) => ({
+            ico: "user", label: (c.full_name || c.name || "مشتری") + (c.phone ? " · " + c.phone : ""), hint: "مشتری",
+            run: () => go("customers"),
+          }));
+          pushEntities(its);
+        }).catch(() => {});
+      }
+    }
+  }
+  function pushEntities(its) {
+    if (!its.length || !bg) return;
+    const seen = new Set(visible.map((v) => v.label + v.hint));
+    its = its.filter((it) => !seen.has(it.label + it.hint));
+    if (!its.length) return;
+    visible = [...visible, ...its];
+    const keep = selIdx;
+    paint();
+    selIdx = keep;
+    listEl.querySelectorAll(".cmdk-item").forEach((b, i) => b.classList.toggle("sel", i === selIdx));
+  }
+  function paint() {
+    listEl.innerHTML = visible.map((it, i) => `
+      <button class="cmdk-item ${i === selIdx ? "sel" : ""}" data-i="${i}">
+        <span class="cmdk-ic">${icon(it.ico, 16)}</span><span>${esc(it.label)}</span><small>${it.hint}</small>
+      </button>`).join("") || `<div class="state-empty">چیزی پیدا نشد</div>`;
+    listEl.querySelectorAll(".cmdk-item").forEach((b) => {
+      b.addEventListener("click", () => { close(); visible[+b.dataset.i].run(); });
+    });
+  }
+
+  function move(dir) {
+    if (!visible.length) return;
+    selIdx = (selIdx + dir + visible.length) % visible.length;
+    listEl.querySelectorAll(".cmdk-item").forEach((b, i) => b.classList.toggle("sel", i === selIdx));
+    const el = listEl.querySelector(`.cmdk-item[data-i="${selIdx}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }
+
+  function open() {
+    if (bg || !state.user) return;
+    bg = document.createElement("div");
+    bg.className = "cmdk-bg";
+    bg.innerHTML = `
+      <div class="cmdk" role="dialog" aria-label="جست‌وجوی سریع">
+        <input class="cmdk-input" placeholder="جست‌وجو در بخش‌ها و اقدام‌ها… (Enter)" aria-label="جست‌وجوی سریع" />
+        <div class="cmdk-list"></div>
+        <div class="cmdk-foot"><span><span class="kbd">↑↓</span> حرکت</span><span><span class="kbd">Enter</span> اجرا</span><span><span class="kbd">Esc</span> بستن</span></div>
+      </div>`;
+    document.body.appendChild(bg);
+    inputEl = bg.querySelector(".cmdk-input");
+    listEl = bg.querySelector(".cmdk-list");
+    draw("");
+    inputEl.focus();
+    bg.addEventListener("mousedown", (e) => { if (e.target === bg) close(); });
+    inputEl.addEventListener("input", () => draw(inputEl.value));
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+      else if (e.key === "Enter") { e.preventDefault(); const it = visible[selIdx]; if (it) { close(); it.run(); } }
+      else if (e.key === "Escape") { e.preventDefault(); close(); }
+    });
+  }
+
+  function close() { if (bg) { bg.remove(); bg = null; } }
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (bg) close(); else open();
+    }
+  });
+  window.openQuickPalette = open;
+})();

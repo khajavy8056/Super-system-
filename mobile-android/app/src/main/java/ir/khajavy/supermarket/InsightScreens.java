@@ -51,6 +51,12 @@ public final class InsightScreens {
         public boolean autoRefresh() { return true; }
         public void load() {
             loading();
+            fetch();
+        }
+        /** v4.8.1 — به‌روزرسانی در پس‌زمینه: محتوای فعلی تا رسیدن دادهٔ تازه سر جایش
+         *  می‌ماند (بدون «در حال بارگذاری» و بدون پرش)؛ جای اسکرول را AppActivity نگه می‌دارد. */
+        @Override public void refresh() { fetch(); }
+        void fetch() {
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
 
@@ -92,7 +98,7 @@ public final class InsightScreens {
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);
-            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
+            Ui.Flow br = Ui.wrap(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
             if (!Api.standalone()) br.addView(Ui.small(c, "مشاور AI", this::advisor));   // v3.5 — free-model advisor lives on the PC engine
             br.addView(Ui.small(c, "پیش‌بینی سود", () -> a.route("insightsPlan"))); br.addView(Ui.small(c, "مشتریان در نوبت", () -> a.route("insightsCustomers")));
             android.widget.Button rep = Ui.small(c, "گزارش هفتگی", () -> get("/insights/report", r -> { JSONObject x = (JSONObject) r; LinearLayout l = Ui.col(c); TextView tv = Ui.body(c, x.optString("narrative")); tv.setLineSpacing(0, 1.35f); l.addView(tv); Ui.sheet(c, "گزارش هوش فروشگاه", l); })); br.addView(rep);
@@ -101,9 +107,9 @@ public final class InsightScreens {
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             // v3.5 — group strip; filtering is local so switching is instant
             java.util.Map<String, Integer> cnt = new java.util.HashMap<>(); for (int i = 0; i < items.length(); i++) cnt.merge(group(items.optJSONObject(i).optString("kind")), 1, Integer::sum);
-            LinearLayout gl = Ui.row(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
+            Ui.Flow gl = Ui.wrap(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
             for (String[] g : GROUPS) { int n = cnt.getOrDefault(g[0], 0); if (n == 0) continue; gl.addView(Ui.chip(c, g[1] + " (" + Ui.num(n) + ")", g[0].equals(grp), () -> { grp = g[0]; render(all); })); }
-            body.addView(Ui.chips(c, gl));
+            body.addView(gl);   // v4.8.1 — نوار گروه‌ها در هر سایزی می‌پیچد و صفحه را نمی‌شکند
             if (!grp.isEmpty()) { JSONArray fl = new JSONArray(); for (int i = 0; i < items.length(); i++) if (grp.equals(group(items.optJSONObject(i).optString("kind")))) fl.put(items.optJSONObject(i)); items = fl; }
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
             LinearLayout list = Ui.col(c); body.addView(list); Ui.paged(list, items, 12, this::card);   // v3.5 staged (cards carry charts)
@@ -118,7 +124,7 @@ public final class InsightScreens {
         View heroKpi(String l, String v) { LinearLayout t = Ui.col(c); t.setLayoutParams(Ui.weight(1)); t.addView(Ui.text(c, v, 15, 0xFFFFFFFF, true)); t.addView(Ui.text(c, l, 11, 0xCCFFFFFF, false)); return t; }
         View card(JSONObject x) {
             LinearLayout card = Ui.card(c, null); card.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 10));
-            LinearLayout hd = Ui.row(c); hd.setGravity(Gravity.CENTER_VERTICAL); hd.addView(Icons.view(c, kindIcon(x.optString("kind")), prioColor(x.optInt("priority")), 20)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0); tc.addView(Ui.text(c, x.optString("title"), 14.5f, Ui.TEXT, true)); tc.addView(Ui.muted(c, x.optString("label") + " · " + prioLabel(x.optInt("priority")))); hd.addView(tc);
+            LinearLayout hd = Ui.row(c); hd.setGravity(Gravity.CENTER_VERTICAL); hd.addView(Images.insightIcon(c, x, kindIcon(x.optString("kind")), prioColor(x.optInt("priority")), 20)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0); tc.addView(Ui.text(c, x.optString("title"), 14.5f, Ui.TEXT, true)); tc.addView(Ui.muted(c, x.optString("label") + " · " + prioLabel(x.optInt("priority")))); hd.addView(tc);
             String st = x.optString("status"); if ("NEW".equals(st) && x.optDouble("expected_gain") > 0) hd.addView(Ui.badge(c, "~" + Ui.money(x.optDouble("expected_gain")) + "/ماه", Ui.GREEN)); else if (!x.isNull("measured_gain")) { double g = x.optDouble("measured_gain"); hd.addView(Ui.badge(c, (g >= 0 ? "+" : "") + Ui.money(g), g >= 0 ? Ui.GREEN : Ui.RED)); } else if ("ACCEPTED".equals(st)) hd.addView(Ui.badge(c, "در حال سنجش", Ui.AMBER)); card.addView(hd);
             TextView b = Ui.body(c, x.optString("body")); b.setLineSpacing(0, 1.3f); b.setPadding(0, Ui.dp(8), 0, 0); card.addView(b);
             JSONObject fc = x.optJSONObject("evidence") == null ? null : x.optJSONObject("evidence").optJSONObject("forecast");
@@ -153,12 +159,15 @@ public final class InsightScreens {
     static View measuredBlock(android.content.Context c, JSONObject x, boolean full) {
         JSONObject res = x.optJSONObject("result"), base = x.optJSONObject("baseline"); if (res == null || base == null) return new View(c);
         String m = x.optJSONObject("metric") == null ? "" : x.optJSONObject("metric").optString("metric");
-        boolean pending = x.isNull("measured_gain"); double g = x.optDouble("measured_gain", 0); Double gr = res.isNull("profit_pct_adj") ? (res.isNull("profit_pct") ? null : res.optDouble("profit_pct")) : res.optDouble("profit_pct_adj");
-        int col = pending ? Ui.AMBER : g >= 0 ? Ui.GREEN : Ui.RED;
+        boolean pending = x.isNull("measured_gain"); double g = x.optDouble("measured_gain", 0);
+        String vdict = res.optString("verdict", res.optString("outcome_class", ""));
+        boolean missed = "MISSED_OPPORTUNITY".equals(vdict) || (pending && !res.isNull("missed_gain"));
+        boolean realLoss = "NEGATIVE_OUTCOME".equals(vdict); Double gr = res.isNull("profit_pct_adj") ? (res.isNull("profit_pct") ? null : res.optDouble("profit_pct")) : res.optDouble("profit_pct_adj");
+        int col = pending || missed || (!realLoss && g < 0) ? Ui.AMBER : g >= 0 ? Ui.GREEN : Ui.RED;
         LinearLayout box = Ui.col(c); box.setBackground(Ui.rounded((col & 0x00FFFFFF) | 0x14000000, (col & 0x00FFFFFF) | 0x55000000, 14)); box.setPadding(Ui.dp(8), Ui.dp(8), Ui.dp(8), Ui.dp(8)); box.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0));
-        LinearLayout hd = Ui.row(c); hd.addView(Icons.view(c, "trend", col, 16)); TextView ht = Ui.text(c, pending ? "در حال سنجش اثر" : "اثر اندازه‌گیری‌شده (واقعی)", 12.5f, col, true); ht.setPadding(Ui.dp(6), 0, 0, 0); hd.addView(ht); hd.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); box.addView(hd);
+        LinearLayout hd = Ui.row(c); hd.addView(Icons.view(c, "trend", col, 16)); TextView ht = Ui.text(c, missed ? "◇ فرصت ازدست‌رفته — ضرر نیست (§۳۷)" : pending ? "در حال سنجش اثر" : realLoss && g < 0 ? "▼ ضرر واقعی (مستند)" : "اثر اندازه‌گیری‌شده (واقعی)", 12.5f, col, true); ht.setPadding(Ui.dp(6), 0, 0, 0); hd.addView(ht); hd.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); box.addView(hd);
         box.addView(tiles2(c, tile(c, "رشد سود", pending ? "…" : gr == null ? "—" : pctTxt(gr), res.optDouble("control_ratio", 1) != 1 ? "پس از حذف روند فروشگاه" : "نسبت به قبل از اجرا", gr == null ? 0 : gr >= 0 ? Ui.GREEN : Ui.RED),
-                tile(c, "اثر بر سود", pending ? "…" : (g >= 0 ? "+" : "−") + Ui.moneyShort(Math.abs(g)), res.isNull("projected_month") ? "" : "ماهانه ≈ " + Ui.moneyShort(res.optDouble("projected_month")), pending ? 0 : g >= 0 ? Ui.GREEN : Ui.RED)));
+                tile(c, "اثر بر سود", missed ? "فرصت ازدست‌رفته (ضرر نیست)" : pending ? "…" : (g >= 0 ? "+" : "−") + Ui.moneyShort(Math.abs(g)), res.isNull("projected_month") ? "" : "ماهانه ≈ " + Ui.moneyShort(res.optDouble("projected_month")), col)));
         box.addView(tiles2(c, tile(c, metricLabel(m) + " — قبل", fmtVal(m, base.optDouble("value")), Ui.num(base.optDouble("window_days", 28)) + " روز · " + Ui.moneyShort(res.optDouble("base_profit_per_day")) + "/روز", 0),
                 tile(c, metricLabel(m) + " — بعد", fmtVal(m, res.optDouble("value")), Ui.num(res.optDouble("elapsed_days")) + " روز · " + Ui.moneyShort(res.optDouble("post_profit_per_day")) + "/روز" + (res.isNull("change_pct") ? "" : " · " + pctTxt(res.optDouble("change_pct"))), 0)));
         JSONObject daily = res.optJSONObject("daily"); JSONArray bef = daily == null ? null : daily.optJSONArray("before"), aft = daily == null ? null : daily.optJSONArray("after");

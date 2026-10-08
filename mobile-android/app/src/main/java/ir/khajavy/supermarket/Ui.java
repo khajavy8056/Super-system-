@@ -37,6 +37,17 @@ import java.util.Locale;
 public final class Ui {
     private Ui() {}
     public static Context ctx;
+    /** v4.8.1 — «به‌روزرسانی در پس‌زمینه»: تازه‌سازی صفحه فقط وقتی کاربر بی‌کار است.
+     *  لمس‌های اخیر / فعال بودن یک فیلد متنی یعنی کاربر دارد کار می‌کند — هیچ صفحه‌ای
+     *  نباید زیر دستش بازسازی شود (ریشهٔ «هی صفحه ریفرش می‌شه و نمی‌شه کار کرد»). */
+    public static volatile long lastTouch = 0;
+    public static void touch() { lastTouch = System.currentTimeMillis(); }
+    public static boolean interacting() {
+        if (System.currentTimeMillis() - lastTouch < 15000) return true;
+        android.app.Activity a = top;
+        if (a != null) { try { View f = a.getCurrentFocus(); if (f instanceof EditText) return true; } catch (Exception ignore) {} }
+        return false;
+    }
     /** foreground activity (set by AppActivity.onResume) — dialogs need an Activity, not the app context. */
     public static android.app.Activity top;
     public static Typeface FONT, FONT_BOLD;
@@ -102,7 +113,14 @@ public final class Ui {
     public static GradientDrawable luxe(float radius) { GradientDrawable g = gradient(dark ? 0xFF142857 : 0xFF263D7B, dark ? 0xFF07152F : 0xFF142954, 0, radius); g.setStroke(dp(1), GOLD_LINE | 0x66000000); return g; }
     public static LinearLayout card(Context c) { LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(16), dp(15), dp(16), dp(15)); l.setElevation(dark ? 0 : dp(2.5f)); if (android.os.Build.VERSION.SDK_INT >= 28) l.setOutlineSpotShadowColor(0x33000000); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
     /** hero card (dashboard welcome): teal gradient, white text. */
-    public static LinearLayout hero(Context c) { LinearLayout l = col(c); GradientDrawable g = gradient(0xFF214EC0, dark ? 0xFF101D4E : 0xFF343D8D, BORDER, 22); g.setStroke(dp(1), dark ? 0x66FFC65A : 0x667383EF); l.setBackground(g); l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18)); l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l; }
+    public static LinearLayout hero(Context c) {
+        // build-484 — بنر سلام (الهام از تصویر مرجع): گرادیان بنفش/آبی ملایم، گوشه‌های گرد.
+        LinearLayout l = col(c);
+        GradientDrawable g = gradient(dark ? 0xFF2749C9 : 0xFF7C8CFF, dark ? 0xFF101D4E : 0xFF9BA9FF, BORDER, 22);
+        g.setStroke(dp(1), dark ? 0x66FFC65A : 0x667383EF); l.setBackground(g);
+        l.setElevation(dp(dark ? 0 : 4)); l.setPadding(dp(18), dp(18), dp(18), dp(18));
+        l.setLayoutParams(margin(match(), 0, 0, 0, 12)); return l;
+    }
     /** dashboard tile: rounded icon badge + label + big value (+ optional custom view below). */
     public static LinearLayout tile(Context c, String icon, int accent, String label, String value, View extra) {
         LinearLayout l = col(c); l.setBackground(surface(20)); l.setPadding(dp(14), dp(14), dp(14), dp(14)); l.setMinimumHeight(dp(118));
@@ -221,6 +239,45 @@ public final class Ui {
         return t;
     }
     public static HorizontalScrollView chips(Context c, LinearLayout inner) { HorizontalScrollView h = new HorizontalScrollView(c); h.setHorizontalScrollBarEnabled(false); h.setLayoutDirection(View.LAYOUT_DIRECTION_RTL); h.addView(inner); return h; }
+
+    /**
+     * v4.8.1 (بیلد ۴۸۲) — چیدمان روان (flow): دکمه‌ها/چیپ‌ها هر وقت جا نشدند به خط
+     * بعدی می‌روند. ریشهٔ «نیمی از صفحه بد می‌افتد» همین بود: ردیف افقیِ چند دکمه‌ای
+     * (تب‌ها، نوار گروه‌های هوش فروشگاه، دکمه‌های عملیات) در عرض کم از صفحه بیرون
+     * می‌زد و بقیهٔ صفحه را هم خراب می‌کرد. این چیدمان در همهٔ سایزها درست می‌ماند.
+     */
+    public static class Flow extends ViewGroup {
+        private final int gap;
+        public Flow(Context c) { this(c, dp(5)); }
+        public Flow(Context c, int gapPx) { super(c); this.gap = gapPx; }
+        @Override protected void onMeasure(int ws, int hs) {
+            int width = MeasureSpec.getSize(ws), x = 0, y = 0, rowH = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View ch = getChildAt(i); if (ch.getVisibility() == GONE) continue;
+                measureChild(ch, ws, hs);
+                ViewGroup.MarginLayoutParams m = ch.getLayoutParams() instanceof ViewGroup.MarginLayoutParams ? (ViewGroup.MarginLayoutParams) ch.getLayoutParams() : null;
+                int w = ch.getMeasuredWidth() + (m == null ? 0 : m.leftMargin + m.rightMargin);
+                if (x > 0 && x + w > width) { x = 0; y += rowH + gap; rowH = 0; }
+                x += w + gap;
+                rowH = Math.max(rowH, ch.getMeasuredHeight() + (m == null ? 0 : m.topMargin + m.bottomMargin));
+            }
+            setMeasuredDimension(width, y + rowH);
+        }
+        @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            int width = r - l, x = width, y = 0, rowH = 0;   // RTL: start from the right edge
+            for (int i = 0; i < getChildCount(); i++) {
+                View ch = getChildAt(i); if (ch.getVisibility() == GONE) continue;
+                ViewGroup.MarginLayoutParams m = ch.getLayoutParams() instanceof ViewGroup.MarginLayoutParams ? (ViewGroup.MarginLayoutParams) ch.getLayoutParams() : null;
+                int ml = m == null ? 0 : m.leftMargin, mr = m == null ? 0 : m.rightMargin, mt = m == null ? 0 : m.topMargin;
+                int w = ch.getMeasuredWidth(), h = ch.getMeasuredHeight() + (m == null ? 0 : m.topMargin + m.bottomMargin);
+                if (x - ml - w < 0) { x = width; y += rowH + gap; rowH = 0; }
+                ch.layout(x - ml - w, y + mt, x - ml, y + mt + ch.getMeasuredHeight());
+                x -= w + ml + mr + gap; rowH = Math.max(rowH, h);
+            }
+        }
+    }
+    /** a wrapping row of buttons/chips — the responsive replacement for plain {@link #row}. */
+    public static Flow wrap(Context c) { Flow f = new Flow(c); f.setLayoutParams(margin(match(), 0, 0, 0, 4)); return f; }
 
     /* ---------------- sheets / dialogs ---------------- */
     /** Bottom sheet with a drag handle; returns the dialog so callers can dismiss. */

@@ -33,6 +33,7 @@ public class AppActivity extends Activity {
     static final int REQ_SCAN = 31, REQ_PICK = 32;
     Consumer<android.net.Uri> pickCb;
     private FrameLayout content; private LinearLayout tabs; private TextView title; private View syncDot; private TextView syncTxt;
+    private View aiFab;   // build-483 — دکمهٔ شناور «هوش فروشگاه» (فقط داشبورد)
     private FrameLayout drawerLayer; private LinearLayout drawer;
     private final Deque<Screens.Screen> stack = new ArrayDeque<>();
     private Consumer<String> scanCb;
@@ -41,27 +42,32 @@ public class AppActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        Prefs.init(this); Db.init(this); Ui.init(this); Api.bg(() -> Db.importBankSeed(this));   // v2.7 bundled barcode bank
-        // v3.5.1 — the default catalogue used to be reachable only through the
-        // first-run wizard (AppActivity → SetupActivity → InstallService), and an
-        // in-place update never walks that path, so shops that upgraded saw the new
-        // bank advertised and received none of it. This runs on EVERY launch and is
-        // gated on the catalogue version, not on "is the database empty", so an
-        // upgrade picks up the new lines too. importStarter reconciles against the
-        // products the shop already has (barcode, then normalised name) rather than
-        // duplicating them, so it is safe to run repeatedly.
-        Api.bg(() -> { try { if (Db.catalogPending()) Db.importStarter(this); } catch (Exception ignore) {} });
+        Prefs.init(this); Db.init(this); Ui.init(this);
+        // Build 494 migration: builds through 493 persisted a fake, timed installer gate.
+        // Release it before routing; Db.bootstrap below safely resumes chunked imports.
+        InstallRecovery.releaseLegacyDelay();
         Api.base = Prefs.serverUrl(this) == null ? "" : Prefs.serverUrl(this);
         Api.token = Prefs.deviceToken(this) == null ? "" : Prefs.deviceToken(this);
         Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         LockActivity.top = this;
-        if (Api.base.isEmpty() || !Lic.setupDone() || InstallService.running()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (Api.base.isEmpty() || !Lic.setupDone()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
         if (!Lic.allowed()) { LockActivity.showing = false; LockActivity.showIfNeeded(); finish(); return; }
         // v2.4: a login is always required; the session ends after 30 minutes without interaction
         if (Session.expired()) { Session.end(); startActivity(new Intent(this, LoginActivity.class)); finish(); return; }
         Session.touch();
         if (!"1".equals(Prefs.get("first_loading_done", ""))) Prefs.set("first_loading_done", "1");
         Lic.recheckIfDue();
+        // Start the optional default-catalogue import only after setup and authentication.
+        // It is chunked, local, and does not block the first screen or the login wizard.
+        final android.content.Context appContext = getApplicationContext();
+        Api.bg(() -> {
+            Db.bootstrap(appContext);
+            Api.ui(() -> {
+                if (isFinishing()) return;
+                Screens.Screen active = stack.peek();
+                if (!Ui.interacting() && (active instanceof StockScreens.Products || active instanceof SalesScreens.Pos)) active.refresh();
+            });
+        });
         Sync.watchNetwork(this);
         Images.kick();   // v2.5: pending product-picture lookups (standalone) resume whenever the app opens
         getWindow().setStatusBarColor(Ui.BG2); getWindow().setNavigationBarColor(Ui.BG2);
@@ -71,9 +77,11 @@ public class AppActivity extends Activity {
         Sync.listener = (online, applied, rejected, pending) -> {
             syncDot.setBackground(Ui.rounded(online ? Ui.GREEN : Ui.RED, 0, 5));
             syncTxt.setText(online ? (pending > 0 ? "همگام‌سازی " + Ui.fa(String.valueOf(pending)) + " مورد…" : (Relay.active ? "متصل از راه دور · همگام" : "متصل · همگام")) : (Api.standalone() ? "مستقل" : "آفلاین · صف " + Ui.fa(String.valueOf(pending))));
-            if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }
+            if (applied > 0) { Ui.toast("همگام شد: " + Ui.fa(String.valueOf(applied)) + " مورد"); quietRefresh(); }
             if (rejected > 0) { Ui.toast(Ui.fa(String.valueOf(rejected)) + " مورد رد شد — بخش همگام‌سازی"); Notify.syncProblem(this, rejected); }
-            if (applied == 0 && rejected == 0 && online) { Screens.Screen s = stack.peek(); if (s != null && s.autoRefresh()) s.refresh(); }
+            // v4.8.1 — ضربان قلبِ همگام‌سازی (هر ۲۰ ثانیه) دیگر صفحه را بازسازی نمی‌کند.
+            // ریشهٔ «هی صفحه ریفرش می‌شه و اصلاً نمی‌شه کار کرد» همین بود. داده‌های تازه
+            // فقط وقتی کاربر دست به گوشی نیست (پس‌زمینه) و با حفظ جای اسکرول می‌نشینند.
         };
         Screens.loadConfig(this);
         Notify.channels(this); Notify.schedule(this); Notify.askPermission(this);
@@ -83,13 +91,25 @@ public class AppActivity extends Activity {
         else { Tour.maybe(this, "home"); if (!"1".equals(Prefs.get("welcomed_" + Db.now().substring(0, 10), ""))) { Prefs.set("welcomed_" + Db.now().substring(0, 10), "1"); Sfx.play("welcome"); } }
         Api.bg(() -> Notify.checkLocal(this));
     }
+
+    /** v4.8.1 — به‌روزرسانی در پس‌زمینه: بی‌سروصدا، بدون وقفهٔ کاربر، با حفظ اسکرول. */
+    void quietRefresh() {
+        Screens.Screen s = stack.peek();
+        if (s == null || !s.autoRefresh() || Ui.interacting()) return;
+        final int y = s.scroll == null ? 0 : s.scroll.getScrollY();
+        s.refresh();
+        if (s.scroll != null) {
+            final android.widget.ScrollView sv = s.scroll;
+            for (long d : new long[]{150, 450, 1000, 1800}) sv.postDelayed(() -> sv.scrollTo(0, y), d);
+        }
+    }
     private boolean bioShowing = false;
     void bioGate() {
         if (bioShowing || !Biometric.lockDue()) return;
         bioShowing = true; View veil = new View(this); veil.setBackgroundColor(Ui.BG); veil.setClickable(true); ((android.view.ViewGroup) getWindow().getDecorView().findViewById(android.R.id.content)).addView(veil);
         Biometric.prompt(this, "باز کردن رسا سیستم", "اثر انگشت یا رمز گوشی", ok -> { bioShowing = false; if (ok) ((android.view.ViewGroup) veil.getParent()).removeView(veil); else finishAffinity(); });
     }
-    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); }
+    @Override public void onUserInteraction() { super.onUserInteraction(); Session.touch(); Biometric.touch(); Ui.touch(); }
     @Override protected void onStop() { super.onStop(); Biometric.onBackground(); }   // v4.3
     @Override protected void onResume() { super.onResume(); Ui.top = this; LockActivity.top = this; if (Session.expired()) { Session.end(); Ui.toast("نشست پس از ۳۰ دقیقه بی‌کاری بسته شد — دوباره وارد شوید"); startActivity(new Intent(this, LoginActivity.class)); finish(); return; } Session.touch(); h.post(ticker); bioGate(); if (!Lic.allowed()) LockActivity.showIfNeeded(); if (Api.standalone()) Api.bg(() -> { int n = SupportRelay.poll(); if (n > 0) { Notify.supportReply(this, n); Api.ui(() -> Ui.toast(Ui.fa(String.valueOf(n)) + " پاسخ جدید از پشتیبانی")); } }); else Api.bg(() -> { Notify.checkPcSupport(this); SmsLocal.relayPcOutbox(); }); }
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); String r = i == null ? null : i.getStringExtra("route"); if (r != null && !r.isEmpty()) route(r); }
@@ -120,14 +140,33 @@ public class AppActivity extends Activity {
         drawer = Ui.col(this); drawer.setBackgroundColor(Ui.BG2); drawer.setElevation(Ui.dp(16)); drawer.setClickable(true);
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(Ui.dp(304), ViewGroup.LayoutParams.MATCH_PARENT); dlp.gravity = Gravity.END; drawer.setLayoutParams(dlp);
         drawerLayer.addView(drawer); outer.addView(drawerLayer);
+        // build-483 — دکمهٔ شناور «هوش فروشگاه» (FAB): گرادیان برند، بالای نوار تب‌ها،
+        // با فاصلهٔ امن از لبه‌ها؛ فقط روی داشبورد نمایش داده می‌شود (بی‌صدا و کنترل‌شده).
+        LinearLayout fab = Ui.row(this);
+        fab.setBackground(Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.PRIMARY2, 24));
+        fab.setPadding(Ui.dp(16), Ui.dp(12), Ui.dp(16), Ui.dp(12));
+        fab.setElevation(Ui.dp(18));
+        fab.addView(Icons.view(this, "star", 0xFFFFFFFF, 20));
+        TextView fabTx = Ui.text(this, "هوش فروشگاه", 13, 0xFFFFFFFF, true);
+        fabTx.setPadding(Ui.dp(8), 0, 0, 0);
+        fab.addView(fabTx);
+        fab.setOnClickListener(v -> route("insights"));
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        flp.gravity = Gravity.BOTTOM | Gravity.START;
+        flp.setMargins(Ui.dp(16), 0, 0, Ui.dp(78));   // بالای نوار تب‌ها، بدون پوشاندن محتوا
+        fab.setLayoutParams(flp);
+        fab.setVisibility(View.GONE);
+        aiFab = fab;
+        outer.addView(fab);
         setContentView(outer);
     }
     private View iconBtn(String icon, Runnable r) { android.widget.ImageView t = Icons.view(this, icon, Ui.TEXT, 40); int p = Ui.dp(10); t.setPadding(p, p, p, p); t.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22FFFFFF), Ui.rounded(Ui.CARD2, Ui.BORDER, 13), null)); t.setOnClickListener(v -> r.run()); return t; }
 
-    private static final String[][] TABS = {{"home", "خانه", "home"}, {"pos", "فروش", "cart"}, {"products", "کالاها", "tag"}, {"inventory", "انبار", "box"}, {"more", "بیشتر", "grid"}};
+    private static final String[][] TABS = {{"home", "داشبورد", "home"}, {"pos", "فروش", "cart"}, {"inventory", "موجودی", "box"}, {"receive", "دریافت", "truck"}, {"more", "بیشتر", "grid"}};
     private void buildTabs(String active) {
         tabs.removeAllViews();
         for (String[] t : TABS) {
+            if (!"home".equals(t[0]) && !"more".equals(t[0]) && !Screens.allowed(t[0])) continue;
             boolean on = t[0].equals(active) || ("more".equals(t[0]) && active != null && !isTabKey(active));
             LinearLayout col = Ui.col(this); col.setGravity(Gravity.CENTER); LinearLayout.LayoutParams wp = Ui.weight(1); wp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0); col.setLayoutParams(wp); col.setPadding(0, Ui.dp(6), 0, Ui.dp(4));
             col.setBackground(on ? Ui.gradient(Ui.PRIMARY2, Ui.PRIMARY, Ui.BORDER, 18) : Ui.rounded(Color.TRANSPARENT, 0, 18));
@@ -142,7 +181,7 @@ public class AppActivity extends Activity {
         switch (k) {
             case "pos": return "cart"; case "held": return "pause"; case "customers": return "users"; case "invoices": return "receipt"; case "reports": return "chart"; case "accounting": return "calc";
             case "products": return "tag"; case "receive": return "truck"; case "inventory": return "box"; case "stocktake": return "clipboard"; case "stockops": return "undo"; case "warehouses": return "warehouse"; case "movements": return "history";
-            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
+            case "marketing": return "gift"; case "insights": return "star"; case "sms": return "sms"; case "shifts": case "attendance": case "my-shifts": return "clock"; case "announcements": return "bell"; case "payroll": return "receipt"; case "performance": return "chart"; case "home": return "dashboard"; case "users": return "user"; case "audit": return "list"; case "settings": return "settings"; case "store": return "store";
             case "hardware": return "printer"; case "diagnostics": return "pulse"; case "notifications": return "bell"; case "support": return "support"; case "license": return "key"; case "sync": return "sync"; case "backup": return "archive"; case "bank": return "bank";
             default: return "chev";
         }
@@ -155,6 +194,8 @@ public class AppActivity extends Activity {
         {"receipt|فاکتورها و گزارش", "insights:هوش فروشگاه", "invoices:فاکتورها / ابطال / مرجوعی", "reports:گزارش‌ها", "accounting:حسابداری"},
         {"box|کالا و موجودی", "products:کالاها", "receive:ورود کالا", "inventory:انبار و موجودی", "stocktake:انبارگردانی", "stockops:ضایعات / اصلاح / انتقال", "warehouses:انبارها", "movements:گردش موجودی"},
         {"gift|جشنواره و پیامک", "marketing:جشنواره و کوپن", "sms:پیامک"},
+        {"clock|شیفت و حضور", "my-shifts:شیفت‌های من", "shifts:برنامه‌ریزی شیفت", "attendance:حضور کارکنان"},
+        {"users|منابع انسانی", "announcements:اطلاعیه‌ها", "payroll:حقوق و دستمزد", "performance:عملکرد کارکنان"},
         {"settings|مدیریت و سیستم", "home:داشبورد", "users:کاربران و نقش‌ها", "audit:لاگ حسابرسی", "settings:تنظیمات", "backup:پشتیبان‌گیری", "store:مشخصات فروشگاه", "hardware:سخت‌افزار", "diagnostics:تست اتصالات", "notifications:اعلان‌ها", "support:درخواست پشتیبانی", "license:لایسنس", "sync:همگام‌سازی", "cloud:همگام‌سازی ابری", "device:تنظیمات دستگاه", "about:دربارهٔ برنامه"},
     };
     private final java.util.Set<String> openGroups = new java.util.HashSet<>();
@@ -196,13 +237,17 @@ public class AppActivity extends Activity {
         android.widget.Switch sw = new android.widget.Switch(this); sw.setChecked(!Ui.dark); sw.setOnCheckedChangeListener((b, on) -> { Prefs.set("theme_resolved", on ? "light" : "dark"); Prefs.set("theme_mode", on ? "light" : "dark"); recreate(); }); th.addView(sw);
         foot.addView(th);
         foot.addView(Ui.ghost(this, "ارتباط با پشتیبانی", () -> { drawer(false); route("support"); }));
-        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Api.token = ""; startActivity(new Intent(this, LoginActivity.class)); finish(); })));
+        foot.addView(Ui.danger(this, "خروج از حساب", () -> Ui.confirm(this, "از حساب خارج می‌شوید؟ داده‌های گوشی حفظ می‌شود.", () -> { Session.end(); Prefs.set("user_json", ""); Prefs.set("device_token", ""); Prefs.set("bio_token", ""); Api.token = ""; Screens.user = new org.json.JSONObject(); startActivity(new Intent(this, LoginActivity.class)); finish(); })));
         drawer.addView(foot);
         drawerLayer.setVisibility(View.VISIBLE);
     }
 
     /* ---------------- navigation ---------------- */
-    public void route(String key) { Screens.Screen s = Screens.create(this, key); if (s != null) open(s, !isTabKey(key)); }
+    public void route(String key) {
+        if (!Screens.allowed(key)) { Ui.toast("دسترسی به این بخش برای نقش شما فعال نیست."); return; }
+        Screens.Screen s = Screens.create(this, key);
+        if (s != null) open(s, !isTabKey(key));
+    }
     public void open(Screens.Screen s, boolean push) {
         if (!push) stack.clear();
         stack.push(s); show(s);
@@ -211,7 +256,10 @@ public class AppActivity extends Activity {
     private void show(Screens.Screen s) {
         content.removeAllViews(); title.setText(s.title());
         View v = s.view(); content.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        buildTabs(s.key()); s.load();
+        buildTabs(s.key());
+        // build-483 — دکمهٔ شناور «هوش فروشگاه» فقط روی داشبورد (پایین صفحه، بالای نوار تب‌ها).
+        if (aiFab != null) aiFab.setVisibility("home".equals(s.key()) && Screens.allowed("insights") ? View.VISIBLE : View.GONE);
+        s.load();
     }
     public Screens.Screen current() { return stack.peek(); }
     public void refreshCurrent() { Screens.Screen s = stack.peek(); if (s != null) s.refresh(); }

@@ -28,20 +28,20 @@
   const MENU = [
     ["فروش و مشتری", [
       ["showHeldM", "clipboard", "فاکتورهای معلق", "pos.sell"],
-      ["showInvoicesM", "invoice", "فاکتورها / ابطال / مرجوعی", "reports.view"],
+      ["showInvoicesM", "invoice", "فاکتورها / ابطال / مرجوعی", "pos.sell"],
       ["showCustomersM", "user", "مشتریان و دفتر حساب", "pos.sell"],
-      ["showCampaignsM", "gift", "جشنواره‌ها", "reports.view"],
-      ["showCouponsM", "gift", "کوپن‌ها", "reports.view"],
+      ["showCampaignsM", "gift", "جشنواره‌ها", "marketing.view"],
+      ["showCouponsM", "gift", "کوپن‌ها", "marketing.view"],
     ]],
     ["کالا و انبار", [
       ["showProducts", "box", "کالاها (افزودن / ویرایش / قیمت)", "products.view"],
       ["showDefaultCatalogM", "download", "دریافت محصولات پیش‌فرض", "products.manage"],
-      ["showStockOpsM", "warehouse", "ضایعات / اصلاح / انتقال", "inventory.view"],
-      ["showWarehousesM", "warehouse", "انبارها و محل نگهداری", "inventory.view"],
-      ["showMovementsM", "sync", "گردش موجودی", "inventory.view"],
+      ["showStockOpsM", "warehouse", "ضایعات / اصلاح / انتقال", "inventory.adjust"],
+      ["showWarehousesM", "warehouse", "انبارها و محل نگهداری", "inventory.adjust"],
+      ["showMovementsM", "sync", "گردش موجودی", "inventory.adjust"],
     ]],
     ["گزارش و مالی", [
-      ["showReportsM", "chart", "داشبورد و گزارش‌ها", "reports.view"],
+      ["showReportsM", "chart", "داشبورد و گزارش‌ها", "reports.view_all"],
       ["showAccountingM", "chart", "حسابداری (صندوق، هزینه، چک)", "accounting.view"],
     ]],
     ["مدیریت", [
@@ -69,13 +69,15 @@
 
   /* ------------------------------------------------------------------ Held invoices (≤10) */
   const HELD_KEY = "m_held";
-  const held = () => { try { return JSON.parse(localStorage.getItem(HELD_KEY) || "[]"); } catch (_) { return []; } };
-  const saveHeld = (h) => localStorage.setItem(HELD_KEY, JSON.stringify(h));
+  const heldKeyM = () => state.user && state.user.id ? `${HELD_KEY}.u_${state.user.id}` : HELD_KEY;
+  const held = () => { try { return JSON.parse(localStorage.getItem(heldKeyM()) || localStorage.getItem(HELD_KEY) || "[]"); } catch (_) { return []; } };
+  const saveHeld = (h) => { const s = JSON.stringify(h); localStorage.setItem(heldKeyM(), s); localStorage.setItem(HELD_KEY, s); };
   window.mHold = () => {
     if (!state.cart.length) { toast("سبد خالی است", "err"); return; }
     const h = held();
     if (h.length >= 10) { toast("حداکثر ۱۰ فاکتور معلق مجاز است", "err"); return; }
-    const label = prompt("نام مشتری / برچسب فاکتور (اختیاری)") || `فاکتور ${h.length + 1}`;
+    // build-491 — برچسب خودکار؛ هیچ prompt() مرورگری در هیچ UI نباید باشد
+    const label = `فاکتور ${h.length + 1}`;
     h.push({ id: Date.now(), label, cart: state.cart, at: new Date().toISOString() });
     saveHeld(h); state.cart = []; toast("فاکتور معلق شد"); showPos();
   };
@@ -274,12 +276,12 @@
     $("#rt-go").onclick = async () => { if (await run(() => api("/returns", { method: "POST", body: JSON.stringify({ invoice_id: inv, invoice_item_id: item, qty: num(v("rt-qty")), reason: v("rt-reason") || null }) }), "مرجوعی ثبت شد")) closeSheet(); }; };
 
   /* ------------------------------------------------------------------ Marketing */
-  window.showCampaignsM = () => { screen("جشنواره‌ها", null, `${perm("settings.manage") ? `<button class="btn btn-primary" onclick="mCampaignForm()">${icon("plus", 18)} جشنوارهٔ جدید</button>` : ""}<div id="cp"></div>`);
+  window.showCampaignsM = () => { screen("جشنواره‌ها", null, `${perm("marketing.manage") ? `<button class="btn btn-primary" onclick="mCampaignForm()">${icon("plus", 18)} جشنوارهٔ جدید</button>` : ""}<div id="cp"></div>`);
     list("#cp", () => api("/marketing/campaigns"), (c) => row(esc(c.name), `${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)} · حداقل خرید ${money(c.min_purchase)} · ${J(c.valid_from, false)} تا ${J(c.valid_until, false)}`, `<span class="badge ${c.status === "ACTIVE" ? "badge-green" : "badge-gray"}">${esc(c.status)}</span>`)); };
   window.mCampaignForm = () => { sheet(`<h2>جشنوارهٔ جدید</h2>${field("cm-name", "نام *")}${sel("cm-type", "نوع تخفیف", [["PERCENT", "درصدی"], ["FIXED", "مبلغ ثابت"]], "PERCENT")}${field("cm-val", "مقدار *", `type="number" inputmode="decimal"`)}${field("cm-min", "حداقل خرید", `type="number" inputmode="numeric" value="0"`)}${field("cm-from", "از تاریخ (YYYY-MM-DD)", `class="ltr" placeholder="2026-01-01"`)}${field("cm-to", "تا تاریخ", `class="ltr"`)}<button class="btn btn-primary" id="cm-save">ذخیره</button><button class="btn" onclick="closeSheet()">انصراف</button>`);
     $("#cm-save").onclick = async () => { if (await run(() => api("/marketing/campaigns", { method: "POST", body: JSON.stringify({ name: v("cm-name"), discount_type: v("cm-type"), discount_value: num(v("cm-val")), min_purchase: num(v("cm-min")), valid_from: v("cm-from") || null, valid_until: v("cm-to") || null, status: "ACTIVE" }) }), "جشنواره ثبت شد")) { closeSheet(); showCampaignsM(); } }; };
-  window.showCouponsM = () => { screen("کوپن‌ها", null, `${perm("settings.manage") ? `<button class="btn btn-primary" onclick="mCouponForm()">${icon("plus", 18)} کوپن جدید</button>` : ""}<div id="cu"></div>`);
-    list("#cu", () => api("/marketing/coupons?limit=50"), (c) => row(`<span class="ltr">${esc(c.code)}</span>`, `${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)} · ${c.used_count}/${c.usage_limit}${c.customer_phone ? " · " + esc(c.customer_phone) : ""}`, `<span class="badge ${c.status === "ACTIVE" ? "badge-green" : "badge-gray"}">${esc(c.status)}</span>${c.status === "ACTIVE" ? `<button class="qbtn del" onclick="run_(()=>api('/marketing/coupons/${c.id}/block',{method:'POST'}),'مسدود شد').then(showCouponsM)">${icon("close", 14)}</button>` : ""}`)); };
+  window.showCouponsM = () => { screen("کوپن‌ها", null, `${perm("marketing.manage") ? `<button class="btn btn-primary" onclick="mCouponForm()">${icon("plus", 18)} کوپن جدید</button>` : ""}<div id="cu"></div>`);
+    list("#cu", () => api("/marketing/coupons?limit=50"), (c) => row(`<span class="ltr">${esc(c.code)}</span>`, `${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)} · ${c.used_count}/${c.usage_limit}${c.customer_phone ? " · " + esc(c.customer_phone) : ""}`, `<span class="badge ${c.status === "ACTIVE" ? "badge-green" : "badge-gray"}">${esc(c.status)}</span>${c.status === "ACTIVE" && perm("marketing.manage") ? `<button class="qbtn del" onclick="run_(()=>api('/marketing/coupons/${c.id}/block',{method:'POST'}),'مسدود شد').then(showCouponsM)">${icon("close", 14)}</button>` : ""}`)); };
   window.mCouponForm = () => { sheet(`<h2>کوپن جدید</h2>${field("co-code", "کد (خالی = خودکار)", `class="ltr"`)}${sel("co-type", "نوع", [["PERCENT", "درصدی"], ["FIXED", "مبلغ ثابت"]], "PERCENT")}${field("co-val", "مقدار *", `type="number" inputmode="decimal"`)}${field("co-min", "حداقل خرید", `type="number" inputmode="numeric" value="0"`)}${field("co-phone", "فقط برای این مشتری (موبایل)", `class="ltr" inputmode="tel"`)}${field("co-limit", "تعداد دفعات استفاده", `type="number" value="1"`)}${field("co-to", "تا تاریخ (YYYY-MM-DD)", `class="ltr"`)}<button class="btn btn-primary" id="co-save">ذخیره</button><button class="btn" onclick="closeSheet()">انصراف</button>`);
     $("#co-save").onclick = async () => { if (await run(() => api("/marketing/coupons", { method: "POST", body: JSON.stringify({ code: v("co-code") || null, discount_type: v("co-type"), discount_value: num(v("co-val")), min_purchase: num(v("co-min")), customer_phone: v("co-phone") || null, usage_limit: num(v("co-limit")) || 1, valid_until: v("co-to") || null }) }), "کوپن ساخته شد")) { closeSheet(); showCouponsM(); } }; };
 
