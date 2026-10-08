@@ -133,7 +133,7 @@ def test_v492_no_cache_headers_and_frontend_contracts(client):
     assert "no-store" in res.headers.get("cache-control", "")
 
     app_js = (REPO / "frontend/app.js").read_text(encoding="utf-8")
-    assert "const UI_BUILD = 497;" in app_js
+    assert "const UI_BUILD = 498;" in app_js
     assert "function normalizeDashboardData(" in app_js
     assert "const VIEW_PERMS =" in app_js
     assert "function canView(" in app_js
@@ -153,9 +153,9 @@ def test_v492_no_cache_headers_and_frontend_contracts(client):
     assert "purge_stale_webview_cache" in run_py
 
     from app import BUILD, __version__
-    assert __version__ == "1.0.497"
-    assert BUILD == 49700
-    assert int((REPO / "mobile-android/BUILD").read_text().strip()) == 49700
+    assert __version__ == "1.0.498"
+    assert BUILD == 49800
+    assert int((REPO / "mobile-android/BUILD").read_text().strip()) == 49800
 
 
 def test_v492_mobile_sync_user_isolation_and_attendance_summary(client, auth_headers):

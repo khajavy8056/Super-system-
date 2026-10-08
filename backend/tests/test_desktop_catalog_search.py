@@ -87,37 +87,25 @@ def test_nudges_recheck_live_product_and_sellable_batch(client,milk,two_batches,
 
 
 def test_native_shell_defaults_to_fullscreen_and_never_browser(monkeypatch,tmp_path):
-    # v4.8.1 (بیلد ۴۸۲) — قرارداد عمداً عوض شد: برنامه روی سیستم فروشگاهی نصب می‌شود
-    # و باید «تمام صفحه» باز شود. حالت پنجره‌ای با SUPERMARKET_KIOSK=0 برمی‌گردد؛
-    # fallback مرورگر همچنان ممنوع است (همان سیاست 3.6.7).
-    import sys
-    from types import SimpleNamespace
+    # build-498 — قرارداد نیتیو: لانچر برنامهٔ Qt را باز می‌کند (نه مرورگر، نه WebView).
+    # کنترل تمام‌صفحه در خود برنامهٔ نیتیو است (desktop/main.py، پیش‌فرض = تمام‌صفحه).
+    import sys as _sys
+    import types as _types
     root=Path(__file__).resolve().parents[2]
     path=root/'installer/windows/run_supermarket.py'
     spec=importlib.util.spec_from_file_location('native_launcher_test',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    stub=SimpleNamespace(create_window=Mock(return_value=SimpleNamespace(events=SimpleNamespace())), start=Mock())
-    monkeypatch.setitem(sys.modules,'webview',stub)
+    calls=[]
+    stub=_types.ModuleType('desktop.main')
+    stub.run_desktop_app=lambda **kw: calls.append(kw) or 0
+    pkg=_types.ModuleType('desktop'); pkg.main=stub
+    monkeypatch.setitem(_sys.modules,'desktop',pkg)
+    monkeypatch.setitem(_sys.modules,'desktop.main',stub)
     monkeypatch.delenv('SUPERMARKET_KIOSK',raising=False)
-    assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
-    kw=stub.create_window.call_args.kwargs
-    assert kw['fullscreen'] is True and kw['frameless'] is False   # پیش‌فرض: تمام‌صفحه
-    assert kw['min_size']==(640,480)
-    monkeypatch.setenv('SUPERMARKET_KIOSK','0')
-    stub.create_window.reset_mock()
-    assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
-    kw=stub.create_window.call_args.kwargs
-    assert kw['fullscreen'] is False and kw['frameless'] is False  # عیب‌یابی: پنجرهٔ معمولی
-    monkeypatch.setenv('SUPERMARKET_KIOSK','kiosk')
-    stub.create_window.reset_mock()
-    assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
-    kw=stub.create_window.call_args.kwargs
-    assert kw['fullscreen'] is True and kw['frameless'] is True    # صندوق قفل‌شده
-    stub.start.side_effect=RuntimeError('runtime missing')
-    assert not module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
+    assert module.open_native_app(tmp_path,logging.getLogger())
+    assert len(calls)==1 and calls[0]['data_dir']==tmp_path   # برنامهٔ نیتیو باز شد
     assert 'webbrowser.open' not in path.read_text()
-    assert 'open_window(' not in path.read_text()
-
+    assert 'win.showFullScreen()' in (root/'desktop/main.py').read_text(encoding='utf-8')
 
 @pytest.mark.parametrize('visit_count,gap',[(3,30),(8,7)])
 def test_recurrence_abstains_for_small_or_short_history(visit_count,gap):

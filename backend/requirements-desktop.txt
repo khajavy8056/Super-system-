@@ -1,3 +1,4 @@
-# Required for Windows: embedded WebView2 shell, never a browser fallback.
-pywebview>=5.0,<6.0; sys_platform == "win32"
-pythonnet>=3.0; sys_platform == "win32"
+# وابستگی رابط نیتیو ویندوز (build-498 — دستورالعمل §۶).
+# برنامهٔ ویندوز یک اپ دسکتاپ واقعی Qt Widgets است: بدون مرورگر، بدون مؤلفهٔ
+# نمایش وبی، بدون کوکی و بدون کش وب. بسته‌های نمایش وبی نسخه‌های قبلی حذف شدند.
+PySide6>=6.5,<7.0

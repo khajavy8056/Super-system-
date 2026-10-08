@@ -63,27 +63,37 @@ def test_link_endpoint_gives_phone_the_pc_license_verdict(client, auth_headers):
     assert client.get("/api/mobile/link").status_code == 401
 
 
-def test_lan_beacon_answers_only_its_own_key(client, auth_headers):
+def test_lan_beacon_answers_only_its_own_key(client, auth_headers, monkeypatch):
     from app.database import SessionLocal
     from app.services import discovery
     key = client.post("/api/mobile/pair/code", headers=auth_headers).json()["link_key"]
-    discovery.start(SessionLocal, 8123)   # no-op if the app lifespan already started it (then port = settings.PORT)
-    time.sleep(0.3)
+    # bind روی پورت موقت (۰) → تست کاملاً ایزوله است و بیکنِ هیچ پروسهٔ دیگری
+    # (مثلاً سرور زندهٔ توسعه) نمی‌تواند پاسخ را بدزدد؛ پورت واقعی از BOUND_PORT.
+    # بیکنِ lifespan را (اگر فعال است) کامل خاموش کن تا بیکنِ ایزولهٔ همین تست
+    # جای آن بنشیند — وگرنه start() روی بیکنِ زندهٔ پورت ۴۸۷۶۵ no-op می‌شود.
+    discovery.stop()
+    if discovery._thread and discovery._thread.is_alive():
+        discovery._thread.join(timeout=3.0)
+    monkeypatch.setattr(discovery, "PORT", 0)
+    discovery.start(SessionLocal, 8123)
+    time.sleep(0.4)
+    port = discovery.BOUND_PORT
+    assert port and port != 48765, f"test beacon must bind an ephemeral port, got {port}"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(1.5)
-        s.sendto(f"SMKT-FIND {key}".encode(), ("127.0.0.1", discovery.PORT))
+        s.sendto(f"SMKT-FIND {key}".encode(), ("127.0.0.1", port))
         data, _ = s.recvfrom(256)
         parts = data.decode().split(" ", 3)
         assert parts[0] == "SMKT-HERE" and parts[1] in ("8123", "8000") and parts[2] == key
         # a stranger's key gets silence
-        s.sendto(b"SMKT-FIND DEADBEEF0000", ("127.0.0.1", discovery.PORT))
+        s.sendto(b"SMKT-FIND DEADBEEF0000", ("127.0.0.1", port))
         try:
             s.recvfrom(256)
             assert False, "beacon must not answer another shop's key"
         except socket.timeout:
             pass
         # an empty key (first-time auto-discover from the wizard) is answered
-        s.sendto(b"SMKT-FIND", ("127.0.0.1", discovery.PORT))
+        s.sendto(b"SMKT-FIND", ("127.0.0.1", port))
         data, _ = s.recvfrom(256)
         assert data.decode().split(" ")[2] == key
         s.close()

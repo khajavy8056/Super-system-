@@ -17,6 +17,8 @@ import threading
 log = logging.getLogger("supermarket.discovery")
 
 PORT = 48765
+#: پورت واقعیِ متصل‌شدهٔ بیکنِ جاری (برای عیب‌یابی/تست؛ با bind پورت ۰ هم درست می‌ماند)
+BOUND_PORT = PORT
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 
@@ -41,6 +43,8 @@ def _serve(session_factory, http_port: int) -> None:
     except OSError as exc:
         log.warning("discovery beacon disabled: %s", exc)
         return
+    global BOUND_PORT
+    BOUND_PORT = sock.getsockname()[1]
     log.info("LAN discovery beacon listening on udp/%s", PORT)
     while not _stop.is_set():
         try:
@@ -69,7 +73,11 @@ def _serve(session_factory, http_port: int) -> None:
 def start(session_factory, http_port: int) -> None:
     global _thread
     if _thread and _thread.is_alive():
-        return
+        if not _stop.is_set():
+            return          # بیکن سالم است — همان کافی است
+        # نخ در حالِ خاموشی است (stop() قبلی): تا خروج و آزادشدن سوکت صبر کن،
+        # وگرنه «no-op» بیکن مرده را سالم جلوه می‌دهد و گوشی هرگز پاسخ نمی‌گیرد.
+        _thread.join(timeout=3.0)
     _stop.clear()
     _thread = threading.Thread(target=_serve, args=(session_factory, http_port), name="lan-discovery", daemon=True)
     _thread.start()

@@ -169,5 +169,6 @@ def test_windows_users_ui_has_local_only_checkbox():
     assert "u-offline-allowed" in appjs and "offline_allowed" in appjs and "آفلاین مجاز" in appjs
     admin = (JAVA / "AdminScreens.java").read_text(encoding="utf-8")
     assert "offline_allowed" in admin and "اجازهٔ ورود با دادهٔ محلی" in admin
-    launcher = (Path(__file__).resolve().parents[2] / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
-    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in launcher, "the POS program must open full screen by default"
+    main_py = (Path(__file__).resolve().parents[2] / "desktop" / "main.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in main_py, "the native POS program must read the kiosk switch"
+    assert 'win.showFullScreen()' in main_py, "the POS program must open full screen by default"
