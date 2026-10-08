@@ -44,11 +44,12 @@ import random
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from ..models import (Brand, Category, Cheque, Customer, CustomerLedgerEntry, Expense, ExpenseCategory, Invoice, InvoiceItem,
-                      Payment, Product, ProductBatch, Return, StockMovement, Stocktake, StocktakeItem, Supplier, Unit, User)
+                      Payment, Product, ProductBatch, Return, Shift, ShiftAssignment, ShiftAttendance, StockMovement,
+                      Stocktake, StocktakeItem, Supplier, Unit, User)
 from . import accounting as acc_svc
 from . import catalog
 from . import inventory as inv_svc
@@ -183,6 +184,95 @@ def _stocktake_days(total_days: int) -> set[int]:
     return {d for d in marks if 0 <= d < total_days}
 
 
+#: v4.8.0 — شیفت‌های رسمیِ فروشگاه شبیه‌سازی‌شده: (نام، شروع، پایان).
+#: «تقویت پیک» فقط در روزهای پرتردد هفته (پنجشنبه/جمعه در تقویم فروشگاه) گرفته می‌شود.
+_HR_SHIFT_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("شیفت صبح", "08:00", "16:00"),
+    ("شیفت عصر", "14:00", "22:00"),
+    ("تقویت پیک", "11:00", "19:00"),
+)
+
+
+def _simulate_hr_shifts(db: Session, *, start: date, end: date, cashiers: list[User],
+                        admin: User, rng: random.Random) -> dict:
+    """یک سال شیفت‌بندی واقعی: تعریف شیفت، تخصیص روزانهٔ صندوق‌دارها و حضور/خروج هر روز.
+
+    چرا داخل خودِ شبیه‌ساز و نه در نوت‌بوک کولب (§۳ «یک شبیه‌ساز، یک مسیر»):
+    منطقی که فقط داخل یک سلول Jupyter زندگی می‌کند نه تست می‌شود، نه در CI دیده
+    می‌شود و نه تضمینی دارد که همان چیزی باشد که به فروشنده تحویل داده می‌شود.
+    اکنون همان کدی که فایل پشتیبان را می‌سازد، شیفت‌ها را هم ثبت می‌کند و
+    ``tools/simulate_year.py`` تنها مسیر اجرای آن است.
+
+    همه‌چیز از سرویس رسمی ``app.services.shifts`` رد می‌شود (همان مسیری که مدیر
+    از پنل استفاده می‌کند): تعریف شیفت، تخصیص و ساعت ورود/خروج با تأخیر و
+    خروج زودهنگامِ انسانی. بازگشتِ نتیجه، خلاصهٔ قابل چاپ در پایان اجراست.
+    """
+    from . import shifts as shift_svc
+
+    existing = {sh.name: sh for sh in db.execute(
+        select(Shift).where(Shift.name.in_([s[0] for s in _HR_SHIFT_SPECS]))).scalars().all()}
+    shifts: dict[str, Shift] = {}
+    for name, start_time, end_time in _HR_SHIFT_SPECS:
+        sh = existing.get(name)
+        if sh is None:
+            sh = shift_svc.create_shift(db, name=name, start_time=start_time, end_time=end_time,
+                                        workdays=[], store="فروشگاه شبیه‌سازی‌شده",
+                                        department="صندوق", user=admin)
+        shifts[name] = sh
+
+    names = [c.username for c in cashiers]
+    planned = 0
+    current = start
+    index = 0
+    while current <= end:
+        day_text = current.isoformat()
+        rotation = index % max(1, len(names))
+        plan = [(_HR_SHIFT_SPECS[0][0], names[rotation]),
+                (_HR_SHIFT_SPECS[1][0], names[(rotation + 1) % len(names)])]
+        if current.weekday() in (3, 4) and len(names) >= 3:   # روزهای پرتردد: شیفت کمکی
+            plan.append((_HR_SHIFT_SPECS[2][0], names[(rotation + 2) % len(names)]))
+
+        used: set[str] = set()
+        for shift_name, username in plan:
+            if username in used:          # یک نفر نمی‌تواند هم‌زمان دو شیفت داشته باشد
+                continue
+            used.add(username)
+            user = next(c for c in cashiers if c.username == username)
+            shift = shifts[shift_name]
+            shift_svc.assign(db, shift, user.id, day=day_text, actor=admin)
+            shift_start, shift_end = shift_svc.shift_window(shift, day_text)
+            late = rng.randint(2, 12) if rng.random() < 0.12 else 0
+            early = rng.randint(1, 10) if rng.random() < 0.06 else 0
+            shift_svc.clock_in(db, user, shift_id=shift.id, day=day_text,
+                               at=shift_start + timedelta(minutes=late))
+            shift_svc.clock_out(db, user, day=day_text,
+                                at=shift_end - timedelta(minutes=early))
+            planned += 1
+        current += timedelta(days=1)
+        index += 1
+
+    shift_ids = [sh.id for sh in shifts.values()]
+    span = (start.isoformat(), end.isoformat())
+    assignments = db.execute(select(func.count(ShiftAssignment.id)).where(
+        ShiftAssignment.shift_id.in_(shift_ids),
+        ShiftAssignment.day >= span[0], ShiftAssignment.day <= span[1])).scalar_one()
+    attendance = db.execute(select(func.count(ShiftAttendance.id)).where(
+        ShiftAttendance.shift_id.in_(shift_ids),
+        ShiftAttendance.day >= span[0], ShiftAttendance.day <= span[1])).scalar_one()
+    late_rows = db.execute(select(func.count(ShiftAttendance.id)).where(
+        ShiftAttendance.shift_id.in_(shift_ids),
+        ShiftAttendance.day >= span[0], ShiftAttendance.day <= span[1],
+        ShiftAttendance.late_minutes > 0)).scalar_one()
+    early_rows = db.execute(select(func.count(ShiftAttendance.id)).where(
+        ShiftAttendance.shift_id.in_(shift_ids),
+        ShiftAttendance.day >= span[0], ShiftAttendance.day <= span[1],
+        ShiftAttendance.early_leave_minutes > 0)).scalar_one()
+    return {"definitions": len(_HR_SHIFT_SPECS), "daily_assignments": int(assignments),
+            "attendance_records": int(attendance), "late_arrivals": int(late_rows),
+            "early_departures": int(early_rows), "days": (end - start).days + 1,
+            "planned_attendances_this_pass": planned}
+
+
 def _supplier_weights(n: int) -> list[float]:
     """v3.5.9 — ``random.choices`` silently ignores a population longer than its weight list,
     so a big-store build with 15 wholesalers would have kept buying from the first three only."""
@@ -192,7 +282,8 @@ def _supplier_weights(n: int) -> list[float]:
 
 
 def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day: float = 95.0, progress=None,
-             full_catalog: bool = False, resumable: bool = False, pause_after_days: int | None = None, event_callback=None) -> dict:
+             full_catalog: bool = False, resumable: bool = False, pause_after_days: int | None = None,
+             event_callback=None, hr_shifts: bool = True) -> dict:
     """Build the demo store. Idempotent guard: refuses if the DB already has > 50 invoices."""
     import math
     if not 1 <= days <= 3660 or not math.isfinite(invoices_per_day) or not 1 <= invoices_per_day <= 10000:
@@ -941,8 +1032,24 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         if progress:
             progress(1.0)
 
+        # ---- v4.8.0: شیفت‌بندی رسمی + حضور روزانه (§۱۸–۲۰) ---------------------------
+        # تعریف شیفت، تخصیص روزانهٔ صندوق‌دارها و ثبت ورود/خروج هر روز با همان
+        # سرویس رسمیِ برنامه. داخل خودِ شبیه‌ساز است تا یک منطق، یک مسیر و یک
+        # تست داشته باشد (پیش‌تر فقط در سلول کولب بود و هیچ‌کس نمی‌توانست مطمئن
+        # شود آنچه منتشر می‌شود همان چیزی است که تست شده).
+        if hr_shifts:
+            try:
+                stats["hr_shifts"] = _simulate_hr_shifts(
+                    db, start=start, end=today, cashiers=cashiers, admin=admin,
+                    rng=_rng(seed + 49600))
+                db.commit()
+            except Exception as exc:                    # پشتیبان بدون شیفت هم معتبر است
+                db.rollback()
+                stats["hr_shifts_error"] = repr(exc)
+                log.exception("demo: HR shift simulation failed")
+
         try:
-            write_audit(db, action="DEMO_STORE_GENERATED", entity_type="System", entity_id=None, after={"days": days, **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}})
+            write_audit(db, action="DEMO_STORE_GENERATED", entity_type="System", entity_id=None, after={"days": days, **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items() if not isinstance(v, dict)}})
             db.commit()
         except Exception:
             db.rollback()
@@ -1126,7 +1233,8 @@ with file_lock(_cfg["worker_lock"]) if _cfg.get("worker_lock") else nullcontext(
         with session as db:
             s = demo_store.generate(db, days=_cfg["days"], seed=_cfg["seed"],
                 invoices_per_day=_cfg["invoices_per_day"], full_catalog=_cfg["full_catalog"],
-                progress=_p, event_callback=_event, resumable=_cfg.get("resumable", False), pause_after_days=_cfg.get("pause_after_days"))
+                progress=_p, event_callback=_event, resumable=_cfg.get("resumable", False),
+                pause_after_days=_cfg.get("pause_after_days"), hr_shifts=_cfg.get("hr_shifts", True))
     except SimulationPaused as exc:
         print(str(exc), flush=True)
         sys.exit(75)
@@ -1137,7 +1245,8 @@ print("__DEMO__" + json.dumps(s))
 def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
                          invoices_per_day: float = 95.0, compress: bool = True,
                          full_catalog: bool = False, progress=None, work_dir=None, resume: bool = False,
-                         pause_after_days: int | None = None, event_callback=None) -> dict:
+                         pause_after_days: int | None = None, event_callback=None,
+                         hr_shifts: bool = True) -> dict:
     """v3.5.6 — build the standalone one-year demo store.
 
     This module's docstring has promised ``generate_backup_file(path)`` since v3.0,
@@ -1191,7 +1300,7 @@ def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
         cfg = json.dumps({"days": int(days), "seed": int(seed),
                           "invoices_per_day": float(invoices_per_day),
                           "full_catalog": bool(full_catalog), "resumable": work_dir is not None,
-                          "pause_after_days": pause_after_days,
+                          "pause_after_days": pause_after_days, "hr_shifts": bool(hr_shifts),
                           "worker_lock": str(Path(td) / "worker.lock") if work_dir else None})
         proc = subprocess.Popen([sys.executable, "-u", "-c", _CHILD, cfg],
                                 cwd=str(backend_dir), env=env, stdout=subprocess.PIPE,

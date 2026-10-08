@@ -77,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-full-catalog", action="store_true",
                     help="فقط ~۱۲۰ کالای منتخب به‌جای کل بانک پیش‌فرض (سریع‌تر برای آزمون)")
     ap.add_argument("--resume-dir", default=None, help="پوشهٔ کار قابل‌ادامه (قطع شد؟ از همان روز ادامه می‌دهد)")
+    ap.add_argument("--no-hr-shifts", action="store_true",
+                    help="بدون شیفت‌بندی/حضور کارکنان (پیش‌فرض: ثبت می‌شود)")
     args = ap.parse_args(argv)
 
     if not BACKEND.exists():
@@ -91,8 +93,15 @@ def main(argv: list[str] | None = None) -> int:
     from app.services.demo_store import generate_backup_file   # noqa: E402  (needs sys.path first)
 
     years = args.days / 365.0
+    version = "?"
+    try:
+        import re
+        version = re.search(r'__version__\s*=\s*"([^"]+)"',
+                            (BACKEND / "app" / "__init__.py").read_text(encoding="utf-8")).group(1)
+    except Exception:
+        pass
     print("=" * 64)
-    print(f"شبیه‌ساز فروشگاه — سوپری‌من v4.8.0  ({args.days} روز ≈ {years:.2f} سال)")
+    print(f"شبیه‌ساز فروشگاه — رسا سیستم {version}  ({args.days} روز ≈ {years:.2f} سال)")
     print(f"  {args.days} روز · ~{args.per_day:.0f} فاکتور در روز · بذر {args.seed}")
     print(f"  بانک کامل کالاها: {'خاموش' if args.no_full_catalog else 'روشن (۱۳٬۵۷۰ کالای پیش‌فرض)'}")
     print(f"  خروجی: {out}")
@@ -129,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         compress=not args.no_compress, full_catalog=not args.no_full_catalog,
         progress=on_progress, event_callback=on_event,
         work_dir=args.resume_dir, resume=bool(args.resume_dir),
+        hr_shifts=not args.no_hr_shifts,
     )
     bar.close()
 
@@ -145,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
         ("کالاها (منتخب + بانک کامل)", f"{summary.get('products', 0) + summary.get('long_tail_products', 0):,}"),
         ("تأمین‌کنندگان", f"{summary.get('suppliers', 0):,}"),
         ("شیفت‌های صندوق (جمع‌بندی هفتگی)", f"{summary.get('cash_sessions', 0):,}"),
+        ("تعریف شیفت کارکنان", f"{(summary.get('hr_shifts') or {}).get('definitions', 0):,}"),
+        ("تخصیص شیفت روزانه", f"{(summary.get('hr_shifts') or {}).get('daily_assignments', 0):,}"),
+        ("حضور/خروج ثبت‌شدهٔ کارکنان", f"{(summary.get('hr_shifts') or {}).get('attendance_records', 0):,}"),
         ("انبارگردانی‌های تأییدشده", f"{summary.get('stocktakes', 0):,}"),
         ("پیشنهادهای اجراشده (هوش فروشگاه)", f"{summary.get('accepted_insights', 0):,}"),
         ("پیشنهادهای سنجیده‌شده", f"{(ins or {}).get('measured', 0):,}"),
@@ -155,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     ]
     for k, v in rows:
         print(f"  {k:<38} {v}")
+    if summary.get("hr_shifts_error"):
+        print(f"  {'هشدار':<38} شیفت‌بندی کارکنان ثبت نشد: {summary['hr_shifts_error'][:90]}")
+        print(f"  {'':<38} فایل پشتیبان معتبر است اما گزارش شیفت خالی می‌ماند")
     size = out.stat().st_size if out.exists() else 0
     print(f"  {'حجم فایل پشتیبان':<38} {size / 1048576:.1f} مگابایت")
     print()
