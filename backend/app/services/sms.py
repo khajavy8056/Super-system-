@@ -17,12 +17,13 @@ Honesty rules:
 from __future__ import annotations
 
 import json
+import random
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings as app_settings
@@ -271,44 +272,97 @@ def dispatch_one(db: Session, sms_id: int) -> str:
 
 # --- Dispatcher ----------------------------------------------------------------
 
+def retry_delay_seconds(retry_count: int, *, base: int = 60, cap: int = 3600) -> float:
+    """v3.8 — exponential backoff with jitter: min(cap, base·2ⁿ) + U[0, base].
+
+    The jitter decorrelates concurrent workers so a provider outage does not
+    turn into a synchronized retry stampede when it recovers.
+    """
+    return min(cap, base * (2 ** max(0, retry_count - 1))) + random.uniform(0, base)
+
+
+def _backoff_cfg(db: Session) -> tuple[int, int]:
+    try:
+        base = max(1, int(get_setting(db, "sms.backoff_base_seconds", "60") or 60))
+    except ValueError:
+        base = 60
+    try:
+        cap = max(base, int(get_setting(db, "sms.backoff_max_seconds", "3600") or 3600))
+    except ValueError:
+        cap = 3600
+    return base, cap
+
+
 def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
-    """Process PENDING/RETRYING messages once. Returns an honest summary."""
+    """Process due PENDING/RETRYING messages once. Returns an honest summary.
+
+    v3.8 race control: each message is CLAIMED (PENDING/RETRYING → SENDING) in
+    its own committed transaction and only the worker that won the claim sends
+    it — two dispatchers can no longer double-send the same row. A SENDING row
+    whose worker died (no update for 10 minutes) becomes claimable again.
+    """
+    from ..models import SmsMessage as _M
     provider_code = get_setting(db, "sms.provider", "").strip()
     max_retries = int(get_setting(db, "sms.max_retries", "5") or 5)
+    base, cap = _backoff_cfg(db)
+    now = datetime.utcnow()
 
-    stmt = select(SmsMessage).where(
-        SmsMessage.status.in_(["PENDING", "RETRYING"])
-    ).order_by(SmsMessage.id.asc()).limit(limit)
-    messages = list(db.execute(stmt).scalars())
+    stmt = select(SmsMessage.id).where(
+        or_(SmsMessage.status.in_(["PENDING", "RETRYING"]),
+            # stuck-claim recovery: a SENDING row untouched for 10+ minutes
+            # belongs to a dead worker and re-enters the queue.
+            (SmsMessage.status == "SENDING") & (SmsMessage.updated_at < now - timedelta(minutes=10)))
+    ).order_by(SmsMessage.id.asc()).limit(limit * 2)
+    candidate_ids = list(db.execute(stmt).scalars())
 
     summary = {"provider": provider_code or None, "sent": 0, "retrying": 0,
-               "failed": 0, "skipped": 0}
+               "failed": 0, "skipped": 0, "not_due": 0, "lost_race": 0}
 
     if not provider_code:
         # No provider configured — do NOT touch the messages (stay PENDING).
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = "NO_PROVIDER_CONFIGURED"
         return summary
 
     sender = PROVIDERS.get(provider_code)
     if sender is None:
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = f"UNKNOWN_PROVIDER:{provider_code}"
         return summary
 
     if provider_code == "phone":
         # nothing to do on the PC — the phone drains the outbox itself
-        summary["skipped"] = len(messages)
+        summary["skipped"] = len(candidate_ids)
         summary["reason"] = "PHONE_SIM_HANDOFF"
         return summary
 
-    for msg in messages:
+    done = 0
+    for mid in candidate_ids:
+        if done >= limit:
+            break
+        # CLAIM in its own transaction: exactly one dispatcher wins the row.
+        claimed = db.execute(
+            update(_M).where(_M.id == mid, _M.status.in_(["PENDING", "RETRYING", "SENDING"]))
+            .values(status="SENDING")).rowcount
+        db.commit()
+        if not claimed:
+            summary["lost_race"] += 1
+            continue
+        msg = db.get(SmsMessage, mid)
+        # Backoff gate: a RETRYING row sleeps until next_retry_at.
+        if msg.next_retry_at is not None and msg.next_retry_at > datetime.utcnow():
+            msg.status = "RETRYING"
+            db.commit()
+            summary["not_due"] += 1
+            continue
+        done += 1
         try:
             response = sender(db, msg.phone, msg.text)
             msg.status = "SENT"
             msg.sent_at = datetime.utcnow()
             msg.provider_response = response
             msg.error_message = None
+            msg.next_retry_at = None
             summary["sent"] += 1
             _audit(db, "SMS_SENT", msg, provider_code)
         except SmsProviderError as exc:
@@ -316,6 +370,7 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
             msg.error_message = f"{exc.kind}: {exc.detail}"[:500]
             if msg.retry_count >= max_retries:
                 msg.status = "FAILED"
+                msg.next_retry_at = None
                 summary["failed"] += 1
                 # Only the terminal failure is audited: a message that is still
                 # going to be retried has not failed yet, and logging every
@@ -324,8 +379,10 @@ def dispatch_pending(db: Session, *, limit: int = 20) -> dict:
                        error=f"{exc.kind}: {exc.detail}")
             else:
                 msg.status = "RETRYING"
+                delay = retry_delay_seconds(msg.retry_count, base=base, cap=cap)
+                msg.next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
                 summary["retrying"] += 1
-    db.commit()
+        db.commit()
     return summary
 
 
@@ -375,8 +432,11 @@ def stop_worker() -> None:
 # --- §166 templates / §173–§176 typed messages / §171 manual retry -----------
 
 TEMPLATE_KEYS = {
+    #: v4.8.0 — قالب فاکتور حالا «{items}» دارد: ردیف‌های مرتب کالاها (یک ردیف
+    #: برای هر کالا). قالب کهنهٔ تک‌خطی هم پشتیبانی می‌شود و در آن حالت ردیف‌ها
+    #: به پیام اضافه می‌شوند — هرگز خطوط خریداری‌شده حذف نمی‌شوند.
     "invoice": ("sms.template.invoice",
-                "{store} | فاکتور {invoice} | مبلغ {amount} {currency}{coupon_line}\nاز خرید شما سپاسگزاریم"),
+                "{store} | فاکتور {invoice}\n{items}\nاز خرید شما سپاسگزاریم"),
     "debt_reminder": ("sms.template.debt_reminder",
                       "{customer} گرامی، مانده بدهی شما نزد {store} مبلغ {amount} {currency} است. با تشکر."),
     "coupon": ("sms.template.coupon",
@@ -388,16 +448,19 @@ TEMPLATE_KEYS = {
 }
 
 
+class _SafeDict(dict):
+    """قالب با جای‌نگهدار ناشناخته هم نمی‌شکند (اشتباه تایپی مدیر نباید فروش را بخواباند)."""
+
+    def __missing__(self, k):  # pragma: no cover - defensive
+        return "{" + k + "}"
+
+
 def render_template(db: Session, kind: str, **values) -> str:
     """Fill the shop-editable template for ``kind`` (§166). Unknown placeholders
     are left untouched so a typo in a template never crashes a sale."""
     key, default = TEMPLATE_KEYS[kind]
     tpl = get_setting(db, key, default) or default
-
-    class _Safe(dict):
-        def __missing__(self, k):  # pragma: no cover - defensive
-            return "{" + k + "}"
-    return tpl.format_map(_Safe(values))
+    return tpl.format_map(_SafeDict(values))
 
 
 def _store_ctx(db: Session) -> dict:
@@ -460,6 +523,7 @@ def retry_message(db: Session, sms_id: int) -> "SmsMessage":
     msg.status = "PENDING"
     msg.retry_count = 0
     msg.error_message = None
+    msg.next_retry_at = None  # manual retry sends immediately, no backoff debt
     db.flush()
     return msg
 
@@ -512,21 +576,155 @@ def outbox_report(db: Session, *, sms_id: int, status: str, response: str | None
     return msg
 
 
-def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
-    """Complete receipt; legacy short templates must never suppress purchased lines."""
+#: v4.8.0 — سقف ردیف‌های کالا در پیامک. پیش‌فرض **صفر = بدون سقف**: هیچ خط
+#: خریداری‌شده‌ای هرگز پنهان نمی‌شود (قرارداد v3.6.3). اگر فروشگاهی خواست
+#: پیامک کوتاه‌تر شود، ``sms.invoice_max_items`` را روی عدد دلخواه می‌گذارد و
+#: آن‌وقت باقیِ اقلام در یک ردیف صریح «و N قلم دیگر» خلاصه می‌شوند — نه حذف.
+INVOICE_MAX_ITEMS = 0
+#: حداکثر طول نام کالا در یک ردیف (کاراکتر) — ردیف‌ها هم‌تراز می‌مانند.
+INVOICE_NAME_LIMIT = 26
+
+
+def _fa_digits(text: str) -> str:
+    return text.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def _qty_txt(q) -> str:
+    """۲ · ۱٫۵ — عدد بدون صفر اضافی (واحدهای وزنی درست نمایش داده شوند)."""
+    f = float(q)
+    return f"{f:g}".translate(str.maketrans("0123456789.", "۰۱۲۳۴۵۶۷۸۹٫"))
+
+
+def _short(name: str, limit: int = INVOICE_NAME_LIMIT) -> str:
+    name = " ".join(str(name or "").split())
+    return name if len(name) <= limit else name[: limit - 1].rstrip() + "…"
+
+
+def render_invoice_lines(db: Session, invoice, coupon_line: str = "") -> list[str]:
+    """ردیف‌های مرتب پیامک فاکتور (v4.8.0 — درخواست مالک: «متن‌ها به‌هم‌ریخته نباشد»).
+
+    ساختار ثابت و یک‌خط‌به‌ازای‌هر‌کالا:
+
+        {store} | فاکتور {شماره} | {تاریخ}
+        ۱. نام کالا  ۲ × ۵۰٬۰۰۰ = ۱۰۰٬۰۰۰
+        …
+        جمع کالاها: …   تخفیف: …   مالیات: …   پرداختی: …
+        کد تخفیف خرید بعدی: …
+        از خرید شما سپاسگزاریم — {store}
+
+    چرا این‌طور؟ پیامک قبلی سه خط برای هر کالا داشت و روی گوشی‌های ساده به‌هم
+    می‌ریخت. اینجا هر کالا **یک ردیف** است، مبالغ با جداکنندهٔ هزارگان، و
+    ردیف‌های جمع همیشه در انتها و با ترتیب ثابت. اگر کالاها بیش از حد باشند،
+    بقیه در یک ردیف «و N قلم دیگر» خلاصه می‌شوند تا پیامک بریده نشود.
+    """
     ctx = _store_ctx(db)
-    store = ctx["store"].strip() or "فروشگاه"
-    lines = [store, f"فاکتور {invoice.invoice_number}", f"واحد مبالغ: {ctx['currency']}"]
-    for n, item in enumerate(sorted(invoice.items, key=lambda x: x.id or 0), 1):
+    store = (ctx["store"] or "").strip() or "فروشگاه"
+    cur = ctx["currency"]
+    try:
+        max_items = int(float(get_setting(db, "sms.invoice_max_items", str(INVOICE_MAX_ITEMS)) or INVOICE_MAX_ITEMS))
+    except (TypeError, ValueError, AttributeError):   # بی‌سشن در تست/پیش‌نمایش: پیش‌فرض
+        max_items = INVOICE_MAX_ITEMS
+    if max_items <= 0:
+        max_items = len(invoice.items or []) or 0
+    try:                                               # تاریخ شمسی، مثل رسید صندوق
+        from .timeservice import to_jalali
+        d = _lt_today()
+        jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+        date_txt = _fa_digits(f"{jy:04d}/{jm:02d}/{jd:02d}")
+    except Exception:                                  # never break a sale over a date
+        date_txt = ""
+    head = f"{store} | فاکتور {invoice.invoice_number}"
+    if date_txt:
+        head += f" | {date_txt}"
+
+    items = sorted(list(invoice.items or []), key=lambda x: x.id or 0)
+    digits = "۰۱۲۳۴۵۶۷۸۹"
+    lines = [head, "────────────"]
+    for n, item in enumerate(items[:max_items], 1):
         name = item.product.name if item.product else f"کالا {item.product_id}"
-        lines.extend([f"{n}. {name}",
-                      f"تعداد {item.qty:g} × قیمت واحد {_fmt(item.unit_sell_price)}",
-                      f"تخفیف {_fmt(item.discount)} | مالیات {_fmt(item.tax)} | جمع {_fmt(item.subtotal)}"])
-    lines.extend([f"جمع پیش از تخفیف: {_fmt(invoice.subtotal)}",
-                  f"تخفیف کل: {_fmt(invoice.discount)}",
-                  f"مالیات: {_fmt(invoice.tax)}",
-                  f"مبلغ نهایی: {_fmt(invoice.total_amount)} {ctx['currency']}"])
+        row = (f"{str(n).translate(str.maketrans('0123456789', digits))}. {_short(name)}  "
+               f"{_qty_txt(item.qty)} × {_fa_digits(_fmt(item.unit_sell_price))} "
+               f"= {_fa_digits(_fmt(item.subtotal))}")
+        if float(item.discount or 0) > 0:
+            row += f" (−{_fa_digits(_fmt(item.discount))})"
+        lines.append(row)
+    if len(items) > max_items:
+        rest = len(items) - max_items
+        lines.append(f"و {str(rest).translate(str.maketrans('0123456789', digits))} قلم دیگر "
+                     f"(جزئیات کامل روی رسید صندوق)")
+
+    parts = [f"جمع کالاها: {_fa_digits(_fmt(invoice.subtotal))}"]
+    if float(invoice.discount or 0) > 0:
+        parts.append(f"تخفیف: {_fa_digits(_fmt(invoice.discount))}")
+    if float(invoice.tax or 0) > 0:
+        parts.append(f"مالیات: {_fa_digits(_fmt(invoice.tax))}")
+    lines.append(" | ".join(parts))
+    lines.append(f"پرداختی: {_fa_digits(_fmt(invoice.total_amount))} {cur}")
     if coupon_line.strip():
         lines.append(coupon_line.strip())
-    lines.extend(["از خرید شما سپاسگزاریم", store])
-    return "\n".join(lines)
+    lines.append(f"از خرید شما سپاسگزاریم — {store}")
+    return lines
+
+
+def render_invoice_short(db: Session, invoice, coupon_line: str = "") -> str:
+    """نسخهٔ کوتاه فاکتور مخصوص «حالت الگو» (ملی‌پیامک §166).
+
+    الگوی ثبت‌شده در پنل، تعداد متغیرهای ثابت دارد؛ اگر رسیدِ کامل (یک ردیف برای
+    هر کالا) فرستاده شود، سرویس پیام را رد می‌کند. پس در این حالت همان قالب
+    کوتاهِ خود فروشگاه می‌رود: «{store} | فاکتور {invoice} | مبلغ …».
+    """
+    ctx = _store_ctx(db)
+    key, _default = TEMPLATE_KEYS["invoice"]
+    try:
+        tpl = (get_setting(db, key, "") or "").strip()
+    except AttributeError:          # بی‌سشن (تست/پیش‌نمایش)
+        tpl = ""
+    if not tpl or "{items}" in tpl:
+        tpl = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}"
+    body = tpl.format_map(_SafeDict({"store": ctx["store"], "invoice": invoice.invoice_number,
+                                     "amount": _fa_digits(_fmt(invoice.total_amount)), "currency": ctx["currency"],
+                                     "items": "", "customer": ""}))
+    body = "\n".join(line for line in (ln.strip() for ln in body.splitlines()) if line)
+    if coupon_line.strip():
+        body += "\n" + coupon_line.strip()
+    return body
+
+
+def render_invoice_for_mode(db: Session, invoice, coupon_line: str = "") -> str:
+    """متن فاکتور با توجه به روش ارسال (v4.8.0).
+
+    * خط اختصاصی / کاوه‌نگار / گوشی → رسید مرتب (یک ردیف برای هر کالا).
+    * حالت الگوی ملی‌پیامک → متن کوتاه، چون تعداد متغیرهای الگو ثابت است.
+    """
+    try:
+        provider = (get_setting(db, "sms.provider", "") or "").strip().lower()
+        mode = (get_setting(db, "sms.melipayamak_mode", "line") or "line").strip().lower()
+    except AttributeError:
+        provider, mode = "", "line"
+    if provider == "melipayamak" and mode == "pattern":
+        return render_invoice_short(db, invoice, coupon_line)
+    return render_invoice(db, invoice, coupon_line)
+
+
+def render_invoice(db: Session, invoice, coupon_line: str = "") -> str:
+    """Complete receipt; legacy short templates must never suppress purchased lines.
+
+    v4.8.0 — the shop-editable ``sms.template.invoice`` is honoured when it is
+    rich enough to carry the sale: a template that contains ``{items}`` gets the
+    ordered rows injected. A legacy one-line template (which used to drop every
+    purchased line) is **upgraded**: the tidy rows are appended, never replaced.
+    """
+    rows = render_invoice_lines(db, invoice, coupon_line)
+    key, default = TEMPLATE_KEYS["invoice"]
+    try:
+        tpl = (get_setting(db, key, "") or "").strip()
+    except AttributeError:      # بی‌سشن (تست/پیش‌نمایش): همان چیدمان پیش‌فرض
+        tpl = ""
+    if tpl and "{items}" in tpl:
+        ctx = _store_ctx(db)
+        body = tpl.format_map(_SafeDict({"items": "\n".join(rows[1:]),
+                                         "store": ctx["store"], "invoice": invoice.invoice_number,
+                                         "amount": _fmt(invoice.total_amount), "currency": ctx["currency"],
+                                         "customer": ""}))
+        return body
+    return "\n".join(rows)

@@ -12,8 +12,17 @@ def test_restore_demo_gz_then_plan(client, auth_headers):
     assert r.status_code == 200
     cal = r.json()["calibration"]
     assert cal, "measured insights in the demo must produce a calibration table"
+    # v3.8 honesty contract (user-ordered change): ratios are recorded RAW — the old
+    # [0.15, 2.5] clamp silently rewrote real losses as +15 % wins. The demo data
+    # happens to sit inside the old band, but nothing guarantees that anymore; what
+    # IS guaranteed is finite ratios plus full outcome statistics (see
+    # test_v38_calibration_honest.py for the negative-outcome proof).
+    import math
     for k, v in cal.items():
-        assert v["n"] >= 1 and 0.15 <= v["ratio"] <= 2.5
+        assert v["n"] >= 1 and math.isfinite(v["ratio"])
+        assert v["n_positive"] + v["n_zero"] + v["n_negative"] == v["n"]
+        assert v["mae"] is not None and v["mean_error"] is not None
+        assert v["direction_accuracy"] is not None and len(v["ratio_ci95"]) == 2
     # re-run analyzers → expected gains are calibrated and carry a forecast band
     r = client.post("/api/insights/run", headers=auth_headers)
     assert r.status_code == 200

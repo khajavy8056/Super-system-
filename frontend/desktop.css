@@ -1,12 +1,15 @@
 /* 3.6.6 — desktop workspace: RTL, adaptive columns, readable data, scoped overflow. */
 :root { --workspace-radius: 18px; }
 html:not(.m-shell) body { background: var(--bg); line-height: 1.7; }
-html:not(.m-shell) .sidebar { width: 238px; flex: 0 0 238px; position: sticky; top: 0; height: 100dvh; background: linear-gradient(165deg,#101c38,#0b1328); color: #edf3ff; border-color: #263453; }
-html:not(.m-shell) .sidebar .muted, html:not(.m-shell) .nav-item { color: #b5c3dd; }
+/* v1.0.0 (RASA) — نوار کناری از توکن‌های پوسته تغذیه می‌شود، نه رنگ دستی.
+   (باگ مالک: در حالت روشن، نوار کناری تیره می‌ماند — منبعش همین رنگ‌های ثابت بود.) */
+html:not(.m-shell) .sidebar { width: 238px; flex: 0 0 238px; position: sticky; top: 0; height: 100dvh; background: var(--shell-bg); color: var(--shell-fg); border-color: var(--shell-border); }
+html:not(.m-shell) .sidebar .muted, html:not(.m-shell) .sidebar .nav-item { color: var(--shell-muted); }
+html:not(.m-shell) .sidebar .nav-item.active { color: var(--shell-active-fg); }
 html:not(.m-shell) .nav-item.active { color: white; background: linear-gradient(110deg,#255ee9,#7450e8); box-shadow: 0 4px 16px #0002; }
 html:not(.m-shell) .nav-item { margin: 4px 0; padding: 11px 14px; }
-html:not(.m-shell) .brand { padding: 24px 18px; border-color: #ffffff16; }
-html:not(.m-shell) .sidebar-footer { border-color: #ffffff16; }
+html:not(.m-shell) .brand { padding: 24px 18px; border-color: var(--shell-border); }
+html:not(.m-shell) .sidebar-footer { border-color: var(--shell-border); }
 html:not(.m-shell) .topbar { padding: 17px 28px; min-height: 80px; background: var(--bg2); backdrop-filter: none; flex-wrap: wrap; }
 #topbar-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .topbar h2 { flex-shrink: 0; }
@@ -140,3 +143,15 @@ html:not(.m-shell)[data-theme="light"] {
   --bg:#f2f4ff; --bg2:#ffffff; --card:#ffffff; --border:#c4cded;
   --text:#101c3c; --muted:#546489;
 }
+
+/* v4.8.1 (بیلد ۴۸۲) — نوار دکمه‌های دسته‌بندی/فیلتر (گروه‌های «هوش فروشگاه»، تب‌ها و
+   هر ردیف دکمه‌ای) در هر اندازه‌ای باید سالم بماند: به خط بعد می‌شکند، جمع می‌شود و
+   هرگز نیمی از صفحه را نمی‌شکند — هم ویندوز، هم پوستهٔ موبایل. */
+.ins-groups, #ins-tabs, .set-tabs, .acc-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; align-items: center;
+}
+.ins-groups .set-tab, #ins-tabs .set-tab, .set-tab {
+  flex: 0 1 auto; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: center;
+}
+html.m-shell .ins-groups, html.m-shell #ins-tabs { flex-wrap: wrap; overflow-x: visible; }
+html.m-shell .set-tabs { flex-wrap: wrap; }

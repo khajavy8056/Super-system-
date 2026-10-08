@@ -5,8 +5,6 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
@@ -31,8 +29,8 @@ import java.util.List;
  *    A) «نسخهٔ رایانه را دارم»  → pair (QR / 6-digit code / address+login). The PC's
  *       licence is checked right at pairing (/mobile/link) and becomes the phone's licence.
  *    B) «فقط گوشی — رایانه ندارم» → licence key on the phone → store name → contact →
- *       currency → theme → starter catalogue → admin → finish → ONE-TIME long install
- *       loading (same phases as Windows; never shows minutes) → app.
+ *       currency → theme → optional starter catalogue → admin → local SQLite schema → app.
+ *       Catalogue import and Sync continue in the background; they never gate first use.
  */
 public class SetupActivity extends Activity {
     private static final int REQ_SCAN = 61;
@@ -41,7 +39,7 @@ public class SetupActivity extends Activity {
     private LinearLayout pane; private TextView stepLbl; private LinearLayout root; private LinearLayout dots;
     private int step = -1; // -1 welcome, -2 mode, -3 pair ; >=0 index into STEPS_OWN
     private final JSONObject data = new JSONObject();
-    private final Handler h = new Handler(Looper.getMainLooper());
+    private boolean installing;
     private TextView pairStatus; private EditText addr;
 
     @Override protected void onCreate(Bundle b) {
@@ -53,10 +51,13 @@ public class SetupActivity extends Activity {
         dots = Ui.row(this); dots.setPadding(0, Ui.dp(12), 0, Ui.dp(6)); root.addView(dots);
         pane = Ui.col(this); root.addView(pane);
         setContentView(Ui.scroll(this, root));
+        // Build 494: a pre-494 installer left a persisted 45-minute timer even though
+        // the wizard had already saved the local store/admin. Release it and let the
+        // app's normal background bootstrap resume any interrupted catalogue import.
+        if (InstallRecovery.releaseLegacyDelay()) { finishSetup(true); return; }
         Intent in = getIntent();
         if (in != null && in.getData() != null) { showPair(); handlePayload(in.getData().toString()); }
         else if (in != null && in.getBooleanExtra("pair", false)) showPair();
-        else if (resumeInstallIfRunning()) { /* v2.3: background install still running */ }
         else showWelcome();
     }
 
@@ -200,7 +201,7 @@ public class SetupActivity extends Activity {
                 break;
             }
             case "catalog": {
-                title("بانک اولیهٔ کالا", "بانک محصولات اصلی فروشگاه (نام + دسته + تصویر) بعد از نصب از تنظیمات → «بانک محصولات» از رایانه یا فایل catalog.pack دریافت می‌شود. جدا از آن، می‌توانید با یک بانک آمادهٔ کالاهای رایج سوپرمارکت (حدود ۱۹۰ قلم با دسته‌بندی و واحد، بدون قیمت) شروع کنید یا کاتالوگ را خودتان بسازید.");
+                title("بانک اولیهٔ کالا", "بانک محصولات اصلی فروشگاه (نام + دسته + تصویر) بعد از نصب از تنظیمات → «بانک محصولات» از رایانه یا فایل catalog.pack دریافت می‌شود. جدا از آن، می‌توانید فهرست پیش‌فرض سوپرمارکت (۱۶٬۹۵۳ کالا، بدون قیمت و موجودی) را پس از ورود در پس‌زمینه بارگذاری کنید یا از صفر شروع کنید.");
                 final boolean[] imp = {!data.has("starter") || data.optBoolean("starter")};
                 Runnable[] rd = new Runnable[1]; LinearLayout box = Ui.col(this); pane.addView(box);
                 rd[0] = () -> { box.removeAllViews(); box.addView(choice("بله، بانک آماده بارگذاری شود", "کالاها بدون قیمت و موجودی ثبت می‌شوند؛ قیمت با اولین «ورود کالا» به بچ تعلق می‌گیرد.", imp[0], () -> { imp[0] = true; rd[0].run(); })); box.addView(choice("خیر، از صفر شروع می‌کنم", "کالاها را با اسکن بارکد یکی‌یکی تعریف می‌کنم.", !imp[0], () -> { imp[0] = false; rd[0].run(); })); };
@@ -228,71 +229,84 @@ public class SetupActivity extends Activity {
         }
     }
 
-    /* ---------------- one-time install (long loading; NO minutes shown) ---------------- */
-    static final String[][] PHASES = {{"برقراری ارتباط با سرویس لایسنس", "0.04"}, {"ایجاد ساختار پایگاه داده", "0.10"}, {"اجرای مهاجرت‌های اسکیمای داده", "0.18"}, {"نصب ماژول حسابداری دوطرفه", "0.28"}, {"پیکربندی موتور صندوق (POS)", "0.36"}, {"آماده‌سازی موتور بارکد و واحدها", "0.44"}, {"وارد کردن بانک اولیهٔ کالا", "0.55"}, {"ساخت ایندکس‌های جستجو", "0.63"}, {"پیکربندی پوسته و تقویم شمسی", "0.70"}, {"آماده‌سازی چاپ فاکتور (بلوتوث / اشتراک)", "0.78"}, {"راه‌اندازی صف همگام‌سازی آفلاین", "0.86"}, {"اعمال تنظیمات فروشگاه", "0.93"}, {"بررسی نهایی و بهینه‌سازی", "1.0"}};
+    /* ---------------- one-time install (local schema only; optional catalog is background work) ---------------- */
     void install() {
-        // persist the store profile on the phone (standalone has no PC)
+        // Persist the store profile on the phone (standalone has no PC).
         Prefs.set("store_name", str("store_name")); Prefs.set("store_json", data.toString()); Prefs.set("store_mobile", str("mobile"));
         Prefs.set("currency_label", "IRT".equals(str("currency")) ? "تومان" : "ریال"); Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         Prefs.set("theme_pref", str("theme")); Prefs.set("theme_resolved", "light".equals(str("theme")) ? "light" : "dark".equals(str("theme")) ? "dark" : (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) >= 7 && java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) < 19 ? "light" : "dark"));
-        // v3.5.11: the admin password is hashed on its own — never salted with the device id,
-        // which is what made a correct password read as wrong once that id moved.
-        try { JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL); Prefs.set("user_json", u.toString()); Prefs.set("local_admin_hash", Local.sha(str("admin_username") + "|" + str("admin_password"))); } catch (Exception ignore) {}
-        // v3.5.11: a time-based id here made every install a "new device"; the hardware seed cannot move.
+        // v3.5.11: keep the standalone administrator verifier independent of the device id.
+        try {
+            JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL);
+            Prefs.set("user_json", u.toString());
+            Prefs.set("local_admin_hash", Local.sha(str("admin_username") + "|" + str("admin_password")));
+        } catch (org.json.JSONException e) {
+            Ui.toast("ذخیرهٔ حساب مدیر انجام نشد: " + e.getMessage());
+            return;
+        }
+        // v3.5.11: retain one stable identity across reinstalls/re-login.
         Prefs.save(this, "http://standalone.invalid", "", str("store_name"), Prefs.deviceIdStatic() == null ? Prefs.hwidSeed() : Prefs.deviceIdStatic());
         Prefs.set("lic_mode", "own"); Session.start();
-        final boolean starter = data.optBoolean("starter");
-        boolean fast = "1".equals(Prefs.get("loading_fast", "")) || getIntent().getBooleanExtra("fastload", false);
-        long total = fast ? 6000L : 45L * 60L * 1000L;
-        // v2.3: the long first-time loading runs in a foreground service (progress in the
-        // status bar); this screen only mirrors it, so leaving the app never resets it.
-        Prefs.set("install_starter", starter ? "1" : "0"); Prefs.set("install_work_done", "");
-        InstallService.start(this, total);
-        loadingScreen(total, null, () -> finishSetup(true));
+        Prefs.set("install_starter", data.optBoolean("starter") ? "1" : "0");
+        // Do not make the first usable screen wait for a large optional seed catalogue.
+        // AppActivity opens the local schema, then Db.bootstrap imports the selected
+        // catalogue on a worker while the user can already navigate and work.
+        loadingScreen(() -> finishSetup(true));
     }
-    /** phase label for an eased progress value (shared with the notification). */
-    static String phaseAt(double eased) { for (String[] p : PHASES) if (eased < Double.parseDouble(p[1])) return p[0]; return PHASES[PHASES.length - 1][0]; }
-    /** re-entering the wizard while the install service is running → show the same loading screen. */
-    boolean resumeInstallIfRunning() {
-        if (!InstallService.running()) return false;
-        long total = 1; try { total = Long.parseLong(Prefs.get("install_total", "1")); } catch (Exception ignore) {}
-        loadingScreen(total, null, () -> finishSetup(true)); return true;
-    }
-    void loadingScreen(long totalMs, Runnable work, Runnable done) {
-        pane.removeAllViews(); dots.removeAllViews(); stepLbl.setText("در حال نصب");
-        LinearLayout box = Ui.col(this); box.setGravity(Gravity.CENTER_HORIZONTAL); box.setPadding(0, Ui.dp(10), 0, 0);
-        TextView h1 = Ui.h1(this, "در حال نصب و پیکربندی سامانه"); h1.setGravity(Gravity.CENTER); box.addView(h1);
-        TextView sub = Ui.muted(this, "این مرحله فقط بار اول انجام می‌شود. لطفاً برنامه را نبندید و گوشی را خاموش نکنید."); sub.setGravity(Gravity.CENTER); box.addView(sub);
-        TextView pct = Ui.text(this, "۰٪", 44, Ui.PRIMARY, true); pct.setGravity(Gravity.CENTER); pct.setPadding(0, Ui.dp(18), 0, Ui.dp(6)); box.addView(pct);
-        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(1000); bar.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 14)); box.addView(bar);
-        TextView eta = Ui.muted(this, "لطفاً صبر کنید"); eta.setGravity(Gravity.CENTER); box.addView(eta);
-        LinearLayout ph = Ui.card(this, null); final TextView[] rows = new TextView[PHASES.length]; for (int i = 0; i < PHASES.length; i++) { rows[i] = Ui.body(this, "○  " + PHASES[i][0]); rows[i].setTextColor(Ui.MUTED); ph.addView(rows[i]); } box.addView(ph);
-        TextView log = Ui.muted(this, ""); box.addView(log);
-        pane.addView(box);
-        long t0x = System.currentTimeMillis(); try { if (!Prefs.get("install_t0", "").isEmpty()) t0x = Long.parseLong(Prefs.get("install_t0", "")); } catch (Exception ignore) {}
-        final long t0 = t0x; final boolean[] workDone = {work == null}; final int[] last = {-1};
-        if (work != null) Api.bg(() -> { try { work.run(); } catch (Exception ignore) {} workDone[0] = true; });
-        sub.setText("این مرحله فقط بار اول انجام می‌شود. می‌توانید برنامه را ببندید؛ نصب در پس‌زمینه ادامه می‌یابد و پیشرفت آن در نوار اعلان دیده می‌شود.");
-        final String[] noise = {"اتصال برقرار شد", "بستهٔ داده دریافت شد", "جدول به‌روزرسانی شد", "ایندکس ساخته شد", "بررسی یکپارچگی: موفق", "پیکربندی اعمال شد"};
-        Runnable[] tick = new Runnable[1];
-        tick[0] = () -> {
-            double p = Math.min(1.0, (System.currentTimeMillis() - t0) / (double) totalMs);
-            double eased = p < 0.9 ? Math.pow(p, 0.85) * 0.92 : 0.92 + (p - 0.9) * 0.8;
-            int pc = (int) Math.min(100, Math.round(eased * 100)); pct.setText(Ui.fa(String.valueOf(pc)) + "٪"); bar.setProgress((int) (eased * 1000));
-            int cur = PHASES.length - 1; for (int i = 0; i < PHASES.length; i++) if (eased < Double.parseDouble(PHASES[i][1])) { cur = i; break; }
-            if (cur != last[0]) { for (int i = 0; i < PHASES.length; i++) { rows[i].setText((i < cur ? "✓  " : i == cur ? "▸  " : "○  ") + PHASES[i][0]); rows[i].setTextColor(i < cur ? Ui.GREEN : i == cur ? Ui.TEXT : Ui.MUTED); } log.setText("▸ " + PHASES[cur][0] + "…"); last[0] = cur; }
-            else if (Math.random() < 0.04) log.setText(noise[(int) (Math.random() * noise.length)]);
-            if (p >= 1 && (workDone[0] && (work != null || "1".equals(Prefs.get("install_work_done", "")) || "1".equals(Prefs.get("first_loading_done", ""))))) { eta.setText("آماده شد"); h.postDelayed(done, 600); return; }
-            h.postDelayed(tick[0], 250);
-        };
-        tick[0].run();
+
+    /** Prepare only the local SQLite schema here; all seed imports run after the app opens. */
+    void loadingScreen(Runnable done) {
+        installing = true;
+        pane.removeAllViews(); dots.removeAllViews(); stepLbl.setText("آماده‌سازی فروشگاه");
+        LinearLayout box = Ui.col(this); box.setGravity(Gravity.CENTER_HORIZONTAL); box.setPadding(0, Ui.dp(12), 0, 0);
+        TextView heading = Ui.h1(this, "در حال آماده‌سازی فروشگاه"); heading.setGravity(Gravity.CENTER); box.addView(heading);
+        TextView status = Ui.body(this, "در حال ساخت پایگاه دادهٔ محلی…"); status.setGravity(Gravity.CENTER); status.setPadding(0, Ui.dp(10), 0, Ui.dp(10)); box.addView(status);
+        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setIndeterminate(true);
+        bar.setLayoutParams(Ui.margin(Ui.match(), 0, 4, 0, 14)); box.addView(bar);
+        TextView detail = Ui.muted(this, "پس از آماده‌شدن پایگاه داده، برنامه باز می‌شود. بانک کالا و همگام‌سازی (در صورت انتخاب) ادامه می‌یابند در پس‌زمینه.");
+        detail.setGravity(Gravity.CENTER); box.addView(detail); pane.addView(box);
+
+        Api.bg(() -> {
+            try {
+                // Force SQLiteOpenHelper to create and validate the local schema before
+                // the first screen; do not wait for thousands of optional seed rows.
+                Db.db();
+            } catch (RuntimeException e) {
+                String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                Api.ui(() -> {
+                    if (isFinishing()) return;
+                    installing = false;
+                    bar.setVisibility(View.GONE);
+                    status.setText("ساخت پایگاه دادهٔ محلی انجام نشد.");
+                    detail.setText(message);
+                    box.addView(Ui.primary(this, "تلاش دوباره", () -> loadingScreen(done)));
+                });
+                return;
+            }
+            Api.ui(() -> {
+                if (isFinishing()) return;
+                status.setText("پایگاه دادهٔ محلی آماده است؛ برنامه در حال باز شدن…");
+                bar.setIndeterminate(false); bar.setMax(100); bar.setProgress(100);
+                Api.ui(() -> {
+                    if (isFinishing()) return;
+                    installing = false;
+                    done.run();
+                }, 350);
+            });
+        });
     }
 
     void finishSetup(boolean standalone) {
         Prefs.set("setup_done", "1"); Session.start();   // the wizard itself authenticated the user (PC login or admin creation)
-        if (standalone) Prefs.set("first_loading_done", "1");
+        if (standalone) {
+            Prefs.set("first_loading_done", "1");
+            Prefs.set("install_t0", ""); Prefs.set("install_total", ""); Prefs.set("install_work_done", "1");
+        }
         startActivity(new Intent(this, AppActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)); finish();
     }
-    @Override public void onBackPressed() { if (step == -1) super.onBackPressed(); else if (step == -2 || step == -3) { if (step == -3) showMode(); else showWelcome(); } else if (step == 0) showMode(); else { step--; showStep(); } }
+    @Override public void onBackPressed() {
+        if (installing) return;
+        if (step == -1) super.onBackPressed(); else if (step == -2 || step == -3) { if (step == -3) showMode(); else showWelcome(); } else if (step == 0) showMode(); else { step--; showStep(); }
+    }
     @Override protected void onResume() { super.onResume(); LockActivity.top = this; }
 }

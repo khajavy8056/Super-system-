@@ -1,15 +1,16 @@
 """Customer phone book + credit accounts (§30–35, §42)."""
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Customer, Invoice, User
+from ..models import Campaign, Customer, Invoice, User
 from ..security import get_current_user, require_permission
 from ..services import ledger as ledger_svc
 from ..services.audit import write_audit
@@ -306,6 +307,65 @@ def adjust_ledger(customer_id: int, body: AdjustIn, db: Session = Depends(get_db
 class DebtReminderIn(BaseModel):
     #: Optional override; when omitted the configured template is rendered.
     text: str | None = None
+
+
+@router.get("/{customer_id}/benefits")
+def customer_benefits(customer_id: int, db: Session = Depends(get_db),
+                      _: User = Depends(require_permission("pos.sell"))):
+    """build-481 (§27–28) — future-purchase benefits on the customer profile.
+
+    Every coupon issued *for* this customer (next-purchase festivals, VIP/winback
+    packs, personal coupons) is listed with its real condition, discount,
+    deadline and lifecycle state — the same rows the POS redeems, never a copy:
+
+        ACTIVE  → «فعال» (usable the moment the condition is met)
+        USED    → «استفاده‌شده»
+        EXPIRED → «منقضی»
+        BLOCKED → «مسدود»
+
+    A benefit is marked ``eligible_now`` when this customer's typical basket
+    already clears its ``min_purchase`` — i.e. nothing else stands between them
+    and the discount.
+    """
+    from ..models import Coupon, CouponRedemption, Invoice
+    from ..services.coupons import _expire_if_needed
+
+    cust = db.get(Customer, customer_id)
+    if not cust:
+        raise HTTPException(status_code=404, detail="CUSTOMER_NOT_FOUND")
+    now = datetime.utcnow()
+    rows = db.execute(select(Coupon).where(Coupon.customer_id == customer_id)
+                      .order_by(Coupon.id.desc())).scalars().all()
+    # typical basket of this customer (last 10 paid invoices) → eligibility hint
+    totals = [float(t) for (t,) in db.execute(
+        select(Invoice.total_amount).where(Invoice.customer_id == customer_id,
+                                           Invoice.status == "PAID")
+        .order_by(Invoice.id.desc()).limit(10)).all()]
+    typical = sum(totals) / len(totals) if totals else 0.0
+    out = []
+    for c in rows:
+        _expire_if_needed(c, now)
+        used = db.execute(select(func.coalesce(func.sum(CouponRedemption.amount), 0))
+                          .where(CouponRedemption.coupon_id == c.id)).scalar_one()
+        campaign = db.get(Campaign, c.campaign_id) if c.campaign_id else None
+        out.append({
+            "id": c.id, "code": c.code, "status": c.status,
+            "discount_type": c.discount_type, "discount_value": float(c.discount_value),
+            "min_purchase": float(c.min_purchase),
+            "max_discount": float(c.max_discount) if c.max_discount is not None else None,
+            "valid_from": c.valid_from.isoformat() if c.valid_from else None,
+            "valid_until": c.valid_until.isoformat() if c.valid_until else None,
+            "campaign": campaign.name if campaign else None,
+            "source": "NEXT_PURCHASE" if (campaign and campaign.auto_issue_threshold) else "OFFER",
+            "condition": (f"خرید بالای {float(c.min_purchase):,.0f}" if c.min_purchase else "بدون شرط مبلغ"),
+            "benefit": (f"{float(c.discount_value):g}٪" if c.discount_type == "PERCENT"
+                        else f"{float(c.discount_value):,.0f} تومان"),
+            "used_amount": float(used or 0),
+            "eligible_now": bool(c.status == "ACTIVE" and (not c.min_purchase or typical >= float(c.min_purchase))),
+            "note": c.note,
+        })
+    db.commit()   # persist any lazy EXPIRED flips
+    return {"customer_id": customer_id, "typical_basket": typical, "benefits": out}
 
 
 @router.post("/{customer_id}/debt-reminder", status_code=201)

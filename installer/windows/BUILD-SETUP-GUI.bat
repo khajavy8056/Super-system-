@@ -73,7 +73,7 @@ echo      BUILD-SETUP.bat
 echo  It uses the identical build engine and prints the underlying error.
 echo.
 echo  A detailed log is written to:
-echo      %%USERPROFILE%%\SupermarketSystem-build\build.log
+echo      %%USERPROFILE%%\RasaSystem-build\build.log
 echo      installer\windows\build.log
 echo.
 pause

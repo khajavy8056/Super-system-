@@ -77,13 +77,19 @@ def test_nudges_recheck_live_product_and_sellable_batch(client,milk,two_batches,
         result=insights.nudges(db,[-100])
         if state=='valid':
             assert result[0]['name']==product.name
-            assert result[0]['purpose']=='sell_now'
+            # v4.7.0: the two_batches fixture carries a +30d expiry — inside the
+            # near-expiry window — so an honest nudge flags it sell_before_expiry
+            # (the owner's «نزدیک شدیم نه عبور کرده» priority), not plain sell_now.
+            assert result[0]['purpose']=='sell_before_expiry'
             assert insights.nudges(db,[-100,product.id])==[]
         else: assert result==[]
         db.rollback()
 
 
-def test_native_shell_defaults_to_resizable_window_and_never_browser(monkeypatch,tmp_path):
+def test_native_shell_defaults_to_fullscreen_and_never_browser(monkeypatch,tmp_path):
+    # v4.8.1 (بیلد ۴۸۲) — قرارداد عمداً عوض شد: برنامه روی سیستم فروشگاهی نصب می‌شود
+    # و باید «تمام صفحه» باز شود. حالت پنجره‌ای با SUPERMARKET_KIOSK=0 برمی‌گردد؛
+    # fallback مرورگر همچنان ممنوع است (همان سیاست 3.6.7).
     import sys
     from types import SimpleNamespace
     root=Path(__file__).resolve().parents[2]
@@ -95,8 +101,18 @@ def test_native_shell_defaults_to_resizable_window_and_never_browser(monkeypatch
     monkeypatch.delenv('SUPERMARKET_KIOSK',raising=False)
     assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
     kw=stub.create_window.call_args.kwargs
-    assert kw['fullscreen'] is False and kw['frameless'] is False
+    assert kw['fullscreen'] is True and kw['frameless'] is False   # پیش‌فرض: تمام‌صفحه
     assert kw['min_size']==(640,480)
+    monkeypatch.setenv('SUPERMARKET_KIOSK','0')
+    stub.create_window.reset_mock()
+    assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
+    kw=stub.create_window.call_args.kwargs
+    assert kw['fullscreen'] is False and kw['frameless'] is False  # عیب‌یابی: پنجرهٔ معمولی
+    monkeypatch.setenv('SUPERMARKET_KIOSK','kiosk')
+    stub.create_window.reset_mock()
+    assert module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
+    kw=stub.create_window.call_args.kwargs
+    assert kw['fullscreen'] is True and kw['frameless'] is True    # صندوق قفل‌شده
     stub.start.side_effect=RuntimeError('runtime missing')
     assert not module.open_native_window('http://127.0.0.1:1',tmp_path,logging.getLogger(),lambda:None)
     assert 'webbrowser.open' not in path.read_text()

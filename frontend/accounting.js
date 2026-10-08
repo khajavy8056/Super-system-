@@ -42,8 +42,10 @@
   /* ---------- overview ---------- */
   VIEWS.overview = async (body) => {
     const o = await api("/accounting/overview");
+    if (!body || !body.isConnected) return;
+    const canPost = can("accounting.post");
     const kp = (label, val, ic, cls = "") => `<div class="kpi ${cls}"><span class="kpi-ic">${icon(ic, 22)}</span><div><span class="kpi-label">${label}</span><b class="kpi-val">${money(val)}</b></div></div>`;
-    const due = o.cheques.overdue.map((c) => `<li><span>${c.direction === "RECEIVED" ? "دریافتی" : "پرداختی"} ${esc(c.number)} · ${esc(c.party_name || "")}</span><b>${money(c.amount)}</b><span class="muted">${jd(c.due_date)}</span></li>`).join("");
+    const due = ((o.cheques && o.cheques.overdue) || []).map((c) => `<li><span>${c.direction === "RECEIVED" ? "دریافتی" : "پرداختی"} ${esc(c.number)} · ${esc(c.party_name || "")}</span><b>${money(c.amount)}</b><span class="muted">${jd(c.due_date)}</span></li>`).join("");
     body.innerHTML = `
       <div class="kpi-grid">
         ${kp("موجودی صندوق", o.cash, "cash", "kpi-green")}
@@ -73,22 +75,23 @@
         </div>
         <div class="card"><h3>${icon("ledger", 18)} اقدام سریع</h3>
           <div class="quick-grid">
-            <button class="qa qa-green" id="qa-expense">${icon("cash", 20)}<span>ثبت هزینه</span></button>
-            <button class="qa qa-blue" id="qa-cheque">${icon("cheque", 20)}<span>ثبت چک</span></button>
-            <button class="qa qa-violet" id="qa-entry">${icon("ledger", 20)}<span>سند دستی</span></button>
+            ${canPost ? `<button class="qa qa-green" id="qa-expense">${icon("cash", 20)}<span>ثبت هزینه</span></button>` : ""}
+            ${canPost ? `<button class="qa qa-blue" id="qa-cheque">${icon("cheque", 20)}<span>ثبت چک</span></button>` : ""}
+            ${canPost ? `<button class="qa qa-violet" id="qa-entry">${icon("ledger", 20)}<span>سند دستی</span></button>` : ""}
             <button class="qa qa-amber" id="qa-session">${icon("cash", 20)}<span>شیفت صندوق</span></button>
           </div>
           <div class="muted" style="margin-top:10px">${fa(o.entry_count)} سند ثبت‌شده در دفتر روزنامه</div>
         </div>
       </div>`;
-    $("#qa-expense").onclick = () => expenseModal();
-    $("#qa-cheque").onclick = () => chequeModal();
-    $("#qa-entry").onclick = () => manualEntryModal();
-    $("#qa-session").onclick = () => { tab = "sessions"; drawTabs(); show(tab); };
+    if ($("#qa-expense")) $("#qa-expense").onclick = () => expenseModal();
+    if ($("#qa-cheque")) $("#qa-cheque").onclick = () => chequeModal();
+    if ($("#qa-entry")) $("#qa-entry").onclick = () => manualEntryModal();
+    if ($("#qa-session")) $("#qa-session").onclick = () => { tab = "sessions"; drawTabs(); show(tab); };
   };
 
   /* ---------- journal ---------- */
   VIEWS.journal = async (body) => {
+    const canPost = can("accounting.post");
     body.innerHTML = `<div class="card">
       <div class="card-head"><h3>دفتر روزنامه</h3>
         <div class="row" style="gap:8px;flex-wrap:wrap">
@@ -97,28 +100,31 @@
           <select id="j-kind" style="width:150px"><option value="">همهٔ انواع</option>${Object.entries(KIND_FA).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
           <input id="j-q" placeholder="جستجو در شرح…" style="width:180px" />
           <button id="j-go" class="btn">نمایش</button>
-          <button id="j-new" class="btn btn-primary">+ سند دستی</button>
+          ${canPost ? `<button id="j-new" class="btn btn-primary">+ سند دستی</button>` : ""}
         </div></div>
       <div class="table-wrap"><table id="j-table"></table></div><div id="j-more" class="muted" style="margin-top:8px"></div></div>`;
     Jalali.attachAll(body);
     const load = async () => {
       const q = new URLSearchParams();
-      const st = $("#j-start").value, en = $("#j-end").value;
+      const st = $("#j-start") ? $("#j-start").value : "", en = $("#j-end") ? $("#j-end").value : "";
       if (st) q.set("start", st); if (en) q.set("end", en);
-      if ($("#j-kind").value) q.set("kind", $("#j-kind").value);
-      if ($("#j-q").value.trim()) q.set("q", $("#j-q").value.trim());
+      if ($("#j-kind") && $("#j-kind").value) q.set("kind", $("#j-kind").value);
+      if ($("#j-q") && $("#j-q").value.trim()) q.set("q", $("#j-q").value.trim());
       q.set("limit", "150");
       const r = await api(`/accounting/journal?${q}`);
-      $("#j-table").innerHTML = `<thead><tr><th>شماره</th><th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ</th><th>وضعیت</th><th></th></tr></thead><tbody>${
-        r.items.map((e) => `<tr class="j-row" data-id="${e.id}">
+      const jTable = $("#j-table"), jMore = $("#j-more");
+      if (!jTable || !jTable.isConnected) return;
+      jTable.innerHTML = `<thead><tr><th>شماره</th><th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ</th><th>وضعیت</th><th></th></tr></thead><tbody>${
+        (r.items || []).map((e) => `<tr class="j-row" data-id="${e.id}">
           <td class="ltr">${fa(e.number)}</td><td>${jd(e.date)}</td><td><span class="badge badge-blue">${KIND_FA[e.kind] || e.kind}</span></td>
           <td>${esc(e.description || "")}</td><td>${money(e.total)}</td>
           <td><span class="badge ${e.status === "REVERSED" ? "badge-red" : "badge-green"}">${STATUS_FA[e.status] || e.status}</span></td>
           <td><button class="btn btn-sm j-open">مشاهده</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">سندی یافت نشد</td></tr>`}</tbody>`;
-      $("#j-more").textContent = `${fa(r.items.length)} از ${fa(r.total)} سند`;
+      if (jMore) jMore.textContent = `${fa((r.items || []).length)} از ${fa(r.total || 0)} سند`;
       body.querySelectorAll(".j-open").forEach((b) => b.addEventListener("click", () => entryModal(Number(b.closest("tr").dataset.id))));
     };
-    $("#j-go").onclick = load; $("#j-new").onclick = () => manualEntryModal(load);
+    $("#j-go").onclick = load;
+    if ($("#j-new")) $("#j-new").onclick = () => manualEntryModal(load);
     await load();
   };
 
@@ -134,9 +140,20 @@
         <span class="badge ${e.status === "REVERSED" ? "badge-red" : "badge-green"}">${STATUS_FA[e.status] || e.status}</span>
         <div>${e.status !== "REVERSED" && can("accounting.post") ? `<button class="btn btn-danger" id="je-rev">برگشت سند</button>` : ""} <button class="btn" onclick="closeModal()">بستن</button></div></div>`);
     const rb = $("#je-rev");
-    if (rb) rb.onclick = async () => {
-      const reason = prompt("دلیل برگشت سند:"); if (reason === null) return;
-      try { await api(`/accounting/journal/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }); toast("سند برگشت خورد"); closeModal(); show(tab); } catch (err) { toast(err.message, "err"); }
+    if (rb) rb.onclick = () => {
+      // build-491 — پنجرهٔ فرم داخلی به‌جای prompt() مرورگر
+      openModal(`<h3>برگشت سند</h3>
+        <label>دلیل برگشت</label><textarea id="rev-reason" rows="3"></textarea>
+        <div class="prof-actions" style="margin-top:14px">
+          <button class="btn btn-danger" id="rev-ok">برگشت سند</button>
+          <button class="btn btn-ghost" onclick="closeModal()">انصراف</button>
+        </div>`);
+      $("#rev-ok").addEventListener("click", async () => {
+        try {
+          await api(`/accounting/journal/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason: $("#rev-reason").value }) });
+          toast("سند برگشت خورد"); closeModal(); show(tab);
+        } catch (err) { toast(err.message, "err"); }
+      });
     };
   }
 
@@ -240,21 +257,24 @@
 
   /* ---------- expenses ---------- */
   VIEWS.expenses = async (body) => {
-    body.innerHTML = `<div class="card"><div class="card-head"><h3>هزینه‌ها</h3><div class="row" style="gap:8px"><input id="ex-start" type="date" style="width:140px" /><input id="ex-end" type="date" style="width:140px" /><button id="ex-go" class="btn">نمایش</button><button id="ex-new" class="btn btn-primary">+ ثبت هزینه</button><button id="ex-cat" class="btn">+ دستهٔ جدید</button></div></div><div id="ex-out"></div></div>`;
+    const canPost = can("accounting.post");
+    body.innerHTML = `<div class="card"><div class="card-head"><h3>هزینه‌ها</h3><div class="row" style="gap:8px"><input id="ex-start" type="date" style="width:140px" /><input id="ex-end" type="date" style="width:140px" /><button id="ex-go" class="btn">نمایش</button>${canPost ? `<button id="ex-new" class="btn btn-primary">+ ثبت هزینه</button><button id="ex-cat" class="btn">+ دستهٔ جدید</button>` : ""}</div></div><div id="ex-out"></div></div>`;
     Jalali.attachAll(body);
     const load = async () => {
-      const q = new URLSearchParams(); if ($("#ex-start").value) q.set("start", $("#ex-start").value); if ($("#ex-end").value) q.set("end", $("#ex-end").value);
+      const q = new URLSearchParams(); if ($("#ex-start") && $("#ex-start").value) q.set("start", $("#ex-start").value); if ($("#ex-end") && $("#ex-end").value) q.set("end", $("#ex-end").value);
       const r = await api(`/accounting/expenses?${q}`);
-      const byCat = {}; r.items.forEach((i) => { byCat[i.category] = (byCat[i.category] || 0) + i.amount; });
+      const exOut = $("#ex-out"); if (!exOut || !exOut.isConnected) return;
+      const byCat = {}; (r.items || []).forEach((i) => { byCat[i.category] = (byCat[i.category] || 0) + i.amount; });
       const max = Math.max(1, ...Object.values(byCat));
-      $("#ex-out").innerHTML = `<div class="row" style="gap:16px;align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:280px"><div class="muted" style="margin:6px 0">جمع: <b>${money(r.total)}</b></div>
+      exOut.innerHTML = `<div class="row" style="gap:16px;align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:280px"><div class="muted" style="margin:6px 0">جمع: <b>${money(r.total)}</b></div>
         <div class="table-wrap"><table><thead><tr><th>تاریخ</th><th>دسته</th><th>شرح</th><th>پرداخت از</th><th>مبلغ</th><th></th></tr></thead><tbody>
-        ${r.items.map((i) => `<tr><td>${jd(i.expense_date)}</td><td>${esc(i.category)}</td><td>${esc(i.description || "")}</td><td>${PAY_FA[i.paid_from] || i.paid_from}</td><td>${money(i.amount)}</td><td>${i.journal_entry_id ? `<button class="btn btn-sm" data-je="${i.journal_entry_id}">سند</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">هزینه‌ای ثبت نشده</td></tr>`}</tbody></table></div></div>
+        ${(r.items || []).map((i) => `<tr><td>${jd(i.expense_date)}</td><td>${esc(i.category)}</td><td>${esc(i.description || "")}</td><td>${PAY_FA[i.paid_from] || i.paid_from}</td><td>${money(i.amount)}</td><td>${i.journal_entry_id ? `<button class="btn btn-sm" data-je="${i.journal_entry_id}">سند</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">هزینه‌ای ثبت نشده</td></tr>`}</tbody></table></div></div>
         <div class="card" style="width:300px"><h3>سهم دسته‌ها</h3><div class="bars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><div><i style="width:${v / max * 100}%"></i></div><b>${money(v)}</b></div>`).join("") || `<span class="muted">—</span>`}</div></div></div>`;
       body.querySelectorAll("[data-je]").forEach((b) => b.onclick = () => entryModal(Number(b.dataset.je)));
     };
-    $("#ex-go").onclick = load; $("#ex-new").onclick = () => expenseModal(load);
-    $("#ex-cat").onclick = async () => {
+    $("#ex-go").onclick = load;
+    if ($("#ex-new")) $("#ex-new").onclick = () => expenseModal(load);
+    if ($("#ex-cat")) $("#ex-cat").onclick = async () => {
       const list = await accounts();
       openModal(`<h3>دستهٔ هزینهٔ جدید</h3><label>نام دسته</label><input id="ec-name" /><label>حساب هزینه</label><select id="ec-acc">${accOptions(list.filter((a) => a.class === "EXPENSE"))}</select>
         <div class="row" style="justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn" onclick="closeModal()">انصراف</button><button class="btn btn-primary" id="ec-save">ثبت</button></div>`);
@@ -282,12 +302,14 @@
 
   /* ---------- cheques ---------- */
   VIEWS.cheques = async (body) => {
-    body.innerHTML = `<div class="card"><div class="card-head"><h3>چک‌ها</h3><div class="row" style="gap:8px"><select id="ch-st" style="width:140px"><option value="">همه</option><option value="PENDING">در جریان</option><option value="CLEARED">وصول‌شده</option><option value="BOUNCED">برگشتی</option></select><select id="ch-dir" style="width:140px"><option value="">دریافتی و پرداختی</option><option value="RECEIVED">دریافتی</option><option value="ISSUED">پرداختی</option></select><button id="ch-go" class="btn">نمایش</button><button id="ch-new" class="btn btn-primary">+ ثبت چک</button></div></div><div id="ch-out"></div></div>`;
+    const canPost = can("accounting.post");
+    body.innerHTML = `<div class="card"><div class="card-head"><h3>چک‌ها</h3><div class="row" style="gap:8px"><select id="ch-st" style="width:140px"><option value="">همه</option><option value="PENDING">در جریان</option><option value="CLEARED">وصول‌شده</option><option value="BOUNCED">برگشتی</option></select><select id="ch-dir" style="width:140px"><option value="">دریافتی و پرداختی</option><option value="RECEIVED">دریافتی</option><option value="ISSUED">پرداختی</option></select><button id="ch-go" class="btn">نمایش</button>${canPost ? `<button id="ch-new" class="btn btn-primary">+ ثبت چک</button>` : ""}</div></div><div id="ch-out"></div></div>`;
     const load = async () => {
-      const q = new URLSearchParams(); if ($("#ch-st").value) q.set("status", $("#ch-st").value); if ($("#ch-dir").value) q.set("direction", $("#ch-dir").value);
+      const q = new URLSearchParams(); if ($("#ch-st") && $("#ch-st").value) q.set("status", $("#ch-st").value); if ($("#ch-dir") && $("#ch-dir").value) q.set("direction", $("#ch-dir").value);
       const rows = await api(`/accounting/cheques?${q}`);
-      $("#ch-out").innerHTML = `<div class="table-wrap"><table><thead><tr><th>نوع</th><th>شماره</th><th>بانک</th><th>طرف حساب</th><th>مبلغ</th><th>سررسید</th><th>وضعیت</th><th></th></tr></thead><tbody>
-        ${rows.map((c) => `<tr class="${c.status === "PENDING" && c.days_left < 0 ? "row-bad" : c.status === "PENDING" && c.days_left <= 3 ? "row-warn" : ""}">
+      const chOut = $("#ch-out"); if (!chOut || !chOut.isConnected) return;
+      chOut.innerHTML = `<div class="table-wrap"><table><thead><tr><th>نوع</th><th>شماره</th><th>بانک</th><th>طرف حساب</th><th>مبلغ</th><th>سررسید</th><th>وضعیت</th><th></th></tr></thead><tbody>
+        ${(Array.isArray(rows) ? rows : []).map((c) => `<tr class="${c.status === "PENDING" && c.days_left < 0 ? "row-bad" : c.status === "PENDING" && c.days_left <= 3 ? "row-warn" : ""}">
           <td><span class="badge ${c.direction === "RECEIVED" ? "badge-green" : "badge-amber"}">${c.direction === "RECEIVED" ? "دریافتی" : "پرداختی"}</span></td>
           <td class="ltr">${esc(c.number)}</td><td>${esc(c.bank_name || "")}</td><td>${esc(c.party_name || "")}</td><td>${money(c.amount)}</td>
           <td>${jd(c.due_date)} ${c.status === "PENDING" ? `<span class="muted">(${c.days_left < 0 ? fa(-c.days_left) + " روز گذشته" : fa(c.days_left) + " روز مانده"})</span>` : ""}</td>
@@ -296,7 +318,8 @@
       body.querySelectorAll("[data-clear]").forEach((b) => b.onclick = async () => { try { await api(`/accounting/cheques/${b.dataset.clear}/clear`, { method: "POST" }); toast("چک وصول شد"); load(); } catch (e) { toast(e.message, "err"); } });
       body.querySelectorAll("[data-bounce]").forEach((b) => b.onclick = async () => { if (!confirm("چک برگشت خورده است؟")) return; try { await api(`/accounting/cheques/${b.dataset.bounce}/bounce`, { method: "POST" }); toast("برگشت چک ثبت شد"); load(); } catch (e) { toast(e.message, "err"); } });
     };
-    $("#ch-go").onclick = load; $("#ch-new").onclick = () => chequeModal(load);
+    $("#ch-go").onclick = load;
+    if ($("#ch-new")) $("#ch-new").onclick = () => chequeModal(load);
     await load();
   };
 
@@ -328,60 +351,36 @@
 
   /* ---------- suppliers ---------- */
   VIEWS.suppliers = async (body) => {
-    body.innerHTML = `<div class="grid grid-2"><div class="card"><div class="card-head"><h3>تأمین‌کنندگان و بدهی</h3></div><table id="sp-table"></table></div>
-      <div class="card"><h3>تأمین‌کنندهٔ جدید</h3><label>نام</label><input id="sp-name" /><label>تلفن</label><input id="sp-phone" /><label>آدرس</label><input id="sp-addr" /><button id="sp-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
-      <p class="muted" style="margin-top:12px">هنگام «ورود کالا» می‌توانید تأمین‌کننده و نحوهٔ پرداخت (نسیه/نقد/بانک) را انتخاب کنید؛ خرید نسیه به‌طور خودکار در بدهی تأمین‌کننده می‌نشیند.</p></div></div>`;
+    const canPost = can("accounting.post");
+    body.innerHTML = `<div class="${canPost ? "grid grid-2" : ""}"><div class="card"><div class="card-head"><h3>تأمین‌کنندگان و بدهی</h3></div><table id="sp-table"></table></div>
+      ${canPost ? `<div class="card"><h3>تأمین‌کنندهٔ جدید</h3><label>نام</label><input id="sp-name" /><label>تلفن</label><input id="sp-phone" /><label>آدرس</label><input id="sp-addr" /><button id="sp-add" class="btn btn-primary" style="margin-top:12px">ثبت</button>
+      <p class="muted" style="margin-top:12px">هنگام «ورود کالا» می‌توانید تأمین‌کننده و نحوهٔ پرداخت (نسیه/نقد/بانک) را انتخاب کنید؛ خرید نسیه به‌طور خودکار در بدهی تأمین‌کننده می‌نشیند.</p></div>` : ""}</div>`;
     const load = async () => {
       const rows = await api("/accounting/suppliers");
-      $("#sp-table").innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>بدهی ما</th><th></th></tr></thead><tbody>${rows.map((s) => `<tr><td>${esc(s.name)}</td><td class="ltr">${esc(s.phone || "")}</td><td>${signed(s.balance)}</td><td>${can("accounting.post") ? `<button class="btn btn-sm" data-pay="${s.id}" data-name="${esc(s.name)}">پرداخت</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">تأمین‌کننده‌ای ثبت نشده</td></tr>`}</tbody>`;
+      const spTable = $("#sp-table"); if (!spTable || !spTable.isConnected) return;
+      spTable.innerHTML = `<thead><tr><th>نام</th><th>تلفن</th><th>بدهی ما</th><th></th></tr></thead><tbody>${(Array.isArray(rows) ? rows : []).map((s) => `<tr><td>${esc(s.name)}</td><td class="ltr">${esc(s.phone || "")}</td><td>${signed(s.balance)}</td><td>${can("accounting.post") ? `<button class="btn btn-sm" data-pay="${s.id}" data-name="${esc(s.name)}">پرداخت</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">تأمین‌کننده‌ای ثبت نشده</td></tr>`}</tbody>`;
       body.querySelectorAll("[data-pay]").forEach((b) => b.onclick = () => {
         openModal(`<h3>پرداخت به ${b.dataset.name}</h3><label>مبلغ</label><input id="sp-amt" type="number" min="0" autofocus /><label>روش</label><select id="sp-m"><option value="CASH">نقد</option><option value="BANK">بانک</option><option value="CARD">کارت</option></select><label>توضیح</label><input id="sp-note" />
           <div class="row" style="justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn" onclick="closeModal()">انصراف</button><button class="btn btn-primary" id="sp-ok">ثبت پرداخت</button></div>`);
         $("#sp-ok").onclick = async () => { try { await api(`/accounting/suppliers/${b.dataset.pay}/pay`, { method: "POST", body: JSON.stringify({ amount: Number($("#sp-amt").value), method: $("#sp-m").value, note: $("#sp-note").value || null }) }); toast("پرداخت ثبت شد"); closeModal(); load(); } catch (e) { toast(e.message, "err"); } };
       });
     };
-    $("#sp-add").onclick = async () => { try { await api("/accounting/suppliers", { method: "POST", body: JSON.stringify({ name: $("#sp-name").value, phone: $("#sp-phone").value || null, address: $("#sp-addr").value || null }) }); toast("ثبت شد"); load(); } catch (e) { toast(e.message, "err"); } };
+    if ($("#sp-add")) $("#sp-add").onclick = async () => { try { await api("/accounting/suppliers", { method: "POST", body: JSON.stringify({ name: $("#sp-name").value, phone: $("#sp-phone").value || null, address: $("#sp-addr").value || null }) }); toast("ثبت شد"); load(); } catch (e) { toast(e.message, "err"); } };
     await load();
   };
-
-  /* ---------- cash sessions ---------- */
-  VIEWS.sessions = async (body) => {
-    const cur = await api("/accounting/cash-sessions/current");
-    const hist = can("accounting.view") ? await api("/accounting/cash-sessions?limit=30") : [];
-    const methods = (m) => Object.entries(m || {}).map(([k, v]) => `<div class="mini-stat"><b>${money(v)}</b><span>${PAY_FA[k] || (k === "ACCOUNT" ? "نسیه" : k)}</span></div>`).join("");
-    body.innerHTML = `<div class="grid grid-2">
-      <div class="card session-card">${cur ? `<div class="card-head"><h3>شیفت باز</h3><span class="badge badge-green">از ${faDateTime(cur.opened_at)}</span></div>
-        <div class="grid grid-3" style="margin:10px 0">${methods(cur.by_method)}<div class="mini-stat"><b>${fa(cur.invoice_count)}</b><span>فاکتور</span></div></div>
-        <div class="pl-rows"><div><span>وجه شروع</span><b>${money(cur.opening_float)}</b></div><div><span>فروش نقدی</span><b>${money(cur.cash_sales)}</b></div><div><span>استرداد</span><b class="err">−${money(cur.refunds)}</b></div><div class="grand"><span>نقد مورد انتظار در صندوق</span><b>${money(cur.expected_cash)}</b></div></div>
-        <label>نقد شمارش‌شده</label><input id="cs-count" type="number" min="0" /><label>توضیح</label><input id="cs-note" />
-        <button id="cs-close" class="btn btn-danger btn-block" style="margin-top:12px">بستن شیفت و گزارش Z</button>`
-        : `<h3>شروع شیفت صندوق</h3><p class="muted">با وجه اولیهٔ داخل کشو شیفت را باز کنید؛ در پایان، شمارش نقد با فروش نقدی مقایسه و کسری/اضافه به‌طور خودکار در حسابداری ثبت می‌شود.</p><label>وجه اولیه (${state.currency.label})</label><input id="cs-float" type="number" min="0" value="0" /><button id="cs-open" class="btn btn-primary btn-block" style="margin-top:12px">باز کردن شیفت</button>`}</div>
-      <div class="card"><h3>شیفت‌های اخیر</h3><div class="table-wrap"><table><thead><tr><th>#</th><th>صندوق‌دار</th><th>باز شدن</th><th>فروش</th><th>مورد انتظار</th><th>شمارش</th><th>اختلاف</th></tr></thead><tbody>
-        ${hist.map((s) => `<tr><td>${fa(s.id)}</td><td>${esc(s.user || "")}</td><td>${faDateTime(s.opened_at)}</td><td>${money(s.total_sales)}</td><td>${money(s.expected_cash)}</td><td>${s.counted_cash == null ? "—" : money(s.counted_cash)}</td><td>${s.difference == null ? `<span class="badge badge-blue">باز</span>` : signed(s.difference)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">—</td></tr>`}</tbody></table></div></div></div>`;
-    const ob = $("#cs-open"); if (ob) ob.onclick = async () => { try { await api("/accounting/cash-sessions/open", { method: "POST", body: JSON.stringify({ opening_float: Number($("#cs-float").value || 0) }) }); toast("شیفت باز شد"); show(tab); } catch (e) { toast(e.message, "err"); } };
-    const cb = $("#cs-close"); if (cb) cb.onclick = async () => {
-      if ($("#cs-count").value === "") { toast("نقد شمارش‌شده را وارد کنید", "err"); return; }
-      try { const r = await api(`/accounting/cash-sessions/${cur.id}/close`, { method: "POST", body: JSON.stringify({ counted_cash: Number($("#cs-count").value), note: $("#cs-note").value || null }) }); zReport(r); show(tab); } catch (e) { toast(e.message, "err"); }
-    };
-  };
-  function zReport(s) {
-    openModal(`<div class="zrep"><h3>گزارش Z — شیفت #${fa(s.id)}</h3><div class="muted">${faDateTime(s.opened_at)} تا ${faDateTime(s.closed_at)}</div>
-      <table class="je-table" style="margin-top:10px"><tbody><tr><td>تعداد فاکتور</td><td>${fa(s.invoice_count)}</td></tr><tr><td>جمع فروش</td><td>${money(s.total_sales)}</td></tr>
-      ${Object.entries(s.by_method || {}).map(([k, v]) => `<tr><td>— ${PAY_FA[k] || (k === "ACCOUNT" ? "نسیه" : k)}</td><td>${money(v)}</td></tr>`).join("")}
-      <tr><td>استرداد</td><td>${money(s.refunds)}</td></tr><tr><td>وجه شروع</td><td>${money(s.opening_float)}</td></tr><tr><td>نقد مورد انتظار</td><td>${money(s.expected_cash)}</td></tr><tr><td>نقد شمارش‌شده</td><td>${money(s.counted_cash)}</td></tr>
-      <tr class="je-total"><td>اختلاف</td><td class="${s.difference < 0 ? "err" : "ok"}">${money(s.difference)}</td></tr></tbody></table>
-      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn" onclick="window.print()">چاپ</button><button class="btn btn-primary" onclick="closeModal()">بستن</button></div></div>`);
-  }
 
   /* ---------- chart of accounts ---------- */
   VIEWS.accounts = async (body) => {
     ACCOUNTS = null; const list = await accounts();
-    body.innerHTML = `<div class="grid grid-2" style="grid-template-columns:2fr 1fr"><div class="card"><div class="card-head"><h3>کدینگ حساب‌ها</h3><input id="ac-q" placeholder="جستجو…" style="width:200px" /></div><div class="table-wrap"><table id="ac-table"></table></div></div>
-      <div class="card"><h3>حساب جدید (تفصیلی)</h3><label>کد</label><input id="ac-code" class="ltr" placeholder="مثلاً 6111" /><label>نام</label><input id="ac-name" /><label>طبقه</label><select id="ac-class">${Object.entries(CLASS_FA).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select><label>زیرمجموعهٔ</label><select id="ac-parent"><option value="">— (سطح اول)</option>${list.map((a) => `<option value="${a.id}">${a.code} — ${esc(a.name)}</option>`).join("")}</select>
-      <button id="ac-add" class="btn btn-primary" style="margin-top:12px">ایجاد حساب</button><p class="muted" style="margin-top:10px">حساب‌های سیستمی (مقصد اسناد خودکار) قابل حذف نیستند؛ می‌توانید نام آن‌ها را ویرایش کنید.</p></div></div>`;
+    if (!body || !body.isConnected) return;
+    const canPost = can("accounting.post");
+    body.innerHTML = `<div class="${canPost ? "grid grid-2" : ""}" ${canPost ? 'style="grid-template-columns:2fr 1fr"' : ""}><div class="card"><div class="card-head"><h3>کدینگ حساب‌ها</h3><input id="ac-q" placeholder="جستجو…" style="width:200px" /></div><div class="table-wrap"><table id="ac-table"></table></div></div>
+      ${canPost ? `<div class="card"><h3>حساب جدید (تفصیلی)</h3><label>کد</label><input id="ac-code" class="ltr" placeholder="مثلاً 6111" /><label>نام</label><input id="ac-name" /><label>طبقه</label><select id="ac-class">${Object.entries(CLASS_FA).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select><label>زیرمجموعهٔ</label><select id="ac-parent"><option value="">— (سطح اول)</option>${list.map((a) => `<option value="${a.id}">${a.code} — ${esc(a.name)}</option>`).join("")}</select>
+      <button id="ac-add" class="btn btn-primary" style="margin-top:12px">ایجاد حساب</button><p class="muted" style="margin-top:10px">حساب‌های سیستمی (مقصد اسناد خودکار) قابل حذف نیستند؛ می‌توانید نام آن‌ها را ویرایش کنید.</p></div>` : ""}</div>`;
     const draw = () => {
-      const q = $("#ac-q").value.trim();
-      $("#ac-table").innerHTML = `<thead><tr><th>کد</th><th>نام</th><th>طبقه</th><th>مانده</th><th></th></tr></thead><tbody>${list.filter((a) => !q || a.code.includes(q) || a.name.includes(q)).map((a) => `<tr class="${a.is_postable ? "" : "tb-group"}"><td class="ltr">${a.code}</td><td style="padding-inline-start:${(a.code.replace(/0+$/, "").length - 1) * 10 + 10}px">${esc(a.name)} ${a.is_system ? `<span class="badge badge-gray">سیستمی</span>` : ""}${!a.is_active ? ` <span class="badge badge-red">غیرفعال</span>` : ""}</td><td>${CLASS_FA[a.class]}</td><td>${a.is_postable ? signed(a.balance) : ""}</td><td>${can("accounting.post") ? `<button class="btn btn-sm" data-edit="${a.id}">ویرایش</button>` : ""}</td></tr>`).join("")}</tbody>`;
+      const acTable = $("#ac-table"); if (!acTable) return;
+      const q = $("#ac-q") ? $("#ac-q").value.trim() : "";
+      acTable.innerHTML = `<thead><tr><th>کد</th><th>نام</th><th>طبقه</th><th>مانده</th><th></th></tr></thead><tbody>${list.filter((a) => !q || a.code.includes(q) || a.name.includes(q)).map((a) => `<tr class="${a.is_postable ? "" : "tb-group"}"><td class="ltr">${a.code}</td><td style="padding-inline-start:${(a.code.replace(/0+$/, "").length - 1) * 10 + 10}px">${esc(a.name)} ${a.is_system ? `<span class="badge badge-gray">سیستمی</span>` : ""}${!a.is_active ? ` <span class="badge badge-red">غیرفعال</span>` : ""}</td><td>${CLASS_FA[a.class]}</td><td>${a.is_postable ? signed(a.balance) : ""}</td><td>${can("accounting.post") ? `<button class="btn btn-sm" data-edit="${a.id}">ویرایش</button>` : ""}</td></tr>`).join("")}</tbody>`;
       body.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => {
         const a = list.find((x) => x.id === Number(b.dataset.edit));
         openModal(`<h3>ویرایش ${a.code}</h3><label>نام</label><input id="ae-name" value="${esc(a.name)}" />${a.is_system ? "" : `<label><input type="checkbox" id="ae-active" ${a.is_active ? "checked" : ""} style="width:auto"/> فعال</label>`}
@@ -389,8 +388,9 @@
         $("#ae-save").onclick = async () => { const bodyP = { name: $("#ae-name").value }; if ($("#ae-active")) bodyP.is_active = $("#ae-active").checked; try { await api(`/accounting/accounts/${a.id}`, { method: "PATCH", body: JSON.stringify(bodyP) }); toast("ذخیره شد"); closeModal(); show(tab); } catch (e) { toast(e.message, "err"); } };
       });
     };
-    $("#ac-q").oninput = draw; draw();
-    $("#ac-add").onclick = async () => { try { await api("/accounting/accounts", { method: "POST", body: JSON.stringify({ code: $("#ac-code").value.trim(), name: $("#ac-name").value.trim(), account_class: $("#ac-class").value, parent_id: $("#ac-parent").value ? Number($("#ac-parent").value) : null }) }); toast("حساب ایجاد شد"); show(tab); } catch (e) { toast(e.message, "err"); } };
+    if ($("#ac-q")) $("#ac-q").oninput = draw;
+    draw();
+    if ($("#ac-add")) $("#ac-add").onclick = async () => { try { await api("/accounting/accounts", { method: "POST", body: JSON.stringify({ code: $("#ac-code").value.trim(), name: $("#ac-name").value.trim(), account_class: $("#ac-class").value, parent_id: $("#ac-parent").value ? Number($("#ac-parent").value) : null }) }); toast("حساب ایجاد شد"); show(tab); } catch (e) { toast(e.message, "err"); } };
   };
 
   /* ---------- fiscal periods ---------- */

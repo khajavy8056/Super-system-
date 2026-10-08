@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Counter,
+    Customer,
     Invoice,
     InvoiceItem,
     Payment,
@@ -260,14 +261,16 @@ def _resolve_cart_line(db: Session, item: CartItem) -> CartItem:
             f"Only {batch.current_qty} available from batch {batch.batch_number}{hint}",
         )
 
-    item.unit_buy_price = item.unit_buy_price if item.unit_buy_price is not None else batch.buy_price
-    item.unit_consumer_price = (
-        item.unit_consumer_price if item.unit_consumer_price is not None else batch.consumer_price
-    )
-    if item.unit_sell_price is None:
-        item.unit_sell_price = batch.sell_price
-        if item.unit_sell_price is None or item.unit_sell_price == 0:
-            item.unit_sell_price = _default_sell_price(db, product)  # ADR-001 fallback
+    # v3.7 — prices come from the BATCH, never from the caller (§4/§33: a till
+    # must not be able to rewrite its own costs/profits). The CartItem price
+    # fields are *resolved values* (filled here), not inputs: any caller-set
+    # value is overwritten. The API layer never accepted prices anyway
+    # (CartLineIn has no price fields); this closes the service layer too.
+    item.unit_buy_price = batch.buy_price
+    item.unit_consumer_price = batch.consumer_price
+    item.unit_sell_price = batch.sell_price
+    if item.unit_sell_price is None or item.unit_sell_price == 0:
+        item.unit_sell_price = _default_sell_price(db, product)  # ADR-001 fallback
 
     if item.unit_sell_price is None:
         raise PosError("PRICE_NOT_AVAILABLE", f"No sell price for {product.name}")
@@ -317,6 +320,35 @@ def validate_cart(db: Session, items: list[CartItem]) -> list[CartItem]:
             merged[key] = it
 
     return [_resolve_cart_line(db, line) for line in merged.values()]
+
+
+def _enforce_manual_discount_cap(db: Session, *, manual_discount: Decimal, gross: Decimal) -> None:
+    """Reject manual (line + invoice) discounts above ``pos.max_manual_discount_pct``.
+
+    The setting is written by the manager UI and by the intelligence engine
+    (DISCOUNT_DEPENDENCY analyzers); the default (0/empty) means "no cap" so
+    existing shops keep working until they configure a policy. A corrupt value
+    fails open with a loud log — a bad setting must never block the till.
+    """
+    import logging
+
+    if gross <= 0 or manual_discount <= 0:
+        return
+    raw = (get_setting(db, "pos.max_manual_discount_pct", "0") or "0").strip()
+    try:
+        cap_pct = Decimal(raw)
+    except Exception:  # noqa: BLE001 — corrupt setting: loud log, no cap
+        logging.getLogger("supermarket.pos").error(
+            "pos.max_manual_discount_pct is not a number (%r); ignoring the cap", raw)
+        return
+    if cap_pct <= 0:
+        return
+    allowed = (gross * cap_pct / 100).quantize(CENT, ROUND_HALF_UP)
+    if manual_discount > allowed:
+        raise PosError(
+            "DISCOUNT_OVER_POLICY",
+            f"تخفیف دستی {manual_discount:,.0f} از سقف مجاز {cap_pct:g}٪ ({allowed:,.0f}) بیشتر است؛ "
+            "نیاز به مجوز مدیر دارد.")
 
 
 # --- Atomic invoice numbering (BUG-004) --------------------------------------
@@ -394,12 +426,26 @@ def checkout(
     tax_rate: Decimal | None = None,
     coupon_code: str | None = None,
     invoice_discount: Decimal | None = None,
+    campaign_id: int | None = None,
 ) -> Invoice:
     """Atomic checkout (blueprint §18–21). Caller wraps in try/except + commit/rollback.
 
     Money math (BUG-001): gross = Σ(price×qty); discount = Σ(line discounts);
     taxable = gross − discount; tax = taxable × rate; total = taxable + tax.
-    Each discount is counted exactly once."""
+    Each discount is counted exactly once.
+
+    build-481 (§21–26): a *campaign* benefit can be granted here too.  Three
+    honest paths, all server-validated:
+
+    * ``campaign_id`` given → the cashier picked a festival; every condition is
+      re-checked inside this transaction (the POS list is a convenience, not a
+      trust boundary).
+    * no ``campaign_id`` → eligible ``auto_apply`` festivals (threshold ones)
+      grant their benefit automatically — the best one wins by priority.
+    * the applied campaign is snapshotted on the invoice (id + name + benefit)
+      so later edits never rewrite the receipt, and a ``campaign_redemptions``
+      row records who consumed which slot.
+    """
     if not items:
         raise PosError("EMPTY_CART", "Cart is empty")
 
@@ -417,6 +463,9 @@ def checkout(
     if inv_disc > gross - discount:
         raise PosError("INVALID_DISCOUNT", "Invoice discount exceeds cart amount")
     discount += inv_disc
+    # v3.7 — manual-discount policy cap (DISCOUNT_OVER_POLICY). Coupons are
+    # campaign policy, not manual till discounts, so they are excluded.
+    _enforce_manual_discount_cap(db, manual_discount=discount, gross=gross)
 
     # Coupon is evaluated against the post-line-discount amount, then consumed
     # inside this same transaction (§37–38) so a failed sale never burns it.
@@ -436,9 +485,60 @@ def checkout(
             )
         except coupon_svc.CouponError as exc:
             raise PosError(exc.code, exc.message)
+
+    # ---- build-481: campaign benefit (§21) --------------------------------
+    # Line totals per product (post line-discount) — the honest base for
+    # product-targeted festivals.
+    line_amounts: dict[int, Decimal] = {}
+    product_ids: list[int] = []
+    for i in resolved:
+        product_ids.append(i.product_id)
+        line_amounts[i.product_id] = line_amounts.get(i.product_id, ZERO) + (
+            (i.unit_sell_price or ZERO) * i.quantity - i.discount
+        )
+    base_amount = gross - discount   # after manual discounts, before coupon/campaign
+
+    from . import coupons as campaign_svc   # one module owns both benefit engines
+    campaign_info = None
+    chosen_campaign_id = campaign_id
+    if chosen_campaign_id is None:
+        # Auto path: a threshold festival whose conditions hold applies itself
+        # (§21).  Several may hold → priority (then larger benefit) wins.
+        try:
+            options = campaign_svc.eligible_campaigns(
+                db, amount=base_amount, product_ids=product_ids,
+                line_amounts=line_amounts, customer_id=customer_id,
+                include_auto_apply=True,
+            )
+        except campaign_svc.CampaignError as exc:   # pragma: no cover — defensive
+            raise PosError(exc.code, exc.message)
+        auto = [o for o in options if o.get("auto_apply")]
+        if auto:
+            auto.sort(key=lambda o: (o.get("priority", 3), -float(o["discount"])))
+            chosen_campaign_id = int(auto[0]["campaign_id"])
+
+    if chosen_campaign_id is not None:
+        try:
+            campaign_info = campaign_svc.evaluate_campaign(
+                db, campaign_id=chosen_campaign_id, amount=base_amount,
+                product_ids=product_ids, line_amounts=line_amounts,
+                customer_id=customer_id,
+            )
+        except campaign_svc.CampaignError as exc:
+            raise PosError(exc.code, exc.message)
+        if coupon_info is not None and not campaign_info["stackable"]:
+            raise PosError(
+                "CAMPAIGN_NOT_STACKABLE",
+                f"جشنواره «{campaign_info['name']}» با کوپن قابل ترکیب نیست؛ "
+                "یکی از دو مورد را انتخاب کنید",
+            )
+
+    if coupon_info is not None:
         discount += coupon_info["discount"]
-        if discount > gross:
-            discount = gross
+    if campaign_info is not None:
+        discount += campaign_info["discount"]
+    if discount > gross:
+        discount = gross
 
     taxable = gross - discount
     rate = tax_rate if tax_rate is not None else Decimal(get_setting(db, "pos.tax_rate", "0"))
@@ -462,6 +562,24 @@ def checkout(
             "فروش نسیه فقط برای مشتری ثبت‌شده ممکن است؛ مشتری آزاد حساب دفتری ندارد",
         )
 
+    # build-481 (§26) — benefit provenance snapshotted on the invoice row.
+    benefit_source = "NONE"
+    benefit_amount = ZERO
+    if coupon_info is not None:
+        benefit_source, benefit_amount = "COUPON", coupon_info["discount"]
+    if campaign_info is not None:
+        # a stacking campaign shares the source label with its coupon partner
+        benefit_source = "CAMPAIGN+COUPON" if benefit_source == "COUPON" else "CAMPAIGN"
+        benefit_amount += campaign_info["discount"]
+
+    # POS-only mobile sync carries a purchase-count snapshot for offline
+    # first-purchase campaign checks. Touch the customer in the same transaction
+    # so an existing customer is pulled again after a sale.
+    if customer_id:
+        customer = db.get(Customer, customer_id)
+        if customer is not None:
+            customer.updated_at = datetime.utcnow()
+
     invoice = Invoice(
         invoice_number=_next_invoice_number(db),
         customer_id=customer_id,
@@ -477,6 +595,11 @@ def checkout(
         print_status="PENDING",
         paid_at=None if on_account >= total else datetime.utcnow(),
         created_by=user.id if user else None,
+        campaign_id=(campaign_info["campaign_id"] if campaign_info else None),
+        campaign_name=(campaign_info["name"] if campaign_info else None),
+        benefit_source=benefit_source,
+        benefit_amount=benefit_amount,
+        applied_coupon_code=(coupon_info["code"] if coupon_info else None),
     )
     db.add(invoice)
     db.flush()
@@ -520,6 +643,20 @@ def checkout(
         except coupon_svc.CouponError as exc:
             raise PosError(exc.code, exc.message)
 
+    # build-481 (§25–26) — campaign benefit is consumed in the SAME transaction,
+    # so a failed sale can never burn a usage slot, and every grant has an audit
+    # row naming the cashier and the invoice.
+    if campaign_info is not None:
+        from . import coupons as coupon_svc
+
+        try:
+            coupon_svc.consume_campaign(
+                db, campaign_id=campaign_info["campaign_id"], amount=campaign_info["discount"],
+                invoice_id=invoice.id, customer_id=customer_id, user=user,
+            )
+        except coupon_svc.CampaignError as exc:
+            raise PosError(exc.code, exc.message)
+
     for p in payments:
         db.add(Payment(invoice_id=invoice.id, method=p.get("method", "CASH"), amount=Decimal(p["amount"])))
 
@@ -542,9 +679,12 @@ def checkout(
         db, action="SALE_CREATED", user_id=user.id if user else None,
         entity_type="Invoice", entity_id=invoice.id,
         after={"invoice_number": invoice.invoice_number, "total": str(total),
-               "coupon": coupon_info["code"] if coupon_info else None},
+               "coupon": coupon_info["code"] if coupon_info else None,
+               "campaign": campaign_info["name"] if campaign_info else None,
+               "campaign_id": campaign_info["campaign_id"] if campaign_info else None,
+               "benefit_amount": str(benefit_amount) if benefit_amount else None,
+               "benefit_source": benefit_source},
     )
-    invoice.applied_coupon_code = coupon_info["code"] if coupon_info else None  # transient
     # v1.4 — double-entry posting in the SAME transaction (rolls back with the sale)
     from . import accounting as acc_svc
     db.flush()

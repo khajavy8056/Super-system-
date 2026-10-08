@@ -36,7 +36,10 @@ PAID = "PAID"
 CAL_KEY = "insights.calibration"
 RAMP_DAYS = 7          # actions do not bite on day 1: linear ramp-up
 DECAY = 0.7            # EWMA weight of the previous estimate (0.7 → last ~3 results dominate)
-RATIO_MIN, RATIO_MAX = 0.15, 2.5
+# v3.8 — NO clamps. v3.1 clamped every measured/expected ratio into [0.15, 2.5],
+# which silently rewrote every real loss (negative ratio) as a +15 % win and fed
+# the lie back into predictions. Ratios are recorded raw; robustness comes from
+# reporting dispersion honestly (sd, CI, pos/neg rates), not from hiding data.
 
 
 # ----------------------------------------------------------------------------- calibration
@@ -61,54 +64,151 @@ def learn(db: Session) -> dict:
     """Re-fit the per-kind calibration from every completed measurement.
 
     Deterministic (re-computed from scratch each time, chronological EWMA) so that a restore
-    or a re-run yields the same numbers.  Returns the calibration table."""
+    or a re-run yields the same numbers.  Returns the calibration table.
+
+    v3.8 honesty contract: every completed measurement counts exactly as measured.
+    build-488 (§۳۶–۳۷): «فرصت ازدست‌رفته» (MISSED_OPPORTUNITY — سودی که می‌توانست
+    اتفاق بیفتد ولی نیفتاد، مثل نیامدن مشتریِ پیش‌بینی‌شده) **ضرر نیست** و در
+    measured_gain هم NULL می‌ماند؛ accuracy جهت‌دار فقط روی نتایج «تصمیم‌گیری‌شده»
+    (سود واقعی / ضرر واقعی) حساب می‌شود تا عملکرد خوب مدل منفی نشان داده نشود.
+    """
     rows = db.execute(select(Insight).where(Insight.status == "MEASURED", Insight.measured_gain.isnot(None))
                       .order_by(Insight.measured_at.asc(), Insight.id.asc())).scalars().all()
+    # فرصت‌های ازدست‌رفته: هر ردیفی که یک بار اندازه‌گیری معنادار داشته (result
+    # ثبت شده)، حتی اگر پنجره هنوز کامل نشده — برای شفافیت «عملکرد مدل».
+    missed_rows = db.execute(select(Insight).where(Insight.result.isnot(None))
+                             .order_by(Insight.id.asc())).scalars().all()
     cal: dict[str, dict] = {}
+
+    def _verdict_of(r) -> str:
+        try:
+            v = (json.loads(r.result or "{}") or {}).get("verdict")
+            if v in ("POSITIVE_OUTCOME", "NEGATIVE_OUTCOME", "NEUTRAL_OUTCOME",
+                     "NO_IMPACT", "MISSED_OPPORTUNITY"):
+                return v
+        except Exception:
+            pass
+        m = _f(r.measured_gain)
+        return "POSITIVE_OUTCOME" if m > 0 else ("NEGATIVE_OUTCOME" if m < 0 else "NO_IMPACT")
+
     for r in rows:
         exp = _f(r.expected_gain)
         ev = json.loads(r.evidence or "{}")
         raw = _f(ev.get("expected_gain_raw", exp))      # un-calibrated prediction at creation time
         if raw <= 0:
             continue
-        ratio = max(RATIO_MIN, min(RATIO_MAX, _f(r.measured_gain) / raw))
-        c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0})
+        measured = _f(r.measured_gain)
+        verdict = _verdict_of(r)
+        if verdict == "MISSED_OPPORTUNITY":
+            continue                                     # هرگز ضرر حساب نمی‌شود (§۳۷)
+        ratio = measured / raw                           # raw, unclamped — see module note
+        err = measured - raw                             # signed error in toman
+        c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0,
+                                    "n_positive": 0, "n_zero": 0, "n_negative": 0, "n_missed": 0,
+                                    "sum_err": 0.0, "sum_abs_err": 0.0})
+        if verdict == "NO_IMPACT":
+            c["n_missed"] = c.get("n_missed", 0)  # ردیف خنثی — نه امتیاز منفی
         if c["n"] == 0:
             c["ratio"], c["var"] = ratio, 0.25
         else:
-            err = ratio - c["ratio"]
+            d = ratio - c["ratio"]
             c["ratio"] = DECAY * c["ratio"] + (1 - DECAY) * ratio
-            c["var"] = DECAY * c["var"] + (1 - DECAY) * err * err
+            c["var"] = DECAY * c["var"] + (1 - DECAY) * d * d
         c["n"] += 1
-        c["abs_err"] = DECAY * c["abs_err"] + (1 - DECAY) * abs(_f(r.measured_gain) - raw) if c["n"] > 1 else abs(_f(r.measured_gain) - raw)
-        if (_f(r.measured_gain) > 0) == (raw > 0):
-            c["hits"] += 1
+        c["abs_err"] = DECAY * c["abs_err"] + (1 - DECAY) * abs(err) if c["n"] > 1 else abs(err)
+        c["sum_err"] += err
+        c["sum_abs_err"] += abs(err)
+        if verdict == "POSITIVE_OUTCOME":
+            c["n_positive"] += 1
+            if raw > 0:
+                c["hits"] += 1
+        elif verdict == "NEGATIVE_OUTCOME":
+            c["n_negative"] += 1
+            if raw < 0:
+                c["hits"] += 1
+        else:
+            c["n_zero"] += 1
+    # فرصت‌های ازدست‌رفته — برای شفافیت شمرده می‌شوند اما هیچ جریمه‌ای ندارند
+    for r in missed_rows:
+        try:
+            res = json.loads(r.result or "{}") or {}
+        except Exception:
+            res = {}
+        if res.get("verdict") == "MISSED_OPPORTUNITY":
+            c = cal.setdefault(r.kind, {"ratio": 1.0, "n": 0, "var": 0.0, "abs_err": 0.0, "hits": 0,
+                                        "n_positive": 0, "n_zero": 0, "n_negative": 0, "n_missed": 0,
+                                        "sum_err": 0.0, "sum_abs_err": 0.0})
+            c["n_missed"] += 1
     for c in cal.values():
+        n = c["n"]
+        decided = c["n_positive"] + c["n_negative"]     # فقط نتایج قطعی (§۳۷)
+        sd = math.sqrt(max(0.0, c["var"]))
         c["ratio"] = round(c["ratio"], 3)
-        c["sd"] = round(math.sqrt(max(0.0, c["var"])), 3)
-        c["direction_accuracy"] = round(c["hits"] / c["n"], 2) if c["n"] else None
+        c["sd"] = round(sd, 3)
+        c["direction_accuracy"] = round(c["hits"] / decided, 2) if decided else None
+        c["pos_rate"] = round(c["n_positive"] / n, 3) if n else None
+        c["neg_rate"] = round(c["n_negative"] / n, 3) if n else None
+        c["missed_rate"] = round(c["n_missed"] / max(1, n + c["n_missed"]), 3)
+        c["mean_error"] = round(c["sum_err"] / n) if n else None
+        c["mae"] = round(c["sum_abs_err"] / n) if n else None
+        # 95 % CI of the mean ratio (normal approx): the band predictions honestly live in
+        half = round(1.96 * sd / math.sqrt(n), 3) if n else 0.0
+        c["ratio_ci95"] = [round(c["ratio"] - half, 3), round(c["ratio"] + half, 3)]
         del c["var"]
+        del c["sum_err"]
+        del c["sum_abs_err"]
     _save_cal(db, cal)
     db.commit()
     return cal
 
 
 def calibrate(db: Session, kind: str, raw_gain: float, cal: dict | None = None) -> dict:
-    """Apply the learned ratio of *kind* to a raw prediction → {gain, low, high, confidence, n}."""
+    """Apply the learned ratio of *kind* to a raw prediction.
+
+    Returns the flat keys the UI already reads (gain/low/high/confidence/n/ratio)
+    plus the v3.8 split the honesty contract requires — ``economic_impact`` (money),
+    ``evidence_strength`` (how much history backs it) and ``prediction_uncertainty``
+    (how wide the truth could swing). Money, evidence and uncertainty are never
+    mixed into one number again.
+    """
     cal = _load_cal(db) if cal is None else cal
     c = cal.get(kind)
     if raw_gain <= 0:
-        return {"gain": 0.0, "low": 0.0, "high": 0.0, "confidence": "n/a", "n": (c or {}).get("n", 0), "ratio": 1.0}
+        return {"gain": 0.0, "low": 0.0, "high": 0.0, "confidence": "n/a", "n": (c or {}).get("n", 0), "ratio": 1.0,
+                "economic_impact": {"gain": 0.0, "low": 0.0, "high": 0.0, "unit": "toman_month"},
+                "evidence_strength": {"n": (c or {}).get("n", 0), "verdict": "NO_PREDICTION"},
+                "prediction_uncertainty": {"confidence": "n/a"}}
     if not c or not c.get("n"):
         # No history for this kind yet: keep the analyzer estimate but flag it as a first guess
-        return {"gain": raw_gain, "low": round(raw_gain * 0.4), "high": round(raw_gain * 1.4), "confidence": "low", "n": 0, "ratio": 1.0}
+        out = {"gain": raw_gain, "low": round(raw_gain * 0.4), "high": round(raw_gain * 1.4), "confidence": "low", "n": 0, "ratio": 1.0}
+        out["economic_impact"] = {"gain": out["gain"], "low": out["low"], "high": out["high"], "unit": "toman_month"}
+        out["evidence_strength"] = {"n": 0, "verdict": "FIRST_GUESS"}
+        out["prediction_uncertainty"] = {"confidence": "low", "note": "no measured history for this kind"}
+        return out
     n, ratio, sd = int(c["n"]), float(c["ratio"]), float(c.get("sd", 0.5))
-    # 1-sigma band shrinks with more observations (standard error of the mean)
+    # 1-sigma band shrinks with more observations (standard error of the mean).
+    # v3.8: the low edge is NOT floored at zero — a kind that lost money shows a
+    # band reaching into the red, which is the entire point of the band.
     band = sd / math.sqrt(n) if n else sd
-    lo, hi = max(0.0, ratio - band), ratio + band
-    conf = "high" if n >= 5 and band < 0.25 else "medium" if n >= 2 and band < 0.6 else "low"
-    return {"gain": round(raw_gain * ratio), "low": round(raw_gain * lo), "high": round(raw_gain * hi),
-            "confidence": conf, "n": n, "ratio": ratio}
+    lo, hi = ratio - band, ratio + band
+    gain, low, high = round(raw_gain * ratio), round(raw_gain * lo), round(raw_gain * hi)
+    # Confidence comes from real performance only: sample size, stability of the
+    # ratio AND the share of past actions that actually made money.
+    pos_rate = float(c.get("pos_rate", 0.0) or 0.0)
+    if n >= 5 and band < 0.25 and pos_rate >= 0.7:
+        conf = "high"
+    elif n >= 3 and band < 0.6 and pos_rate >= 0.5:
+        conf = "medium"
+    else:
+        conf = "low"
+    return {"gain": gain, "low": low, "high": high, "confidence": conf, "n": n, "ratio": ratio,
+            "economic_impact": {"gain": gain, "low": low, "high": high, "unit": "toman_month"},
+            "evidence_strength": {"n": n, "n_positive": c.get("n_positive", 0), "n_zero": c.get("n_zero", 0),
+                                  "n_negative": c.get("n_negative", 0), "pos_rate": pos_rate,
+                                  "direction_accuracy": c.get("direction_accuracy"),
+                                  "mae": c.get("mae"), "mean_error": c.get("mean_error")},
+            "prediction_uncertainty": {"confidence": conf, "sd": round(sd, 3), "band": round(band, 3),
+                                       "ratio_ci95": c.get("ratio_ci95")}}
 
 
 # ----------------------------------------------------------------------------- time series
@@ -219,12 +319,29 @@ def plan(db: Session, horizon: int = 90, history_days: int = 182) -> dict:
                     "measured": round(_f(r.measured_gain)), "measured_at": r.measured_at.isoformat() if r.measured_at else None})
     hits = sum(1 for a in acc if (a["measured"] > 0) == (a["predicted"] > 0))
     mape = [abs(a["measured"] - a["calibrated"]) / abs(a["calibrated"]) for a in acc if a["calibrated"]]
+    # build-488 (§۳۶–۳۷) — تفکیک شفاف نتایج مدل: سود واقعی / بدون اثر /
+    # فرصت ازدست‌رفته (ضرر نیست) / ضرر واقعی — فقط عدد واقعی، قابل ردیابی.
+    outcomes = {"positive": 0, "neutral": 0, "missed": 0, "negative": 0}
+    for r in db.execute(select(Insight).where(Insight.result.isnot(None))).scalars():
+        try:
+            v = (json.loads(r.result or "{}") or {}).get("verdict")
+        except Exception:
+            v = None
+        if v == "POSITIVE_OUTCOME":
+            outcomes["positive"] += 1
+        elif v == "NEGATIVE_OUTCOME":
+            outcomes["negative"] += 1
+        elif v == "MISSED_OPPORTUNITY":
+            outcomes["missed"] += 1
+        elif v in ("NO_IMPACT", "NEUTRAL_OUTCOME"):
+            outcomes["neutral"] += 1
     return {
         "generated_at": _now().isoformat(), "horizon_days": horizon,
         "model": {"weeks_of_history": fit["weeks"], "trend_pct_per_week": round(fit["slope_per_day"] * 7 / fit["level"] * 100, 2) if fit["level"] else 0,
                   "fit_r2": fit["r2"], "weekday_index": [round(i, 2) for i in fit["weekday"]],
                   "calibration": [{"kind": k, "label": KIND_LABELS.get(k, k), **v} for k, v in sorted(cal.items())],
                   "measured_count": len(acc), "direction_accuracy": round(hits / len(acc), 2) if acc else None,
+                  "outcomes": outcomes,
                   "mean_abs_pct_error": round(sum(mape) / len(mape) * 100) if mape else None},
         "baseline": {"profit_per_day": round(fit["level"]), "profit_month": month_base, "profit_horizon": round(cum_b)},
         "plan": {"open": len(items), "gain_month": plan_month, "low_month": round(low_day * 30), "high_month": round(high_day * 30),

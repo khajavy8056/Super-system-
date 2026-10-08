@@ -48,6 +48,10 @@ public final class Insights {
         if ("plan".equals(w)) { if (seg.length > 2 && "learn".equals(seg[2])) return Local.obj("ok", true, "calibration", Forecast.learn()); return Forecast.plan(Math.max(14, Math.min(365, q.optInt("horizon", 90)))); }
         if ("report".equals(w)) { JSONObject s = summary(); JSONArray open = arr(Local.rows("SELECT * FROM ai_insights WHERE status='NEW' ORDER BY priority, expected_gain DESC LIMIT 10")); return Local.obj("summary", s, "open", open, "narrative", weekly(s, open), "generated_at", Db.now()); }
         if ("nudges".equals(w)) return nudges(b.optJSONArray("product_ids"));
+        if ("actions".equals(w)) {   // v4.8.0 — بررسی اجراها روی گوشی هم در دسترس است
+            if (seg.length > 2 && "health-scan".equals(seg[2])) { JSONArray lost = healthScan(); return Local.obj("lost", lost, "checked", lost.length()); }
+            if (seg.length > 2 && "report".equals(seg[2])) return healthReport();
+        }
         if ("customers".equals(w)) { ensure(); return Local.obj("today", Jalali.todayIso().substring(0, 10), "horizon_days", q.optInt("days", 7), "rows", customerPatterns(new Frame(180), q.optInt("days", 7))); }
         if ("tasks".equals(w)) { JSONArray lst = new JSONArray(Local.setting("insights.reorder_list", "[]")); if ("DELETE".equals(method) && seg.length > 3) { JSONArray keep = new JSONArray(); for (int i = 0; i < lst.length(); i++) if (lst.optJSONObject(i).optLong("product_id") != Long.parseLong(seg[3])) keep.put(lst.optJSONObject(i)); Local.setSetting("insights.reorder_list", keep.toString()); return keep; } return lst; }
         long id = Long.parseLong(w); JSONObject row = Local.one("SELECT * FROM ai_insights WHERE id=?", id); if (row == null) throw new Api.ApiError(404, "INSIGHT_NOT_FOUND", "پیشنهاد یافت نشد");
@@ -81,6 +85,7 @@ public final class Insights {
     static String daysAgo(int d) { return plusDays(Db.now(), -d); }
     static double daysBetween(String a, String b) { return (ms(b) - ms(a)) / 86400000.0; }
     static String money(double v) { return Ui.fa(String.format(java.util.Locale.US, "%,d", Math.round(v))) + " " + Ui.currencyLabel; }
+    static String pname(long pid) { JSONObject p = Db.productById(pid); return p == null ? ("کالا #" + pid) : p.optString("name"); }
     static String fa(double v) { return Ui.num(v); }
 
     /* ============================ engine ============================ */
@@ -150,20 +155,129 @@ public final class Insights {
         return out;
     }
 
-    /* ---- 2. expiry ladder ---- */
+    /* ============================ 2. expiry ladder — v4.8.0 تایم‌لاین درست ============================
+       هم‌تای دقیق ماژول سرور (app/services/expiry_plan.py). گزارش مالک: «وقتی
+       صفر روز مانده بود پیشنهاد می‌داد، عملاً فاسد شده؛ باید چند روز قبلش، یک
+       هفته قبلش پیشنهاد بدهد.» سه قاعده:
+         ۱) سرعت محافظه‌کارانه = کمینهٔ نرخ ۷/۲۸/۹۰ روز (نه بهترین هفته).
+         ۲) حاشیهٔ اطمینان ۱۵٪ — «تقریباً فروش می‌رود» کافی نیست.
+         ۳) هر پله تاریخ شمسی خودش را دارد؛ آخرین پله دست‌کم ۲ روز پیش از انقضا.
+       کالای تاریخ‌گذشته تخفیف نمی‌گیرد؛ هشدار ضایعات با اقدام واقعی می‌گیرد. */
+    static final int EXP_WINDOW = 45, EXP_MIN_RUNWAY = 2, EXP_MAX_DISCOUNT = 60, EXP_MIN_STEP = 5;
+
+    /** {lead_days, safety, pos_days} — تنظیمات فروشگاه با پیش‌فرض‌های امن. */
+    static double[] expiryCfg() {
+        double lead = 21, safety = 1.15, pos = 30;
+        try { lead = Double.parseDouble(Local.setting("insights.expiry_lead_days", "21")); } catch (Exception ignore) {}
+        try { safety = Double.parseDouble(Local.setting("insights.expiry_safety", "1.15")); } catch (Exception ignore) {}
+        try { pos = Double.parseDouble(Local.setting("insights.pos_expiry_days", "30")); } catch (Exception ignore) {}
+        return new double[]{Math.max(3, Math.min(EXP_WINDOW, lead)), Math.max(1.0, Math.min(3.0, safety)), Math.max(1, Math.min(90, pos))};
+    }
+
+    /** کندترین سرعت فروش اخیر — برنامه باید هفتهٔ آرام را دوام بیاورد، نه بهترین هفته را. */
+    static double conservativeVelocity(Frame f, long pid) {
+        return Math.max(0, Math.min(f.velocity(pid, 7), Math.min(f.velocity(pid, 28), f.velocity(pid, 90))));
+    }
+
+    /** تاریخ شمسی یک تاریخ ISO («۱۴۰۵/۰۷/۰۵»). */
+    static String jdateIso(String iso) { return Ui.jdate(iso); }
+
+    /** پله‌های تخفیف: تعداد پله به فرصت باقی‌مانده بستگی دارد، نه به سلیقه. */
+    static JSONArray expirySteps(double daysLeft, double buy, double sell) throws Exception {
+        JSONArray out = new JSONArray(); if (sell <= 0) return out;
+        int ceiling = (int) Math.min(EXP_MAX_DISCOUNT, Math.max(0, Math.floor((1 - (buy * 1.01) / sell) * 100)));
+        if (ceiling < EXP_MIN_STEP) return out;                       // تخفیف امن وجود ندارد
+        int[] raw = daysLeft >= 7 ? new int[]{Math.max(EXP_MIN_STEP, ceiling / 3), Math.max(EXP_MIN_STEP + 5, (ceiling * 2) / 3), ceiling}
+                   : daysLeft >= 3 ? new int[]{Math.max(EXP_MIN_STEP, ceiling / 2), ceiling}
+                   : new int[]{ceiling};
+        int last = 0;
+        for (int p : raw) { p = Math.max(EXP_MIN_STEP, Math.min(EXP_MAX_DISCOUNT, p)); if (p > last) { out.put(p); last = p; } }
+        return out;
+    }
+
+    /** پلان کامل یک بچ (null = کاری لازم نیست). خالص و قابل تست. */
+    static JSONObject expiryPlan(double qty, double velocity, double buy, double sell, double daysLeft,
+                                String todayIso, double lead, double safety) throws Exception {
+        if (qty <= 0 || daysLeft > EXP_WINDOW) return null;
+        JSONObject base = Local.obj("days_left", Math.round(daysLeft), "qty", qty, "velocity_per_day", Math.round(velocity * 10000) / 10000.0,
+                                    "sell_by", Ui.jdate(todayIso), "lead_days", Math.round(lead));
+        if (daysLeft < 0) {                                        // تاریخ‌گذشته: فقط صداقت
+            double risk = qty * buy; if (risk < 50000) return null;
+            base.put("mode", "waste"); base.put("at_risk", Math.round(risk)); base.put("surplus", qty); base.put("will_sell", 0.0);
+            base.put("timeline", new JSONArray().put(Local.obj("step", 1, "kind", "expired", "date", todayIso, "jdate", Ui.jdate(todayIso), "label", "از قفسه برداشته شود و ضایعات ثبت گردد")));
+            return base;
+        }
+        double willSell = velocity * daysLeft;
+        base.put("will_sell", Math.round(willSell * 100) / 100.0); base.put("safe", willSell >= qty * safety);
+        if (willSell >= qty * safety) return null;
+        double surplus = Math.max(0, qty - willSell), risk = surplus * buy;
+        if (risk < 50000) return null;                              // ریسک ناچیز: وقت مدیر را نگیر
+        JSONArray steps = expirySteps(daysLeft, buy, sell);
+        if (steps.length() == 0) { base.put("mode", "risk_only"); base.put("surplus", Math.round(surplus * 10) / 10.0); base.put("at_risk", Math.round(risk)); base.put("timeline", new JSONArray()); return base; }
+        int n = steps.length(), span = Math.max(0, (int) daysLeft - EXP_MIN_RUNWAY);
+        JSONArray ladder = new JSONArray(), timeline = new JSONArray();
+        for (int i = 0; i < n; i++) {
+            int percent = steps.optInt(i);
+            int offset = i == 0 ? 0 : Math.min(Math.max(1, (int) Math.round(i * (double) span / n)), Math.max(1, (int) daysLeft));
+            String date = plusDays(todayIso + "T00:00:00", offset).substring(0, 10);
+            Double price = sell > 0 ? (double) (Math.round(sell * (1 - percent / 100.0) / 100) * 100) : null;
+            ladder.put(Local.obj("from_day", offset, "percent", percent));
+            timeline.put(Local.obj("step", i + 1, "from_day", offset, "percent", percent, "date", date, "jdate", Ui.jdate(date),
+                                   "suggested_price", price, "kind", "markdown",
+                                   "label", i == 0 ? ("امروز — تخفیف " + fa(percent) + "٪") : ("از " + Ui.jdate(date) + " — تخفیف " + fa(percent) + "٪")));
+        }
+        int finalRunway = Math.max(0, (int) daysLeft - timeline.optJSONObject(n - 1).optInt("from_day"));
+        base.put("mode", "ladder").put("surplus", Math.round(surplus * 10) / 10.0).put("at_risk", Math.round(risk))
+            .put("ladder", ladder).put("timeline", timeline).put("final_runway_days", finalRunway).put("deepest_percent", steps.optInt(n - 1));
+        if (finalRunway < EXP_MIN_RUNWAY || daysLeft <= 1) base.put("urgent", true);
+        return base;
+    }
+
     static List<Draft> expiry(Frame f) throws Exception {
         List<Draft> out = new ArrayList<>(); String today = Jalali.todayIso();
+        double[] cfg = expiryCfg();
         for (JSONObject b : Local.rows("SELECT * FROM batches WHERE status='ACTIVE' AND current_qty>0 AND expiry_date IS NOT NULL AND expiry_date<>''")) {
-            double left = daysBetween(today + "T00:00:00", b.optString("expiry_date").substring(0, 10) + "T00:00:00"); if (left < 0 || left > 45) continue;
-            long pid = b.optLong("product_id"); double v = f.velocity(pid, 28), qty = b.optDouble("current_qty"); double will = v * left; if (will >= qty * 0.9) continue;
-            double surplus = qty - will, buy = b.optDouble("buy_price"), sell = b.optDouble("sell_price"); double risk = surplus * buy; if (risk < 50000) continue;
-            int maxPct = sell > 0 ? (int) Math.max(5, Math.min(40, Math.floor((1 - buy * 1.02 / sell) * 100))) : 10; int s1 = Math.max(1, (int) left / 3);
-            JSONArray ladder = new JSONArray().put(Local.obj("from_day", 0, "percent", Math.max(5, maxPct / 3))).put(Local.obj("from_day", s1, "percent", Math.max(8, maxPct * 2 / 3))).put(Local.obj("from_day", s1 * 2, "percent", maxPct));
-            Draft d = new Draft("EXPIRY_LADDER", "batch:" + b.optLong("id"), f.name(pid) + ": " + fa(Math.ceil(surplus)) + " عدد تا انقضا نمی‌فروشد", fa(Math.round(left)) + " روز تا انقضا مانده؛ سرعت فروش " + fa(Math.round(v * 70) / 10.0) + " عدد در هفته است و از " + fa(qty) + " عدد موجود حدود " + fa(Math.ceil(surplus)) + " عدد ضایعات می‌شود (" + money(risk) + " ضرر). پیشنهاد: تخفیف پله‌ای " + fa(ladder.optJSONObject(0).optInt("percent")) + "٪ ← " + fa(ladder.optJSONObject(1).optInt("percent")) + "٪ ← " + fa(maxPct) + "٪ (آخرین پله هنوز بالای قیمت خرید است).");
-            d.prio = left <= 7 ? 1 : 2; d.gain = risk * 0.6; d.ev = Local.obj("batch_id", b.optLong("id"), "product_id", pid, "days_left", Math.round(left), "qty", qty, "velocity_per_day", Math.round(v * 1000) / 1000.0, "surplus", Math.round(surplus * 10) / 10.0, "at_risk", Math.round(risk), "buy", buy, "sell", sell, "ladder", ladder);
-            d.act("markdown_ladder", "اعمال تخفیف پله‌ای", "batch_id", b.optLong("id"), "ladder", ladder).act("sms_buyers", "پیامک به خریداران قبلی", "product_id", pid, "percent", ladder.optJSONObject(0).optInt("percent")); d.metric = Local.obj("metric", "product_units", "product_id", pid, "window_days", Math.min(28, Math.max(7, (int) left))); out.add(d);
+            String exp = b.optString("expiry_date"); if (exp.length() < 10) continue; exp = exp.substring(0, 10);
+            double left = daysBetween(today + "T00:00:00", exp + "T00:00:00");
+            long pid = b.optLong("product_id"); double qty = b.optDouble("current_qty"), buy = b.optDouble("buy_price"), sell = b.optDouble("sell_price");
+            JSONObject plan = expiryPlan(qty, conservativeVelocity(f, pid), buy, sell, left, today, cfg[0], cfg[1]);
+            if (plan == null) continue;
+            String mode = plan.optString("mode");
+            JSONObject ev = plan; ev.put("batch_id", b.optLong("id")); ev.put("product_id", pid); ev.put("buy", buy); ev.put("sell", sell);
+            if ("waste".equals(mode)) {
+                Draft d = new Draft("EXPIRY_LADDER", "batch:" + b.optLong("id"), f.name(pid) + ": " + fa(qty) + " عدد تاریخ‌گذشته در انبار است",
+                        "تاریخ این بچ گذشته است و " + fa(qty) + " عدد از آن در انبار مانده — یعنی " + money(plan.optDouble("at_risk")) + " سرمایهٔ ازدست‌رفته. فروش این کالا درست نیست؛ «ثبت ضایعات» را بزنید تا موجودی و حساب‌ها با واقعیت قفسه یکی شود. دفعهٔ بعد این پیشنهاد چند هفته زودتر می‌آید تا به این نقطه نرسیم.");
+                d.prio = 1; d.gain = 0; d.ev = ev;
+                d.act("write_off_waste", "ثبت ضایعات (برداشتن از موجودی)", "batch_id", b.optLong("id"), "qty", qty, "reason", "تاریخ‌گذشته — هشدار هوش فروشگاه")
+                 .act("shelf_note", "یادداشت برداشتن از قفسه", "products", new JSONArray().put(pid));
+                d.metric = Local.obj("metric", "product_units", "product_id", pid, "window_days", 7);
+                out.add(d); continue;
+            }
+            if ("risk_only".equals(mode)) {
+                Draft d = new Draft("EXPIRY_LADDER", "batch:" + b.optLong("id"), f.name(pid) + ": " + fa(plan.optDouble("surplus")) + " عدد تا انقضا نمی‌فروشد (تخفیف ممکن نیست)",
+                        fa(plan.optInt("days_left")) + " روز تا انقضا مانده و با سرعت واقعی فروش حدود " + fa(plan.optDouble("surplus")) + " عدد (" + money(plan.optDouble("at_risk")) + ") ضایعات می‌شود. حاشیهٔ سود اجازهٔ تخفیف بی‌خطر نمی‌دهد؛ راه‌های صادقانه: باندل با کالای پرفروش، جابه‌جایی به قفسهٔ ورودی، یا فروش عمده.");
+                d.prio = plan.optInt("days_left") <= 7 ? 1 : 2; d.gain = plan.optDouble("at_risk") * 0.35; d.ev = ev;
+                d.act("shelf_note", "یادداشت جابه‌جایی به قفسهٔ ورودی", "products", new JSONArray().put(pid))
+                 .act("sms_buyers", "پیامک به خریداران قبلی", "product_id", pid, "percent", 10);
+                d.metric = Local.obj("metric", "product_units", "product_id", pid, "window_days", Math.min(28, Math.max(7, plan.optInt("days_left"))));
+                out.add(d); continue;
+            }
+            JSONArray timeline = plan.optJSONArray("timeline"), ladder = plan.optJSONArray("ladder");
+            StringBuilder sched = new StringBuilder(); for (int i = 0; i < timeline.length(); i++) { JSONObject t = timeline.optJSONObject(i); if (i > 0) sched.append("، "); sched.append(t.optString("jdate")).append(" → ").append(fa(t.optInt("percent"))).append("٪"); }
+            int runway = plan.optInt("final_runway_days");
+            String runwayTxt = runway > 0 ? ("آخرین پله از " + timeline.optJSONObject(timeline.length() - 1).optString("jdate") + " اعمال می‌شود و " + fa(runway) + " روز تا انقضا فرصت فروش دارد")
+                                          : ("فرصت پله‌بندی تمام شده؛ امروز (" + fa(plan.optInt("days_left")) + " روز مانده) آخرین فرصت فروش است");
+            Draft d = new Draft("EXPIRY_LADDER", "batch:" + b.optLong("id"),
+                    f.name(pid) + ": " + fa(plan.optDouble("surplus")) + " عدد تا انقضا نمی‌فروشد — " + (plan.optBoolean("urgent") ? "امروز آخرین فرصت" : fa(plan.optInt("days_left")) + " روز فرصت دارید"),
+                    fa(plan.optInt("days_left")) + " روز تا انقضا مانده؛ سرعت فروش واقعی (محافظه‌کارانه) " + fa(Math.round(plan.optDouble("velocity_per_day") * 70) / 10.0) + " عدد در هفته است و از " + fa(qty) + " عدد موجود حدود " + fa(plan.optDouble("surplus")) + " عدد ضایعات می‌شود (" + money(plan.optDouble("at_risk")) + " ضرر). پیشنهاد: تخفیف پله‌ای با تاریخ مشخص → " + sched + " (آخرین پله هنوز بالای قیمت خرید است) و پیامک به مشتریانی که قبلاً این کالا را خریده‌اند. " + runwayTxt + ".");
+            d.prio = (plan.optInt("days_left") <= 10 || plan.optBoolean("urgent")) ? 1 : 2; d.gain = plan.optDouble("surplus") * sell * 0.5; d.ev = ev;
+            d.act("markdown_ladder", "اجرای تخفیف پله‌ای روی این بچ", "batch_id", b.optLong("id"), "ladder", ladder)
+             .act("sms_buyers", "پیامک به خریداران قبلی", "product_id", pid, "percent", timeline.optJSONObject(Math.min(1, timeline.length() - 1)).optInt("percent"));
+            d.metric = Local.obj("metric", "product_units", "product_id", pid, "window_days", Math.min(28, Math.max(7, plan.optInt("days_left"))));
+            out.add(d);
         }
-        out.sort((x, y) -> Double.compare(y.gain, x.gain)); return out.subList(0, Math.min(8, out.size()));
+        out.sort((x, y) -> x.prio != y.prio ? x.prio - y.prio : Double.compare(y.gain, x.gain));
+        return out.subList(0, Math.min(8, out.size()));
     }
 
     /* ---- 3. dead stock ---- */
@@ -312,7 +426,15 @@ public final class Insights {
         JSONObject first = Local.one("SELECT MIN(at) AS a FROM invoices"); if (first != null && !first.optString("a").isEmpty() && daysBetween(first.optString("a"), now) < wd) wd = Math.max(3, (int) daysBetween(first.optString("a"), now));
         JSONObject base = metric(spec, plusDays(now, -wd), now); base.put("window_days", wd); base.put("from", plusDays(now, -wd)); base.put("to", now);
         JSONArray executed = new JSONArray(); JSONArray acts = ja(row.optString("actions")); Set<String> onlySet = null; if (only != null) { onlySet = new HashSet<>(); for (int i = 0; i < only.length(); i++) onlySet.add(only.optString(i)); }
-        for (int i = 0; i < acts.length(); i++) { JSONObject a = acts.optJSONObject(i); if (onlySet != null && !onlySet.contains(a.optString("type"))) continue; try { executed.put(Local.obj("type", a.optString("type"), "ok", true, "result", execute(row, a.optString("type"), a.optJSONObject("params") == null ? new JSONObject() : a.optJSONObject("params")))); } catch (Exception e) { executed.put(Local.obj("type", a.optString("type"), "ok", false, "error", String.valueOf(e.getMessage()))); } }
+        for (int i = 0; i < acts.length(); i++) { JSONObject a = acts.optJSONObject(i); if (onlySet != null && !onlySet.contains(a.optString("type"))) continue;
+            // v4.8.0 — پارامترها و نتیجهٔ بازبینی هم ذخیره می‌شوند تا «سیستم بررسی» بعداً
+            // بتواند بگوید این کار واقعاً ماند یا از بین رفته (نه اینکه فقط ok داده باشیم).
+            JSONObject params = a.optJSONObject("params") == null ? new JSONObject() : a.optJSONObject("params");
+            try { params.put("insight_id", String.valueOf(row.optLong("id"))); } catch (Exception ignore) {}
+            try { Object res = execute(row, a.optString("type"), params); JSONObject v = verifyAction(a.optString("type"), params);
+                executed.put(Local.obj("type", a.optString("type"), "label", a.optString("label"), "ok", true, "params", params, "result", res, "health", v.optString("status"), "health_detail", v.optString("detail"))); }
+            catch (Exception e) { executed.put(Local.obj("type", a.optString("type"), "label", a.optString("label"), "ok", false, "params", params, "error", String.valueOf(e.getMessage()), "health", "FAILED", "health_detail", String.valueOf(e.getMessage()))); } }
+        base.put("executed", executed);   // گزارش اجرا داخل baseline می‌ماند (ستون/مایگریشن لازم نیست)
         Local.exec("UPDATE ai_insights SET status='ACCEPTED', accepted_at=?, baseline=? WHERE id=?", now, base.toString(), row.optLong("id"));
         Local.audit("INSIGHT_ACCEPTED", "Insight", String.valueOf(row.optLong("id")), null, row.optString("kind"));
         return Local.obj("baseline", base, "executed", executed);
@@ -326,7 +448,32 @@ public final class Insights {
             case "reorder_note": { JSONArray lst = new JSONArray(Local.setting("insights.reorder_list", "[]")); long pid = p.optLong("product_id"); boolean has = false; for (int i = 0; i < lst.length(); i++) if (lst.optJSONObject(i).optLong("product_id") == pid) has = true; if (!has) { JSONObject pr = Db.productById(pid); lst.put(Local.obj("product_id", pid, "name", pr == null ? String.valueOf(pid) : pr.optString("name"), "qty", p.opt("qty"), "added", now, "insight_id", ins.optLong("id"))); } Local.setSetting("insights.reorder_list", lst.toString()); return Local.obj("reorder_list", lst.length()); }
             case "set_min_stock": { long pid = p.optLong("product_id"); JSONObject pr = Db.productById(pid); if (pr == null) return Local.obj("skipped", "product"); Local.exec("UPDATE products SET min_stock_alert=? WHERE id=?", p.optInt("min_stock"), pid); Local.audit("INSIGHT_ACTION", "Product", String.valueOf(pid), pr.opt("min_stock_alert"), p.optInt("min_stock")); return Local.obj("min_stock_alert", p.optInt("min_stock")); }
             case "set_price": { long bid = p.optLong("batch_id"); JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", bid); if (b == null) return Local.obj("skipped", "batch"); Local.exec("UPDATE batches SET sell_price=?, updated_at=? WHERE id=?", p.optDouble("sell_price"), now, bid); Local.exec("INSERT INTO price_history(product_id,price_type,price,effective_from) VALUES(?,?,?,?)", b.optLong("product_id"), "SELL", p.optDouble("sell_price"), now); Local.audit("INSIGHT_ACTION", "Batch", String.valueOf(bid), b.optDouble("sell_price"), p.optDouble("sell_price")); return Local.obj("sell_price", p.optDouble("sell_price")); }
-            case "markdown_ladder": { long bid = p.optLong("batch_id"); JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", bid); if (b == null) return Local.obj("skipped", "batch"); JSONArray plans = new JSONArray(Local.setting("insights.markdown_plans", "[]")); JSONArray keep = new JSONArray(); for (int i = 0; i < plans.length(); i++) if (plans.optJSONObject(i).optLong("batch_id") != bid) keep.put(plans.optJSONObject(i)); keep.put(Local.obj("batch_id", bid, "base_price", b.optDouble("sell_price"), "start", Jalali.todayIso(), "ladder", p.optJSONArray("ladder"), "applied", new JSONArray(), "insight_id", ins.optLong("id"))); Local.setSetting("insights.markdown_plans", keep.toString()); applyMarkdownSteps(); return Local.obj("plan", "saved"); }
+            case "write_off_waste": {   // v4.8.0 — «ثبت ضایعات»: موجودی و حساب‌ها با قفسه یکی می‌شود
+                long bid = p.optLong("batch_id"); JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", bid); if (b == null) return Local.obj("skipped", "batch");
+                double qty = p.has("qty") ? p.optDouble("qty") : b.optDouble("current_qty"); qty = Math.max(0, Math.min(qty, b.optDouble("current_qty"))); if (qty <= 0) return Local.obj("skipped", "empty");
+                double after = b.optDouble("current_qty") - qty;
+                Local.exec("UPDATE batches SET current_qty=?, updated_at=? WHERE id=?", after, now, bid);
+                Local.exec("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,reason,user,created_at) VALUES(?,?,'WASTE',?,'Insight',?,?,?,?)",
+                        b.optLong("product_id"), bid, -qty, String.valueOf(ins.optLong("id")), p.optString("reason", "ضایعات — هشدار هوش فروشگاه"), Screens.userName(), now);
+                Local.refreshBatchJson(b.optLong("product_id"));
+                Local.audit("INSIGHT_ACTION", "Batch", String.valueOf(bid), b.optDouble("current_qty"), after);
+                JSONObject pr = Db.productById(b.optLong("product_id"));
+                notify("ضایعات ثبت شد", (pr == null ? "بچ " + bid : pr.optString("name")) + " — " + Ui.num(qty) + " عدد از موجودی کم شد");
+                return Local.obj("wasted", qty, "current_qty", after); }
+            case "markdown_ladder": {    // v4.8.0 — پله‌ها با اندیس شمرده می‌شوند (دو پله با درصد برابر هم اعمال می‌شوند)
+                long bid = p.optLong("batch_id"); JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", bid); if (b == null) return Local.obj("skipped", "batch");
+                JSONArray plans = new JSONArray(Local.setting("insights.markdown_plans", "[]")); JSONArray keep = new JSONArray();
+                for (int i = 0; i < plans.length(); i++) if (plans.optJSONObject(i).optLong("batch_id") != bid) keep.put(plans.optJSONObject(i));
+                double base = b.optDouble("sell_price");
+                keep.put(Local.obj("batch_id", bid, "product_id", b.optLong("product_id"), "base_price", base, "start", Jalali.todayIso(),
+                        "ladder", p.optJSONArray("ladder") == null ? new JSONArray() : p.optJSONArray("ladder"), "applied", new JSONArray(),
+                        "applied_dates", new JSONArray(), "insight_id", ins.optLong("id"), "label", p.optString("label")));
+                Local.setSetting("insights.markdown_plans", keep.toString());
+                applyMarkdownSteps();
+                JSONObject saved = null; JSONArray now2 = new JSONArray(Local.setting("insights.markdown_plans", "[]"));
+                for (int i = 0; i < now2.length(); i++) if (now2.optJSONObject(i).optLong("batch_id") == bid) saved = now2.optJSONObject(i);
+                return Local.obj("plan", "saved", "applied_now", saved == null ? 0 : saved.optJSONArray("applied").length(), "base_price", base);
+            }
             case "vip_coupons": case "winback_sms": { boolean vip = "vip_coupons".equals(type); JSONArray ids = p.optJSONArray("customer_ids"); int pct = p.optInt("percent", vip ? 5 : 10), days = p.optInt("days", vip ? 30 : 14); Local.exec("INSERT INTO campaigns(name,discount_type,discount_value,min_purchase,valid_until,status,created_at) VALUES(?,?,?,?,?,'ACTIVE',?)", vip ? "باشگاه VIP" : "بازگشت مشتری", "PERCENT", pct, 0, plusDays(now, days), now); int issued = 0, sent = 0;
                 for (int i = 0; ids != null && i < ids.length(); i++) { JSONObject c = Local.one("SELECT * FROM customers WHERE id=?", ids.optLong(i)); if (c == null) continue; String code = (vip ? "VIP-" : "BACK-") + Long.toString(System.currentTimeMillis() % 100000000L + i * 7919L, 36).toUpperCase(); Local.exec("INSERT INTO coupons(code,discount_type,discount_value,min_purchase,customer_phone,valid_until,usage_limit,used_count,status,created_at) VALUES(?,?,?,?,?,?,1,0,'ACTIVE',?)", code, "PERCENT", pct, 0, c.optString("phone", null), plusDays(now, days), now); issued++; String ph = c.optString("phone"); if (!ph.isEmpty() && SmsLocal.configured()) { SmsLocal.enqueueAndSend(ph, vip ? (c.optString("name") + " عزیز، شما مشتری ویژهٔ " + store + " هستید. کد " + code + " = " + pct + "٪ تخفیف تا " + days + " روز. با سپاس از همراهی‌تان.") : (c.optString("name") + " عزیز، دلمان برایتان تنگ شده! " + store + " با کد " + code + " " + pct + "٪ تخفیف تا " + days + " روز منتظر شماست."), "coupon"); sent++; } }
                 return Local.obj("coupons", issued, "sms", sent); }
@@ -342,12 +489,163 @@ public final class Insights {
         throw new IllegalArgumentException("unknown action " + type);
     }
 
+    /** v4.8.0 — دقایقِ اجرای پله‌ها، معادلِ سرور.
+     *
+     *  پله‌ها با **اندیس** ثبت می‌شوند (نه درصد): اگر دو پله درصد یکسان داشته باشند،
+     *  هر دو اعمال می‌شوند. هر اعمال قیمت + تاریخچهٔ قیمت + نوتیفیکیشن دارد. بچ
+     *  تاریخ‌گذشته یک‌بار هشدار می‌دهد و پلانش بسته می‌شود تا مدیر بداند این کالا
+     *  دیگر با تخفیف فروش نمی‌رود و باید ضایعات ثبت شود.
+     */
     static int applyMarkdownSteps() throws Exception {
-        JSONArray plans = new JSONArray(Local.setting("insights.markdown_plans", "[]")); JSONArray keep = new JSONArray(); int changed = 0; String today = Jalali.todayIso();
-        for (int i = 0; i < plans.length(); i++) { JSONObject plan = plans.optJSONObject(i); JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", plan.optLong("batch_id")); if (b == null || !"ACTIVE".equals(b.optString("status")) || b.optDouble("current_qty") <= 0) continue; int day = (int) daysBetween(plan.optString("start") + "T00:00:00", today + "T00:00:00"); JSONArray ladder = plan.optJSONArray("ladder"), applied = plan.optJSONArray("applied"); JSONObject step = null; for (int k = 0; ladder != null && k < ladder.length(); k++) if (ladder.optJSONObject(k).optInt("from_day") <= day) step = ladder.optJSONObject(k);
-            if (step != null) { boolean done = false; for (int k = 0; k < applied.length(); k++) if (applied.optInt(k) == step.optInt("percent")) done = true; if (!done) { double np = Math.max(Math.round(plan.optDouble("base_price") * (1 - step.optInt("percent") / 100.0) / 100) * 100, b.optDouble("buy_price") * 1.01); Local.exec("UPDATE batches SET sell_price=?, updated_at=? WHERE id=?", Math.round(np), Db.now(), b.optLong("id")); applied.put(step.optInt("percent")); changed++; JSONObject pr = Db.productById(b.optLong("product_id")); notify("تخفیف پله‌ای " + step.optInt("percent") + "٪ اعمال شد", (pr == null ? "" : pr.optString("name")) + " — قیمت جدید " + money(np)); } }
-            if (applied.length() < (ladder == null ? 0 : ladder.length())) keep.put(plan); }
+        JSONArray plans = new JSONArray(Local.setting("insights.markdown_plans", "[]")); JSONArray keep = new JSONArray(); int changed = 0; String today = Jalali.todayIso().substring(0, 10);
+        for (int i = 0; i < plans.length(); i++) {
+            JSONObject plan = plans.optJSONObject(i); if (plan == null) continue;
+            JSONObject b = Local.one("SELECT * FROM batches WHERE id=?", plan.optLong("batch_id"));
+            if (b == null) continue;                                        // بچ پاک شده — پلان هم می‌رود
+            if (!"ACTIVE".equals(b.optString("status")) || b.optDouble("current_qty") <= 0) continue;
+            JSONArray ladder = plan.optJSONArray("ladder") == null ? new JSONArray() : plan.optJSONArray("ladder");
+            JSONArray applied = plan.optJSONArray("applied") == null ? new JSONArray() : plan.optJSONArray("applied");
+            String exp = b.optString("expiry_date"); exp = (exp == null || exp.length() < 10) ? null : exp.substring(0, 10);
+            int left = exp == null ? 9999 : (int) Math.round(daysBetween(today + "T00:00:00", exp + "T00:00:00"));
+            if (left < 0) {                                                 // تاریخ گذشته — تخفیف بی‌معنی است
+                if (!plan.optBoolean("closed")) {
+                    notify("برنامهٔ تخفیف بسته شد", pname(b.optLong("product_id")) + " از تاریخ گذشته؛ تخفیف را ادامه ندهید و «ثبت ضایعات» را بزنید.");
+                    plan.put("closed", true); keep.put(plan);
+                }
+                continue;
+            }
+            int day = (int) daysBetween(plan.optString("start") + "T00:00:00", today + "T00:00:00");
+            int idx = -1;
+            for (int k = 0; k < ladder.length(); k++) if (ladder.optJSONObject(k).optInt("from_day") <= day) idx = k;
+            if (idx >= 0 && !contains(applied, idx)) {
+                int percent = ladder.optJSONObject(idx).optInt("percent");
+                double floor = b.optDouble("buy_price") * 1.01;
+                double np = Math.max(Math.round(plan.optDouble("base_price") * (1 - percent / 100.0) / 100) * 100, floor);
+                Local.exec("UPDATE batches SET sell_price=?, updated_at=? WHERE id=?", Math.round(np), Db.now(), b.optLong("id"));
+                Local.exec("INSERT INTO price_history(product_id,price_type,price,effective_from,is_active) VALUES(?,'SELL',?,?,1)", b.optLong("product_id"), Math.round(np), Db.now());
+                Local.audit("INSIGHT_ACTION", "Batch", String.valueOf(b.optLong("id")), b.optDouble("sell_price"), Math.round(np));
+                applied.put(idx);
+                JSONObject pr = Db.productById(b.optLong("product_id"));
+                notify("تخفیف پله‌ای " + percent + "٪ اعمال شد", (pr == null ? ("بچ " + b.optLong("id")) : pr.optString("name")) + " — قیمت جدید " + money(np));
+                changed++;
+            }
+            if (applied.length() < ladder.length()) keep.put(plan); else plan.put("completed", today);   // تمام‌شده هم بماند تا بازبینی دروغ نگوید
+        }
         Local.setSetting("insights.markdown_plans", keep.toString()); return changed;
+    }
+
+    static boolean contains(JSONArray a, int v) { for (int i = 0; i < a.length(); i++) if (a.optInt(i) == v) return true; return false; }
+
+    /* ================= v4.8.0: سیستم بررسی «آیا اجرا واقعاً انجام شد و ماند؟» =================
+       درخواست مالک: «دکمهٔ اجرا باید واقعاً کار را انجام دهد» و «یک سیستم بررسی
+       کلی برای پیشنهاد→اجرا». پس هر اجرا با پارامترهایش ثبت می‌شود، همان لحظه
+       بازبینی می‌شود، و در تیک‌های بعدی اگر کار از بین رفته باشد (قیمت دستی
+       برگشته، بچ عوض شده) یک‌بار به مدیر خبر داده می‌شود. */
+    static final java.util.Set<String> ADVISORY = new java.util.HashSet<>(java.util.Arrays.asList(
+            "note", "shelf_note", "set_min_stock", "set_min_stock_bulk", "set_price", "set_prices_bulk",
+            "pos_nudge", "enable_nudges", "personal_sms", "visit_sms", "sms_buyers", "debt_reminders",
+            "set_setting", "tag_customers", "threshold_campaign"));
+
+    /** آیا تغییرِ قول‌داده‌شده سر جایش است؟ OK / LOST / WARNING (تغییر دستی، عیبی ندارد) / UNKNOWN */
+    static JSONObject verifyAction(String type, JSONObject p) {
+        try {
+            switch (type) {
+                case "write_off_waste": {
+                    JSONObject m = Local.one("SELECT COUNT(*) AS n FROM movements WHERE batch_id=? AND movement_type='WASTE' AND reference_id=?", p.optLong("batch_id"), p.optString("insight_id"));
+                    boolean ok = m != null && m.optInt("n") > 0;
+                    return vres(ok, ok ? "حرکت ضایعات ثبت شده و موجودی کم شده است" : "حرکت ضایعات برای این بچ پیدا نشد"); }
+                case "set_price": {
+                    JSONObject b = Local.one("SELECT sell_price FROM batches WHERE id=?", p.optLong("batch_id"));
+                    if (b == null) return vres(false, "بچ دیگر وجود ندارد");
+                    double want = p.optDouble("sell_price"), has = b.optDouble("sell_price");
+                    if (Math.abs(has - want) < 0.5) return vres(true, "قیمت همان " + money(has) + " است");
+                    return vres(false, "قیمت بعداً به " + money(has) + " تغییر کرده (قیمت موردنظر " + money(want) + " بود)"); }
+                case "markdown_ladder": {
+                    long bid = p.optLong("batch_id"); JSONObject plan = null; JSONArray plans = new JSONArray(Local.setting("insights.markdown_plans", "[]"));
+                    for (int i = 0; i < plans.length(); i++) if (plans.optJSONObject(i).optLong("batch_id") == bid) plan = plans.optJSONObject(i);
+                    JSONObject b = Local.one("SELECT sell_price, buy_price FROM batches WHERE id=?", bid);
+                    if (b == null) return vres(false, "بچ دیگر وجود ندارد");
+                    if (plan == null) return vres(false, "برنامهٔ تخفیف پله‌ای دیگر در فهرست نیست");
+                    int applied = plan.optJSONArray("applied") == null ? 0 : plan.optJSONArray("applied").length();
+                    boolean cheaper = b.optDouble("sell_price") < plan.optDouble("base_price") - 0.5;
+                    if (applied > 0 || cheaper) return vres(true, applied + " پله اعمال شده — قیمت " + money(b.optDouble("sell_price")));
+                    return vres(false, "هیچ پله‌ای اعمال نشده و قیمت هم پایین نیامده"); }
+                case "set_min_stock": {
+                    JSONObject pr = Db.productById(p.optLong("product_id"));
+                    if (pr == null) return vres(false, "کالا دیگر وجود ندارد");
+                    double want = p.optDouble("min_stock"), has = pr.optDouble("min_stock_alert");
+                    return Math.abs(has - want) < 0.001 ? vres(true, "حد سفارش " + Ui.num(has) + " است") : vres(false, "حد سفارش بعداً به " + Ui.num(has) + " تغییر کرده"); }
+                case "reorder_note": {
+                    JSONArray lst = new JSONArray(Local.setting("insights.reorder_list", "[]"));
+                    for (int i = 0; i < lst.length(); i++) if (lst.optJSONObject(i).optLong("product_id") == p.optLong("product_id")) return vres(true, "کالا در فهرست سفارش هست");
+                    return vres(false, "کالا از فهرست سفارش حذف شده"); }
+                case "enable_nudges": case "pos_nudge": {
+                    return "true".equals(Local.setting("insights.pos_nudges", "false")) ? vres(true, "پیشنهاد پای صندوق روشن است") : vres(false, "پیشنهاد پای صندوق خاموش شده است"); }
+                case "bundle_campaign": case "flash_sale": {
+                    JSONObject c = Local.one("SELECT COUNT(*) AS n FROM campaigns WHERE status='ACTIVE'");
+                    return c != null && c.optInt("n") > 0 ? vres(true, c.optInt("n") + " کمپین فعال هست") : vres(false, "کمپین فعالی پیدا نشد"); }
+                case "sms_buyers": case "visit_sms": case "debt_reminders": case "vip_coupons": case "winback_sms": {
+                    return "true".equals(Local.setting("sms.enabled", "true")) ? vres(true, "وضعیت ارسال پیامک بررسی شد") : vres(false, "ارسال پیامک خاموش شده است"); }
+                default:
+                    return Local.obj("status", "OK", "detail", "این اقدام حرکتی در داده ندارد؛ بررسی خودکار لازم نیست");
+            }
+        } catch (Exception e) { return Local.obj("status", "UNKNOWN", "detail", "بازبینی ممکن نشد: " + e.getMessage()); }
+    }
+
+    static JSONObject vres(boolean ok, String detail) { return Local.obj("status", ok ? "OK" : "LOST", "detail", detail); }
+
+    /** در تیک پس‌زمینه: کارهایی که از بین رفته‌اند را یک‌بار خبر می‌دهد.
+     *  خروجی مثل سرور آرایه‌ای از موارد ازبین‌رفته است تا UI هر دو طرف یکی باشد. */
+    static JSONArray healthScan() {
+        JSONArray lost = new JSONArray();
+        try {
+            for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status IN ('ACCEPTED','MEASURED')")) {
+                JSONObject base = jo(r.optString("baseline")); JSONArray log = base.optJSONArray("executed"); if (log == null) continue;
+                JSONArray alerted = base.optJSONArray("health_alerted"); if (alerted == null) alerted = new JSONArray(); boolean dirty = false;
+                for (int i = 0; i < log.length(); i++) {
+                    JSONObject e = log.optJSONObject(i); if (e == null || !e.optBoolean("ok") || contains(alerted, i)) continue;
+                    String type = e.optString("type"); JSONObject params = e.optJSONObject("params"); if (params == null) continue;
+                    JSONObject v = verifyAction(type, params);
+                    if ("LOST".equals(v.optString("status")) && !ADVISORY.contains(type)) {
+                        notify("اجرای یک پیشنهاد از بین رفت", r.optString("title") + "\n" + v.optString("detail"));
+                        alerted.put(i); dirty = true;
+                        lost.put(Local.obj("insight_id", r.optLong("id"), "kind", r.optString("kind"), "title", r.optString("title"),
+                                           "type", type, "state", "LOST", "detail", v.optString("detail")));
+                    }
+                }
+                if (dirty) { base.put("health_alerted", alerted); Local.exec("UPDATE ai_insights SET baseline=? WHERE id=?", base.toString(), r.optLong("id")); }
+            }
+        } catch (Exception ignore) {}
+        return lost;
+    }
+
+    /** گزارش بررسی اجراها برای صفحهٔ هوش فروشگاه (هم‌تای /actions/report سرور). */
+    static JSONObject healthReport() throws Exception {
+        int ok = 0, lost = 0, failed = 0, unverified = 0, unknown = 0; JSONArray rows = new JSONArray();
+        for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status IN ('ACCEPTED','MEASURED') ORDER BY accepted_at DESC, id DESC LIMIT 40")) {
+            JSONObject base = jo(r.optString("baseline")); JSONArray log = base.optJSONArray("executed"); JSONArray acts = new JSONArray();
+            for (int i = 0; log != null && i < log.length(); i++) {
+                JSONObject e = log.optJSONObject(i); if (e == null) continue;
+                String type = e.optString("type"), detail = e.optString("error"), health;
+                if (!e.optBoolean("ok")) { health = "FAILED"; failed++; }
+                else if (e.optJSONObject("params") == null) { health = "UNVERIFIED"; unverified++; detail = "اجرای قدیمی — پارامترها ثبت نشده"; }
+                else {
+                    JSONObject h = verifyAction(type, e.optJSONObject("params")); health = h.optString("status"); detail = h.optString("detail");
+                    if ("LOST".equals(health) && ADVISORY.contains(type)) { health = "OK"; detail += " — قابل بازبینی"; ok++; }
+                    else if ("OK".equals(health)) ok++;
+                    else if ("LOST".equals(health)) lost++;
+                    else if ("FAILED".equals(health)) failed++;
+                    else unknown++;
+                }
+                acts.put(Local.obj("type", type, "at", e.optString("at"), "status", e.optString("health"), "detail", detail,
+                        "health", health, "health_detail", detail));
+            }
+            rows.put(Local.obj("insight_id", r.optLong("id"), "kind", r.optString("kind"), "title", r.optString("title"),
+                    "status", r.optString("status"), "accepted_at", r.optString("accepted_at"), "actions", acts));
+        }
+        return Local.obj("generated_at", Db.now(),
+                "counts", Local.obj("OK", ok, "LOST", lost, "FAILED", failed, "UNVERIFIED", unverified, "UNKNOWN", unknown),
+                "rows", rows);
     }
 
     /* ============================ measurement ============================ */
@@ -403,9 +701,16 @@ public final class Insights {
         res.put("profit_pct", baseRate != 0 ? Math.round((postRate - baseRate) / Math.abs(baseRate) * 1000) / 10.0 : JSONObject.NULL); res.put("profit_pct_adj", baseRate != 0 ? Math.round((postRate - baseRate * ctrl) / Math.abs(baseRate * ctrl) * 1000) / 10.0 : JSONObject.NULL);
         res.put("base_value", base.opt("value")); res.put("post_value", post.opt("value")); res.put("base_profit_per_day", Math.round(baseRate)); res.put("post_profit_per_day", Math.round(postRate)); res.put("daily", dailySeries(spec, start, end, base));
         String st = elapsed >= wd - 0.01 ? "MEASURED" : "ACCEPTED";
-        if (enough) Local.exec("UPDATE ai_insights SET result=?, measured_gain=?, measured_at=?, status=? WHERE id=?", res.toString(), Math.round(adj), now, st, row.optLong("id")); else Local.exec("UPDATE ai_insights SET result=?, measured_gain=NULL, measured_at=?, status=? WHERE id=?", res.toString(), now, st, row.optLong("id"));
+        // build-489 (§۳۶–۳۷) — حکم صادقانه: فرصت ازدست‌رفته هرگز ضرر/منفی نیست. موتور آفلاین
+        // شواهد «هزینهٔ تحقق‌یافته» ندارد؛ پس نتیجهٔ منفیِ بدون شواهد = MISSED_OPPORTUNITY و
+        // measured_gain=NULL می‌ماند تا هیچ‌جا (امتیاز مدل، خلاصه، گزارش) به‌عنوان ضرر دیده نشود.
+        String verdict = !enough ? "INSUFFICIENT_DATA" : adj > 0 ? "POSITIVE_OUTCOME" : adj == 0 ? "NO_IMPACT" : "MISSED_OPPORTUNITY";
+        res.put("outcome_class", verdict); res.put("verdict", verdict);
+        if ("MISSED_OPPORTUNITY".equals(verdict)) res.put("missed_gain", Math.round(Math.abs(adj)));
+        boolean storeGain = enough && !"MISSED_OPPORTUNITY".equals(verdict);
+        if (storeGain) Local.exec("UPDATE ai_insights SET result=?, measured_gain=?, measured_at=?, status=? WHERE id=?", res.toString(), Math.round(adj), now, st, row.optLong("id")); else Local.exec("UPDATE ai_insights SET result=?, measured_gain=NULL, measured_at=?, status=? WHERE id=?", res.toString(), now, st, row.optLong("id"));
         if ("MEASURED".equals(st) && !"MEASURED".equals(row.optString("status"))) { try { Forecast.learn(); } catch (Exception ignore) {} }   // v3.1: the engine learns from every completed measurement
-        return Local.obj("baseline", base, "post", post, "gain", enough ? Math.round(adj) : 0, "complete", "MEASURED".equals(st));
+        return Local.obj("baseline", base, "post", post, "gain", storeGain ? Math.round(adj) : 0, "verdict", verdict, "complete", "MEASURED".equals(st));
     }
     static int measureAll() { int n = 0; for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status='ACCEPTED'")) { try { if (measure(r) != null) n++; } catch (Exception ignore) {} } return n; }
 
@@ -420,18 +725,68 @@ public final class Insights {
         return Local.obj("accepted", rows.size(), "measured", measured, "open", open.optInt("n"), "total_gain", Math.round(total), "month_gain", Math.round(month), "expected_open", Math.round(open.optDouble("g")), "month_profit", Math.round(mp.optDouble("p")), "share_of_month_profit", mp.optDouble("p") > 0 ? Math.round(month / mp.optDouble("p") * 1000) / 1000.0 : 0, "by_kind", bkA, "top", topA);
     }
 
-    /* ============================ POS nudges ============================ */
+    /* ============================ POS nudges — v4.8.0 هم‌تای سرور ============================
+       گزارش مالک: «پیشنهاد پای صندوق روی گوشی نمی‌آید» و بعد «باید ببینم
+       واقعاً همان چیزی است که رایانه می‌گوید». پیش از این، شرط انقضا در گوشی به
+       تنظیم block_sale گره خورده بود و روزهای باقی‌مانده و رتبه‌بندی
+       «نزدیک‌به‌انقضا اول» نداشت؛ حالا دقیقاً مثل sellable_now سرور است:
+       کالای مرده یا فقط-تاریخ‌گذشته هرگز پیشنهاد نمی‌شود، ولی روشن/خاموش بودن
+       block_sale در صداقت پیشنهاد دخالتی ندارد؛ و کارت «⏰ N روز» روی گوشی هم
+       می‌آید تا صندوق‌دار بداند چرا این کالا مهم است. */
     public static JSONArray nudges(JSONArray ids) throws Exception {
-        JSONArray out = new JSONArray(); if (ids == null || ids.length() == 0 || !"true".equals(Local.setting("insights.pos_nudges", "false"))) return out; ensure();
-        Set<Long> cart = new HashSet<>(); for (int i = 0; i < ids.length(); i++) cart.add(ids.optLong(i)); Set<Long> offered = new HashSet<>();
-        JSONArray rules = new JSONArray(); JSONObject row = Local.one("SELECT evidence FROM ai_insights WHERE kind='BASKET_NUDGE' AND status IN ('ACCEPTED','MEASURED') ORDER BY id DESC LIMIT 1"); if (row != null) rules = jo(row.optString("evidence")).optJSONArray("rules"); if (rules == null) rules = new JSONArray(); JSONArray manual = new JSONArray(Local.setting("insights.manual_rules", "[]")); for (int i = 0; i < manual.length(); i++) rules.put(manual.optJSONObject(i));
-        for (int i = 0; i < rules.length() && out.length() < 2; i++) { JSONObject r = rules.optJSONObject(i); if (r != null && cart.contains(r.optLong("if")) && !cart.contains(r.optLong("then")) && !offered.contains(r.optLong("then"))) { JSONObject product = Local.one("SELECT id,name FROM products WHERE id=? AND is_active=1", r.optLong("then"));
-            if (product == null) continue;
-            String expiry = "true".equals(Local.setting("expiry.block_sale", "true")) ? " AND (expiry_date IS NULL OR expiry_date='' OR substr(expiry_date,1,10)>=?)" : "";
-            JSONObject available = expiry.isEmpty() ? Local.one("SELECT id FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0 LIMIT 1", r.optLong("then")) : Local.one("SELECT id FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0" + expiry + " LIMIT 1", r.optLong("then"), Jalali.todayIso().substring(0,10));
-            if (available == null) continue;
-            offered.add(r.optLong("then")); out.put(Local.obj("product_id", r.optLong("then"), "name", product.optString("name"), "because", r.optString("if_name"), "confidence", r.optDouble("confidence"), "purpose", "sell_now")); } }
+        JSONArray out = new JSONArray();
+        if (ids == null || ids.length() == 0 || !"true".equals(Local.setting("insights.pos_nudges", "false"))) return out;
+        ensure();
+        int posDays = (int) expiryCfg()[2];
+        String today = Jalali.todayIso().substring(0, 10);
+        Set<Long> cart = new HashSet<>(); for (int i = 0; i < ids.length(); i++) cart.add(ids.optLong(i));
+        JSONArray rules = new JSONArray();
+        JSONObject row = Local.one("SELECT evidence FROM ai_insights WHERE kind='BASKET_NUDGE' AND status IN ('ACCEPTED','MEASURED') ORDER BY id DESC LIMIT 1");
+        if (row != null) rules = jo(row.optString("evidence")).optJSONArray("rules");
+        if (rules == null) rules = new JSONArray();
+        JSONArray manual = new JSONArray(Local.setting("insights.manual_rules", "[]")); for (int i = 0; i < manual.length(); i++) rules.put(manual.optJSONObject(i));
+        List<JSONObject> cands = new ArrayList<>(); Set<Long> seen = new HashSet<>();
+        for (int i = 0; i < rules.length() && cands.size() < 6; i++) {
+            JSONObject r = rules.optJSONObject(i);
+            if (r == null || !cart.contains(r.optLong("if")) || cart.contains(r.optLong("then")) || seen.contains(r.optLong("then"))) continue;
+            long pid = r.optLong("then");
+            JSONObject live = sellableNow(pid, today, posDays);   // v4.7.0/v4.8.0: هرگز کالای بی‌موجودی یا تاریخ‌گذشته
+            if (live == null) continue;
+            seen.add(pid);
+            boolean near = live.optBoolean("near_expiry");
+            JSONObject c = Local.obj("product_id", pid, "name", live.optString("name"), "because", r.optString("if_name"),
+                    "confidence", r.optDouble("confidence"), "batch_id", live.optLong("batch_id"),
+                    "days_left", live.isNull("days_left") ? JSONObject.NULL : live.optInt("days_left"),
+                    "near_expiry", near, "purpose", near ? "sell_before_expiry" : "sell_now");
+            if (near) c.put("reason", "موجودی «" + live.optString("name") + "» تا " + fa(live.optInt("days_left")) + " روز آینده تاریخ می‌خورد؛ اگر امروز نفروشد ضرر می‌شود");
+            c.put("_lift", r.has("lift") ? r.optDouble("lift", 1.0) : 1.0);
+            cands.add(c);
+        }
+        // نزدیک‌به‌انقضا اول، بعد قوی‌ترین قاعده — ترتیب کارت‌ها روی گوشی و رایانه یکی است
+        cands.sort((x, y) -> { int a = x.optBoolean("near_expiry") ? 0 : 1, b = y.optBoolean("near_expiry") ? 0 : 1;
+            if (a != b) return a - b;
+            return Double.compare(y.optDouble("confidence") * y.optDouble("_lift"), x.optDouble("confidence") * x.optDouble("_lift")); });
+        for (int i = 0; i < cands.size() && out.length() < 2; i++) { JSONObject c = cands.get(i); c.remove("_lift"); out.put(c); }
         return out;
+    }
+
+    /** v4.8.0 — «آیا واقعاً می‌شود این کالا را پیشنهاد داد؟» (هم‌تای sellable_now سرور).
+        فقط بچ فعالِ موجود و تاریخ‌نخورده؛ حتی اگر block_sale خاموش باشد. */
+    static JSONObject sellableNow(long pid, String today, int posDays) throws Exception {
+        JSONObject p = Local.one("SELECT id,name FROM products WHERE id=? AND is_active=1", pid);
+        if (p == null) return null;
+        long firstId = 0, soonId = 0; String soonE = null; boolean any = false;
+        for (JSONObject b : Local.rows("SELECT id, expiry_date FROM batches WHERE product_id=? AND status='ACTIVE' AND current_qty>0", pid)) {
+            String e = b.optString("expiry_date"); e = (e == null || e.trim().length() < 10) ? null : e.trim().substring(0, 10);
+            if (e != null && e.compareTo(today) < 0) continue;              // گذشته — هرگز
+            any = true; if (firstId == 0) firstId = b.optLong("id");
+            if (e != null && (soonE == null || e.compareTo(soonE) < 0)) { soonE = e; soonId = b.optLong("id"); }
+        }
+        if (!any) return null;
+        Integer daysLeft = soonE == null ? null : (int) Math.round(daysBetween(today + "T00:00:00", soonE + "T00:00:00"));
+        return Local.obj("name", p.optString("name"), "batch_id", soonE != null ? soonId : firstId,
+                         "expiry_date", soonE, "days_left", daysLeft,
+                         "near_expiry", daysLeft != null && daysLeft >= 0 && daysLeft <= posDays);
     }
 
     /* ============================ narrative ============================ */
@@ -442,5 +797,5 @@ public final class Insights {
     static void notify(String title, String text) { try { if (Ui.ctx != null) Notify.show(Ui.ctx, Notify.CH_SYSTEM, ++nid, title, text, "insights", null); } catch (Exception ignore) {} }
 
     /** background tick: called from the sync/alarm worker (every ~6 h) */
-    public static void tick() { try { if (!"true".equals(Local.setting("insights.enabled", "true"))) return; String last = Local.setting("insights.last_run", ""); if (!last.isEmpty() && daysBetween(last, Db.now()) < 0.25) { applyMarkdownSteps(); return; } run(); for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status='NEW' AND priority=1 AND narrative IS NULL")) { notify("پیشنهاد فوری هوش فروشگاه", r.optString("title")); Local.exec("UPDATE ai_insights SET narrative='' WHERE id=?", r.optLong("id")); } } catch (Exception ignore) {} }
+    public static void tick() { try { if (!"true".equals(Local.setting("insights.enabled", "true"))) return; String last = Local.setting("insights.last_run", ""); if (!last.isEmpty() && daysBetween(last, Db.now()) < 0.25) { applyMarkdownSteps(); healthScan(); return; } run(); healthScan(); for (JSONObject r : Local.rows("SELECT * FROM ai_insights WHERE status='NEW' AND priority=1 AND narrative IS NULL")) { notify("پیشنهاد فوری هوش فروشگاه", r.optString("title")); Local.exec("UPDATE ai_insights SET narrative='' WHERE id=?", r.optLong("id")); } } catch (Exception ignore) {} }
 }

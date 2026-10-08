@@ -49,6 +49,7 @@ public final class Relay {
     }
 
     static String raw(String method, String url, String json) throws Exception {
+        Api.requireSafeEndpoint(url);
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         try {
             c.setConnectTimeout(8000); c.setReadTimeout(32000); c.setRequestMethod(method);

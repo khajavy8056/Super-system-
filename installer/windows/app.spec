@@ -40,6 +40,8 @@ a = Analysis(
         (str(ROOT / "backend" / "alembic.ini"), "."),
         # §80–82 bundled zero-stock starter catalog (read at runtime via __file__).
         (str(ROOT / "backend" / "app" / "data"), "app/data"),
+        # build-488 (§6) — Vazirmatn OFL fonts for Persian PDF reports (pdf.py).
+        (str(ROOT / "backend" / "app" / "assets"), "app/assets"),
         # v1.3 native window icon (WebView2 window title bar / taskbar)
         (str(ROOT / "installer" / "windows" / "icon.ico"), "."),
         # v3.5.8 — the bundled one-year demo store (~20 MB gzipped, 76 MB inflated).
@@ -112,7 +114,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="SupermarketSystem",
+    name="RasaSystem",
     icon=str(ROOT / "installer" / "windows" / "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,

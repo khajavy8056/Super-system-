@@ -1,0 +1,458 @@
+{
+ "schema": "super-system-release-manifest/1",
+ "version": "3.8.0",
+ "base_commit": "3e52ae4275fa7b229ae9eb96d6e9f0dc8e6c9d53",
+ "branch": "arena/01a0c664-super-system",
+ "generated_at": "2026-09-22T14:48:36Z",
+ "version_source_of_truth": "backend/app/__init__.py::__version__",
+ "scope": [
+  "Data Quality Engine wired into Intelligence (Critical blocks, Medium/Low cut confidence + audit; DQ status API)",
+  "Economics honesty (expected_gain deterministic-only; LLM narrative-only; impact/evidence/uncertainty split; pre-DB rejection)",
+  "Honest calibration (no positive floors; Pos/Neu/Neg + sample_count/MAE/mean-error/direction-accuracy/CI)",
+  "Action Engine VALIDATE→BEGIN/SAVEPOINT→EXECUTE→VERIFY→COMMIT (real rollback, partial-failure proof, traceability)",
+  "Measurement Contracts per action (NOT_MEASURABLE / INSUFFICIENT_DATA / NEGATIVE_OUTCOME)",
+  "Experiment lifecycle CREATE→…→EVALUATE (migration a8c2e4f6b1d3; immutable assignments; assigned≠exposed; missing≠zero)",
+  "SMS retry honesty (next_retry_at + exp-backoff+jitter; due-only claimed dispatch; stuck recovery)",
+  "Unified Hardware Integration Layer (6 adapters, 4 transports, USB discovery, pinned-driver gate, health+backoff, self-tests; migration c5d9e2f7a4b6)",
+  "CI tests.yml gate staged in installer/ci (activation needs maintainer workflow scope)"
+ ],
+ "tests": {
+  "backend": {
+   "passed": 593,
+   "skipped": 1,
+   "failed": 0,
+   "duration_s": 317,
+   "new_files": [
+    "backend/tests/test_v38_data_quality.py (5)",
+    "backend/tests/test_v38_economics.py (1)",
+    "backend/tests/test_v38_calibration.py (4)",
+    "backend/tests/test_v38_actions.py (4)",
+    "backend/tests/test_v38_measurement.py (5)",
+    "backend/tests/test_v38_experiments.py (4)",
+    "backend/tests/test_v38_sms.py (3)",
+    "backend/tests/test_v38_hardware.py (25)"
+   ]
+  }
+ },
+ "artifacts": [
+  {
+   "file": "releases/android/SupermarketMobile-3.8.0.apk",
+   "sha256": "0a82d345a675f0d102a881baae1aa060a0aa3fce88ec3302f9e7fac35e1c0495",
+   "built_by": "scripts/android/build-apk.sh (same SDK-less pipeline as installer/ci/release-android.yml)",
+   "versionCode": 30800,
+   "versionName": "3.8.0",
+   "signer_sha256": "18b4ab1868c026476c4027fe823d38a8e3965f70194cc0d65e60eac4e7321fa5",
+   "signer_matches_3_6_6_and_3_7_0": true,
+   "note": "Not installed on a physical device in this environment; install-over-previous on the user's device required (H7)."
+  },
+  {
+   "file": "installer/windows Setup.exe",
+   "status": "NOT_BUILT",
+   "reason": "Requires a real windows-latest CI runner. Trigger: maintainer runs scripts/activate-ci.sh, then pushes the v3.8.0 tag."
+  }
+ ],
+ "changes": [
+  {
+   "file": "CHANGELOG.md",
+   "added": 23,
+   "removed": 0,
+   "sha256": "0e4a08c504afbb365e98a735e02ccd0962e3bba1189f3c212e3463aa32ed30b4"
+  },
+  {
+   "file": "RELEASE_AUDIT_3.7.0.md",
+   "added": 80,
+   "removed": 0,
+   "sha256": "1cba1d495d1a4dca452601e15b858eb0f6e1c803655ba67aefdb6a09e0fce606"
+  },
+  {
+   "file": "RELEASE_CHANGE_MANIFEST_3.7.0.json",
+   "added": 249,
+   "removed": 0,
+   "sha256": "2b1699064fc57ea2db15b683081a7d91cd6e006d07accea803450228aba57248"
+  },
+  {
+   "file": "backend/alembic/env.py",
+   "added": 6,
+   "removed": 1,
+   "sha256": "345905f05123494d7c75f73d4c6d0fbd7a756a10ef7393c5e5b299b47b595cd3"
+  },
+  {
+   "file": "backend/alembic/versions/20260922_a8c2e4f6b1d3_v3_8_experiment_arms.py",
+   "added": 45,
+   "removed": 0,
+   "sha256": "ed8e638cf303103e5e35baa172671230cc1f36186a537ab4d4bcc3eade2e2f53"
+  },
+  {
+   "file": "backend/alembic/versions/20260922_c5d9e2f7a4b6_v3_8_hardware_health.py",
+   "added": 57,
+   "removed": 0,
+   "sha256": "f304aae313af484d0917100cbf2c541632de39809f1e6d2755a2be5e6f0219cc"
+  },
+  {
+   "file": "backend/alembic/versions/20260922_f7a1c2d3e4b5_v3_7_catchup.py",
+   "added": 168,
+   "removed": 0,
+   "sha256": "6903602a78e7cb57ccd7b1800303a600d90a0d65050338725aa23e0bcf1628c6"
+  },
+  {
+   "file": "backend/app/__init__.py",
+   "added": 1,
+   "removed": 1,
+   "sha256": "6f036cf2d4809afd856e1e5d2affe157e361b82c5ed7fbb125256f0d73f8cfcb"
+  },
+  {
+   "file": "backend/app/config.py",
+   "added": 20,
+   "removed": 1,
+   "sha256": "a66e9f366bd92f286cd205aa9711f1a420d982e04cd22b44feeef6767462c736"
+  },
+  {
+   "file": "backend/app/database.py",
+   "added": 143,
+   "removed": 53,
+   "sha256": "462829532238b1d94177405ac38a357ffbfd2069af14cf29cb42be77d85d4934"
+  },
+  {
+   "file": "backend/app/main.py",
+   "added": 7,
+   "removed": 1,
+   "sha256": "c0483eea4adbf378033c0a42c9295efa25b3fde93566a54c290c6c37667ee711"
+  },
+  {
+   "file": "backend/app/models/__init__.py",
+   "added": 2,
+   "removed": 1,
+   "sha256": "ff1a54178a318f280d267cad57abd49ba1373727919b07ae626257bb085e1c82"
+  },
+  {
+   "file": "backend/app/models/insights.py",
+   "added": 50,
+   "removed": 1,
+   "sha256": "62f99dbcef82d05b4cfd9bbd47345ce4745532ed718dd030960f234e7e525347"
+  },
+  {
+   "file": "backend/app/models/system.py",
+   "added": 14,
+   "removed": 0,
+   "sha256": "2eacd2108278c967746e804b2dcbe489ed3325ded898005e6fba32c86f2bfa50"
+  },
+  {
+   "file": "backend/app/routers/batches.py",
+   "added": 12,
+   "removed": 5,
+   "sha256": "4371a277596709629e7374829861b90c620cc6ca24a44434eac99acadf2e369e"
+  },
+  {
+   "file": "backend/app/routers/hw.py",
+   "added": 113,
+   "removed": 0,
+   "sha256": "46bcacd80f32661b240c94db33673ffc7b63945c76eb7d020451a11390118ee1"
+  },
+  {
+   "file": "backend/app/routers/insights.py",
+   "added": 7,
+   "removed": 0,
+   "sha256": "a852ce70fd2add84b37ab09efbe984bce60d4d8c3d9ead1baadb631b7d0b9cdb"
+  },
+  {
+   "file": "backend/app/routers/inventory.py",
+   "added": 9,
+   "removed": 3,
+   "sha256": "bfa398b30a6bf3dcdc94275bfc479a76904ad7c7a6e95040c4b1533acc60c6de"
+  },
+  {
+   "file": "backend/app/routers/invoices.py",
+   "added": 11,
+   "removed": 5,
+   "sha256": "3f3d3a276d796128e3b1d2e65a4b58583c794e17ce0a35c59384451022dedfc1"
+  },
+  {
+   "file": "backend/app/routers/mobile.py",
+   "added": 5,
+   "removed": 1,
+   "sha256": "881319f5bb632e8430add92f1c1cf8b7d6225ad0157e0c120a2e55aef4b6666d"
+  },
+  {
+   "file": "backend/app/routers/pos.py",
+   "added": 16,
+   "removed": 10,
+   "sha256": "c85d2714fcd7f424bf31a302da55b8271629b3a5dd66b7464f67442be13cea43"
+  },
+  {
+   "file": "backend/app/routers/products.py",
+   "added": 10,
+   "removed": 4,
+   "sha256": "88bed10550cab5668b788fe1fe77c3a3e74283e23899e21908cabe27a5bab577"
+  },
+  {
+   "file": "backend/app/routers/reports.py",
+   "added": 24,
+   "removed": 12,
+   "sha256": "78ee3441e26319c50f6863ec97ecc9e72bddaebf84c9925f7b8f21920aed88a7"
+  },
+  {
+   "file": "backend/app/routers/setup.py",
+   "added": 25,
+   "removed": 24,
+   "sha256": "6c7656bcbf22ba080289413de2fa26099ce54339d8a4a417cb5652c99423e280"
+  },
+  {
+   "file": "backend/app/routers/system.py",
+   "added": 7,
+   "removed": 3,
+   "sha256": "212caf90ad4f4e69a7683354e7d7c54966b8da2468debef800f16527b940c6ee"
+  },
+  {
+   "file": "backend/app/routers/warehouses.py",
+   "added": 9,
+   "removed": 3,
+   "sha256": "1ad4b8370360bdfd3107d7f970a59c63e8aeb26b1d1bf3b5aaf401ce19ba6853"
+  },
+  {
+   "file": "backend/app/services/ai_narrator.py",
+   "added": 19,
+   "removed": 2,
+   "sha256": "24a1e33f3138e9f4a0005d63b9e768ce0a8ca6ea9372f168e9f717fdc6928298"
+  },
+  {
+   "file": "backend/app/services/data_quality.py",
+   "added": 344,
+   "removed": 0,
+   "sha256": "b3d9d6fc934498bd0d5ce250aaf2428c25c227f589d7325b714a2965b077d848"
+  },
+  {
+   "file": "backend/app/services/experiments.py",
+   "added": 246,
+   "removed": 0,
+   "sha256": "06da0c8ae9aeafed0b541daa4d3a9a94e9e9a214232d2470a9917feb903f1336"
+  },
+  {
+   "file": "backend/app/services/forecast.py",
+   "added": 81,
+   "removed": 18,
+   "sha256": "c9aae158b4cc8fa1a79ffbbab3e176ab5d0232996077f91b49a0dc6bd2d6de65"
+  },
+  {
+   "file": "backend/app/services/hw/__init__.py",
+   "added": 50,
+   "removed": 0,
+   "sha256": "da49a5f787600034c99d7762bb95dfdcc6b5dad8ef8e1a1d774cfeea9f59361e"
+  },
+  {
+   "file": "backend/app/services/hw/adapters.py",
+   "added": 367,
+   "removed": 0,
+   "sha256": "9519df133201fc8a9232ebe2dd3377c2c178ec10228b1862b71e5dc1a0870f4e"
+  },
+  {
+   "file": "backend/app/services/hw/base.py",
+   "added": 75,
+   "removed": 0,
+   "sha256": "5e8d7b711f02265e8658581d34d4fc55796e22c74437e5f9742ad6eedcae67db"
+  },
+  {
+   "file": "backend/app/services/hw/detection.py",
+   "added": 59,
+   "removed": 0,
+   "sha256": "7954a610074b7f72f17a78bb97e2ad11f4b28eb08fe137f7d1693df36ae2c3d3"
+  },
+  {
+   "file": "backend/app/services/hw/drivers.py",
+   "added": 115,
+   "removed": 0,
+   "sha256": "c78c17f1824b568bf70890147797f5e26f4170d721fa484a50c7589d9691e4d8"
+  },
+  {
+   "file": "backend/app/services/hw/manager.py",
+   "added": 166,
+   "removed": 0,
+   "sha256": "a4f3be1801b99b2492dae361c01c66e561e8ae498a64c07fc399957157f87b94"
+  },
+  {
+   "file": "backend/app/services/hw/transports.py",
+   "added": 139,
+   "removed": 0,
+   "sha256": "ad26e8e5d6b3724c2df4e9b55deb079b06664d2b256c16883a0f45a19667caee"
+  },
+  {
+   "file": "backend/app/services/insight_actions.py",
+   "added": 166,
+   "removed": 10,
+   "sha256": "585018f964f605132c8707132f307d1b5fa82103eb9f08aa839c109861b3acd4"
+  },
+  {
+   "file": "backend/app/services/insights.py",
+   "added": 186,
+   "removed": 6,
+   "sha256": "f14131f726b64caca7786a22142948c11350a8467e62463709b580f33c888d9b"
+  },
+  {
+   "file": "backend/app/services/pos.py",
+   "added": 42,
+   "removed": 8,
+   "sha256": "1ad545b6c9f523227426bbc82f817c28db29a657cb56d0031e676415f3b99f68"
+  },
+  {
+   "file": "backend/app/services/reports.py",
+   "added": 41,
+   "removed": 0,
+   "sha256": "5d1d10ae448e0e30a955c015c306def714f857f6f9ed5c49f4cbba7120b7c7af"
+  },
+  {
+   "file": "backend/app/services/sms.py",
+   "added": 71,
+   "removed": 13,
+   "sha256": "42c552dd20357d9f43284efc1f655bb6be9d7817618b959f2911c3a17f978373"
+  },
+  {
+   "file": "backend/tests/test_phase3.py",
+   "added": 20,
+   "removed": 0,
+   "sha256": "590284fe9870710d7a410b43f837a77d414e373298fda3da8936a0cc39b82908"
+  },
+  {
+   "file": "backend/tests/test_v31_forecast_phone.py",
+   "added": 10,
+   "removed": 1,
+   "sha256": "6e78d85b668b3927105bb092e19f0b684ad53dcfc94b41d14aeafca3fe1768a7"
+  },
+  {
+   "file": "backend/tests/test_v37_migrations.py",
+   "added": 227,
+   "removed": 0,
+   "sha256": "11da8c66048bbe9652d06ef8a5699b77722926607aedc656b792012c298b7e6e"
+  },
+  {
+   "file": "backend/tests/test_v37_pos.py",
+   "added": 131,
+   "removed": 0,
+   "sha256": "fb36acf7b7a988ce180fa6657a9a53767aa902876acd56ac13a12605cc4f64ed"
+  },
+  {
+   "file": "backend/tests/test_v37_security.py",
+   "added": 175,
+   "removed": 0,
+   "sha256": "1dbd50b3148a279c09a9d5d9154e4adba516ef484462b4cd5e62f896a57431df"
+  },
+  {
+   "file": "backend/tests/test_v38_actions.py",
+   "added": 104,
+   "removed": 0,
+   "sha256": "4f08e2b45e85f58e58331a9d45106f2e5e671bbbc2a1df30c1b7c6079d497c59"
+  },
+  {
+   "file": "backend/tests/test_v38_calibration.py",
+   "added": 107,
+   "removed": 0,
+   "sha256": "cb85378bd601235d5af6ef8e2a028cb1dfe9eb330555dee5b593869ef62f213d"
+  },
+  {
+   "file": "backend/tests/test_v38_data_quality.py",
+   "added": 160,
+   "removed": 0,
+   "sha256": "06f503e62b7c618ace9805e4ec4cdda5837fafc718d9cd2043616773305539bc"
+  },
+  {
+   "file": "backend/tests/test_v38_economics.py",
+   "added": 40,
+   "removed": 0,
+   "sha256": "6b319c4ef31e37fa0025855c9cccfbb67c3d80295c0543b2f549ff293ce06352"
+  },
+  {
+   "file": "backend/tests/test_v38_experiments.py",
+   "added": 178,
+   "removed": 0,
+   "sha256": "bc145273ec3117fa46183e51fecb13b79998e476c882c9879a131d1477878a72"
+  },
+  {
+   "file": "backend/tests/test_v38_hardware.py",
+   "added": 296,
+   "removed": 0,
+   "sha256": "d83b68d8391aa412106d8c27be6efcf65ed83f707be10d483b0968f4769c2a07"
+  },
+  {
+   "file": "backend/tests/test_v38_measurement.py",
+   "added": 127,
+   "removed": 0,
+   "sha256": "f1868264609a743ce2c9260c6acb4aa23ca0ee0a569d66fabf9f3559df32a039"
+  },
+  {
+   "file": "backend/tests/test_v38_sms.py",
+   "added": 101,
+   "removed": 0,
+   "sha256": "f017722746858aee6e951e148872f74d4784ce61ea5503be6575db3abc726a91"
+  },
+  {
+   "file": "frontend/app.js",
+   "added": 18,
+   "removed": 9,
+   "sha256": "2b6d06c25fb56cd013054d2cdcd651fb71a1fa4315e5d8d2b4ef5705916313ba"
+  },
+  {
+   "file": "frontend/mobile/app-more.js",
+   "added": 2,
+   "removed": 2,
+   "sha256": "ce237d6c344527d2c3a674cbbf7793980885a4b6a30f55a6d6de11f7414a367e"
+  },
+  {
+   "file": "frontend/mobile/app.js",
+   "added": 5,
+   "removed": 3,
+   "sha256": "a5ae9b1a888947fed25be55e4d5c87eb922a7b97c30dcec884c4368eb786bc46"
+  },
+  {
+   "file": "installer/ci/tests.yml",
+   "added": 41,
+   "removed": 0,
+   "sha256": "d7c15d08ffb2d9036c0ee7de0c3542df69f05b3a7dc38c72804b9c82ebba5e8f"
+  },
+  {
+   "file": "installer/windows/setup.iss",
+   "added": 1,
+   "removed": 1,
+   "sha256": "74fcef0de3158a77acacdc26f05aa04e292dcf8d727d01de0b534c18fec0ef69"
+  },
+  {
+   "file": "releases/android/SupermarketMobile-3.7.0.apk",
+   "added": 0,
+   "removed": 0,
+   "sha256": "174208e915882ff747e57e41e8e13d2287facac150dfd27f2d85fa7744bce06a"
+  },
+  {
+   "file": "releases/android/SupermarketMobile-3.7.0.apk.sha256",
+   "added": 2,
+   "removed": 0,
+   "sha256": "87b4ad3b1c10786af2df78ed37425e2c583effc299bfaf11bb73139ea6a5de97"
+  },
+  {
+   "file": "releases/android/SupermarketMobile-3.8.0.apk",
+   "added": 0,
+   "removed": 0,
+   "sha256": "0a82d345a675f0d102a881baae1aa060a0aa3fce88ec3302f9e7fac35e1c0495"
+  },
+  {
+   "file": "releases/android/SupermarketMobile-3.8.0.apk.idsig",
+   "added": 0,
+   "removed": 0,
+   "sha256": "40d25e3477f258e371b92633edd0ee9f87819b263fd67c04eb569636d94c2c7f"
+  },
+  {
+   "file": "releases/android/SupermarketMobile-3.8.0.apk.sha256",
+   "added": 2,
+   "removed": 0,
+   "sha256": "b64de281f92b2d65dd7f96d4f9f549f0200b77bfe6b655dc9f23064d94a7b1c6"
+  },
+  {
+   "file": "scripts/activate-ci.bat",
+   "added": 2,
+   "removed": 1,
+   "sha256": "d59245148a138e21fb9e2f28286d09b762f5d63cf606021223339fa49190086a"
+  },
+  {
+   "file": "scripts/activate-ci.sh",
+   "added": 4,
+   "removed": 3,
+   "sha256": "60c9bc3724e48a561470b968074f656d2595b1da496bc8a2dbb5d39c7de47c36"
+  }
+ ]
+}

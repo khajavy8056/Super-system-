@@ -7,17 +7,28 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Invoice, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — line costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class VoidIn(BaseModel):
     reason: str | None = None
     #: §209 — admin password re-confirmation for voiding a PAID invoice
     admin_password: str | None = None
+
+
+def _ensure_invoice_scope(inv: Invoice, user: User) -> None:
+    if not has_permission(user, "reports.view_all") and inv.created_by != user.id:
+        raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
 
 
 def _out(inv: Invoice) -> dict:
@@ -27,6 +38,15 @@ def _out(inv: Invoice) -> dict:
         "total_amount": float(inv.total_amount), "payment_method": inv.payment_method,
         "payment_status": inv.payment_status, "status": inv.status, "print_status": inv.print_status,
         "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "customer_id": inv.customer_id,
+        "invoice_discount": float(getattr(inv, "invoice_discount", 0) or 0),
+        # build-481 (§26) — benefit provenance, frozen at sale time: editing the
+        # festival later must never rewrite what this receipt says.
+        "campaign_id": getattr(inv, "campaign_id", None),
+        "campaign_name": getattr(inv, "campaign_name", None),
+        "benefit_source": getattr(inv, "benefit_source", "NONE"),
+        "benefit_amount": float(getattr(inv, "benefit_amount", 0) or 0),
+        "applied_coupon_code": getattr(inv, "applied_coupon_code", None),
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": it.qty,
              "unit_buy_price": float(it.unit_buy_price), "unit_consumer_price": float(it.unit_consumer_price),
@@ -40,17 +60,23 @@ def _out(inv: Invoice) -> dict:
 
 @router.get("")
 def list_invoices(limit: int = Query(default=100, le=1000), offset: int = 0,
-                  db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
-    rows = db.execute(select(Invoice).order_by(Invoice.created_at.desc()).limit(limit).offset(offset)).scalars().all()
-    return {"items": [_out(i) for i in rows]}
+                  db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
+    q = select(Invoice).order_by(Invoice.created_at.desc())
+    # build-490 (§۲–۳) — بدون reports.view_all فقط فاکتورهای خودِ کاربر (سوابق فروش خودش)
+    if not has_permission(user, "reports.view_all"):
+        q = q.where(Invoice.created_by == user.id)
+    rows = db.execute(q.limit(limit).offset(offset)).scalars().all()
+    return _maybe_redact(user, {"items": [_out(i) for i in rows]})
 
 
 @router.get("/{invoice_id}")
-def get_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def get_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
-    return _out(inv)
+    # build-490 (§۲) — فاکتور دیگران برای کاربر بدون reports.view_all قابل دسترسی نیست (حتی با URL مستقیم)
+    _ensure_invoice_scope(inv, user)
+    return _maybe_redact(user, _out(inv))
 
 
 @router.post("/{invoice_id}/void")
@@ -59,6 +85,7 @@ def void_invoice(invoice_id: int, body: VoidIn, db: Session = Depends(get_db),
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     if inv.status == "PAID":
         # Voiding a paid invoice needs a stronger permission (§84).
         from ..security import has_permission, verify_password
@@ -86,13 +113,14 @@ def void_invoice(invoice_id: int, body: VoidIn, db: Session = Depends(get_db),
 
 
 @router.post("/{invoice_id}/print")
-def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def print_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     """Attempt to (re)print via the hardware layer. Printer failure NEVER voids
     the sale (§20) — it only marks print_status=FAILED for a retry."""
     from ..services.hardware import print_receipt
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     from ..services.hardware import render_receipt
     ok, message = print_receipt(db, invoice=inv)
     db.commit()
@@ -101,12 +129,13 @@ def print_invoice(invoice_id: int, db: Session = Depends(get_db), _: User = Depe
 
 
 @router.get("/{invoice_id}/receipt")
-def receipt_preview(invoice_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def receipt_preview(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     """Rendered receipt text (what the thermal printer receives) — on-screen preview / browser print."""
     from ..services.hardware import render_receipt, printer_profile
     inv = db.get(Invoice, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="INVOICE_NOT_FOUND")
+    _ensure_invoice_scope(inv, user)
     prof = printer_profile(db)
     return {"invoice_id": inv.id, "invoice_number": inv.invoice_number, "columns": prof["columns"],
             "print_status": inv.print_status, "receipt_text": render_receipt(db, inv)}

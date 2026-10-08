@@ -16,7 +16,12 @@ Desktop contract (3.6.7):
 - WebView2 is an embedded renderer in the application's own resizable window.
 - A browser is never a fallback. Missing desktop dependencies are an explicit
   startup failure with repair instructions, not a different product.
-- SUPERMARKET_KIOSK=1 explicitly requests full-screen; normal windows are default.
+
+Window contract (4.8.1 / build 482):
+- The program is installed on shop POS machines and MUST open FULL SCREEN by
+  default. SUPERMARKET_KIOSK=0 switches back to a normal resizable window
+  (repair/development); SUPERMARKET_KIOSK=kiosk requests full-screen without a
+  frame (locked-down till). Anything else (unset/1/true/yes) = full screen.
 """
 from __future__ import annotations
 
@@ -30,7 +35,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-APP_NAME = "SupermarketSystem"
+# v1.0.0 (RASA) — brand + data folder. The folder is RasaSystem for new installs;
+# an existing ~/SupermarketSystem (v4.x and older) is taken over once, IN PLACE, so
+# an update never loses the shop's database. Both names are recognised forever.
+APP_NAME = "RasaSystem"
+LEGACY_APP_NAME = "SupermarketSystem"
 
 
 def backend_dir() -> Path:
@@ -40,7 +49,15 @@ def backend_dir() -> Path:
 
 
 def data_dir() -> Path:
+    """User data folder — migrates the pre-1.0 folder name without touching the data."""
     base = Path.home() / APP_NAME
+    legacy = Path.home() / LEGACY_APP_NAME
+    if not base.exists() and legacy.exists():
+        try:
+            legacy.rename(base)                       # same volume: atomic, nothing is copied
+        except OSError:
+            import shutil
+            shutil.copytree(legacy, base)             # different volume (rare): copy, keep the original
     (base / "logs").mkdir(parents=True, exist_ok=True)
     return base
 
@@ -107,6 +124,37 @@ def persistent_secret(base: Path) -> str:
     return key
 
 
+def purge_stale_webview_cache(base: Path) -> None:
+    """build-492 (§۸–۹) — پاک‌سازی خودکار کش WebView2 و ServiceWorker هنگام تغییر نسخه.
+    از باقی‌ماندن فایل‌های قدیمی جاوااسکریپت/استایل پس از به‌روزرسانی جلوگیری می‌کند."""
+    import shutil
+    try:
+        from app import __version__
+    except Exception:
+        return
+    ver_file = base / "ui.version"
+    prev = ver_file.read_text(encoding="utf-8").strip() if ver_file.exists() else ""
+    if prev == __version__:
+        return
+    wv = base / "webview2"
+    if wv.exists():
+        for sub in (
+            "EBWebView/Default/Cache",
+            "EBWebView/Default/Code Cache",
+            "EBWebView/Default/Service Worker",
+            "Default/Cache",
+            "Default/Code Cache",
+            "Default/Service Worker",
+        ):
+            target = wv / sub
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+    try:
+        ver_file.write_text(__version__, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def wait_healthy(port: int, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -140,18 +188,24 @@ def open_native_window(url: str, base: Path, log, on_closed):
         profile = base / "webview2"
         profile.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
-        kiosk = os.environ.get("SUPERMARKET_KIOSK", "").strip().lower() in ("1", "true", "yes")
+        # v4.8.1 (بیلد ۴۸۲) — قرار است روی سیستم فروشگاهی نصب شود: پنجره باید
+        # «تمام صفحه» باز شود. SUPERMARKET_KIOSK=0 پنجرهٔ معمولی (عیب‌یابی) می‌دهد؛
+        # SUPERMARKET_KIOSK=kiosk تمام‌صفحهٔ بدون قاب (صندوق قفل‌شده) می‌ماند.
+        kiosk_env = os.environ.get("SUPERMARKET_KIOSK", "1").strip().lower()
+        windowed = kiosk_env in ("0", "false", "no", "windowed")
+        kiosk = kiosk_env == "kiosk"
+        fullscreen = not windowed
         win = webview.create_window(
-            "سیستم مدیریت سوپرمارکت", url,
+            "مدیریت سوپرمارکت رسا سیستم", url,
             width=1440, height=900, min_size=(640, 480),
-            fullscreen=kiosk, frameless=kiosk, easy_drag=False,
+            fullscreen=fullscreen, frameless=kiosk, easy_drag=False,
             text_select=True, zoomable=True, confirm_close=False,
         )
         try:
             win.events.closed += on_closed
         except Exception:  # noqa: BLE001 - older pywebview
             pass
-        if kiosk:
+        if fullscreen:
             # v2.5 — belt and braces: some pywebview/WebView2 builds ignore the
             # ``fullscreen=`` constructor flag on the first frame; toggling once
             # the window exists guarantees a true full-screen, chrome-less panel.
@@ -247,8 +301,14 @@ def main() -> None:
     sys.path.insert(0, str(backend_dir()))
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
+    # v4.0 — one data dir for everything the app persists (DB, logs, brain models,
+    # llama.cpp runtime). Without this the frozen backend would resolve its data
+    # dir inside the PyInstaller temp extraction dir and lose the model the
+    # installer placed in ~/SupermarketSystem/brain/models on every launch.
+    os.environ.setdefault("SUPERMARKET_DATA_DIR", str(base))
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
     os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
+    purge_stale_webview_cache(base)
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ENVIRONMENT", "production")
 

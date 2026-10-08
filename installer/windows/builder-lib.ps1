@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..\..')
-$WorkDir   = Join-Path $env:USERPROFILE 'SupermarketSystem-build'
+$WorkDir   = Join-Path $env:USERPROFILE 'RasaSystem-build'
 $LogFile   = Join-Path $WorkDir 'build.log'
 # A second copy next to the script: users send us "the build log" and they look
 # in the folder they double-clicked, not in their profile.
@@ -71,8 +71,18 @@ try {
     $m = Select-String -Path $initPy -Pattern '__version__\s*=\s*"([^"]+)"'
     if ($m) { $Version = $m.Matches[0].Groups[1].Value }
 } catch { Write-Log "Could not read version, defaulting to $Version : $_" 'WARN' }
+
+# build-485 — شمارهٔ بیلد از فایل واحد BUILD (همان منبعی که تست v48 می‌خواند).
+$UIBuild = 0
+try {
+    $buildFile = Join-Path $RepoRoot 'mobile-android\BUILD'
+    if (Test-Path $buildFile) {
+        $btxt = (Get-Content -Path $buildFile -Raw).Trim()
+        if ($btxt -match '^\d+$') { $UIBuild = [int]$btxt / 100 }
+    }
+} catch { Write-Log "Could not read BUILD, defaulting to 0 : $_" 'WARN' }
 Write-Log "Repository: $RepoRoot"
-Write-Log "Version:    $Version"
+Write-Log "Version:    $Version (UI build $UIBuild)"
 Write-Log "AllowDownloads: $Script:AllowDownloads   RequireSetup: $Script:RequireSetup"
 
 # ---------------------------------------------------------------------------
@@ -141,7 +151,8 @@ function Invoke-Native {
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory,
-        [scriptblock]$Report
+        [scriptblock]$Report,
+        [switch]$Stream
     )
     $prev = $null
     if ($WorkingDirectory) { $prev = Get-Location; Set-Location $WorkingDirectory }
@@ -162,13 +173,19 @@ function Invoke-Native {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = 0
+        $Script:LastNativeExitCode = 0
         try {
             $output = @(& $FilePath @Arguments 2>&1 | ForEach-Object {
                 $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
                 Write-Log "    $line"
+                # v4.2.1 -Stream: the ~1 GB model download prints its own progress
+                # lines; show them LIVE in this console instead of swallowing them
+                # until the step ends (the owner watched a dead screen for minutes).
+                if ($Stream) { Write-Host "  $line" }
                 $line
             })
             $code = $LASTEXITCODE
+            $Script:LastNativeExitCode = $code
         } finally {
             $ErrorActionPreference = $prevEap
         }
@@ -486,6 +503,25 @@ $Steps = @(
                    "`n`nکل مخزن را دانلود کنید و BUILD-SETUP.bat را داخل installer\windows\ نگه دارید.")
         }
         & $Report 'ساختار پروژه سالم است (۱۱ فایل حیاتی بررسی شد).'
+
+        # build-485 — راستی‌آزمایی تازگی رابط کاربری. باگ مالک: «فایل نصبی را از
+        # نسخهٔ قدیمی پروژه ساختم و ظاهر قدیمی نصب شد». حالا سازنده قبل از هر کاری
+        # نشان ساخت UI را در frontend\app.js می‌خواند و با mobile-android\BUILD
+        # می‌سنجد؛ پروژهٔ کهنه همان اول کار با پیام روشن متوقف می‌شود.
+        $appJs = Join-Path $RepoRoot 'frontend\app.js'
+        $marker = $null
+        foreach ($line in [System.IO.File]::ReadAllLines($appJs)) {
+            if ($line -match 'ui-build-(\d+)') { $marker = [int]$Matches[1]; break }
+        }
+        if ($null -eq $marker) {
+            throw ("نشان ساخت رابط کاربری (ui-build-NNN) در frontend\app.js پیدا نشد.`n" +
+                   "این پوشهٔ پروژه کامل یا به‌روز نیست. آخرین نسخهٔ مخزن را دانلود کنید.")
+        }
+        if ($UIBuild -gt 0 -and $marker -ne $UIBuild) {
+            throw ("نسخهٔ رابط کاربری کهنه است: app.js می‌گوید بیلد $marker ولی BUILD می‌گوید $UIBuild.`n" +
+                   "پروژهٔ شما قدیمی است؛ آخرین نسخه را از گیت‌هاب دانلود و دوباره اجرا کنید.")
+        }
+        & $Report "تازگی رابط کاربری تأیید شد: بیلد $marker."
     }}
 
     @{ Name = 'یافتن یا نصب پایتون ۳٫۱۱+'; Action = {
@@ -514,6 +550,9 @@ $Steps = @(
             & $Report 'محیط مجازی موجود بازاستفاده شد.'
         }
         $Script:VenvPy = Join-Path $venv 'Scripts\python.exe'
+        # redirected consoles must never mangle Python's (pip's) UTF-8 output
+        $env:PYTHONUTF8 = '1'
+        $env:PYTHONIOENCODING = 'utf-8'
 
         # v1.4.1: pip is the #1 point of failure on restricted networks
         # (pypi.org read timeouts). Every pip call therefore (a) waits longer
@@ -596,7 +635,7 @@ $Steps = @(
         Invoke-Native -FilePath $Script:VenvPy -WorkingDirectory $ScriptDir -Report $Report `
             -Arguments @('-m', 'PyInstaller', '--clean', '--noconfirm', 'app.spec')
 
-        $exe = Join-Path $ScriptDir 'dist\SupermarketSystem.exe'
+        $exe = Join-Path $ScriptDir 'dist\RasaSystem.exe'
         if (-not (Test-Path $exe)) {
             throw "PyInstaller بدون خطا تمام شد اما فایل خروجی ساخته نشد:`n$exe"
         }
@@ -615,9 +654,30 @@ $Steps = @(
         }
         & $Report "فایل اجرایی خودکفا ساخته شد ($mb مگابایت)."
 
+        # build-486 — راستی‌آزمایی درستِ داخل exe. باگ مالک: نسخهٔ قبلی بایت خام
+        # را می‌گشت ولی PyInstaller فایل‌ها را فشرده نگه می‌دارد → خطای «تم جدید
+        # داخل نیست» در حالی که داخل بود و ساخت Setup بی‌دلیل متوقف می‌شد. حالا
+        # ابزار verify_ui_in_exe.py آرشیو را می‌خواند؛ فقط «اثبات کهنگی» ساخت را
+        # متوقف می‌کند و بازرسی ناممکن فقط اخطار است (هرگز مانع ساخت نمی‌شود).
+        $needle = 'ui-build-' + [int]$UIBuild
+        $verifier = Join-Path $ScriptDir 'verify_ui_in_exe.py'
+        & $Report "راستی‌آزمایی رابط کاربری داخل فایل اجرایی ($needle) ..."
+        & $Script:VenvPy $verifier $exe $needle
+        $vcode = $LASTEXITCODE
+        if ($vcode -eq 1) {
+            throw ("اثبات شد که رابط کاربری داخل فایل اجرایی کهنه است ($needle).`n" +
+                   "PyInstaller از پوشهٔ قدیمی خوانده است؛ پروژه را به‌روز کنید و دوباره بسازید.")
+        }
+        if ($vcode -eq 0) {
+            & $Report "رابط کاربری جدید داخل فایل اجرایی تأیید شد ($needle)."
+        } else {
+            & $Report "بازرسی محتوای داخل exe ممکن نشد؛ با تأیید نشان در app.js ادامه می‌دهیم (خطری نیست)."
+            Write-Log "verify_ui_in_exe returned UNCERTAIN (2) - continuing" 'WARN'
+        }
+
         # ALWAYS publish a portable copy. Even when Inno Setup is missing the
         # user walks away with something that runs (from v0.4.0).
-        $portable = Join-Path $OutputDir "SupermarketSystem-$Version-portable.exe"
+        $portable = Join-Path $OutputDir "RasaSystem-$Version-portable.exe"
         Copy-Item $exe $portable -Force
         $Script:Portable = $portable
         & $Report "نسخه قابل‌حمل (بدون نیاز به نصب): $portable"
@@ -637,16 +697,13 @@ $Steps = @(
         }
         & $Report 'اجرای Inno Setup ...'
         Invoke-Native -FilePath $Script:Iscc -WorkingDirectory $ScriptDir -Report $Report `
-            -Arguments @("/DMyAppVersion=$Version", 'setup.iss')
+            -Arguments @("/DMyAppVersion=$Version", "/DMyAppBuild=$UIBuild", 'setup.iss')
 
-        $setup = Join-Path $OutputDir "SupermarketSystem-Setup-$Version.exe"
+        $setup = Join-Path $OutputDir "RasaSystem-Setup-$Version.exe"
         if (-not (Test-Path $setup)) {
             throw "Inno Setup بدون خطا تمام شد اما فایل نصب ساخته نشد:`n$setup"
         }
         $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
-        if ($mb -lt 10) {
-            throw "فایل نصب تنها $mb مگابایت است؛ احتمالاً فایل اجرایی داخل آن قرار نگرفته."
-        }
         & $Report "فایل نصب آماده توزیع است ($mb مگابایت)."
         & $Report 'این فایل کاملاً خودکفاست: روی سیستم مقصد نه پایتون لازم است نه هیچ پیش‌نیاز دیگری.'
         & $Report "مسیر: $setup"

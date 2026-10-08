@@ -7,7 +7,7 @@
 ```mermaid
 flowchart LR
   subgraph Store["رایانهٔ فروشگاه (Windows)"]
-    EXE["SupermarketSystem.exe<br/>(PyInstaller + پنجرهٔ اختصاصی)"]
+    EXE["RasaSystem.exe<br/>(PyInstaller + پنجرهٔ اختصاصی)"]
     API["FastAPI backend<br/>:8000 — bind 0.0.0.0"]
     DB[("SQLite<br/>data/supermarket.db")]
     MEDIA["data/media<br/>(تصاویر، لوگو)"]

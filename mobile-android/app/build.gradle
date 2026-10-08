@@ -7,8 +7,17 @@ if (initPy.exists()) {
     def m = (initPy.text =~ /__version__\s*=\s*"([^"]+)"/)
     if (m.find()) appVersion = m.group(1)
 }
+// v1.0.0 (RASA) — کد نسخه از یک فایل صریح خوانده می‌شود، نه از جمع وزن‌دار نسخه.
+// چرا: 1.0.0 با فرمول قبلی → 10000 می‌شد که از 40800 (نسخهٔ 4.8.0) *کوچک‌تر* است و
+// اندروید نصب روی نسخهٔ قبلی را رد می‌کند (INSTALL_FAILED_VERSION_DOWNGRADE)؛ یعنی
+// مشتری موجود نمی‌توانست به‌روزرسانی کند. حالا «بیلد ۴۸۱» = 48100 و فایل
+// mobile-android/BUILD تنها منبع آن است (همین را اسکریپت بدون‌گریدل هم می‌خواند؛
+// این عدد فقط پیش‌فرض اضطراری است و همیشه از BUILD جلوتر می‌افتد).
+def code = 48100
+def buildFile = new File(rootDir, "BUILD")
+if (buildFile.exists() && buildFile.text.trim().isInteger()) code = buildFile.text.trim().toInteger()
 def parts = appVersion.tokenize(".").collect { it.toInteger() }
-def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+if (parts[0] * 10000 + parts[1] * 100 + parts[2] > code) code = parts[0] * 10000 + parts[1] * 100 + parts[2]
 
 // Version.java is generated (scripts/android/prepare.sh does the same for the SDK-less build)
 def genDir = new File(buildDir, "generated/version")

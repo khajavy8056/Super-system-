@@ -42,6 +42,37 @@ public final class Images {
 
     /** Full URL for a product's picture, or null. */
     /** Load a remote/local URL into an ImageView (async, memory cache only) — used by the picker grid. */
+    /** build-490 (§۶) — تصویر واقعی محصول در کارت هوش: اگر Insight به کالای مشخصی مربوط
+     *  باشد، تصویر واقعی همان کالا (با شناسهٔ واقعی از Product) جایگزین آیکون عمومی می‌شود؛
+     *  بدون تصویر → همان آیکون (Fallback). ارتباط فقط با ID — هرگز با نام. */
+    public static android.view.View insightIcon(android.content.Context c, org.json.JSONObject x,
+                                               String icon, int color, int sizeDp) {
+        try {
+            org.json.JSONArray ps = x.optJSONArray("products");
+            org.json.JSONObject p = (ps != null && ps.length() > 0) ? ps.optJSONObject(0) : null;
+            if (p == null) {
+                org.json.JSONObject spec = x.optJSONObject("metric");
+                long pid = spec == null ? 0 : spec.optLong("product_id");
+                if (pid > 0) p = Local.one("SELECT id, name, image_url, gallery FROM products WHERE id=?", pid);
+            }
+            if (p != null) {
+                String url = p.isNull("image_url") ? "" : p.optString("image_url", "");
+                if (url.isEmpty() && !p.isNull("gallery")) {
+                    org.json.JSONArray g = new org.json.JSONArray(p.optString("gallery"));
+                    if (g.length() > 0) url = g.optString(0);
+                }
+                if (!url.isEmpty() && !url.startsWith("pack://")) {
+                    android.widget.ImageView iv = new android.widget.ImageView(c);
+                    iv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(Ui.dp(34), Ui.dp(34)));
+                    iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+                    bindUrl(iv, url);
+                    return iv;
+                }
+            }
+        } catch (Exception ignore) {}
+        return Icons.view(c, icon, color, sizeDp);
+    }
+
     public static void bindUrl(android.widget.ImageView iv, String url) {
         bindSource(iv, url);
     }

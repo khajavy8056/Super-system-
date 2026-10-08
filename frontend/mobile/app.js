@@ -96,7 +96,9 @@ const faDT = (iso, withTime = true) => {
   try { return new Intl.DateTimeFormat("fa-IR-u-ca-persian", o).format(d); } catch (_) { return d.toLocaleString("fa-IR"); }
 };
 window.faDT = faDT;
-const money = (n) => fmtNum(Math.round(Number(n || 0))) + " " + (state.currency.label || "");
+/* v3.7 (§34): the server redacts cost figures the user may not see as null —
+   render those as "—", never as 0 (a zero cost would be a lie). */
+const money = (n) => (n === null || n === undefined) ? "—" : fmtNum(Math.round(Number(n))) + " " + (state.currency.label || "");
 const qtyFmt = (n) => fmtNum(n);
 const unitById = (id) => state.units.find((u) => u.id === id) || null;
 
@@ -239,6 +241,10 @@ async function mobileSync(showToast) {
     }
     if (r.pull) { await cachePut("products", r.pull.products || []); await cachePut("batches", r.pull.batches || []); await cachePut("customers", r.pull.customers || []);
       if (window.Local) await Local.applyPull(r.pull, !localStorage.getItem("m_cursor")); }
+    if (r.current_user && r.current_user.id) {
+      state.user = r.current_user;
+      localStorage.setItem("m_user", JSON.stringify(r.current_user));
+    }
     for (const a of r.applied || []) { if (a.status === "APPLIED" && a.result && a.result.invoice_number && window.Local) { const o = ops.find((x) => x.id === a.id); if (o && o.local_no) await Local.markInvoiceSynced(o.local_no, a.result.invoice_number); } }
     localStorage.setItem("m_cursor", r.cursor); localStorage.setItem("m_last_sync", new Date().toISOString());
     if (showToast || applied || rejected) toast(`همگام‌سازی با رایانه: ${applied} ثبت شد${rejected ? ` · ${rejected} رد شد` : ""}`, rejected ? "err" : "ok");
@@ -277,7 +283,7 @@ function showLogin() {
   $("#app").innerHTML = `
     <div class="screen" style="justify-content:center;max-width:420px;margin:auto;width:100%">
       <div class="card">
-        <h2 class="brand">${icon("cart", 22)} سامانه سوپرمارکت</h2>
+        <h2 class="brand">${icon("cart", 22)} رسا سیستم</h2>
         <label>نام کاربری</label><input id="l-user" autocomplete="username" />
         <label>رمز عبور</label><input id="l-pass" type="password" autocomplete="current-password" />
         <button id="l-go" class="btn btn-primary" style="margin-top:14px">ورود</button>
@@ -352,7 +358,8 @@ window.unpairDevice = () => {
 };
 window.logout = () => {
   localStorage.removeItem("m_token");
-  state.token = ""; state.user = null;
+  localStorage.removeItem("m_user");
+  state.token = ""; state.user = null; state.cart = [];
   showLogin();
 };
 
@@ -603,8 +610,17 @@ window.mQty = (idx, d) => {
 };
 window.mRemove = (idx) => { state.cart.splice(idx, 1); showPos(); };
 
-window.mCheckout = () => {
+window.mCheckout = async () => {
   const total = state.cart.reduce((a, i) => a + i.sell * i.qty, 0);
+  // build-481 (§24/§49) — same structured campaign list as the desktop till
+  let camps = [];
+  try {
+    const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+      amount: total, product_ids: state.cart.map((i) => i.product_id), include_auto_apply: true }) });
+    camps = r.campaigns || [];
+  } catch (_) { /* offline: coupon-less sale is still possible */ }
+  const campOpts = camps.map((c) =>
+    `<option value="${c.campaign_id}" data-disc="${c.discount}">${esc(c.name)} — ${c.discount_type === "PERCENT" ? c.discount_value + "٪" : money(c.discount_value)}</option>`).join("");
   $("#app").insertAdjacentHTML("beforeend", `
     <div class="sheet" id="m-sheet"><div class="sheet-body">
       <h2>پرداخت</h2>
@@ -613,6 +629,8 @@ window.mCheckout = () => {
       <input id="m-phone" inputmode="numeric" placeholder="0912…" />
       <label>کد تخفیف (اختیاری)</label>
       <input id="m-coupon" placeholder="مثلاً WELCOME10" />
+      <label>جشنواره (اختیاری)</label>
+      <select id="m-campaign"><option value="">بدون جشنواره</option>${campOpts}</select>
       <label>روش پرداخت</label>
       <select id="m-method"><option value="CASH">نقدی</option><option value="CARD">کارت</option></select>
       <button class="btn btn-green" onclick="mDoCheckout(${total})">ثبت فروش</button>
@@ -624,6 +642,7 @@ window.mDoCheckout = async (total) => {
   const phone = $("#m-phone").value.trim();
   const coupon = $("#m-coupon").value.trim();
   const method = $("#m-method").value;
+  const campId = $("#m-campaign") ? Number($("#m-campaign").value || 0) || null : null;
   let payable = total;
   if (coupon) {
     try {
@@ -632,16 +651,27 @@ window.mDoCheckout = async (total) => {
       payable = total - ev.discount;
     } catch (e) { toast(e.message, "err"); return; }
   }
+  if (campId) {
+    // preview the festival benefit the server will grant (it re-validates at checkout)
+    try {
+      const ev = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
+        amount: payable, product_ids: state.cart.map((i) => i.product_id), include_auto_apply: true }) });
+      const mine = (ev.campaigns || []).find((c) => c.campaign_id === campId);
+      if (mine) payable = Math.max(0, payable - mine.discount);
+    } catch (e) { toast(e.message, "err"); return; }
+  }
   const payload = {
       items: state.cart.map((i) => ({ product_id: i.product_id, batch_id: i.batch_id, quantity: i.qty, barcode: i.barcode || undefined })),
       payments: [{ method, amount: payable }],
       customer_phone: phone || null,
-      coupon_code: coupon || null };
+      coupon_code: coupon || null,
+      campaign_id: campId };
   try {
     const inv = await api("/pos/checkout", { method: "POST", body: JSON.stringify(payload) });
     closeSheet();
     state.cart = [];
     toast(`ثبت شد: ${inv.invoice_number}`);
+    if (inv.campaign_name) toast(`جشنواره «${inv.campaign_name}» اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
     if (inv.issued_coupon) toast(`کوپن خرید بعدی: ${inv.issued_coupon.code}`);
     showPos();
   } catch (e) {
@@ -831,8 +861,8 @@ window.showReportsM = async () => {
       <div class="kpi-grid">
         <div class="kpi"><span class="k">فروش امروز</span><b>${money(d.sales.today)}</b></div>
         <div class="kpi"><span class="k">فروش ماه</span><b>${money(d.sales.month)}</b></div>
-        <div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
-        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>
+        ${d.profit ? `<div class="kpi"><span class="k">سود امروز</span><b>${money(d.profit.today)}</b></div>
+        <div class="kpi"><span class="k">سود ماه</span><b>${money(d.profit.month)}</b></div>` : ""}
         <div class="kpi"><span class="k">ارزش موجودی</span><b>${money(d.inventory.value)}</b></div>
         <div class="kpi"><span class="k">میانگین فاکتور</span><b>${money(d.sales.avg_invoice_today)}</b></div>
       </div>
@@ -1278,7 +1308,7 @@ window.showProductSheet = (item) => {
         <div class="batch-info">
           <div><b>${money(b.sell_price)}</b> <span class="muted">مصرف‌کننده ${money(b.consumer_price)}</span></div>
           <div class="muted">${esc(b.batch_number)} · موجودی ${qtyFmt(b.current_qty)}
-            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} (${b.days_left} روز)` : ""}</div>
+            ${b.expiry_date ? `· انقضا ${window.Jalali ? Jalali.fromIso(b.expiry_date) : esc(b.expiry_date)} <span class="exp-chip ${Number(b.days_left) < 0 ? "expired" : Number(b.days_left) <= 7 ? "soon" : Number(b.days_left) <= 30 ? "near" : ""}">⏰ ${Number(b.days_left) < 0 ? "منقضی شد" : fmtNum(b.days_left) + " روز"}</span>` : ""}</div>
         </div>`).join("") || `<p class="muted">بچ فعالی ندارد</p>`}
       ${item.price_count > 1 ? `<p class="amber">این کالا ${item.price_count} قیمت فعال دارد.</p>` : ""}
       <button class="btn" onclick="closeSheet()">بستن</button>

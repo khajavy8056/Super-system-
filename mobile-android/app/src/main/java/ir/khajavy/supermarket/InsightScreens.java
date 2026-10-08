@@ -51,24 +51,65 @@ public final class InsightScreens {
         public boolean autoRefresh() { return true; }
         public void load() {
             loading();
+            fetch();
+        }
+        /** v4.8.1 — به‌روزرسانی در پس‌زمینه: محتوای فعلی تا رسیدن دادهٔ تازه سر جایش
+         *  می‌ماند (بدون «در حال بارگذاری» و بدون پرش)؛ جای اسکرول را AppActivity نگه می‌دارد. */
+        @Override public void refresh() { fetch(); }
+        void fetch() {
             get("/insights/summary", r -> { summary = (JSONObject) r; String st = tab == 0 ? "NEW" : tab == 1 ? "ACCEPTED,MEASURED" : "DISMISSED,SNOOZED,EXPIRED"; get("/insights?status=" + st + "&limit=300", rr -> render(arr(rr))); });
         }
+
+        /** v4.8.0 — «سیستم بررسی فروشگاه»: آیا کارهایی که «اجرا» کردیم هنوز سر جایشان‌اند؟
+         *
+         *  گزارش را از سرور (یا موتور محلی گوشی در حالت مستقل) می‌گیرد و یک‌بار
+         *  بازبینی زنده هم اجرا می‌کند؛ نتیجهٔ ازبین‌رفته‌ها را هم به مدیر خبر می‌دهد.
+         */
+        void health() {
+            get("/insights/actions/report", r -> {
+                JSONObject x = r instanceof JSONObject ? (JSONObject) r : new JSONObject();
+                JSONObject cnt = x.optJSONObject("counts"); if (cnt == null) cnt = new JSONObject();
+                LinearLayout l = Ui.col(c);
+                LinearLayout kp = Ui.row(c);
+                kp.addView(Ui.kpi(c, "برقرار", Ui.num(cnt.optInt("OK")), "اقدام هنوز سر جایش است", Ui.GREEN));
+                kp.addView(Ui.kpi(c, "از بین رفته", Ui.num(cnt.optInt("LOST")), "نیاز به اقدام دوباره", Ui.RED));
+                l.addView(kp);
+                if (cnt.optInt("FAILED") + cnt.optInt("UNVERIFIED") + cnt.optInt("UNKNOWN") > 0)
+                    l.addView(Ui.muted(c, Ui.num(cnt.optInt("FAILED")) + " اجرای ناموفق · " + Ui.num(cnt.optInt("UNVERIFIED") + cnt.optInt("UNKNOWN")) + " اجرای قدیمی بدون بازبینی"));
+                JSONArray rows = x.optJSONArray("rows"); if (rows == null) rows = new JSONArray();
+                if (rows.length() == 0) l.addView(Ui.empty(c, "هنوز اقدام اجراشده‌ای ثبت نشده است"));
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject row = rows.optJSONObject(i); JSONArray acts = row.optJSONArray("actions");
+                    int total = acts == null ? 0 : acts.length(), bad = 0;
+                    for (int k = 0; acts != null && k < acts.length(); k++) { String h = acts.optJSONObject(k).optString("health"); if ("LOST".equals(h) || "FAILED".equals(h)) bad++; }
+                    l.addView(Ui.kv(c, row.optString("title"), total == 0 ? "بدون اقدام" : (bad == 0 ? "همهٔ " + Ui.num(total) + " اقدام برقرار" : Ui.num(bad) + " از " + Ui.num(total) + " از بین رفته"), bad == 0 ? Ui.GREEN : Ui.RED));
+                }
+                l.addView(Ui.primary(c, "بازبینی همین حالا", () -> post("/insights/actions/health-scan", new JSONObject(), rr -> {
+                    JSONObject y = rr instanceof JSONObject ? (JSONObject) rr : new JSONObject();
+                    JSONArray lost = y.optJSONArray("lost"); int n = lost == null ? 0 : lost.length();
+                    Ui.toast(n > 0 ? Ui.num(n) + " اقدام از بین رفته پیدا شد — پایین ببینید" : "همهٔ اقدام‌های اجراشده برقرارند");
+                })));
+                Ui.sheet(c, "بررسی اجراها — آیا کارها مانده‌اند؟", l);
+            });
+        }
+
         void render(JSONArray all) {
             JSONArray items = all; clear();
             LinearLayout hero = Ui.hero(c); hero.addView(Ui.text(c, "هوش فروشگاه", 20, 0xFFFFFFFF, true)); hero.addView(Ui.text(c, "تحلیل محلی روی داده‌های خودتان — پیشنهادها را با یک لمس اجرا کنید؛ اثر واقعی هر اقدام اندازه‌گیری می‌شود.", 12, 0xDDFFFFFF, false));
             LinearLayout kp = Ui.row(c); kp.setPadding(0, Ui.dp(10), 0, 0);
             kp.addView(heroKpi("اثر کل", Ui.money(summary.optDouble("total_gain")))); kp.addView(heroKpi("۳۰ روز اخیر", Ui.money(summary.optDouble("month_gain")))); kp.addView(heroKpi("باز", Ui.num(summary.optInt("open")))); hero.addView(kp);
-            LinearLayout br = Ui.row(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
+            Ui.Flow br = Ui.wrap(c); br.setPadding(0, Ui.dp(10), 0, 0); android.widget.Button run = Ui.small(c, "تحلیل دوباره", () -> { Ui.toast("در حال تحلیل…"); post("/insights/run", new JSONObject(), r -> { JSONObject x = (JSONObject) r; Ui.done(Ui.ctx, "تحلیل انجام شد", Ui.num(x.optInt("created")) + " پیشنهاد تازه · " + Ui.num(x.optInt("refreshed")) + " به‌روزرسانی", null); load(); }); }); br.addView(run);
             if (!Api.standalone()) br.addView(Ui.small(c, "مشاور AI", this::advisor));   // v3.5 — free-model advisor lives on the PC engine
             br.addView(Ui.small(c, "پیش‌بینی سود", () -> a.route("insightsPlan"))); br.addView(Ui.small(c, "مشتریان در نوبت", () -> a.route("insightsCustomers")));
             android.widget.Button rep = Ui.small(c, "گزارش هفتگی", () -> get("/insights/report", r -> { JSONObject x = (JSONObject) r; LinearLayout l = Ui.col(c); TextView tv = Ui.body(c, x.optString("narrative")); tv.setLineSpacing(0, 1.35f); l.addView(tv); Ui.sheet(c, "گزارش هوش فروشگاه", l); })); br.addView(rep);
             android.widget.Button lst = Ui.small(c, "لیست سفارش", () -> get("/insights/tasks", r -> { JSONArray t = arr(r); LinearLayout l = Ui.col(c); if (t.length() == 0) l.addView(Ui.empty(c, "لیست سفارش خالی است")); for (int i = 0; i < t.length(); i++) { JSONObject x = t.optJSONObject(i); l.addView(Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("qty")) + " عدد", Ui.AMBER)); } Ui.sheet(c, "لیست سفارش پیشنهادی", l); })); br.addView(lst); hero.addView(br); body.addView(hero);
+            android.widget.Button chk = Ui.small(c, "بررسی اجراها", this::health); br.addView(chk);   // v4.8.0
             body.addView(tabs(new String[]{"پیشنهادها", "اجراشده و اثر", "بایگانی"}, tab, k -> { tab = k; load(); }));
             // v3.5 — group strip; filtering is local so switching is instant
             java.util.Map<String, Integer> cnt = new java.util.HashMap<>(); for (int i = 0; i < items.length(); i++) cnt.merge(group(items.optJSONObject(i).optString("kind")), 1, Integer::sum);
-            LinearLayout gl = Ui.row(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
+            Ui.Flow gl = Ui.wrap(c); gl.addView(Ui.chip(c, "همه (" + Ui.num(items.length()) + ")", grp.isEmpty(), () -> { grp = ""; render(all); }));
             for (String[] g : GROUPS) { int n = cnt.getOrDefault(g[0], 0); if (n == 0) continue; gl.addView(Ui.chip(c, g[1] + " (" + Ui.num(n) + ")", g[0].equals(grp), () -> { grp = g[0]; render(all); })); }
-            body.addView(Ui.chips(c, gl));
+            body.addView(gl);   // v4.8.1 — نوار گروه‌ها در هر سایزی می‌پیچد و صفحه را نمی‌شکند
             if (!grp.isEmpty()) { JSONArray fl = new JSONArray(); for (int i = 0; i < items.length(); i++) if (grp.equals(group(items.optJSONObject(i).optString("kind")))) fl.put(items.optJSONObject(i)); items = fl; }
             if (items.length() == 0) { body.addView(Ui.empty(c, tab == 0 ? "پیشنهاد بازی نیست — با فروش بیشتر، تحلیل دقیق‌تر می‌شود" : "موردی نیست")); return; }
             LinearLayout list = Ui.col(c); body.addView(list); Ui.paged(list, items, 12, this::card);   // v3.5 staged (cards carry charts)
@@ -83,7 +124,7 @@ public final class InsightScreens {
         View heroKpi(String l, String v) { LinearLayout t = Ui.col(c); t.setLayoutParams(Ui.weight(1)); t.addView(Ui.text(c, v, 15, 0xFFFFFFFF, true)); t.addView(Ui.text(c, l, 11, 0xCCFFFFFF, false)); return t; }
         View card(JSONObject x) {
             LinearLayout card = Ui.card(c, null); card.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 10));
-            LinearLayout hd = Ui.row(c); hd.setGravity(Gravity.CENTER_VERTICAL); hd.addView(Icons.view(c, kindIcon(x.optString("kind")), prioColor(x.optInt("priority")), 20)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0); tc.addView(Ui.text(c, x.optString("title"), 14.5f, Ui.TEXT, true)); tc.addView(Ui.muted(c, x.optString("label") + " · " + prioLabel(x.optInt("priority")))); hd.addView(tc);
+            LinearLayout hd = Ui.row(c); hd.setGravity(Gravity.CENTER_VERTICAL); hd.addView(Images.insightIcon(c, x, kindIcon(x.optString("kind")), prioColor(x.optInt("priority")), 20)); LinearLayout tc = Ui.col(c); tc.setLayoutParams(Ui.weight(1)); tc.setPadding(Ui.dp(8), 0, 0, 0); tc.addView(Ui.text(c, x.optString("title"), 14.5f, Ui.TEXT, true)); tc.addView(Ui.muted(c, x.optString("label") + " · " + prioLabel(x.optInt("priority")))); hd.addView(tc);
             String st = x.optString("status"); if ("NEW".equals(st) && x.optDouble("expected_gain") > 0) hd.addView(Ui.badge(c, "~" + Ui.money(x.optDouble("expected_gain")) + "/ماه", Ui.GREEN)); else if (!x.isNull("measured_gain")) { double g = x.optDouble("measured_gain"); hd.addView(Ui.badge(c, (g >= 0 ? "+" : "") + Ui.money(g), g >= 0 ? Ui.GREEN : Ui.RED)); } else if ("ACCEPTED".equals(st)) hd.addView(Ui.badge(c, "در حال سنجش", Ui.AMBER)); card.addView(hd);
             TextView b = Ui.body(c, x.optString("body")); b.setLineSpacing(0, 1.3f); b.setPadding(0, Ui.dp(8), 0, 0); card.addView(b);
             JSONObject fc = x.optJSONObject("evidence") == null ? null : x.optJSONObject("evidence").optJSONObject("forecast");
@@ -118,12 +159,15 @@ public final class InsightScreens {
     static View measuredBlock(android.content.Context c, JSONObject x, boolean full) {
         JSONObject res = x.optJSONObject("result"), base = x.optJSONObject("baseline"); if (res == null || base == null) return new View(c);
         String m = x.optJSONObject("metric") == null ? "" : x.optJSONObject("metric").optString("metric");
-        boolean pending = x.isNull("measured_gain"); double g = x.optDouble("measured_gain", 0); Double gr = res.isNull("profit_pct_adj") ? (res.isNull("profit_pct") ? null : res.optDouble("profit_pct")) : res.optDouble("profit_pct_adj");
-        int col = pending ? Ui.AMBER : g >= 0 ? Ui.GREEN : Ui.RED;
+        boolean pending = x.isNull("measured_gain"); double g = x.optDouble("measured_gain", 0);
+        String vdict = res.optString("verdict", res.optString("outcome_class", ""));
+        boolean missed = "MISSED_OPPORTUNITY".equals(vdict) || (pending && !res.isNull("missed_gain"));
+        boolean realLoss = "NEGATIVE_OUTCOME".equals(vdict); Double gr = res.isNull("profit_pct_adj") ? (res.isNull("profit_pct") ? null : res.optDouble("profit_pct")) : res.optDouble("profit_pct_adj");
+        int col = pending || missed || (!realLoss && g < 0) ? Ui.AMBER : g >= 0 ? Ui.GREEN : Ui.RED;
         LinearLayout box = Ui.col(c); box.setBackground(Ui.rounded((col & 0x00FFFFFF) | 0x14000000, (col & 0x00FFFFFF) | 0x55000000, 14)); box.setPadding(Ui.dp(8), Ui.dp(8), Ui.dp(8), Ui.dp(8)); box.setLayoutParams(Ui.margin(Ui.match(), 0, 8, 0, 0));
-        LinearLayout hd = Ui.row(c); hd.addView(Icons.view(c, "trend", col, 16)); TextView ht = Ui.text(c, pending ? "در حال سنجش اثر" : "اثر اندازه‌گیری‌شده (واقعی)", 12.5f, col, true); ht.setPadding(Ui.dp(6), 0, 0, 0); hd.addView(ht); hd.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); box.addView(hd);
+        LinearLayout hd = Ui.row(c); hd.addView(Icons.view(c, "trend", col, 16)); TextView ht = Ui.text(c, missed ? "◇ فرصت ازدست‌رفته — ضرر نیست (§۳۷)" : pending ? "در حال سنجش اثر" : realLoss && g < 0 ? "▼ ضرر واقعی (مستند)" : "اثر اندازه‌گیری‌شده (واقعی)", 12.5f, col, true); ht.setPadding(Ui.dp(6), 0, 0, 0); hd.addView(ht); hd.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(4)); box.addView(hd);
         box.addView(tiles2(c, tile(c, "رشد سود", pending ? "…" : gr == null ? "—" : pctTxt(gr), res.optDouble("control_ratio", 1) != 1 ? "پس از حذف روند فروشگاه" : "نسبت به قبل از اجرا", gr == null ? 0 : gr >= 0 ? Ui.GREEN : Ui.RED),
-                tile(c, "اثر بر سود", pending ? "…" : (g >= 0 ? "+" : "−") + Ui.moneyShort(Math.abs(g)), res.isNull("projected_month") ? "" : "ماهانه ≈ " + Ui.moneyShort(res.optDouble("projected_month")), pending ? 0 : g >= 0 ? Ui.GREEN : Ui.RED)));
+                tile(c, "اثر بر سود", missed ? "فرصت ازدست‌رفته (ضرر نیست)" : pending ? "…" : (g >= 0 ? "+" : "−") + Ui.moneyShort(Math.abs(g)), res.isNull("projected_month") ? "" : "ماهانه ≈ " + Ui.moneyShort(res.optDouble("projected_month")), col)));
         box.addView(tiles2(c, tile(c, metricLabel(m) + " — قبل", fmtVal(m, base.optDouble("value")), Ui.num(base.optDouble("window_days", 28)) + " روز · " + Ui.moneyShort(res.optDouble("base_profit_per_day")) + "/روز", 0),
                 tile(c, metricLabel(m) + " — بعد", fmtVal(m, res.optDouble("value")), Ui.num(res.optDouble("elapsed_days")) + " روز · " + Ui.moneyShort(res.optDouble("post_profit_per_day")) + "/روز" + (res.isNull("change_pct") ? "" : " · " + pctTxt(res.optDouble("change_pct"))), 0)));
         JSONObject daily = res.optJSONObject("daily"); JSONArray bef = daily == null ? null : daily.optJSONArray("before"), aft = daily == null ? null : daily.optJSONArray("after");
@@ -184,6 +228,50 @@ public final class InsightScreens {
         return row;
     }
 
+    /** v4.6.0 — the owner's rule: tapping a suggestion's details must explain
+     *  it so ANYONE understands it — «کاربر چه می‌داند مشتری VIP چیست، چه فرقی
+     *  با سایر مشتریان دارد». The backend attaches a plain-language guide per
+     *  kind (definition, why it matters here, exact steps, cost of ignoring,
+     *  a concrete example); this renders it as a card of labelled sections. */
+    static void guideCard(android.content.Context c, JSONObject x) {
+        JSONObject g = x.optJSONObject("guide");
+        if (g == null || g.optString("what", "").isEmpty()) return;
+        LinearLayout card = Ui.card(c, "این پیشنهاد یعنی چه؟ (راهنمای کامل)");
+        addGuideSection(c, card, "تعریف", g.optString("what"));
+        addGuideSection(c, card, "چرا برای فروشگاه شما مهم است؟", g.optString("why"));
+        JSONArray how = g.optJSONArray("how");
+        if (how != null && how.length() > 0) {
+            card.addView(guideLabel(c, "چه کاری انجام دهید؟ (گام‌به‌گام)"));
+            for (int i = 0; i < how.length(); i++) {
+                LinearLayout r = Ui.row(c);
+                r.setPadding(0, Ui.dp(2), 0, Ui.dp(2));
+                r.addView(Ui.badge(c, Ui.num(i + 1), Ui.TEAL));
+                TextView s = Ui.body(c, how.optString(i));
+                s.setPadding(Ui.dp(8), 0, 0, 0);
+                s.setLayoutParams(Ui.weight(1));
+                s.setLineSpacing(0, 1.35f);
+                r.addView(s);
+                card.addView(r);
+            }
+        }
+        addGuideSection(c, card, "اگر انجام نشود چه می‌شود؟", g.optString("if_ignored"));
+        addGuideSection(c, card, "مثال ملموس", g.optString("example"));
+    }
+
+    static TextView guideLabel(android.content.Context c, String s) {
+        TextView t = Ui.text(c, s, 12.5f, Ui.TEAL, true);
+        t.setPadding(0, Ui.dp(8), 0, Ui.dp(2));
+        return t;
+    }
+
+    static void addGuideSection(android.content.Context c, LinearLayout card, String label, String text) {
+        if (text == null || text.isEmpty()) return;
+        card.addView(guideLabel(c, label));
+        TextView tv = Ui.body(c, text);
+        tv.setLineSpacing(0, 1.45f);
+        card.addView(tv);
+    }
+
     /* ---------------- v3.2 detail screen (readable body, effect, what-if, charts, actions) ---------------- */
     public static final class Detail extends Screens.Screen {
         final long id;
@@ -197,6 +285,7 @@ public final class InsightScreens {
             else if (x.optDouble("expected_gain") > 0) hero.addView(Ui.text(c, "برآورد سود ماهانه: " + Ui.money(x.optDouble("expected_gain")), 13.5f, 0xFFEFE3B8, true));
             body.addView(hero);
             LinearLayout card = Ui.card(c, "چه اتفاقی افتاده؟"); String narr = x.optString("narrative"); TextView tv = Ui.body(c, narr.isEmpty() || "null".equals(narr) ? x.optString("body") : narr); tv.setLineSpacing(0, 1.4f); card.addView(tv); body.addView(card);
+            guideCard(c, x);   // v4.6.0 — «این پیشنهاد یعنی چه؟» complete plain-language guide
             if (x.optJSONObject("result") != null && x.optJSONObject("baseline") != null) { LinearLayout mc = Ui.card(c, "اثر اجرا — قبل و بعد"); mc.addView(measuredBlock(c, x, true)); body.addView(mc); }
             JSONObject p = x.optJSONObject("prediction"); if (p != null && p.optDouble("gain_month") > 0) { LinearLayout pcard = Ui.card(c, "پیش‌بینی اگر اجرا شود"); pcard.addView(predictBlock(c, p)); body.addView(pcard); }
             LinearLayout evc = Ui.card(c, "شواهد از داده‌های خود فروشگاه"); evidenceViews(c, x, evc); body.addView(evc);
@@ -355,7 +444,7 @@ public final class InsightScreens {
             if (fs != null) { java.util.Arrays.sort(fs, (x, y) -> Long.compare(y.lastModified(), x.lastModified())); for (java.io.File f : fs) { if (!f.getName().endsWith(".db")) continue; n++; final java.io.File ff = f; list.addView(Ui.item(c, f.getName(), Ui.num(f.length() / 1024) + " KB", "بازیابی", Ui.PRIMARY, () -> { LinearLayout l = Ui.col(c); l.addView(Ui.ghost(c, "اشتراک‌گذاری این فایل", () -> share(ff))); l.addView(Ui.primary(c, "بازیابی از این نسخه", () -> Ui.confirm(c, "داده‌های فعلی با «" + ff.getName() + "» جایگزین شود؟", () -> restore(() -> { try { return new java.io.FileInputStream(ff); } catch (Exception e) { return null; } })))); Ui.sheet(c, ff.getName(), l); })); } }
             if (n == 0) list.addView(Ui.empty(c, "هنوز پشتیبانی ساخته نشده")); body.addView(list);
         }
-        void share(java.io.File f) { try { android.net.Uri u = BackupProvider.uri(a, f); Intent i = new Intent(Intent.ACTION_SEND); i.setType("application/octet-stream"); i.putExtra(Intent.EXTRA_STREAM, u); i.putExtra(Intent.EXTRA_SUBJECT, "پشتیبان سوپری من — " + f.getName()); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); Biometric.markInternal(); a.startActivity(Intent.createChooser(i, "ارسال فایل پشتیبان")); } catch (Exception e) { Ui.toast("اشتراک‌گذاری ممکن نشد: " + e.getMessage()); } }
+        void share(java.io.File f) { try { android.net.Uri u = BackupProvider.uri(a, f); Intent i = new Intent(Intent.ACTION_SEND); i.setType("application/octet-stream"); i.putExtra(Intent.EXTRA_STREAM, u); i.putExtra(Intent.EXTRA_SUBJECT, "پشتیبان رسا سیستم — " + f.getName()); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); Biometric.markInternal(); a.startActivity(Intent.createChooser(i, "ارسال فایل پشتیبان")); } catch (Exception e) { Ui.toast("اشتراک‌گذاری ممکن نشد: " + e.getMessage()); } }
         void pick() { Intent i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); a.pickCb = uri -> restore(() -> { try { return a.getContentResolver().openInputStream(uri); } catch (Exception e) { return null; } }); Biometric.markInternal(); a.startActivityForResult(Intent.createChooser(i, "انتخاب فایل پشتیبان"), AppActivity.REQ_PICK); }
         void restore(java.util.function.Supplier<java.io.InputStream> src) {
             // v3.3: dedicated thread (never one of the 4 API workers the screens depend on), a modal progress sheet

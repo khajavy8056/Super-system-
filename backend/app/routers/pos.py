@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,11 +11,17 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import CartItem, PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/pos", tags=["pos"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — unit costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class CartLineIn(BaseModel):
@@ -30,6 +38,8 @@ class CartIn(BaseModel):
     coupon_code: str | None = None
     customer_id: int | None = None
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 — cashier-selected campaign (validated server-side, §25)
+    campaign_id: int | None = None
 
 
 class PaymentIn(BaseModel):
@@ -38,6 +48,8 @@ class PaymentIn(BaseModel):
 
 
 from .customers import norm_phone as _norm_phone
+
+log = logging.getLogger("supermarket.pos")
 
 
 class CheckoutIn(BaseModel):
@@ -50,6 +62,11 @@ class CheckoutIn(BaseModel):
     coupon_code: str | None = None
     #: §12 whole-invoice discount (absolute amount in base currency)
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 (§24) — festival picked from the POS list; the server re-validates
+    campaign_id: int | None = None
+    #: build-496 — offline terminals reserve their locally issued next-purchase code
+    #: so queued checkouts can create the exact same coupon on the server.
+    client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
 
@@ -62,7 +79,8 @@ def kiosk_config(db: Session = Depends(get_db),
     """Config the POS terminal needs to enter kiosk mode (any logged-in user)."""
     shortcut = pos_svc.get_setting(db, "pos.kiosk_shortcut", "Ctrl+Shift+L")
     store = pos_svc.get_setting(db, "printer.header", "") or "فروشگاه"
-    return {"shortcut": shortcut, "store_name": store.split("\n")[0]}
+    return {"shortcut": shortcut, "store_name": store.split("\n")[0],
+            "tax_rate": pos_svc.get_setting(db, "pos.tax_rate", "0")}
 
 
 class KioskUnlockIn(BaseModel):
@@ -99,18 +117,44 @@ def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
 
 
 @router.get("/batch-options/{product_id}")
-def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def batch_options(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
     if not product or product.deleted_at is not None or not product.is_active:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     options = pos_svc.get_batch_options(db, product)
-    return {"product_id": product_id, "product_name": product.name,
-            "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
-            "options": [o.as_dict() for o in options]}
+    return _maybe_redact(user, {"product_id": product_id, "product_name": product.name,
+                                "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
+                                "options": [o.as_dict() for o in options]})
+
+
+class CampaignListIn(BaseModel):
+    amount: Decimal = Field(ge=0)
+    product_ids: list[int] | None = None
+    line_amounts: dict[int, Decimal] | None = None
+    customer_id: int | None = None
+    include_auto_apply: bool = True
+
+
+@router.post("/campaigns/eligible")
+def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("pos.sell"))):
+    """build-481 (§24) — the structured festival list a cashier chooses from.
+
+    Returns ONLY campaigns whose conditions already hold for this basket —
+    active, inside their window, over the minimum purchase, usage slots left.
+    Selecting one is a convenience; checkout re-validates everything (§25).
+    """
+    from ..services import coupons as coupon_svc
+    rows = coupon_svc.eligible_campaigns(
+        db, amount=Decimal(str(body.amount)), product_ids=body.product_ids,
+        line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
+        customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
+    )
+    return {"campaigns": rows, "count": len(rows)}
 
 
 @router.post("/cart/validate")
-def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     try:
         items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
                                                    batch_id=i.batch_id, discount=i.discount)
@@ -144,7 +188,29 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
             except coupon_svc.CouponError as exc:
                 coupon = {"code": body.coupon_code, "ok": False,
                           "error_code": exc.code, "message": exc.message}
-        return {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon}
+        campaign = None
+        if body.campaign_id:
+            from ..services import coupons as camp_svc
+            line_amounts: dict[int, Decimal] = {}
+            for i in items:
+                line_amounts[i.product_id] = line_amounts.get(i.product_id, Decimal("0")) + (
+                    (i.unit_sell_price or Decimal("0")) * i.quantity - i.discount)
+            try:
+                ev = camp_svc.evaluate_campaign(
+                    db, campaign_id=body.campaign_id,
+                    amount=Decimal(str(totals["subtotal"])),
+                    product_ids=[i.product_id for i in items], line_amounts=line_amounts,
+                    customer_id=body.customer_id)
+                campaign = {"campaign_id": ev["campaign_id"], "name": ev["name"],
+                            "discount": float(ev["discount"]), "ok": True,
+                            "stackable": ev["stackable"]}
+                totals["campaign_discount"] = float(ev["discount"])
+                totals["subtotal"] = float(Decimal(str(totals["subtotal"])) - ev["discount"])
+            except camp_svc.CampaignError as exc:
+                campaign = {"campaign_id": body.campaign_id, "ok": False,
+                            "error_code": exc.code, "message": exc.message}
+        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals,
+                                    "coupon": coupon, "campaign": campaign})
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -153,6 +219,15 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
 def checkout(body: CheckoutIn, db: Session = Depends(get_db),
              user: User = Depends(require_permission("pos.sell"))):
     try:
+        # v4.8.0 — «تخفیفِ اجراشده باید روی صندوق باشد»: پیش از هر فروش، پله‌های
+        # تخفیف انقضایی که امروز موعدشان رسیده اعمال می‌شوند. کارگر پس‌زمینه هم
+        # این کار را می‌کند، اما فروشگاهی که کارگر را خاموش کرده نباید کالای
+        # «تخفیف‌خورده در تئوری» را به قیمت قدیم بفروشد. عمل idempotent است.
+        from ..services import insight_actions as _ia
+        try:
+            _ia.apply_markdown_steps(db)
+        except Exception:
+            log.exception("markdown steps skipped before checkout")   # never block a sale
         customer_id = body.customer_id
         if customer_id is None and body.customer_phone:
             # Phone book: a phone number alone is enough to create a customer (§30)
@@ -182,6 +257,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             tax_rate=body.tax_rate,
             coupon_code=body.coupon_code,
             invoice_discount=body.invoice_discount,
+            campaign_id=body.campaign_id,
         )
 
         # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
@@ -191,7 +267,8 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
 
         customer = db.get(_C, customer_id) if customer_id else None
         issued = coupon_svc.issue_next_purchase_coupon(
-            db, invoice=invoice, customer=customer, user=user)
+            db, invoice=invoice, customer=customer, user=user,
+            preferred_codes=body.client_issued_coupon_codes)
 
         from ..services import sms as sms_svc
         # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
@@ -204,10 +281,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             # the next-purchase coupon rides along in the same message.
             coupon_line = ""
             if issued:
-                coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
+                coupon_line = f"کد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
-                    coupon_line += f" (تا {issued.valid_until.date()})"
-            text = sms_svc.render_invoice(db, invoice, coupon_line)
+                    # v4.8.0 — تاریخ شمسی با ارقام فارسی (متن پیامک یکدست می‌ماند)
+                    from ..services.timeservice import to_jalali
+                    d = issued.valid_until.date()
+                    jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+                    coupon_line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
+                                    .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+            text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line)
             msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)
@@ -227,11 +309,14 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             ok, msg = hw_svc.open_cash_drawer(db)
             out["drawer"] = {"ok": ok, "message": msg}
         out["coupon_code"] = body.coupon_code
+        # build-481: do NOT echo body.campaign_id over the applied one — for an
+        # auto-applied threshold festival the request carries None while the
+        # invoice really was discounted by a campaign.
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
                                  if issued.valid_until else None} if issued else None)
         db.commit()
-        return out
+        return _maybe_redact(user, out)
     except PosError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
@@ -279,6 +364,12 @@ def _invoice_out(inv) -> dict:
         "status": inv.status,
         "print_status": inv.print_status,
         "customer_id": inv.customer_id,
+        # build-481 (§26) — which festival/coupon granted what, frozen at sale time
+        "campaign_id": getattr(inv, "campaign_id", None),
+        "campaign_name": getattr(inv, "campaign_name", None),
+        "benefit_source": getattr(inv, "benefit_source", "NONE"),
+        "benefit_amount": float(getattr(inv, "benefit_amount", 0) or 0),
+        "applied_coupon_code": getattr(inv, "applied_coupon_code", None),
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": float(it.qty),
              "qty_display": float(it.qty),
@@ -293,7 +384,7 @@ def _invoice_out(inv) -> dict:
 
 @router.get("/search")
 def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
-               _: User = Depends(require_permission("pos.sell"))):
+               user: User = Depends(require_permission("pos.sell"))):
     """Cashier search by barcode, product name, SKU or product code.
 
     An exact barcode/SKU hit is always returned first so scanning stays instant,
@@ -368,4 +459,4 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "exact": p in exact,
             "batches": [o.as_dict() for o in options],
         })
-    return {"query": term, "count": len(items), "items": items}
+    return _maybe_redact(user, {"query": term, "count": len(items), "items": items})

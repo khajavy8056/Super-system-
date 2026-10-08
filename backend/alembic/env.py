@@ -10,7 +10,12 @@ from app.database import Base
 from app import models  # noqa: F401  (register all mappers)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# v3.7 — honour a URL the caller already configured (migration tests point at
+# throwaway databases); only fall back to the live settings URL otherwise.
+# The old code overwrote unconditionally, which silently redirected every
+# programmatic upgrade at the production file.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

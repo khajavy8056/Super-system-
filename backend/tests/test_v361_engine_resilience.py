@@ -73,9 +73,14 @@ def test_analyzer_that_raises_while_computing_does_not_stop_the_run(client, auth
 def test_analyzer_that_fails_while_persisting_does_not_stop_the_run(client, auth_headers, run_ok, monkeypatch):
     """The case the old try/except could not catch: the draft is fine, writing it is not."""
     def bad_draft(ctx):
+        # build-481 note: the new-published-card quality gate runs before the
+        # write, so a draft that would be *suppressed* never reaches the upsert.
+        # This draft earns its place (it has an action and real gain) — the crash
+        # it must prove is the one INSIDE the persist path, unchanged since v3.6.1.
         return [insights.Draft(
             kind="VELOCITY", dedupe_key="test:unpersistable", title="t", body="b", priority=1,
-            evidence={}, actions=[], expected_gain=0.0,
+            evidence={"rows": [{"customer_id": 1}]}, actions=[{"type": "note", "label": "x", "params": {}}],
+            expected_gain=150000.0,
             # a set is not JSON-serialisable, so json.dumps(metric) raises inside the upsert
             metric={"metric": "avg_basket_size", "bad": {1, 2}})]
 

@@ -79,7 +79,17 @@ def test_sync_pull_carries_the_fields_the_phone_db_needs(client, auth_headers):
                     headers=auth_headers)
     assert r.status_code == 200, r.text
     pull = r.json()["pull"]
-    assert set(pull) == {"products", "batches", "customers", "bank"}   # v2.7: + بانک کالا
+    # build-496 — identity policy + role-scoped HR cache and POS-only offline
+    # campaign/coupon/tax configuration ride the same pull; hashes never cross.
+    assert set(pull) == {
+        "products", "batches", "customers", "bank", "users", "roster_users",
+        "shifts", "shift_assignments", "attendance", "payroll", "announcements",
+        "pos_config", "pos_campaigns", "pos_coupons", "pos_campaign_redemptions",
+    }
+    if pull["users"]:
+        assert {"username", "roles", "is_active", "local_only"} <= set(pull["users"][0])
+        for banned in ("password_hash", "pass_hash", "password", "hash"):
+            assert banned not in pull["users"][0]
     if pull["products"]:
         assert {"brand_id", "min_stock_alert", "has_own_barcode", "unit_id", "barcode"} <= set(pull["products"][0])
     if pull["batches"]:

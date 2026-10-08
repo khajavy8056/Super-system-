@@ -21,10 +21,13 @@ from .routers import (
     accounting,
     audit,
     auth,
+    dev,
+    hr,
     batches,
     customers,
     diagnostics,
     hardware,
+    hw,
     inventory,
     mobile,
     invoices,
@@ -130,7 +133,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=__version__,
-    description="Supermarket ERP / Smart Inventory / POS — batch-aware, offline-first.",
+    description="مدیریت سوپرمارکت رسا سیستم (RASA SYSTEM) — batch-aware, offline-first supermarket ERP: POS, inventory, expiry, accounting, store intelligence.",
     lifespan=lifespan,
 )
 
@@ -150,9 +153,10 @@ for r in (
     auth.router, products.router, products.unit_router, products.bank_router, products.catalog_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
-    hardware.router, reports.router, users.router, audit.router, settings_router.router,
+    hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
+    hr.router, dev.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -227,7 +231,20 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # health, the setup/licence endpoints and static assets is refused with 402 so
 # the UI can show the activation wizard. The verdict comes from the cached state
 # (no network on the request path); a background worker re-validates every 24 h.
-_LICENSE_FREE_PREFIXES = ("/api/setup/", "/health", "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
+#
+# v1.0.0 (RASA) — «پشتیبانی» پشت دروازهٔ لایسنس حبس نمی‌شود. باگ گزارش‌شدهٔ مالک:
+# «از ویندوز تیکت پشتیبانی ثبت نمی‌شود» — ریشه‌اش همین بود. فروشگاهی که لایسنسش
+# منقضی/فعال‌نشده بود، به `/api/support/types` پاسخ ۴۰۲ می‌گرفت، فهرست «نوع
+# درخواست» خالی می‌ماند و ارسال با خطای «نوع درخواست نامعتبر» رد می‌شد — یعنی
+# دقیقاً وقتی فروشگاه به پشتیبانی نیاز داشت (برای همان لایسنس!) راه تماس بسته بود.
+# روی گوشی این اتفاق نمی‌افتاد چون حالت مستقل گوشی تیکت را مستقیم به رله می‌فرستد
+# و از بک‌اند عبور نمی‌کند؛ برای همین مشکل «فقط ویندوزی» به‌نظر می‌رسید.
+#
+# تصمیم آگاهانه: پشتیبانی *قابلیت لایسنس‌دار* نیست، راهِ کمک گرفتن است. پس
+# پشتیبانی و ورود (بدون توکن، هیچ درخواستی معنا ندارد) آزاد می‌شوند؛ دادهٔ
+# فروش، انبار، حسابداری و همهٔ قابلیت‌های واقعی همچنان با ۴۰۲ بسته می‌مانند.
+_LICENSE_FREE_PREFIXES = ("/api/setup/", "/api/support/", "/api/auth/", "/health",
+                          "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
 _LICENSE_GATE_ENABLED = os.environ.get("SUPERMARKET_LICENSE_GATE", "1") not in ("0", "false", "off")
 
 
@@ -265,19 +282,51 @@ async def license_gate(request: Request, call_next):
     return await call_next(request)
 
 
+#: v4.8.0 — آینهٔ پیش‌نمایش/دسکتاپ: به‌طور پیش‌فرض هیچ‌کس اجازهٔ قاب‌گرفتن پنل را ندارد
+#: (X-Frame-Options: DENY). برای اجرای پنل داخل یک قاب — مثل پیش‌نمایش میزبان ابری
+#: یا یک پوستهٔ دسکتاپ قاب‌محور — مالک می‌تواند با SUPERMARKET_ALLOW_EMBED=1 اجازه
+#: بدهد؛ در آن حالت هدر DENY فرستاده نمی‌شود و CSP با frame-ancestors باز می‌شود.
+_ALLOW_EMBED = os.environ.get("SUPERMARKET_ALLOW_EMBED", "0") not in ("0", "false", "off", "")
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    if not _ALLOW_EMBED:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    # v3.7 (§34) — camera/mic stay denied; **geolocation is allowed for our own
+    # origin only** (v1.0.0). The panel's support form offers «ارسال موقعیت
+    # مکانی دقیق»; sending `geolocation=()` made that feature impossible and, in
+    # the Windows WebView2 shell, left the permission request unanswered — the
+    # ticket submission then waited on a promise that could never settle.
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
+    )
     # CSP: inline handlers are used by the panel, so allow 'unsafe-inline' for
     # scripts in this phase; tighten when the frontend moves to a bundler.
+    frame_ancestors = " frame-ancestors *;" if _ALLOW_EMBED else ""
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'; connect-src 'self'",
+        "script-src 'self' 'unsafe-inline'; connect-src 'self';" + frame_ancestors,
     )
+    return response
+
+
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """build-485/492 — جلوگیری کامل از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
+    جدید، ظاهر قدیمی»). WebView2/Edge فایل‌های JS/CSS را با کش تهاجمی نگه می‌داشت؛
+    حالا همهٔ پاسخ‌های غیر از /media با `no-store, no-cache, must-revalidate` ارسال می‌شوند."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/media/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 

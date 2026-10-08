@@ -288,6 +288,27 @@ def test_markdown_ladder_applies_the_first_step(client, store, admin_user):
     assert price < 12000.0, f"the first markdown step was not applied (price still {price})"
 
 
+def test_write_off_waste_really_removes_the_stock(client, store, admin_user):
+    """v4.8.0 — «ضایعات» فقط یک پیام نیست: موجودی بچ پایین می‌آید و حرکت WASTE ثبت می‌شود."""
+    from sqlalchemy import func, select
+
+    from app.database import SessionLocal
+    from app.models import ProductBatch, StockMovement
+
+    with SessionLocal() as db:
+        before = float(db.get(ProductBatch, store["batch_id"]).current_qty)
+        res = _run_one(db, "write_off_waste",
+                       {"batch_id": store["batch_id"], "qty": 3, "reason": "تاریخ‌گذشته"}, admin_user)
+        db.commit()
+        assert res["ok"] is True, res
+        after = float(db.get(ProductBatch, store["batch_id"]).current_qty)
+        moves = db.execute(select(func.count(StockMovement.id)).where(
+            StockMovement.batch_id == store["batch_id"],
+            StockMovement.movement_type == "WASTE")).scalar()
+    assert after == before - 3, f"stock did not drop: {before} → {after}"
+    assert moves >= 1, "no WASTE movement was written for the loss"
+
+
 # --------------------------------------------------------------------------- SMS actions
 SMS_ACTIONS = [
     ("personal_sms", lambda s: {"customers": [{"id": s["cid"], "text": "سلام"}]}),
@@ -363,7 +384,8 @@ def test_every_registered_action_is_covered_by_this_file(client):
                "reorder_note", "shelf_note", "note", "enable_nudges", "pos_nudge", "set_setting",
                "set_credit_limit", "tag_customers", "vip_coupons", "winback_sms",
                "threshold_campaign", "flash_sale", "bundle_campaign", "markdown_ladder",
-               "personal_sms", "visit_sms", "sms_buyers", "debt_reminders", "personal_coupons"}
+               "personal_sms", "visit_sms", "sms_buyers", "debt_reminders", "personal_coupons",
+               "write_off_waste"}
     missing = set(insight_actions.ACTIONS) - covered
     assert not missing, (
         f"these actions have no execution test: {sorted(missing)} — add a case that asserts the "

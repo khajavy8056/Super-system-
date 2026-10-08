@@ -65,6 +65,17 @@ class UserOut(BaseModel):
     full_name: str
     roles: list[str]
     permissions: list[str] = []
+    allowed_views: list[str] = []
+    # «دسترسی فقط به صورت بومی» + admin verdict, so a paired phone can apply the
+    # sign-in policy offline (standalone / outside the network) without guessing.
+    local_only: bool = False
+    offline_allowed: bool = False
+    is_admin: bool = False
+    phone: str | None = None
+    job_title: str | None = None
+    store: str | None = None
+    hire_date: str | None = None
+    pc_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -88,6 +99,12 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()],
 
     _clear_failures(key)
     user.last_login_at = datetime.utcnow()
+    # build-492 (§۶) — تشخیص خودکار حضور در شیفت هنگام ورود کاربر در بازهٔ شیفت مجاز
+    try:
+        from ..services import shifts as shift_svc
+        shift_svc.auto_enter_shift(db, user)
+    except Exception:
+        pass
     write_audit(db, action="USER_LOGIN", user_id=user.id, entity_type="User", entity_id=user.id,
                 ip_address=request.client.host if request.client else None)
     db.commit()
@@ -116,9 +133,16 @@ def logout(current_user: Annotated[User, Depends(get_current_user)],
 
 @router.get("/me", response_model=UserOut)
 def me(current_user: Annotated[User, Depends(get_current_user)]):
-    from ..security import _user_permission_codes
+    from ..security import _user_permission_codes, allowed_views_for_user, is_admin
     return UserOut(
         id=current_user.id, username=current_user.username,
         full_name=current_user.full_name, roles=[r.name for r in current_user.roles],
         permissions=sorted(_user_permission_codes(current_user)),
+        allowed_views=allowed_views_for_user(current_user),
+        local_only=bool(current_user.local_only),
+        offline_allowed=bool(current_user.offline_allowed),
+        is_admin=is_admin(current_user),
+        phone=current_user.phone, job_title=current_user.job_title, store=current_user.store,
+        hire_date=current_user.hire_date.isoformat() if current_user.hire_date else None,
+        pc_id=current_user.id,
     )

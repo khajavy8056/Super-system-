@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>سیستم مدیریت سوپرمارکت</title>
+  <title>مدیریت سوپرمارکت رسا سیستم</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="theme-pro.css" />
   <link rel="stylesheet" href="mobile-shell.css" />
   <link rel="stylesheet" href="desktop.css" />
+  <link rel="stylesheet" href="ui-refresh.css" />   <!-- v4.8.0 — ظاهر حرفه‌ای‌تر -->
+  <link rel="stylesheet" href="rasa-ui.css" />      <!-- v1.0.0 (RASA) — لایهٔ نهایی: سلسله‌مراتب اطلاعاتی و پوستهٔ توکن‌محور -->
   <script>
     /* v1.9 — the SAME panel runs inside the Android app. Resolve the paired shop
        PC before any module loads; a phone that is not paired / standalone /
@@ -30,9 +32,10 @@
   <!-- Login -->
   <div id="login-view" class="login-wrap hidden">
     <form id="login-form" class="card login-card">
-      <img class="login-logo" src="/icons/logo.svg" alt="لوگوی سامانه" />
-      <h1>سیستم مدیریت سوپرمارکت</h1>
-      <p class="muted">مدیریت کالا · انبارداری هوشمند · صندوق فروشگاهی</p>
+      <img class="login-logo" src="/icons/logo.svg" alt="نشان رسا سیستم" />
+      <h1>رسا سیستم</h1>
+      <p class="muted">مدیریت سوپرمارکت رسا سیستم</p>
+      <p class="muted small">مدیریت کالا · انبار هوشمند · صندوق فروشگاهی · هوش فروشگاه</p>
       <label>نام کاربری</label>
       <input id="login-username" autocomplete="username" autofocus />
       <label>رمز عبور</label>
@@ -46,18 +49,53 @@
   <div id="app-view" class="app hidden">
     <aside class="sidebar">
       <div class="brand">
-        <img class="brand-logo" src="/icons/logo.svg" alt="لوگو" />
-        <span>سوپرمارکت</span></div>
+        <img class="brand-logo" src="/icons/logo.svg" alt="نشان رسا سیستم" />
+        <span class="brand-meta"><b>رسا سیستم</b><span id="brand-store">مدیریت سوپرمارکت</span></span></div>
       <nav id="nav"></nav>
+      <!-- build-484 — کارت پایینی سایدبار (الهام از تصویر مرجع): دستیار هوشمند + وضعیت فروشگاه -->
       <div class="sidebar-footer">
-        <div id="whoami" class="muted"></div>
-        <button id="logout" class="btn btn-ghost btn-block">خروج</button>
+        <button class="ai-assist hidden" onclick="go('insights')" title="دستیار هوشمند فروشگاه">
+          <span class="ai-av">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="8" width="16" height="12" rx="4"/><path d="M12 8V4M12 4h4"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></svg>
+          </span>
+          <span class="ai-meta"><b>دستیار هوشمند</b><span>پیشنهادها و راهکارها</span></span>
+          <span class="ai-chev">‹</span>
+        </button>
+        <div class="store-status">
+          <span class="ss-dot"></span>
+          <span class="ss-meta"><b id="brand-store2">فروشگاه</b><span id="whoami">سیستم</span></span>
+          <button id="logout" class="btn btn-sm btn-ghost" title="خروج از حساب">خروج</button>
+        </div>
       </div>
     </aside>
     <main class="main">
+      <!-- build-484 — نوار بالای سراسری (الهام از تصویر مرجع): جست‌وجوی هوشمند + اعلان‌ها + تقویم + پوسته + کارت کاربر -->
       <header class="topbar">
-        <h2 id="view-title"></h2>
+        <div class="topbar-title"><h2 id="view-title"></h2><span class="topbar-sub" id="view-sub"></span></div>
+        <div class="global-search" id="gsearch-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input id="gsearch" placeholder="جست‌وجوی کالا، مشتری، فاکتور…" autocomplete="off" spellcheck="false" />
+          <span class="gs-kbd">Ctrl K</span>
+        </div>
         <div id="topbar-actions"></div>
+        <div class="topbar-icons">
+          <button id="tb-bell" class="tb-icon hidden" title="پیشنهادها و اعلان‌ها">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            <i class="tb-badge hidden" id="tb-bell-badge"></i>
+          </button>
+          <button id="tb-cal" class="tb-icon hidden" title="گزارش‌های امروز">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          </button>
+          <button id="tb-theme" class="tb-icon tb-round" title="تغییر پوسته ☀/🌙">◐</button>
+        </div>
+        <div class="topbar-user-wrap">
+          <button class="topbar-user" id="tb-user" title="حساب کاربری">
+            <span class="tu-meta"><b id="tb-user-name"></b><span id="tb-user-role"></span></span>
+            <span class="tu-avatar" id="tb-user-av">؟</span>
+          </button>
+          <!-- build-491 — نوار حضور: زیر کارت پروفایل — سبز=حاضر (با ساعت دقیقه)، قرمز=غایب -->
+          <div class="presence-strip" id="tb-presence" style="display:none"></div>
+        </div>
       </header>
       <section id="view" class="view"></section>
       <!-- Status bar (§21): network, date/time, and live system state -->
@@ -81,18 +119,25 @@
   <div id="toast" class="toast hidden"></div>
   <div id="modal" class="modal-overlay hidden"></div>
 
-  <script src="jalali.js"></script>
-  <script src="vendor-qrcode.js"></script>
-  <script src="sfx.js"></script>
-  <script src="onboarding.js"></script>
-  <script src="tour.js"></script>
-  <script src="app.js"></script>
-  <script src="insights.js"></script>
-  <script src="accounting.js"></script>
-  <script src="mobile-shell.js"></script>
+  <script src="jalali.js?v=1.0.496"></script>
+  <script src="vendor-qrcode.js?v=1.0.496"></script>
+  <script src="sfx.js?v=1.0.496"></script>
+  <script src="onboarding.js?v=1.0.496"></script>
+  <script src="tour.js?v=1.0.496"></script>
+  <script src="app.js?v=1.0.496"></script>
+  <script src="insights.js?v=1.0.496"></script>
+  <script src="accounting.js?v=1.0.496"></script>
+  <script src="mobile-shell.js?v=1.0.496"></script>
   <script>
-    if ("serviceWorker" in navigator && !window.SM_NATIVE) {
-      window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => r.unregister().catch(() => {}));
+      }).catch(() => {});
+    }
+    if (window.caches && typeof window.caches.keys === "function") {
+      window.caches.keys().then((keys) => {
+        keys.forEach((k) => window.caches.delete(k).catch(() => {}));
+      }).catch(() => {});
     }
   </script>
 </body>

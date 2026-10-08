@@ -184,28 +184,29 @@ def complete(body: SetupIn, db: Session = Depends(get_db)):
             raise HTTPException(status_code=422, detail={"code": "BAD_PAPER", "message": "عرض کاغذ نامعتبر"})
         _set(db, "printer.paper_width_mm", str(body.printer_width_mm))
 
-    # Admin credentials — set during the wizard, replaces the bootstrap default.
-    if body.admin_username or body.admin_password:
-        if not (body.admin_username and body.admin_password):
-            raise HTTPException(status_code=422, detail={"code": "ADMIN_INCOMPLETE",
-                                                         "message": "نام کاربری و رمز عبور مدیر هر دو لازم است."})
-        if not _USERNAME_RE.match(body.admin_username):
-            raise HTTPException(status_code=422, detail={"code": "BAD_USERNAME",
-                                                         "message": "نام کاربری: ۳ تا ۳۲ حرف انگلیسی/عدد/._-"})
-        if len(body.admin_password) < 6:
-            raise HTTPException(status_code=422, detail={"code": "WEAK_PASSWORD",
-                                                         "message": "رمز عبور باید حداقل ۶ کاراکتر باشد."})
-        admin = db.execute(select(User).where(User.username == app_settings.ADMIN_USERNAME)).scalar_one_or_none()
-        if admin is None:  # bootstrap admin renamed earlier — take the first Administrator
-            admin = db.execute(select(User).order_by(User.id)).scalars().first()
-        taken = db.execute(select(User).where(User.username == body.admin_username)).scalar_one_or_none()
-        if taken and taken.id != admin.id:
-            raise HTTPException(status_code=422, detail={"code": "USERNAME_TAKEN", "message": "این نام کاربری قبلاً استفاده شده."})
-        admin.username = body.admin_username
-        admin.password_hash = hash_password(body.admin_password)
-        if body.admin_full_name:
-            admin.full_name = body.admin_full_name.strip()
-        admin.is_active = True
+    # Admin credentials — MANDATORY in v3.7 (§33: no usable default credential
+    # in production). The wizard cannot complete while admin/admin123 still
+    # works; the bootstrap default is replaced here, before setup.done is set.
+    if not (body.admin_username and body.admin_password):
+        raise HTTPException(status_code=422, detail={"code": "ADMIN_REQUIRED",
+                                                     "message": "برای پایان راه‌اندازی، نام کاربری و رمز عبور جدید مدیر هر دو لازم است (حساب پیش‌فرض نباید باقی بماند)."})
+    if not _USERNAME_RE.match(body.admin_username):
+        raise HTTPException(status_code=422, detail={"code": "BAD_USERNAME",
+                                                     "message": "نام کاربری: ۳ تا ۳۲ حرف انگلیسی/عدد/._-"})
+    if len(body.admin_password) < 6:
+        raise HTTPException(status_code=422, detail={"code": "WEAK_PASSWORD",
+                                                     "message": "رمز عبور باید حداقل ۶ کاراکتر باشد."})
+    admin = db.execute(select(User).where(User.username == app_settings.ADMIN_USERNAME)).scalar_one_or_none()
+    if admin is None:  # bootstrap admin renamed earlier — take the first Administrator
+        admin = db.execute(select(User).order_by(User.id)).scalars().first()
+    taken = db.execute(select(User).where(User.username == body.admin_username)).scalar_one_or_none()
+    if taken and taken.id != admin.id:
+        raise HTTPException(status_code=422, detail={"code": "USERNAME_TAKEN", "message": "این نام کاربری قبلاً استفاده شده."})
+    admin.username = body.admin_username
+    admin.password_hash = hash_password(body.admin_password)
+    if body.admin_full_name:
+        admin.full_name = body.admin_full_name.strip()
+    admin.is_active = True
 
     starter = None
     if body.import_starter_catalog and _get(db, SETUP_KEYS["starter"]) != "1":
@@ -223,10 +224,10 @@ def complete(body: SetupIn, db: Session = Depends(get_db)):
     _set(db, SETUP_KEYS["loading_done"], "1")
     write_audit(db, action="SETUP_COMPLETED", entity_type="System",
                 after={"store": profile.get("name"), "currency": body.currency, "theme": body.theme,
-                       "starter": bool(starter), "admin_renamed": bool(body.admin_username)})
+                       "starter": bool(starter), "admin_renamed": True})
     db.commit()
     return {"ok": True, "setup_done": True, "starter": starter,
-            "admin_username": body.admin_username or app_settings.ADMIN_USERNAME}
+            "admin_username": body.admin_username}
 
 
 _LOGO_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/svg+xml": ".svg", "image/webp": ".webp"}
