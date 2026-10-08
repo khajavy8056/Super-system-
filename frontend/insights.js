@@ -609,6 +609,7 @@
         try { const r = await api("/system/restore", { method: "POST", body: fd }); toast(r.detail || "بازیابی شد"); setTimeout(() => location.reload(), 1200); } catch (e) { toast(e.message, "err"); }
       };
       list();
+      await factoryResetCard(body);
       try {
         const d = await api("/system/demo");
         if (d.available) $("#bk-demo").innerHTML = `<div class="demo-box"><b>فروشگاه نمونه (یک سال داده واقعی‌نما)</b><p class="muted">برای آموزش و نمایش: ~۴۰ هزار فاکتور، ۱۴۰ مشتری، ۷۵ کالا، حسابداری کامل. ${d.is_demo ? "<b>هم‌اکنون فعال است.</b>" : ""}</p><button class="btn btn-sm" id="bk-demo-load">بارگذاری فروشگاه نمونه</button></div>`;
@@ -633,6 +634,90 @@
       };
     },
   };
+
+  /* build-496 — بازنشانی به تنظیمات کارخانه.
+   * دو مرحله‌ای است تا کسی با یک کلیک اشتباه داده‌های فروشگاه را از دست ندهد:
+   * اول «نقشهٔ بازنشانی» از سرور گرفته و نشان داده می‌شود (کدام جدول، چند ردیف،
+   * چه چیزی می‌ماند)، بعد کاربر باید عبارت تأیید را عیناً بنویسد. سرور هم پیش از
+   * هر تغییری پشتیبان می‌گیرد و اگر پشتیبان‌گیری شکست بخورد، هیچ‌چیز پاک نمی‌شود. */
+  async function factoryResetCard(body) {
+    if (!(state.user && state.user.is_admin) || !can("settings.manage")) return;
+    const card = el("div", { class: "card", id: "fr-card" });
+    card.innerHTML = `<h3>${ico("shield", 18)} بازنشانی به تنظیمات کارخانه</h3>
+      <p class="muted">همهٔ داده‌های عملیاتی فروشگاه (فاکتور، موجودی، مشتری، حسابداری، شیفت‌ها، پیشنهادها) پاک می‌شود و برنامه به وضعیت پایه برمی‌گردد.
+      <b>پیش از هر تغییری یک نسخهٔ پشتیبان کامل گرفته می‌شود و اگر پشتیبان‌گیری شکست بخورد، بازنشانی انجام نمی‌شود.</b>
+      کاربران، نقش‌ها، پروفایل فروشگاه، واحد ارز، پرینتر و تنظیمات پیامک/لایسنس حفظ می‌شوند.</p>
+      <button class="btn btn-danger" id="fr-open">مشاهدهٔ نقشهٔ بازنشانی…</button>`;
+    body.append(card);
+    $("#fr-open").onclick = () => openFactoryResetDialog();
+  }
+
+  async function openFactoryResetDialog() {
+    let plan;
+    try { plan = await api("/system/factory-reset/plan?mode=full"); }
+    catch (e) { toast(e.message, "err"); return; }
+    const rowsF = (rows) => rows.filter((r) => r.rows > 0)
+      .map((r) => `<tr><td>${esc(r.label)}</td><td class="ltr">${esc(r.table)}</td><td>${fa(r.rows.toLocaleString("en-US"))}</td></tr>`).join("");
+    openModal(`<h3>${ico("shield", 18)} بازنشانی به تنظیمات کارخانه</h3>
+      <p class="muted">${esc(plan.modes.full)}</p>
+      <div class="form-grid">
+        <label>حالت بازنشانی<select id="fr-mode">
+          <option value="full">بازگشت به نصب تازه (کالاها هم پاک و بانک پیش‌فرض بازسازی می‌شود)</option>
+          <option value="keep_catalog">حفظ کالاها و دسته‌بندی‌ها (فقط عملیات و موجودی صفر می‌شود)</option>
+        </select></label>
+        <label class="row" style="gap:6px;align-items:center"><input type="checkbox" id="fr-users"/> کاربران هم بازنشانی شوند (به‌جز مدیر اصلی)</label>
+        <label class="row" style="gap:6px;align-items:center"><input type="checkbox" id="fr-support"/> تیکت‌های پشتیبانی حفظ شوند</label>
+      </div>
+      <div id="fr-lists"></div>
+      <div id="fr-warn" class="muted" style="margin-top:10px"></div>
+      <label style="display:block;margin-top:12px">برای تأیید، عبارت «<b id="fr-phrase">${esc(plan.confirmation_phrase)}</b>» را بنویسید
+        <input id="fr-confirm" placeholder="${esc(plan.confirmation_phrase)}" autocomplete="off"/></label>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="btn btn-danger" id="fr-run" disabled>بازنشانی کن</button>
+        <button class="btn" id="fr-cancel">انصراف</button>
+      </div>
+      <div id="fr-result" style="margin-top:10px"></div>`);
+    const render = (data) => {
+      $("#fr-lists").innerHTML = `
+        <h4 style="margin-top:12px">پاک می‌شود (${fa(data.delete.length)} جدول · ${fa(data.delete_total.toLocaleString("en-US"))} ردیف)</h4>
+        <div style="max-height:220px;overflow:auto"><table class="tbl"><thead><tr><th>داده</th><th>جدول</th><th>ردیف</th></tr></thead><tbody>${rowsF(data.delete)}</tbody></table></div>
+        <h4 style="margin-top:12px">حفظ می‌شود</h4>
+        <table class="tbl"><tbody>${data.keep.map((r) => `<tr><td>${esc(r.label)}</td><td class="ltr">${esc(r.table)}</td><td>${fa(r.rows.toLocaleString("en-US"))}</td></tr>`).join("")}</tbody></table>
+        <h4 style="margin-top:12px">تنظیمات</h4>
+        <p class="muted">${fa(data.settings_reset.length)} تنظیم عملیاتی به پیش‌فرض برمی‌گردد؛
+        ${fa(data.settings_kept.length)} تنظیم هویتی (فروشگاه/ارز/پرینتر/پیامک/لایسنس/امنیت) حفظ می‌شود.</p>`;
+      $("#fr-warn").innerHTML = data.warnings.map((w) => `• ${esc(w)}`).join("<br/>");
+    };
+    render(plan);
+    const reload = async () => {
+      const mode = $("#fr-mode").value, users = $("#fr-users").checked, support = $("#fr-support").checked;
+      try { render(await api(`/system/factory-reset/plan?mode=${mode}&reset_users=${users}&keep_support=${support}`)); }
+      catch (e) { toast(e.message, "err"); }
+    };
+    $("#fr-mode").onchange = reload; $("#fr-users").onchange = reload; $("#fr-support").onchange = reload;
+    $("#fr-confirm").oninput = (e) => { $("#fr-run").disabled = e.target.value.trim() !== plan.confirmation_phrase; };
+    $("#fr-cancel").onclick = () => closeModal();
+    $("#fr-run").onclick = async () => {
+      if (!confirm("مطمئن هستید؟ داده‌های عملیاتی پاک می‌شوند. یک نسخهٔ پشتیبان کامل پیش از عملیات گرفته می‌شود.")) return;
+      $("#fr-run").disabled = true;
+      const body = { confirmation: $("#fr-confirm").value.trim(), mode: $("#fr-mode").value,
+                     reset_users: $("#fr-users").checked, keep_support: $("#fr-support").checked };
+      try {
+        const r = await api("/system/factory-reset", { method: "POST", body: JSON.stringify(body) });
+        $("#fr-result").innerHTML = `<div class="demo-box"><b>بازنشانی انجام شد.</b>
+          <p class="muted">${fa(r.deleted_total.toLocaleString("en-US"))} ردیف در ${fa(r.tables_wiped)} جدول پاک شد ·
+          ${fa(r.settings_reset)} تنظیم بازنشانی شد${r.media_files_removed ? ` · ${fa(r.media_files_removed)} تصویر پاک شد` : ""}</p>
+          <p class="muted ltr">${esc(r.backup_path)}</p>
+          <button class="btn btn-primary" id="fr-done">ورود دوباره به برنامه</button></div>`;
+        $("#fr-done").onclick = () => { closeModal(); doLogout(); };
+        toast("بازنشانی انجام شد");
+      } catch (e) {
+        $("#fr-run").disabled = false;
+        $("#fr-result").innerHTML = `<div class="muted" style="color:var(--danger,#c0392b)">${esc(e.message)}</div>`;
+      }
+    };
+  }
+  window.openFactoryResetDialog = openFactoryResetDialog;
 
   async function download(path, name, method = "GET") {
     const res = await fetch(API + path, { method, headers: { Authorization: "Bearer " + state.token } });

@@ -277,6 +277,58 @@ def demo_load(db: Session = Depends(get_db), user: User = Depends(require_permis
 
 
 # ---------------------------------------------------------------------------
+# Factory reset (§۱۰ — بازنشانی به تنظیمات کارخانه)
+#
+# Two steps on purpose: the owner first SEES the plan (which tables, how many
+# rows, what stays) and only then types the confirmation phrase. Nothing is
+# deleted before a full backup exists; the backup name is in the report so the
+# owner can always go back with restore.
+# ---------------------------------------------------------------------------
+class FactoryResetIn(BaseModel):
+    confirmation: str
+    mode: str = "full"            # full | keep_catalog
+    reset_users: bool = False
+    keep_support: bool = False
+    reason: str | None = None
+
+
+def _factory_reset_admin(user: User) -> User:
+    from ..security import is_admin
+    if not is_admin(user):
+        raise HTTPException(status_code=403,
+                           detail="بازنشانی به تنظیمات کارخانه فقط با نقش مدیر اصلی انجام می‌شود")
+    return user
+
+
+@router.get("/factory-reset/plan")
+def factory_reset_plan(mode: str = "full", reset_users: bool = False, keep_support: bool = False,
+                       db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("settings.manage"))):
+    """«نقشهٔ بازنشانی» پیش از اجرا — دقیقاً چه چیزی پاک/حفظ می‌شود (dry-run)."""
+    from ..services import factory_reset as fr
+    _factory_reset_admin(user)
+    try:
+        return fr.plan(db, mode=mode, reset_users=reset_users, keep_support=keep_support)
+    except fr.FactoryResetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/factory-reset")
+def factory_reset_now(payload: FactoryResetIn, db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("settings.manage"))):
+    """اجرای بازنشانی: پشتیبان اجباری + عبارت تأیید + رکورد حسابرسی."""
+    from ..services import factory_reset as fr
+    _factory_reset_admin(user)
+    try:
+        report = fr.execute(db, actor=user, mode=payload.mode, reset_users=payload.reset_users,
+                            keep_support=payload.keep_support, confirmation=payload.confirmation,
+                            reason=payload.reason)
+    except fr.FactoryResetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Update system (§27–29)
 #
 # Mounted under /api (unlike the bare /health route above), so every client
