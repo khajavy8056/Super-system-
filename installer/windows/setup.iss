@@ -15,7 +15,7 @@
 ; application reports. Redefining an existing symbol is an error in Inno Setup,
 ; hence the guard: this default only applies when ISCC is invoked by hand.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.496"
+  #define MyAppVersion "1.0.497"
 #endif
 ; build-485 — شمارهٔ بیلد رابط کاربری (از BUILD، با /DMyAppBuild می‌آید). در نام
 ; نمایشی محصول می‌آید تا کاربر همیشه بداند کدام ساخت نصب است.

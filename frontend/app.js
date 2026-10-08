@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-496 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-497 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 496;
+const UI_BUILD = 497;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -1534,7 +1534,7 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۶ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۷ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>` : ""}
         ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
@@ -1605,7 +1605,7 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>` : ""}
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.496")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.497")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
@@ -4162,6 +4162,7 @@ const SET_CATEGORIES = [
   { id: "network",  label: "شبکه",            prefixes: ["network."] },
   { id: "security", label: "امنیت",           prefixes: ["security."] },
   { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."], panel: "backup" },
+  { id: "factory",  label: "بازنشانی کارخانه", prefixes: [], panel: "factory" },
   { id: "catalog",  label: "بانک محصولات (اکسل + تصاویر)", prefixes: [], panel: "catalog" },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
@@ -4192,6 +4193,99 @@ RENDER.settings = async () => {
   renderSettingsPanel(SET_CATEGORIES[0], allRows);
 };
 
+
+/* ---------- build-497 — Factory Reset (بازنشانی به تنظیمات کارخانه، §۱۲) ----------
+ * سه‌مرحله‌ای و اجباری: پیش‌نمایش دقیق ← تأیید تایپی «RESET» + رمز مدیر ← اجرا با پشتیبان اجباری.
+ * هیچ حذفی بدون دیدن گزارش «چه حذف می‌شود / چه حفظ می‌شود» ممکن نیست.
+ * --------------------------------------------------------------------------- */
+async function renderFactoryResetPanel(body) {
+  const card = el("div", { class: "card", id: "factory-card" });
+  card.innerHTML = `<h3>بازنشانی به تنظیمات کارخانه (Factory Reset)</h3>
+    <p class="muted">برنامه را به وضعیت پایه برمی‌گرداند. این عملیات حساس است:
+    پیش از هر حذفی، <b>پشتیبان امن</b> ساخته می‌شود؛ کاربران، نقش‌ها، دسترسی‌ها،
+    لایسنس، جفت‌سازی گوشی‌ها و پشتیبان‌های روی دیسک <b>همیشه حفظ می‌شوند</b>.</p>
+    <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0">
+      <label>دامنهٔ بازنشانی:
+        <select id="fr-scope" style="min-width:280px">
+          <option value="transactions">داده‌های عملیاتی (فروش، موجودی، حسابداری…) — کالا و مشتری می‌مانند</option>
+          <option value="full">کامل — کاتالوگ و مشتریان هم پاک و تنظیمات کسب‌وکار به پیش‌فرض برمی‌گردد</option>
+        </select>
+      </label>
+      <button class="btn" id="fr-preview">۱) نمایش دقیق گزارش</button>
+    </div>
+    <div id="fr-report" class="muted">گزارشی نمایش داده نشده است.</div>
+    <div id="fr-confirm-box" style="display:none;margin-top:14px;border-top:1px dashed var(--line,#ccc);padding-top:12px">
+      <p><b>برای تأیید، عبارت <code>RESET</code> را دقیقاً تایپ کنید و رمز مدیر را وارد نمایید:</b></p>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="fr-confirm" placeholder="RESET" style="width:140px" autocomplete="off"/>
+        <input id="fr-password" type="password" placeholder="رمز مدیر" style="width:200px" autocomplete="off"/>
+        <button class="btn btn-danger" id="fr-run">۲) بازنشانی کن</button>
+      </div>
+      <p class="muted" style="margin-top:6px">پس از اجرا، گوشی‌های جفت‌شده در اولین همگام‌سازی تغییر را تشخیص می‌دهند و دادهٔ محلی را از نو همگام می‌کنند.</p>
+    </div>
+    <div id="fr-result" style="margin-top:12px"></div>`;
+  body.append(card);
+
+  const fmt = (n) => Number(n || 0).toLocaleString("fa-IR");
+  let previewData = null;
+
+  $("#fr-preview").onclick = async () => {
+    const scope = $("#fr-scope").value;
+    const rep = $("#fr-report");
+    rep.textContent = "در حال تهیهٔ گزارش…";
+    try {
+      previewData = await api(`/system/factory-reset/preview?scope=${encodeURIComponent(scope)}`);
+      const wipedRows = Object.entries(previewData.wiped_tables || {})
+        .sort((a, b) => (b[1] > 0 ? 1 : -1))
+        .map(([t, c]) => `<tr><td><code>${esc(t)}</code></td><td class="num">${c < 0 ? "خطا" : fmt(c)}</td></tr>`)
+        .join("");
+      const kept = (previewData.kept_tables || []).map((t) => `<code>${esc(t)}</code>`).join(" · ");
+      const resetKeys = (previewData.reset_setting_keys || []);
+      rep.innerHTML = `
+        <div class="card" style="border:1px solid #b91c1c33">
+          <b>دامنه: ${scope === "full" ? "کامل" : "داده‌های عملیاتی"}</b> —
+          مجموع ${fmt(previewData.wiped_total_rows)} ردیف حذف می‌شود · دورهٔ داده: ${fmt(previewData.epoch_current)} → ${fmt(previewData.epoch_after)}
+          <div class="grid grid-2" style="margin-top:10px;gap:14px">
+            <div><b>حذف می‌شوند (جدول: ردیف)</b>
+              <div style="max-height:240px;overflow:auto"><table><tbody>${wipedRows || "<tr><td>—</td></tr>"}</tbody></table></div>
+            </div>
+            <div><b>حفظ می‌شوند</b>
+              <p style="margin:6px 0">${kept}</p>
+              <b>تنظیمات حفظ‌شده (زیرساخت/لایسنس/جفت‌سازی):</b>
+              <p style="margin:6px 0;max-height:120px;overflow:auto;font-size:12px">${(previewData.kept_setting_keys || []).map((k) => `<code>${esc(k)}</code>`).join(" · ") || "—"}</p>
+              ${scope === "full" ? `<b>تنظیماتی که به پیش‌فرض برمی‌گردند (${resetKeys.length}):</b>
+              <p style="margin:6px 0;max-height:120px;overflow:auto;font-size:12px">${resetKeys.map((k) => `<code>${esc(k)}</code>`).join(" · ") || "—"}</p>` : ""}
+            </div>
+          </div>
+          <ul class="muted" style="margin:8px 0 0">${(previewData.notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
+        </div>`;
+      $("#fr-confirm-box").style.display = "block";
+    } catch (e) {
+      rep.textContent = "گزارش تهیه نشد: " + (e.message || e);
+    }
+  };
+
+  $("#fr-run").onclick = async () => {
+    const result = $("#fr-result");
+    if (!previewData) { toast("ابتدا گزارش را ببینید"); return; }
+    if ($("#fr-confirm").value !== previewData.confirm_phrase) { toast("برای تأیید باید RESET را دقیقاً تایپ کنید"); return; }
+    if (!window.confirm("آیا مطمئن هستید؟ این عملیات داده‌ها را حذف می‌کند (با پشتیبان اجباری).")) return;
+    result.textContent = "در حال پشتیبان‌گیری و بازنشانی…";
+    try {
+      const out = await api("/system/factory-reset", { method: "POST", body: JSON.stringify({
+        scope: $("#fr-scope").value, confirm: $("#fr-confirm").value, password: $("#fr-password").value }) });
+      result.innerHTML = `<div class="card" style="border:1px solid #16a34a55">
+        <b>✅ بازنشانی انجام شد</b> — دورهٔ دادهٔ جدید: ${fmt(out.epoch)}<br/>
+        <span class="muted">پشتیبان امن: <code>${esc(out.backup_path)}</code> (${fmt(Math.round((out.backup_size || 0) / 1024))} کیلوبایت) ·
+        ${fmt(out.wiped_total_rows)} ردیف پاک شد.</span></div>`;
+      $("#fr-confirm-box").style.display = "none";
+      previewData = null;
+      toast("بازنشانی کارخانه انجام شد");
+    } catch (e) {
+      result.textContent = "بازنشانی انجام نشد: " + (e.message || e);
+    }
+  };
+}
 
 /* ---------- v3.4 — «بانک محصولات» از پوشه: Excel + pic folders → products, images, catalog.pack ---------- */
 const CATALOG_HELP = `پوشهٔ بانک محصولات را باز کنید و کل پوشه‌های خود را (با همان ساختار) داخل آن کپی کنید:
@@ -4361,6 +4455,7 @@ async function renderSettingsPanel(cat, allRows) {
   }
 
   if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
+  if (cat.panel === "factory") { await renderFactoryResetPanel(body); return; }
   if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
   if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
   if (cat.panel === "dev") {

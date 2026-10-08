@@ -295,6 +295,58 @@ public final class Db extends SQLiteOpenHelper {
     public static String cacheGet(String path) { try (Cursor c = w().rawQuery("SELECT json FROM cache WHERE path=?", new String[]{path})) { return c.moveToFirst() ? c.getString(0) : null; } }
     public static void cacheClearForUser(long userId) { if (userId > 0) w().delete("cache", "path LIKE ?", new String[]{"u/" + userId + "/%"}); }
 
+    /* ---------------- build-497 — Factory Reset سمت گوشی ----------------
+     * پاک‌سازی دادهٔ عملیاتی محلی؛ «هویت» می‌ماند: کاربران، نشست، جفت‌سازی
+     * (Prefs) و تنظیمات سیستمی kv. بعد از بازنشانی رایانه، گوشی با همین متد
+     * دادهٔ دورهٔ قبلی را پاک می‌کند تا اطلاعات دو دوره با هم قاطی نشود (§۵/§۷). */
+
+    /** جداول عملیاتی محلی که در بازنشانی خالی می‌شوند (کاربران/نشست/تنظیمات سیستمی حذف نمی‌شوند). */
+    private static final String[] WIPE_TABLES = {
+            "invoice_items", "movements", "ledger", "conflicts", "ops", "invoices",
+            "batches", "products", "customers",
+            "campaigns", "coupons", "pos_campaign_redemptions", "price_history",
+            "stocktakes", "stocktake_items", "warehouses", "locations",
+            "expense_categories", "expenses", "suppliers", "cheques", "journal",
+            "journal_lines", "cash_sessions",
+            "local_shifts", "local_shift_assignments", "local_attendance",
+            "local_announcements", "local_announcement_reads", "local_payroll",
+            "cache",
+    };
+
+    /**
+     * دادهٔ عملیاتی محلی را پاک می‌کند و تعداد فاکتورِ همگام‌نشدهٔ حذف‌شده را
+     * برمی‌گرداند (برای اطلاع صادقانه به کاربر). کاربران، kv سیستمی و Prefs
+     * (نشست/جفت‌سازی) دست‌نخورده می‌مانند — برنامه بلافاصله از نو همگام می‌شود.
+     */
+    public static int wipeOperational() {
+        BULK_WRITE_LOCK.lock();
+        SQLiteDatabase d = w();
+        try {
+            d.beginTransaction();
+            int unsynced = 0;
+            try {
+                unsynced = (int) countForUser("ops", null);
+                for (String t : WIPE_TABLES) { try { d.delete(t, null, null); } catch (Exception ignore) {} }
+                // شمارندهٔ شماره‌گذاری محلی و نشانگرهای همگام‌سازی از نو شروع می‌شوند
+                try { d.delete("kv", "k LIKE ?", new String[]{"cursor_user_%"}); } catch (Exception ignore) {}
+                try { d.delete("kv", "k LIKE ?", new String[]{"data_epoch_user_%"}); } catch (Exception ignore) {}
+                try { d.delete("kv", "k LIKE ?", new String[]{"shift_status_%"}); } catch (Exception ignore) {}
+                kv("last_pull", "");
+                kv("last_sync", "");
+                d.setTransactionSuccessful();
+            } finally { d.endTransaction(); }
+            return unsynced;
+        } finally { BULK_WRITE_LOCK.unlock(); }
+    }
+
+    /** تعداد ردیف جدول برای گزارش بازنشانی (کارت پیش‌نمایش گوشی). */
+    public static long tableCount(String table) { try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM " + table, null)) { return c.moveToFirst() ? c.getLong(0) : 0; } catch (Exception e) { return 0; } }
+
+    private static long countForUser(String table, Long userId) {
+        if (userId == null) { try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM ops WHERE synced=0", null)) { return c.moveToFirst() ? c.getLong(0) : 0; } catch (Exception e) { return 0; } }
+        return 0;
+    }
+
     /* ---------------- catalogue merge from PC ---------------- */
     public static void applyPull(JSONObject pull, boolean full) {
         BULK_WRITE_LOCK.lock();

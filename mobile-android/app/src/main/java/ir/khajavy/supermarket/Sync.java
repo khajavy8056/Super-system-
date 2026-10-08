@@ -76,6 +76,21 @@ public final class Sync {
                     Api.online = false; lastRun = System.currentTimeMillis(); return;
                 }
                 JSONObject res = (JSONObject) r;
+                // build-497 — تشخیص «بازنشانی کارخانه» روی رایانه: اگر epoch داده
+                // عوض شده باشد، دادهٔ دورهٔ قبل روی گوشی معتبر نیست؛ پاک و از نو همگام می‌شود.
+                String epoch = res.optString("data_epoch", "");
+                if (!epoch.isEmpty()) {
+                    String epochKey = "data_epoch_user_" + ownerUserId;
+                    String epochBefore = Db.kv(epochKey);
+                    if (epochBefore != null && !epochBefore.isEmpty() && !epochBefore.equals(epoch)) {
+                        final int dropped = Db.wipeOperational();
+                        Db.kv(cursorKey, null);
+                        Api.ui(() -> Ui.toast(dropped > 0
+                                ? "رایانه بازنشانی شد؛ " + Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد"
+                                : "رایانه بازنشانی شد؛ همگام‌سازی از نو انجام می‌شود"));
+                    }
+                    Db.kv(epochKey, epoch);
+                }
                 JSONArray ap = res.optJSONArray("applied");
                 for (int i = 0; ap != null && i < ap.length(); i++) {
                     JSONObject a = ap.getJSONObject(i); String id = a.optString("id"); String st = a.optString("status");

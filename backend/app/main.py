@@ -167,6 +167,8 @@ app.include_router(system.router)
 app.include_router(system.router, prefix=API + "/system", include_in_schema=False)
 # ...but the update endpoints belong on the normal authenticated API surface
 app.include_router(system.update_router, prefix="/api")
+# build-497 — Factory Reset: مسیر /api/system/factory-reset (در schema هم ثبت می‌شود)
+app.include_router(system.factory_router, prefix="/api")
 
 
 # --- Error handling (BUG-020): users never see raw stack/SQL traces ----------

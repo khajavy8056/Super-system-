@@ -826,6 +826,9 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         pull["batches"] = redact_costs(pull["batches"])
     from ..security import allowed_views_for_user as _av, is_admin as _ia, user_permissions as _up
     from ..services import shifts as _shift_svc
+    # build-497 — epoch دادهٔ سمت رایانه؛ گوشی با مقایسهٔ آن، بازنشانی کارخانهٔ
+    # سرور را تشخیص می‌دهد و دادهٔ محلی قدیمی را با همگام‌سازی تازه جایگزین می‌کند.
+    from ..services.factory_reset import data_epoch as _data_epoch
     current_user_payload = {
         "id": user.id, "pc_id": user.id,
         "username": user.username,
@@ -847,4 +850,5 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         log.exception("mobile sync could not compute attendance status for user_id=%s", user.id)
         raise
     return {"applied": applied, "pull": pull, "cursor": cursor, "server_time": now,
-            "has_more": has_more, "current_user": current_user_payload, "shift_status": shift_status}
+            "has_more": has_more, "current_user": current_user_payload, "shift_status": shift_status,
+            "data_epoch": _data_epoch(db)}
