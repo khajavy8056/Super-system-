@@ -132,7 +132,7 @@ supermarket-system/
 
 ## 🪟 نصب روی Windows
 
-نسخه نهایی به‌صورت `Setup.exe` توزیع می‌شود که Runtime و وابستگی‌ها را خودش مدیریت می‌کند (کاربر نیازی به نصب Python ندارد). راهنما: [`docs/INSTALL.md`](docs/INSTALL.md) و [`installer/`](installer/).
+نسخه نهایی به‌صورت `Setup.exe` توزیع می‌شود که Runtime و وابستگی‌ها را خودش مدیریت می‌کند (کاربر نیازی به نصب Python ندارد). راهنما: [`docs/INSTALL.md`](docs/INSTALL.md) و [`installer/`](installer/). برای نصب تمیز با حذف نصب‌ها و داده‌های محلی قدیمی، ابزار مخرب `RESET-TO-FRESH-INSTALL.bat` و راهنمای استفاده‌اش در [`installer/windows/README.md`](installer/windows/README.md) است.
 
 ---
 
