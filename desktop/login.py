@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QVBoxLayout)
 
+from sqlalchemy import select
+
 from app.database import SessionLocal
 from app.models import User
 from app.security import verify_password
@@ -71,8 +73,7 @@ class LoginDialog(QDialog):
         db = SessionLocal()
         try:
             user = db.execute(
-                __import__("sqlalchemy", fromlist=["select"]).select(User)
-                .where(User.username == username)
+                select(User).where(User.username == username)
             ).scalar_one_or_none()
             if not user or not verify_password(password, user.password_hash) or not user.is_active:
                 write_audit(db, action="USER_LOGIN_FAILED", entity_type="User", reference=username)

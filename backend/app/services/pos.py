@@ -135,15 +135,41 @@ def sellable_batches(db: Session, product: Product) -> list[ProductBatch]:
     if expiry_svc.block_expired_policy(db):
         batches = [b for b in batches if not (b.expiry_date and b.expiry_date < today)]
 
-    policy = allocation_policy(db)
+    return sorted(batches, key=_batch_sort_key(allocation_policy(db)))
 
+
+def _batch_sort_key(policy: str):
+    """کلید مرتب‌سازی سیاست تخصیص — تک‌منبع برای sellable_batches و نقشهٔ دسته‌ای."""
     def sort_key(b: ProductBatch):
         if policy == "FIFO":
             return (b.production_date or b.received_at, b.received_at, b.expiry_date or date.max)
         # FEFO and HYBRID both prioritise expiry risk, HYBRID breaks ties by oldest received.
         return (b.expiry_date is None, b.expiry_date or date.max, b.received_at)
+    return sort_key
 
-    return sorted(batches, key=sort_key)
+
+def recommend_price_map(db: Session, products: list[Product]) -> dict[int, Decimal | None]:
+    """قیمت فروشِ پیشنهادی «چند» کالا با یک کوئری (build-499).
+
+    دقیقاً همان سیاست sellable_batches/recommend_batch — فقط دسته‌ای؛ تا
+    کاتالوگ POS با ۴۰ کالا ۴۰ کوئری نفرستد (۱+N). """
+    ids = [p.id for p in products]
+    if not ids:
+        return {}
+    today = _lt_today()
+    batches = list(db.execute(
+        select(ProductBatch).where(
+            ProductBatch.product_id.in_(ids),
+            ProductBatch.current_qty > 0,
+            ProductBatch.status.in_(["ACTIVE"]),
+        )
+    ).scalars())
+    if expiry_svc.block_expired_policy(db):
+        batches = [b for b in batches if not (b.expiry_date and b.expiry_date < today)]
+    best: dict[int, ProductBatch] = {}
+    for b in sorted(batches, key=_batch_sort_key(allocation_policy(db))):
+        best.setdefault(b.product_id, b)     # اولِ هر کالا = پیشنهاد همان کالا
+    return {pid: (best[pid].sell_price if pid in best else None) for pid in ids}
 
 
 def get_batch_options(db: Session, product: Product) -> list[BatchOption]:

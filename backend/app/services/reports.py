@@ -101,6 +101,53 @@ def _profit_agg(db: Session, start: datetime, end: datetime, user_id: int | None
     return Decimal(val)
 
 
+
+def dashboard_profile(user) -> str:
+    """Select a presentation profile from effective permissions, never from a role label.
+
+    This is display metadata only. Route authorization and data scope remain enforced
+    independently; a profile can never grant permission or widen a report.
+    (build-499 — از routers به services منتقل شد: لایهٔ UI دسکتاپ هم همین را صدا می‌زند.)
+    """
+    from ..security import has_permission
+    admin = has_permission(user, "users.manage") and has_permission(user, "settings.manage")
+    if admin:
+        return "administrator"
+    supervisor = (
+        has_permission(user, "reports.view_all")
+        and has_permission(user, "shifts.manage")
+        and has_permission(user, "inventory.adjust")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if supervisor:
+        return "supervisor"
+    accountant = (
+        has_permission(user, "accounting.view")
+        and not has_permission(user, "pos.sell")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if accountant:
+        return "accountant"
+    seller = (
+        has_permission(user, "pos.sell")
+        and not has_permission(user, "reports.view_all")
+        and not has_permission(user, "accounting.view")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if seller:
+        return "seller"
+    if has_permission(user, "users.manage") or has_permission(user, "settings.manage"):
+        return "manager"
+    if has_permission(user, "reports.view_all"):
+        return "operations"
+    return "staff"
+
+
 def dashboard(db: Session, *, user_id: int | None = None) -> dict:
     from .timeservice import local_today
     today = local_today()

@@ -3,6 +3,7 @@
 کوپن، مشتری، چاپ آفلاین محلی. قیمت‌ها از Batch (سرور حقیقت واحد) می‌آیند."""
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from PySide6.QtCore import Qt
@@ -13,9 +14,8 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QFormLayout,
                                QWidget)
 
 from app.database import SessionLocal
-from app.models import Customer
+from app.models import Customer, Product
 from app.services import pos as pos_svc
-from app.services import coupons as coupon_svc
 
 from .. import ui_kit
 from ..app_context import Context, fa, money
@@ -42,7 +42,7 @@ class CustomerPickDialog(QDialog):
         from sqlalchemy import select
         db = SessionLocal()
         try:
-            stmt = select(Customer).where(Customer.deleted_at.is_(None))
+            stmt = select(Customer).where(Customer.is_active.is_(True))
             if (term or "").strip():
                 like = f"%{term.strip()}%"
                 stmt = stmt.where((Customer.name.ilike(like)) | (Customer.phone.ilike(like)))
@@ -70,21 +70,32 @@ class HeldDialog(QDialog):
         self.setWindowTitle("فاکتورهای نگه‌داشته‌شده")
         self.chosen_index: int | None = None
         lay = QVBoxLayout(self)
-        self.table = ui_kit.make_table(["برچسب", "اقلام", "مجموع (تومان)"])
+        self.table = ui_kit.make_table(["برچسب", "کاربر", "اقلام", "مجموع (تومان)"])
         self.table.doubleClicked.connect(self._pick)
         lay.addWidget(self.table)
+        owners = {}
+        if ctx.user is not None:
+            from sqlalchemy import select
+            from app.models import User as UserModel
+            db = SessionLocal()
+            try:
+                for uid, uname in db.execute(select(UserModel.id, UserModel.username)).all():
+                    owners[uid] = uname
+            finally:
+                db.close()
         carts = ctx.held_carts(None)
         for i, cart in enumerate(carts):
             total = sum(float(line.get("qty", 0)) * float(line.get("price", 0)) for line in cart.get("lines", []))
             r = self.table.rowCount()
             self.table.insertRow(r)
             ui_kit.fill_row(self.table, r, [cart.get("label", "—"),
+                                            owners.get(cart.get("user_id"), "—"),
                                             fa(len(cart.get("lines", []))) + " قلم", money(total)])
             self.table.item(r, 0).setData(Qt.UserRole, i)
         if not carts:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            ui_kit.fill_row(self.table, r, ["فاکتور نگه‌داشته‌ای نیست", "—", "—"])
+            ui_kit.fill_row(self.table, r, ["فاکتور نگه‌داشته‌ای نیست", "—", "—", "—"])
 
     def _pick(self, index) -> None:
         self.chosen_index = self.table.item(index.row(), 0).data(Qt.UserRole)
@@ -105,7 +116,8 @@ class PosPage(QWidget):
 
         top = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("جست‌وجوی نام کالا یا بارکد… (Enter = افزودن به سبد)")
+        self.search.setPlaceholderText("اسکن بارکد یا جست‌وجوی نام کالا… (Enter = افزودن به سبد)")
+        # Enter (F2 مرجع) = افزودن؛ Enter خالی = اسکن پیوسته بدون پاک‌کردن تمرکز
         self.search.returnPressed.connect(self._add_searched)
         top.addWidget(self.search, 1)
         held_btn = QPushButton("فاکتورهای نگه‌داشته")
@@ -171,10 +183,10 @@ class PosPage(QWidget):
         self.total_label.setStyleSheet("font-size: 13pt; font-weight: 800;")
         bottom.addWidget(self.total_label)
         bottom.addStretch(1)
-        b_hold = QPushButton("نگه داشتن فاکتور")
+        b_hold = QPushButton("نگه داشتن فاکتور (F8)")
         b_hold.setProperty("role", "ghost")
         b_hold.clicked.connect(self._hold)
-        b_pay = QPushButton("ثبت فروش (پرداخت نقدی)")
+        b_pay = QPushButton("ثبت فروش / پرداخت (F2)")
         b_pay.setProperty("role", "success")
         b_pay.clicked.connect(self._checkout)
         bottom.addWidget(b_hold)
@@ -198,18 +210,21 @@ class PosPage(QWidget):
         self.catalog.setRowCount(0)
         db = SessionLocal()
         try:
-            for p in products:
-                price = pos_svc.recommend_batch(db, p)
-                sell = price.sell_price if price else None
-                r = self.catalog.rowCount()
-                self.catalog.insertRow(r)
-                ui_kit.fill_row(self.catalog, r, [p.name, p.barcode or "—", money(sell) if sell else "—"])
-                it = self.catalog.item(r, 0)
-                it.setData(Qt.UserRole, p.id)
+            # قیمت همهٔ کالاهای صفحه با «یک» کوئری (همان سیاست recommend_batch)
+            prices = pos_svc.recommend_price_map(db, products)
         finally:
             db.close()
+        for p in products:
+            sell = prices.get(p.id)
+            r = self.catalog.rowCount()
+            self.catalog.insertRow(r)
+            ui_kit.fill_row(self.catalog, r, [p.name, p.barcode or "—", money(sell) if sell else "—"])
+            it = self.catalog.item(r, 0)
+            it.setData(Qt.UserRole, p.id)
 
     def _add_searched(self) -> None:
+        """Enter روی کادر جست‌وجو (مثل F2 مرجع): افزودن به سبد + تمرکز دوباره
+        برای اسکن پیوستهٔ بارکد — صندوق هرگز منتظر کلیک اضافه نمی‌ماند."""
         term = self.search.text().strip()
         if not term:
             return
@@ -217,9 +232,28 @@ class PosPage(QWidget):
         if products:
             self._add_product(products[0].id)
             self.search.clear()
-            self._load_catalog(self.search.text().strip())
+            self._load_catalog()
+            self.search.setFocus()
         else:
             QMessageBox.information(self, "یافت نشد", "کالایی با این نام/بارکد پیدا نشد")
+            self.search.setFocus()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 — نام Qt
+        """میان‌برهای صندوق مثل تصویر مرجع: F2 پرداخت، F8 نگه‌داشتن،
+        Del حذف قلم انتخابی، Esc پاک‌کردن جست‌وجو."""
+        from PySide6.QtCore import Qt as _Qt
+        key = event.key()
+        if key == _Qt.Key_F2:
+            self._checkout()
+        elif key == _Qt.Key_F8:
+            self._hold()
+        elif key == _Qt.Key_Delete:
+            self._remove_line()
+        elif key == _Qt.Key_Escape:
+            self.search.clear()
+            self.search.setFocus()
+        else:
+            super().keyPressEvent(event)
 
     def _add_from_catalog(self, index) -> None:
         pid = self.catalog.item(index.row(), 0).data(Qt.UserRole)
@@ -228,7 +262,7 @@ class PosPage(QWidget):
     def _add_product(self, product_id: int) -> None:
         db = SessionLocal()
         try:
-            p = db.get(__import__("app.models", fromlist=["Product"]).Product, product_id)
+            p = db.get(Product, product_id)
             if p is None:
                 return
             batch = pos_svc.recommend_batch(db, p)
@@ -295,9 +329,8 @@ class PosPage(QWidget):
             "customer_id": self.customer_id,
             "coupon_code": self.coupon_code,
             "invoice_discount": float(self.invoice_discount),
-            "lines": [{k: v for k, v in line.items() if k != "name"} | {"name": line["name"]}
-                      for line in self.cart],
-            "created": str(__import__("datetime").datetime.now()),
+            "lines": [dict(line) for line in self.cart],
+            "created": datetime.now().isoformat(timespec="seconds"),
         })
         self._reset_cart()
         QMessageBox.information(self, "نگه داشته شد", "فاکتور نگه داشته شد؛ از «فاکتورهای نگه‌داشته» بازیابی کنید")
@@ -318,17 +351,29 @@ class PosPage(QWidget):
         if not self.cart:
             QMessageBox.information(self, "سبد خالی", "هیچ کالایی در سبد نیست")
             return
+        # دفاع در عمق: مجوز فروش دوباره روی دادهٔ تازه کنترل می‌شود (§۷)
+        if not self.ctx.can("pos.sell"):
+            QMessageBox.warning(self, "دسترسی ناکافی", "حساب شما مجوز فروش ندارد")
+            return
         items = [pos_svc.CartItem(product_id=line["product_id"],
                                   quantity=Decimal(str(line["qty"])),
                                   discount=Decimal(str(line.get("discount", 0))))
                  for line in self.cart]
         db = SessionLocal()
         try:
-            # پیش‌محاسبه برای مبلغ پرداخت (قیمت واقعی از Batch)
-            resolved = pos_svc.validate_cart(db, items)
+            # پیش‌محاسبه برای مبلغ پرداخت (قیمت واقعی از Batch) — خطا = پیام، نه کرش
+            try:
+                resolved = pos_svc.validate_cart(db, items)
+            except pos_svc.PosError as exc:
+                QMessageBox.warning(self, "سبد نامعتبر", exc.message)
+                return
             gross = sum((r.unit_sell_price * r.quantity for r in resolved), Decimal(0))
             disc = sum((r.discount for r in resolved), Decimal(0))
             total = gross - disc - self.invoice_discount
+            if total < 0:
+                QMessageBox.warning(self, "مبلغ نامعتبر",
+                                    "تخفیف فاکتور بیشتر از جمع سبد است")
+                return
             try:
                 invoice = pos_svc.checkout(
                     db, items=items, user=self.ctx.user,

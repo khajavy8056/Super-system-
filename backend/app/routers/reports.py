@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models import User
 from ..security import get_current_user, has_permission, require_any_permission, require_permission
 from ..services import reports as rep
+from ..services.reports import dashboard_profile  # noqa: F401 — تک‌منبع منطق در services
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -46,50 +47,6 @@ def _maybe_redact(user: User, payload):
 
 _SELF_ONLY_BLOCKS = ("receivables", "top_products", "sales_by_category",
                      "customers_new", "expiry", "pricing")
-
-
-def dashboard_profile(user: User) -> str:
-    """Select a presentation profile from effective permissions, never from a role label.
-
-    This is display metadata only. Route authorization and data scope remain enforced
-    independently below; a profile can never grant permission or widen a report.
-    """
-    admin = has_permission(user, "users.manage") and has_permission(user, "settings.manage")
-    if admin:
-        return "administrator"
-    supervisor = (
-        has_permission(user, "reports.view_all")
-        and has_permission(user, "shifts.manage")
-        and has_permission(user, "inventory.adjust")
-        and not has_permission(user, "users.manage")
-        and not has_permission(user, "settings.manage")
-    )
-    if supervisor:
-        return "supervisor"
-    accountant = (
-        has_permission(user, "accounting.view")
-        and not has_permission(user, "pos.sell")
-        and not has_permission(user, "shifts.manage")
-        and not has_permission(user, "users.manage")
-        and not has_permission(user, "settings.manage")
-    )
-    if accountant:
-        return "accountant"
-    seller = (
-        has_permission(user, "pos.sell")
-        and not has_permission(user, "reports.view_all")
-        and not has_permission(user, "accounting.view")
-        and not has_permission(user, "shifts.manage")
-        and not has_permission(user, "users.manage")
-        and not has_permission(user, "settings.manage")
-    )
-    if seller:
-        return "seller"
-    if has_permission(user, "users.manage") or has_permission(user, "settings.manage"):
-        return "manager"
-    if has_permission(user, "reports.view_all"):
-        return "operations"
-    return "staff"
 
 
 @router.get("/dashboard")

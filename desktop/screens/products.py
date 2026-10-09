@@ -97,7 +97,8 @@ class ReceiveDialog(QDialog):
         try:
             try:
                 catalog_svc.receive_batch(
-                    db, product=self.product, quantity_received=self.qty.value(),
+                    db, product=db.merge(self.product, load=True),
+                    quantity_received=self.qty.value(),
                     buy_price=self.buy.value(), sell_price=self.sell.value(),
                     expiry_date=(self.expiry.date().toPython()
                                  if self.expiry.date() != self.expiry.minimumDate() else None),
@@ -168,21 +169,26 @@ class ProductsPage(QWidget):
                 like = f"%{term}%"
                 stmt = stmt.having((Product.name.ilike(like)) | (Product.barcode.ilike(like)))
             rows = db.execute(stmt.order_by(Product.name.asc()).limit(300)).all()
+            # نزدیک‌ترین Batch فعالِ همهٔ کالاها در «یک» کوئری (بهینه‌سازی 1+N):
+            # ردیف‌های فعال مرتب بر اساس (کالا، انقضا) → اولینِ هر کالا
+            nearest: dict[int, tuple] = {}
+            for pid, expiry, price in db.execute(
+                select(ProductBatch.product_id, ProductBatch.expiry_date, ProductBatch.sell_price)
+                .where(ProductBatch.current_qty > 0, ProductBatch.status == "ACTIVE")
+                .order_by(ProductBatch.product_id.asc(),
+                          ProductBatch.expiry_date.asc().nullslast())
+            ).all():
+                nearest.setdefault(pid, (expiry, price))
             self.table.setRowCount(0)
             for product, qty in rows:
-                batch = db.execute(
-                    select(ProductBatch).where(ProductBatch.product_id == product.id,
-                                               ProductBatch.current_qty > 0,
-                                               ProductBatch.status == "ACTIVE")
-                    .order_by(ProductBatch.expiry_date.asc().nullslast()).limit(1)
-                ).scalars().first()
-                expiry = fa(batch.expiry_date) if batch and batch.expiry_date else "—"
+                expiry, batch_price = nearest.get(product.id, (None, None))
+                expiry = fa(expiry) if expiry else "—"
                 r = self.table.rowCount()
                 self.table.insertRow(r)
                 ui_kit.fill_row(self.table, r, [
                     product.name, product.barcode or "—",
                     fa(float(qty)) + " " + (product.unit.name if product.unit else ""),
-                    money(batch.sell_price) if batch else "—", expiry])
+                    money(batch_price) if batch_price is not None else "—", expiry])
                 self.table.item(r, 0).setData(Qt.UserRole, product.id)
         finally:
             db.close()

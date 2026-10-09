@@ -41,8 +41,11 @@ def run_desktop_app(data_dir: Path, version: str = "", store_name: str = "رسا
         kiosk_env = os.environ.get("SUPERMARKET_KIOSK", "1").strip().lower()
         if kiosk_env in ("0", "false", "no", "windowed"):
             win.show()                # حالت پنجره‌ای فقط برای تعمیر/توسعه
+        elif kiosk_env == "kiosk":
+            win.setWindowFlags(Qt.FramelessWindowHint)   # صندوق قفل‌شده: بدون قاب
+            win.showFullScreen()
         else:
-            # پیش‌فرض (1/خالی/kiosk): تمام‌صفحه — مثل نرم‌فروشی‌های واقعی
+            # پیش‌فرض (1/خالی): تمام‌صفحه — مثل نرم‌فروشی‌های واقعی
             win.showFullScreen()
         app.exec()
         if ctx.user is None:      # «خروج از حساب» → دوباره ورود

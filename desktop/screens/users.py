@@ -6,6 +6,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPushButton,
                                QVBoxLayout, QWidget)
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.database import SessionLocal
 from app.models import Role, User
@@ -37,8 +39,7 @@ class UserDialog(QDialog):
         form.addRow(QLabel("نقش‌ها:"))
         db = SessionLocal()
         try:
-            roles = db.execute(__import__("sqlalchemy", fromlist=["select"]).select(Role)
-                               .order_by(Role.id.asc())).scalars().all()
+            roles = db.execute(select(Role).order_by(Role.id.asc())).scalars().all()
             self.role_boxes = []
             current = {r.name for r in user.roles} if user else set()
             for role in roles:
@@ -65,12 +66,16 @@ class UserDialog(QDialog):
         if not self.user and not password:
             QMessageBox.warning(self, "ناقص", "رمز عبور برای کاربر جدید لازم است")
             return
+        # دفاع در عمق: صفحه فقط با users.manage ساخته می‌شود، ولی ذخیره دوباره کنترل می‌شود
+        if not self.ctx.can("users.manage"):
+            QMessageBox.warning(self, "دسترسی ناکافی", "مدیریت کاربران مجاز نیست")
+            return
         db = SessionLocal()
         try:
-            user = self.user
+            user = None if self.user is None else db.merge(self.user, load=True)
             if user is None:
-                exists = db.execute(__import__("sqlalchemy", fromlist=["select"]).select(User)
-                                    .where(User.username == username)).scalar_one_or_none()
+                exists = db.execute(
+                    select(User).where(User.username == username)).scalar_one_or_none()
                 if exists:
                     QMessageBox.warning(self, "تکراری", "این نام کاربری قبلاً ثبت شده است")
                     return
@@ -133,7 +138,11 @@ class UsersPage(QWidget):
         uid = self.table.item(row, 0).data(Qt.UserRole)
         db = SessionLocal()
         try:
-            user = db.get(User, uid)
+            user = db.execute(
+                select(User).where(User.id == uid)
+                .options(selectinload(User.roles))).scalar_one_or_none()
+            if user is not None:
+                db.expunge(user)
         finally:
             db.close()
         if user is None:

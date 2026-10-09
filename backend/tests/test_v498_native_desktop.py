@@ -222,3 +222,232 @@ def _SessionLocal():
 
 
 SessionLocal_ = _SessionLocal
+
+
+# ---------------------------------------------------------------------------
+# build-499 — دودِ کامل پنجرهٔ اصلی + ایزوله‌سازی نقش‌ها (§۷)
+# ---------------------------------------------------------------------------
+_counter = {"n": 0}
+
+
+def _make_user(role_names, password="pass1234"):
+    """کاربر واقعی با نقش‌های استاندارد — برخاسته از همان DB سرور."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.models import Role, User as UserModel
+    from app.security import hash_password
+    _counter["n"] += 1
+    username = f"native_{_counter['n']}_{role_names[0].lower()}"
+    db = SessionLocal_()
+    try:
+        roles = db.execute(select(Role).where(Role.name.in_(role_names))).scalars().all()
+        user = UserModel(username=username, full_name="کاربر " + role_names[0],
+                         password_hash=hash_password(password), is_active=True)
+        user.roles.extend(roles)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        db.expunge(user)
+        return user
+    finally:
+        db.close()
+
+
+def test_native_main_window_full_smoke_admin(client):
+    """پنجرهٔ اصلی مدیر: همهٔ صفحات ساخته و تازه‌سازی می‌شوند — بدون هیچ کرش."""
+    from desktop.app_context import Context
+    from desktop.main_window import MainWindow
+
+    ctx = Context(Path("/tmp"))
+    ctx.set_user(_make_user(["Administrator"]))
+    win = MainWindow(ctx, version="test")
+    titles = [win.nav.item(i).text() for i in range(win.nav.count())]
+    for expected in ("داشبورد", "صندوق فروش", "کالا و موجودی", "مشتریان",
+                     "فاکتورها", "گزارش‌ها", "کاربران", "تنظیمات"):
+        assert expected in titles, f"صفحهٔ {expected} برای مدیر نیست: {titles}"
+    for i in range(win.stack.count()):
+        page = win.stack.widget(i)
+        if hasattr(page, "refresh"):
+            page.refresh()          # داشبورد/گزارش‌ها/... = نقطهٔ کرش‌های پنهان
+    win.close()
+
+
+def test_native_cashier_pages_are_gated_and_invoices_scoped(client):
+    """صندوقدار: کاربران/تنظیمات ندارد؛ فاکتورها فقط مالِ خودش (§۷)."""
+    from desktop.app_context import Context
+    from desktop.main_window import MainWindow
+
+    cashier = _make_user(["Cashier"])
+    ctx = Context(Path("/tmp"))
+    ctx.set_user(cashier)
+    assert ctx.can("pos.sell") and ctx.can("reports.view")
+    assert not ctx.can("users.manage") and not ctx.can("settings.manage")
+    assert not ctx.can("pos.void_paid") and not ctx.can("reports.view_all")
+    win = MainWindow(ctx, version="test")
+    titles = [win.nav.item(i).text() for i in range(win.nav.count())]
+    assert "کاربران" not in titles and "تنظیمات" not in titles
+    assert "فاکتورها" in titles
+    for i in range(win.stack.count()):
+        page = win.stack.widget(i)
+        if hasattr(page, "refresh"):
+            page.refresh()
+    win.close()
+    # فاکتورِ دیگری (admin) ساخته می‌شود — صندوقدار نباید ببیندش (build-490 §۲)
+    from app.models import Invoice
+    from app.services import catalog as catalog_svc
+    from app.services import pos as pos_svc
+    db = SessionLocal_()
+    try:
+        admin = db.execute(_select(UserModel_).where(UserModel_.username == "admin")).scalar_one()
+        product = Product_(name=f"ScopeTest{admin.id}", barcode=f"SC{admin.id:06d}")
+        db.add(product)
+        db.commit()
+        catalog_svc.receive_batch(db, product=product, quantity_received=3,
+                                  buy_price=500, sell_price=900, user=admin)
+        db.commit()
+        pos_svc.checkout(db, items=[pos_svc.CartItem(product_id=product.id,
+                                                     quantity=Decimal_("1"),
+                                                     discount=Decimal_("0"))],
+                         user=admin, payments=[{"method": "CASH", "amount": "900"}])
+        db.commit()
+        foreign_id = db.execute(_select(Invoice.id)
+                                .order_by(Invoice.id.desc())).scalars().first()
+    finally:
+        db.close()
+    from desktop.screens.invoices import InvoicesPage
+    page = InvoicesPage(ctx)
+    page.refresh()
+    ids = {page.table.item(r, 0).data(_QtRole()) for r in range(page.table.rowCount())}
+    assert foreign_id not in ids, "فاکتور دیگران نباید برای صندوقدار دیده شود"
+
+
+def test_native_paid_invoice_void_needs_password(client):
+    """ابطال فاکتور پرداخت‌شده: رمز غلط = VOID_DENIED و فاکتور سرِ جایش؛
+    رمز درست = ابطال واقعی (قرارداد §209 مثل سرور)."""
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import Qt as _Qt
+
+    from desktop.app_context import Context
+    from desktop.screens.invoices import InvoicesPage
+
+    _mute_message_boxes()
+    from app.models import Invoice
+    from app.services import catalog as catalog_svc
+    from app.services import pos as pos_svc
+
+    # فاکتور پرداخت‌شدهٔ متعلق به خودِ کاربر — نقشی با pos.void_paid (Manager)
+    user = _make_user(["Manager"])
+    db = SessionLocal_()
+    try:
+        product = Product_(name="VoidTest", barcode=f"VT{user.id:06d}")
+        db.add(product)
+        db.commit()
+        catalog_svc.receive_batch(db, product=product, quantity_received=5,
+                                  buy_price=1000, sell_price=2000, user=user)
+        db.commit()
+        invoice = pos_svc.checkout(
+            db, items=[pos_svc.CartItem(product_id=product.id, quantity=Decimal_("1"),
+                                        discount=Decimal_("0"))],
+            user=user, payments=[{"method": "CASH", "amount": "2000"}])
+        db.commit()
+        inv_id = invoice.id
+    finally:
+        db.close()
+
+    ctx = Context(Path("/tmp"))
+    ctx.set_user(user)
+    page = InvoicesPage(ctx)
+    page.refresh()
+    assert page.table.rowCount() >= 1, "فاکتورِ خودِ کاربر باید دیده شود"
+    page.table.selectRow(0)
+    assert page.table.item(0, 0).data(_Qt.UserRole) == inv_id
+
+    # رمز غلط → ابطال نمی‌شود
+    calls = iter([("", False), ("دلیل", True)])
+    import desktop.screens.invoices as inv_mod
+    inv_mod.QInputDialog.getText = staticmethod(lambda *a, **k: next(calls))
+    # (نخستین getText رمز است؛ "" و ok=False → مسیر رد سریع)
+    calls = iter([("wrong-pass", True), ("دلیل", True)])
+    page._void()
+    db = SessionLocal_()
+    try:
+        db.refresh(db.get(Invoice, inv_id))
+        assert db.get(Invoice, inv_id).status != "VOID"
+    finally:
+        db.close()
+    # رمز درست → ابطال می‌شود
+    calls = iter([("pass1234", True), ("اشتباه صندوق", True)])
+    page._void()
+    db = SessionLocal_()
+    try:
+        assert db.get(Invoice, inv_id).status == "VOID", "با رمز درست ابطال باید انجام شود"
+    finally:
+        db.close()
+
+
+def _Product_():
+    from app.models import Product
+    return Product
+
+
+def _Decimal_():
+    from decimal import Decimal
+    return Decimal
+
+
+def _select():
+    from sqlalchemy import select
+    return select
+
+
+def _UserModel():
+    from app.models import User
+    return User
+
+
+def _QtRole():
+    from PySide6.QtCore import Qt
+    return Qt.UserRole
+
+
+Product_ = _Product_()
+Decimal_ = _Decimal_()
+_select = _select()
+UserModel_ = _UserModel()
+_QtRole = _QtRole()
+
+
+def test_native_theme_matches_reference_dark_palette():
+    """§۸ — تم نیتیو همان پالت تیرهٔ مرجع است (BG تیره، SURFACE کارت، آبی اکشن)."""
+    from desktop import ui_kit
+    assert ui_kit.BG == "#0b1220" and ui_kit.SURFACE == "#111a2e"
+    assert ui_kit.PRIMARY == "#2563eb"
+    src = (ROOT / "desktop" / "main_window.py").read_text(encoding="utf-8")
+    assert "SURFACE_2" in src, "سایدبار باید همان رنگ تیرهٔ مرجع را داشته باشد"
+    kit = (ROOT / "desktop" / "ui_kit.py").read_text(encoding="utf-8")
+    assert "QFrame#kpiCard" in kit, "سبک کارت KPI باید scoped باشد (نه QLabel را بگیرد)"
+    # میان‌برهای صندوق مثل مرجع: Enter برای افزودن، F2 پرداخت، F8 نگه‌داشتن
+    pos_src = (ROOT / "desktop" / "screens" / "pos.py").read_text(encoding="utf-8")
+    assert "returnPressed" in pos_src, "کلید Enter باید در جست‌وجو/اسکن کار کند"
+    assert "Key_F2" in pos_src and "Key_F8" in pos_src, "میان‌برهای F2/F8 مثل مرجع"
+
+
+def test_recommend_price_map_matches_per_product_policy(client, milk, two_batches):
+    """نگاشت دسته‌ای کاتالوگ باید «دقیقاً» همان قیمت recommend_batch تک‌کالا
+    بدهد (همان سیاست FEFO/FIFO/HYBRID — تک‌منبع بودن)."""
+    from app.services import pos as pos_svc
+    from desktop.app_context import Context
+    db = SessionLocal_()
+    try:
+        products = Context.find_products("", limit=10)
+        assert products, "کاتالوگ seed نباید خالی باشد"
+        batch_map = pos_svc.recommend_price_map(db, products)
+        for p in products:
+            single = pos_svc.recommend_batch(db, p)
+            expected = single.sell_price if single else None
+            assert batch_map.get(p.id) == expected, \
+                f"قیمت نگاشت دسته‌ای {p.name} با سرویس تکی نمی‌خواند"
+    finally:
+        db.close()

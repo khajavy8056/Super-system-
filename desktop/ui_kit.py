@@ -9,16 +9,18 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QTableWidget, QVBoxLayout, QWidget)
 
-PRIMARY = "#4f46e5"        # نیلی برند رسا
-PRIMARY_DARK = "#3730a3"
-BG = "#f5f6fa"
-CARD = "#ffffff"
-TEXT = "#111827"
-MUTED = "#6b7280"
-GREEN = "#15803d"
-RED = "#b91c1c"
-AMBER = "#b45309"
-LINE = "#e5e7eb"
+#: پالت برند — تم تیرهٔ رسمی (تصاویر مرجع docs/screenshots/02,03، §۸)
+PRIMARY = "#2563eb"        # آبی اکشن/انتخاب
+PRIMARY_DARK = "#1d4ed8"
+BG = "#0b1220"             # پس‌زمینهٔ پنجره
+SURFACE = "#111a2e"        # کارت‌ها
+SURFACE_2 = "#0e1626"      # سایدبار
+TEXT = "#e6edf7"
+MUTED = "#8fa3bf"
+GREEN = "#22c55e"
+RED = "#ef4444"
+AMBER = "#f59e0b"
+LINE = "#1f2b45"
 
 
 def load_fonts(app) -> None:
@@ -42,48 +44,64 @@ def apply_theme(app) -> None:
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor(BG))
     palette.setColor(QPalette.WindowText, QColor(TEXT))
-    palette.setColor(QPalette.Base, QColor(CARD))
-    palette.setColor(QPalette.AlternateBase, QColor("#fafafa"))
+    palette.setColor(QPalette.Base, QColor(SURFACE))
+    palette.setColor(QPalette.AlternateBase, QColor("#0d1526"))
     palette.setColor(QPalette.Text, QColor(TEXT))
-    palette.setColor(QPalette.Button, QColor(CARD))
+    palette.setColor(QPalette.Button, QColor(SURFACE))
     palette.setColor(QPalette.ButtonText, QColor(TEXT))
     palette.setColor(QPalette.Highlight, QColor(PRIMARY))
     palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
     palette.setColor(QPalette.ToolTipText, QColor(TEXT))
+    palette.setColor(QPalette.PlaceholderText, QColor(MUTED))
     app.setPalette(palette)
     app.setStyleSheet(f"""
-        QWidget {{ font-size: 10pt; }}
+        QWidget {{ font-size: 10pt; color: {TEXT}; }}
         QLabel {{ background: transparent; }}
-        QLabel[role="title"] {{ font-size: 14pt; font-weight: 700; color: {PRIMARY_DARK}; }}
+        QLabel[role="title"] {{ font-size: 14pt; font-weight: 700; color: {TEXT}; }}
         QLabel[role="muted"] {{ color: {MUTED}; font-size: 9pt; }}
+        QFrame#card, QFrame[frameShape="4"] {{ background: {SURFACE}; }}
         QPushButton {{
-            background: {PRIMARY}; color: white; border: none; border-radius: 6px;
-            padding: 8px 18px; font-weight: 600;
+            background: {PRIMARY}; color: white; border: none; border-radius: 8px;
+            padding: 9px 18px; font-weight: 600;
         }}
         QPushButton:hover {{ background: {PRIMARY_DARK}; }}
-        QPushButton:disabled {{ background: #c7c9d1; }}
-        QPushButton[role="ghost"] {{ background: transparent; color: {PRIMARY_DARK};
-            border: 1px solid {LINE}; }}
-        QPushButton[role="ghost"]:hover {{ background: #eef0ff; }}
-        QPushButton[role="danger"] {{ background: {RED}; }}
-        QPushButton[role="success"] {{ background: {GREEN}; }}
+        QPushButton:disabled {{ background: #24304d; color: {MUTED}; }}
+        QPushButton[role="ghost"] {{
+            background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; }}
+        QPushButton[role="ghost"]:hover {{ border-color: {PRIMARY}; }}
+        QPushButton[role="danger"] {{ background: #b91c1c; }}
+        QPushButton[role="danger"]:hover {{ background: {RED}; }}
+        QPushButton[role="success"] {{ background: #16a34a; }}
+        QPushButton[role="success"]:hover {{ background: {GREEN}; }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit {{
-            border: 1px solid {LINE}; border-radius: 6px; padding: 6px 10px; background: white;
+            border: 1px solid {LINE}; border-radius: 8px; padding: 7px 10px;
+            background: {SURFACE}; selection-background-color: {PRIMARY};
         }}
-        QLineEdit:focus {{ border-color: {PRIMARY}; }}
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+        QDateEdit:focus {{ border-color: {PRIMARY}; }}
         QTableWidget {{
-            border: 1px solid {LINE}; border-radius: 8px; gridline-color: {LINE};
-            selection-background-color: #eef0ff; selection-color: {TEXT};
+            border: 1px solid {LINE}; border-radius: 10px; gridline-color: {LINE};
+            background: {SURFACE}; alternate-background-color: #0d1526;
+            selection-background-color: {PRIMARY}; selection-color: white;
         }}
         QHeaderView::section {{
-            background: #eef0ff; color: {PRIMARY_DARK}; font-weight: 700;
-            border: none; padding: 6px;
+            background: {SURFACE}; color: {MUTED}; font-weight: 700;
+            border: none; border-bottom: 1px solid {LINE}; padding: 7px;
         }}
+        QTableWidget QTableCornerButton::section {{ background: {SURFACE}; border: none; }}
         QListWidget {{ border: none; background: transparent; }}
-        QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: white; }}
-        QTabBar::tab {{ padding: 8px 18px; }}
-        QTabBar::tab:selected {{ color: {PRIMARY_DARK}; font-weight: 700;
+        QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 10px; background: {SURFACE}; }}
+        QTabBar::tab {{ padding: 8px 18px; background: transparent; color: {MUTED}; }}
+        QTabBar::tab:selected {{ color: {TEXT}; font-weight: 700;
             border-bottom: 2px solid {PRIMARY}; }}
+        QScrollBar:vertical {{ background: transparent; width: 10px; }}
+        QScrollBar::handle:vertical {{ background: #24304d; border-radius: 5px; min-height: 30px; }}
+        QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+        QScrollBar:horizontal {{ background: transparent; height: 10px; }}
+        QScrollBar::handle:horizontal {{ background: #24304d; border-radius: 5px; min-width: 30px; }}
+        QDoubleSpinBox::up-button, QSpinBox::up-button,
+        QDoubleSpinBox::down-button, QSpinBox::down-button {{ width: 18px; }}
+        QDialog {{ background: {BG}; }}
     """)
 
 
@@ -92,7 +110,8 @@ def card(title: str = "", parent: QWidget | None = None) -> tuple[QFrame, QVBoxL
     frame = QFrame(parent)
     frame.setObjectName("card")
     frame.setStyleSheet(
-        "QFrame#card { background: white; border: 1px solid #e5e7eb; border-radius: 12px; }")
+        f"QFrame#card {{ background: {SURFACE}; border: 1px solid {LINE};"
+        f" border-radius: 12px; }}")
     lay = QVBoxLayout(frame)
     lay.setContentsMargins(16, 14, 16, 14)
     lay.setSpacing(10)
@@ -104,25 +123,35 @@ def card(title: str = "", parent: QWidget | None = None) -> tuple[QFrame, QVBoxL
 
 
 def kpi_row(items: list[tuple[str, str, str]]) -> QWidget:
-    """ردیف کارت‌های شاخص: [(عنوان، مقدار، رنگ)] — داشبورد نقش‌محور."""
+    """کارت‌های شاخص در شبکهٔ ۳ستونه: [(عنوان، مقدار، رنگ)] — داشبورد نقش‌محور.
+
+    شبکه به‌جای ردیف تک‌خطی: با ۵–۶ شاخص، کارت‌ها در نمایشگرهای معمولی بریده
+    نمی‌شوند. کارتِ تختِ تیره مثل تصاویر مرجع (مقدار رنگی، عنوان خاکستری)."""
+    from PySide6.QtWidgets import QGridLayout
     wrap = QWidget()
-    lay = QHBoxLayout(wrap)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(10)
-    for title, value, color in items:
+    grid = QGridLayout(wrap)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(10)
+    grid.setVerticalSpacing(10)
+    for index, (title, value, color) in enumerate(items):
         frame = QFrame()
+        frame.setObjectName("kpiCard")   # سلکتور محدود: QFrame خام QLabel را هم می‌گیرد
+        frame.setMinimumHeight(92)
         frame.setStyleSheet(
-            f"QFrame {{ background: white; border: 1px solid {LINE}; border-radius: 12px;"
-            f" border-{('top' if True else 'top')}: 3px solid {color}; }}")
+            f"QFrame#kpiCard {{ background: {SURFACE}; border: 1px solid {LINE};"
+            f" border-radius: 12px; }}")
         v = QVBoxLayout(frame)
         v.setContentsMargins(14, 12, 14, 12)
         cap = QLabel(title)
         cap.setProperty("role", "muted")
+        cap.setWordWrap(True)
         val = QLabel(value)
-        val.setStyleSheet(f"font-size: 15pt; font-weight: 800; color: {color};")
+        val.setStyleSheet(f"font-size: 14pt; font-weight: 800; color: {color};")
         v.addWidget(cap)
         v.addWidget(val)
-        lay.addWidget(frame, 1)
+        grid.addWidget(frame, index // 3, index % 3)
+    for col in range(3):
+        grid.setColumnStretch(col, 1)
     return wrap
 
 

@@ -29,18 +29,49 @@ class Context:
     def set_user(self, user: User | None) -> None:
         self.user = user
 
+    def _attached_user(self, db):
+        """کاربر جاری را به این نشست می‌چسباند (نمونهٔ login با نشستِ بسته‌شده
+        است و lazy-load روابط روی نمونهٔ detached ممنوع است)."""
+        return db.merge(self.user, load=True)
+
     def can(self, code: str) -> bool:
-        return self.user is not None and has_permission(self.user, code)
+        """بررسی مجوز روی نمونهٔ اتصال‌یافته — همیشه رو به پایگاه داده تازه،
+        یعنی تغییر نقش‌ها وسط نشست هم بی‌درنگ اعمال می‌شود (§۷)."""
+        if self.user is None:
+            return False
+        db = SessionLocal()
+        try:
+            return has_permission(self._attached_user(db), code)
+        finally:
+            db.close()
 
     def is_admin(self) -> bool:
-        return self.user is not None and is_admin(self.user)
+        if self.user is None:
+            return False
+        db = SessionLocal()
+        try:
+            return is_admin(self._attached_user(db))
+        finally:
+            db.close()
 
     def permissions(self) -> list[str]:
-        return sorted(user_permissions(self.user)) if self.user else []
+        if self.user is None:
+            return []
+        db = SessionLocal()
+        try:
+            return sorted(user_permissions(self._attached_user(db)))
+        finally:
+            db.close()
 
     def dashboard_profile(self) -> str:
-        from app.routers.reports import dashboard_profile
-        return dashboard_profile(self.user) if self.user else "seller"
+        if self.user is None:
+            return "seller"
+        db = SessionLocal()
+        try:
+            from app.services.reports import dashboard_profile
+            return dashboard_profile(self._attached_user(db))
+        finally:
+            db.close()
 
     # ---------- تنظیمات ----------
     def get_setting(self, key: str, default: str = "") -> str:
@@ -128,7 +159,7 @@ class Context:
             term = (term or "").strip()
             if not term:
                 return None
-            stmt = select(Customer).where(Customer.deleted_at.is_(None))
+            stmt = select(Customer).where(Customer.is_active.is_(True))
             like = f"%{term}%"
             stmt = stmt.where((Customer.name.ilike(like)) | (Customer.phone.ilike(like)))
             return db.execute(stmt.limit(1)).scalars().first()

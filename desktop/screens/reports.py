@@ -58,15 +58,15 @@ class ReportsPage(QWidget):
         db = SessionLocal()
         try:
             rep = sales_report(db, start, end, group="daily")
-            rows = rep.get("rows", rep.get("daily", []))
+            rows = rep.get("groups", [])   # قرارداد سرویس: groups[{date, invoice_count, total}]
             self.sales_table.setRowCount(0)
             for i, row in enumerate(rows if isinstance(rows, list) else []):
                 r = self.sales_table.rowCount()
                 self.sales_table.insertRow(r)
                 ui_kit.fill_row(self.sales_table, r, [
-                    fa(str(row.get("day", row.get("date", "—")))),
-                    fa(row.get("invoices", row.get("count", 0))),
-                    money(row.get("total", row.get("sum", 0)))])
+                    fa(str(row.get("date", "—"))),
+                    fa(row.get("invoice_count", 0)),
+                    money(row.get("total", 0))])
             # کم‌موجودی
             from sqlalchemy import func, select
             from app.models import Product, ProductBatch

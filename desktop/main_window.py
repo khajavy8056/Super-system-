@@ -32,31 +32,36 @@ class MainWindow(QMainWindow):
         # ---- نوار کنار (نیتیو) ----
         side = QFrame()
         side.setFixedWidth(230)
-        side.setStyleSheet(f"QFrame {{ background: {ui_kit.PRIMARY_DARK}; }}")
+        side.setStyleSheet(f"QFrame {{ background: {ui_kit.SURFACE_2};"
+                           f" border-left: 1px solid {ui_kit.LINE}; }}")
         side_lay = QVBoxLayout(side)
         side_lay.setContentsMargins(12, 18, 12, 12)
         side_lay.setSpacing(8)
 
         self.brand = QLabel(ctx.store_name())
-        self.brand.setStyleSheet("color: white; font-size: 14pt; font-weight: 800;")
+        self.brand.setStyleSheet("color: white; font-size: 13pt; font-weight: 800;")
         self.user_label = QLabel(self.ctx.user.full_name or self.ctx.user.username)
-        self.user_label.setStyleSheet("color: #c7d2fe; font-size: 9pt;")
+        self.user_label.setStyleSheet(f"color: {ui_kit.MUTED}; font-size: 9pt;")
         side_lay.addWidget(self.brand)
         side_lay.addWidget(self.user_label)
         side_lay.addSpacing(10)
 
+        # مثل مرجع: آیتم فعال = پیل آبی با گوشهٔ گرد
         self.nav = QListWidget()
-        self.nav.setStyleSheet("""
-            QListWidget::item { color: #e0e7ff; padding: 10px 8px; border-radius: 8px; margin: 2px 0; }
-            QListWidget::item:selected { background: rgba(255,255,255,0.16); color: white; font-weight: 700; }
+        self.nav.setStyleSheet(f"""
+            QListWidget::item {{ color: {ui_kit.TEXT}; padding: 11px 10px;
+                border-radius: 8px; margin: 2px 1px; }}
+            QListWidget::item:hover {{ background: {ui_kit.SURFACE}; }}
+            QListWidget::item:selected {{ background: {ui_kit.PRIMARY};
+                color: white; font-weight: 700; }}
         """)
         self.nav.currentRowChanged.connect(self._navigate)
         side_lay.addWidget(self.nav, 1)
 
         logout = QPushButton("خروج از حساب")
-        logout.setProperty("role", "ghost")
         logout.setStyleSheet(
-            "color: white; border: 1px solid rgba(255,255,255,0.4); border-radius: 6px; padding: 8px;")
+            f"QPushButton {{ background: {ui_kit.SURFACE}; color: white;"
+            f" border: 1px solid {ui_kit.LINE}; border-radius: 8px; padding: 9px; }}")
         logout.clicked.connect(self._logout)
         side_lay.addWidget(logout)
         root.addWidget(side)
@@ -87,7 +92,9 @@ class MainWindow(QMainWindow):
             pages.append(("کالا و موجودی", ProductsPage(ctx)))
         if ctx.can("customers.manage") or ctx.can("customers.ledger"):
             pages.append(("مشتریان", CustomersPage(ctx)))
-        if ctx.can("pos.sell") or ctx.can("reports.view"):
+        # مثل سرور: فهرست فاکتورها مجوز reports.view می‌خواهد (بدون view_all فقط
+        # فاکتورهای خودِ کاربر — داخل صفحه اعمال می‌شود)
+        if ctx.can("reports.view"):
             pages.append(("فاکتورها", InvoicesPage(ctx)))
         if ctx.can("reports.view"):
             pages.append(("گزارش‌ها", ReportsPage(ctx)))

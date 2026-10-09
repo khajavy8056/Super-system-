@@ -19,8 +19,12 @@ from ..app_context import Context, fa, money
 
 
 def _sales_by_day(db, days: int = 7) -> list[tuple]:
-    """فروش ۷ روز اخیر برای نمودار نیتیو."""
+    """فروش ۷ روز اخیر برای نمودار نیتیو — «همیشه» ۷ اسلات: روزهای بدون فروش
+    هم صفر رسم می‌شوند تا نمودار تک‌میلهٔ عریض نشود.
+
+    برچسب هر اسلات = «روز ماه شمسی» (تقویم رسمی؛ مثل سرور §۱۳۷)."""
     from sqlalchemy import func, select
+    from app.services.timeservice import to_jalali
     start = local_today() - timedelta(days=days - 1)
     rows = db.execute(
         select(func.date(Invoice.created_at), func.count(Invoice.id),
@@ -29,7 +33,14 @@ def _sales_by_day(db, days: int = 7) -> list[tuple]:
         .group_by(func.date(Invoice.created_at))
         .order_by(func.date(Invoice.created_at).asc())
     ).all()
-    return [(str(r[0]), int(r[1] or 0), float(r[2] or 0)) for r in rows]
+    by_day = {str(r[0]): (int(r[1] or 0), float(r[2] or 0)) for r in rows}
+    series: list[tuple] = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        key = day.isoformat()
+        cnt, total = by_day.get(key, (0, 0.0))
+        series.append((fa(to_jalali(day)[2]), cnt, float(total)))
+    return series
 
 
 class MiniChart(QFrame):
@@ -41,31 +52,31 @@ class MiniChart(QFrame):
         self.setMinimumHeight(170)
 
     def paintEvent(self, event):  # noqa: N802 — نام Qt
-        from PySide6.QtGui import QPainter, QPen
+        from PySide6.QtGui import QColor, QPainter, QPen
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         area = self.rect().adjusted(8, 12, -8, -26)
-        p.setPen(QPen(ui_kit.LINE, 1))
+        p.setPen(QPen(QColor(ui_kit.LINE), 1))
         p.drawLine(area.left(), area.bottom(), area.right(), area.bottom())
         if not self.data:
-            p.setPen(ui_kit.MUTED)
+            p.setPen(QColor(ui_kit.MUTED))
             p.drawText(self.rect(), Qt.AlignCenter, "فروشی ثبت نشده است")
             p.end()
             return
         peak = max((r[2] for r in self.data), default=1.0) or 1.0
         n = len(self.data)
         slot = area.width() / max(1, n)
-        bar_w = max(10, int(slot * 0.55))
+        bar_w = min(56, max(12, int(slot * 0.55)))   # سقف پهنا: نمودار خفگی نگیرد
         for i, (_day, _cnt, total) in enumerate(self.data):
             h = int((total / peak) * max(1, area.height() - 6))
             x = int(area.left() + i * slot + (slot - bar_w) / 2)
-            p.setBrush(ui_kit.PRIMARY)
+            p.setBrush(QColor(ui_kit.PRIMARY))
             p.setPen(Qt.NoPen)
             p.drawRoundedRect(x, area.bottom() - h, bar_w, h, 4, 4)
-            p.setPen(ui_kit.MUTED)
+            p.setPen(QColor(ui_kit.MUTED))
             p.drawText(int(area.left() + i * slot), area.bottom() + 4, slot,
-                       18, Qt.AlignCenter, fa(_day[5:]))
+                       18, Qt.AlignCenter, str(_day))
         p.end()
 
 
@@ -76,7 +87,8 @@ class DashboardPage(QWidget):
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(18, 18, 18, 18)
         self.lay.setSpacing(12)
-        self.refresh()
+        # refresh() اینجا لازم نیست: MainWindow بلافاصله setCurrentRow(0) می‌کند
+        # و refresh را می‌زند (دوبار ساخت ویجت = پرفورمنس و پارگی بصری)
 
     def refresh(self) -> None:
         while self.lay.count():
@@ -89,14 +101,14 @@ class DashboardPage(QWidget):
             scope_user = None if profile in ("administrator", "supervisor", "manager") else self.ctx.user.id
             d = report_dashboard(db, user_id=scope_user)
             sales = d.get("sales", {}) or {}
-            cur = money(sales.get("today_count", 0) and sales.get("today_sum") or 0)
-            cur_cnt = money(sales.get("today_count", 0))
-            yest = money(sales.get("yesterday_sum") or 0)
-            month = money(sales.get("month_sum") or 0)
-            inv_val = money(d.get("inventory_value") or 0)
+            cur = money(sales.get("today") or 0)
+            cur_cnt = money(sales.get("invoice_count_today", 0))
+            yest = money(sales.get("yesterday") or 0)
+            month = money(sales.get("month") or 0)
+            inv_val = money((d.get("inventory") or {}).get("value") or 0)
 
             head = QLabel(f"داشبورد {self.ctx.user.full_name or self.ctx.user.username}")
-            head.setProperty("role", "title")
+            head.setProperty("role", "title")  # عنوان بزرگ روشن
             self.lay.addWidget(head)
 
             cards = [(f"فروش امروز (تومان)", cur, ui_kit.PRIMARY),
@@ -153,14 +165,14 @@ class DashboardPage(QWidget):
         ).all()
         if not expiring:
             return None
-        frame, lay = ui_kit.card("هشدار انقضا — نزدیک‌ترین Batchها")
+        frame, lay = ui_kit.card("هشدار انقضا — نزدیک‌ترین ورودی‌ها")
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
         for i, (batch, name) in enumerate(expiring):
             days = (batch.expiry_date - today).days
             color = ui_kit.RED if days < 0 else (ui_kit.AMBER if days <= 7 else ui_kit.TEXT)
             lbl = QLabel(f"{name} — {fa(batch.expiry_date)} ({'منقضی' if days < 0 else fa(days) + ' روز'})")
-            lbl.setStyleSheet(f"color: {color};")
+            lbl.setStyleSheet(f"color: {color}; background: transparent;")
             grid.addWidget(lbl, i % 4, i // 4)
         lay.addLayout(grid)
         return frame

@@ -79,7 +79,7 @@ class SettleDialog(QDialog):
         db = SessionLocal()
         try:
             try:
-                ledger_svc.settle(db, customer=self.customer,
+                ledger_svc.settle(db, customer=db.merge(self.customer, load=True),
                                   amount=Decimal(str(self.amount.value())),
                                   user=self.ctx.user)
                 db.commit()
@@ -142,7 +142,7 @@ class CustomersPage(QWidget):
         from sqlalchemy import select
         db = SessionLocal()
         try:
-            stmt = select(Customer).where(Customer.deleted_at.is_(None))
+            stmt = select(Customer).where(Customer.is_active.is_(True))
             term = self.search.text().strip()
             if term:
                 like = f"%{term}%"

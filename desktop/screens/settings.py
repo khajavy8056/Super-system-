@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QMessageBox, QPushButton,
                                QTableWidget, QVBoxLayout, QWidget)
 
 from app.config import settings as app_settings
@@ -80,7 +80,7 @@ class FactoryResetDialog(QDialog):
 
         lay.addWidget(QLabel("دامنهٔ بازنشانی را انتخاب کنید و «نمایش گزارش» را بزنید:"))
         bar = QHBoxLayout()
-        self.scope = QComboBox__()
+        self.scope = QComboBox()
         self.scope.addItem("دادهٔ عملیاتی (کالا و مشتری می‌مانند)", "transactions")
         self.scope.addItem("کامل (کاتالوگ و مشتریان هم پاک می‌شوند)", "full")
         preview_btn = QPushButton("۱) نمایش دقیق گزارش")
@@ -140,8 +140,7 @@ class FactoryResetDialog(QDialog):
             return
         db = SessionLocal()
         try:
-            user = self.ctx.user
-            db.refresh(user)
+            user = self.ctx._attached_user(db)
             if not verify_password(self.password.text(), user.password_hash):
                 write_audit(db, action="FACTORY_RESET_AUTH_FAILED", user_id=user.id, entity_type="System")
                 db.commit()
@@ -176,12 +175,6 @@ class FactoryResetDialog(QDialog):
     def _fail(self, message: str) -> None:
         self.setEnabled(True)
         QMessageBox.critical(self, "بازنشانی ناموفق", message)
-
-
-def QComboBox__():
-    from PySide6.QtWidgets import QComboBox
-    combo = QComboBox()
-    return combo
 
 
 class SettingsPage(QWidget):
