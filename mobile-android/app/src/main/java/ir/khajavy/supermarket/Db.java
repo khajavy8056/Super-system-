@@ -1286,6 +1286,8 @@ public final class Db extends SQLiteOpenHelper {
     }
     /** Apply a sale locally: decrement batches, store the invoice; returns the local number. */
     public static String localSale(JSONObject payload, double total) throws Exception {
+        // build-501 — NaN هرگز به ContentValues/execSQL نمی‌رسد («Forbidden numeric value» در مبدأ خنثی می‌شود)
+        if (!Double.isFinite(total)) throw new IllegalStateException("مبلغ فاکتور نامعتبر است");
         try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {}   // v4.8.0 — تخفیف سررسیدشده پیش از فروش (مثل صندوق رایانه)
         SQLiteDatabase d = w(); d.beginTransaction();
         try {
@@ -1323,7 +1325,7 @@ public final class Db extends SQLiteOpenHelper {
                 d.execSQL("INSERT INTO invoice_items(inv,product_id,batch_id,qty,unit_sell_price,unit_buy_price,discount,subtotal) VALUES(?,?,?,?,?,?,?,?)", new Object[]{rid, it.optLong("product_id"), bid, q, pr, buy, it.optDouble("discount", 0), q * pr - it.optDouble("discount", 0)});
                 d.execSQL("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,user,created_at) VALUES(?,?,'SALE_OUT',?,'Invoice',?,?,?)", new Object[]{it.optLong("product_id"), bid, -q, no, Screens.userName(), now()});
             }
-            if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += pays.optJSONObject(i).optDouble("amount"); d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
+            if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += Double.isFinite(pays.optJSONObject(i).optDouble("amount", 0)) ? pays.optJSONObject(i).optDouble("amount", 0) : 0; d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
             if (!payload.optString("coupon_code").isEmpty()) d.execSQL("UPDATE coupons SET used_count=used_count+1, status=CASE WHEN used_count+1>=usage_limit THEN 'USED' ELSE status END WHERE code=?", new Object[]{payload.optString("coupon_code")});
             long campaignId = payload.optLong("campaign_id", 0);
             if (campaignId > 0) {

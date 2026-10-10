@@ -207,7 +207,11 @@ public final class Images {
         if (o.outWidth <= 0) return null;
         int s = sample(o.outWidth, o.outHeight, edge);
         BitmapFactory.Options o2 = new BitmapFactory.Options(); o2.inSampleSize = s;
-        return BitmapFactory.decodeByteArray(buf, 0, buf.length, o2);
+        // build-501 — مقابله با OOM: کدگذاری 565 (نصف حافظه) + یک تلاش مجدد پس از تخلیهٔ کش
+        o2.inPreferredConfig = android.graphics.Bitmap.Config.RGB_565;
+        try { Bitmap b = BitmapFactory.decodeByteArray(buf, 0, buf.length, o2); if (b != null) return b; }
+        catch (OutOfMemoryError mem) { MEM.evictAll(); }
+        try { return BitmapFactory.decodeByteArray(buf, 0, buf.length, o2); } catch (OutOfMemoryError again) { return null; }
     }
 
     /* ------------------------------------------------------------ HTTP */

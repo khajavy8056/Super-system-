@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import threading
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -221,6 +223,25 @@ def _error_response(exc: Exception, request: Request, code: str, status: int) ->
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     return _error_response(exc, request, "DATABASE_ERROR", 500)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """build-501 — خطای اعتبارسنجی ۴۲۲ باید قابل سریالایز باشد؛ NaN/∞ در ورودی
+    (کلاینت معیوب) خودِ هندلر را نمی‌شکند و پاسخ استاندارد فارسی برمی‌گردد."""
+    def _safe(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
+        if isinstance(value, dict):
+            return {k: _safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_safe(v) for v in value]
+        return value
+    errors = exc.errors()
+    for err in errors:
+        if "input" in err:
+            err["input"] = _safe(err["input"])
+    return JSONResponse(status_code=422, content={"detail": _safe(errors)})
 
 
 @app.exception_handler(Exception)

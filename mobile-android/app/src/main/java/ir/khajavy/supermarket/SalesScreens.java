@@ -269,6 +269,8 @@ public final class SalesScreens {
                 });
             } else Api.post(path, request, ok, error);
         }
+        /** build-501 — تخفیف مزایا هرگز NaN نمی‌شود (کلید غایب/NULL → صفر)؛ جلوی «Forbidden numeric value» گرفته می‌شود. */
+        static double finBenefit(double v) { return Double.isFinite(v) && v > 0 ? v : 0; }
         void refreshBenefits() {
             if (cart.isEmpty()) return;
             String requestedKey = benefitsKey();
@@ -291,18 +293,18 @@ public final class SalesScreens {
                     if (offer.optBoolean("auto_apply") && (auto == null
                             || offer.optInt("priority", 3) < auto.optInt("priority", 3)
                             || (offer.optInt("priority", 3) == auto.optInt("priority", 3)
-                            && offer.optDouble("discount") > auto.optDouble("discount")))) auto = offer;
+                            && finBenefit(offer.optDouble("discount", 0)) > finBenefit(auto.optDouble("discount", 0))))) auto = offer;
                 }
                 if (campaign != null) {
                     if (selected == null) { campaign = null; campaignDiscount = 0; }
-                    else { campaign = selected; campaignDiscount = selected.optDouble("discount"); }
+                    else { campaign = selected; campaignDiscount = finBenefit(selected.optDouble("discount", 0)); }
                 }
                 if (campaign == null && auto != null) {
                     if (couponDiscount > 0 && !auto.optBoolean("stackable")) {
                         coupon = null; couponDiscount = 0;
                         Ui.toast("جشنوارهٔ خودکار با کوپن قابل ترکیب نیست؛ کوپن حذف شد");
                     }
-                    campaign = auto; campaignDiscount = auto.optDouble("discount");
+                    campaign = auto; campaignDiscount = finBenefit(auto.optDouble("discount", 0));
                 }
                 String[] expected = {benefitsKey()}; pendingBenefitsKey = expected[0];
                 if (coupon == null) {
@@ -322,7 +324,7 @@ public final class SalesScreens {
                     }
                     JSONObject validation = couponResult instanceof JSONObject ? (JSONObject) couponResult : new JSONObject();
                     if (validation.optBoolean("valid", validation.optBoolean("ok", false)))
-                        couponDiscount = validation.optDouble("discount");
+                        couponDiscount = finBenefit(validation.optDouble("discount", 0));
                     else { coupon = null; couponDiscount = 0; }
                     resolvedBenefitsKey = benefitsKey(); pendingBenefitsKey = ""; renderCart();
                 }, error -> {
@@ -340,7 +342,7 @@ public final class SalesScreens {
             refreshNudges();   // v4.7.0 — suggestions follow the cart, on the phone like on Windows
             if (cart.isEmpty()) lines.addView(Ui.empty(c, "سبد خالی است — کالا را جست‌وجو یا اسکن کنید"));
             for (JSONObject l : cart) {
-                double q = l.optDouble("quantity"), pr = l.optDouble("price"), disc = l.optDouble("discount"); double sub = q * pr - disc; total += sub; n += q;
+                double q = l.optDouble("quantity", 1), pr = l.optDouble("price", 0), disc = l.optDouble("discount", 0); double sub = q * pr - disc; total += sub; n += q;
                 LinearLayout row = Ui.col(c); row.setBackground(Ui.surface(18)); row.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); row.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8));
                 LinearLayout r1 = Ui.row(c);
                 android.widget.ImageView ic = Ui.thumb(c, Db.productById(l.optLong("product_id")) == null ? l : Db.productById(l.optLong("product_id")), 40); r1.addView(ic);
@@ -390,8 +392,26 @@ public final class SalesScreens {
             LinearLayout l = Ui.col(c); EditText q = Ui.input(c, "نام یا شماره موبایل…"); l.addView(q); LinearLayout res = Ui.col(c); l.addView(res); Dialog[] d = new Dialog[1];
             l.addView(Ui.ghost(c, "مشتری آزاد (بدون ثبت)", () -> { customer = null; d[0].dismiss(); renderCart(); }));
             l.addView(Ui.primary(c, "ثبت مشتری جدید", () -> { d[0].dismiss(); newCustomer(Ui.str(q), cu -> { customer = cu; renderCart(); }); }));
-            Runnable fill = () -> { res.removeAllViews(); for (JSONObject cu : Db.customers(Ui.str(q))) res.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(cu.optString("phone")), null, 0, () -> { customer = cu; d[0].dismiss(); renderCart(); })); };
-            q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { fill.run(); } }); fill.run();
+            // build-501 — بازسازی ۲۰۰ ردیف در هر حرف تایپ، حافظه را می‌خورد (OOM در pickCustomer)؛
+            // اکنون: debounce ۲۵۰ms + سقف ۳۰ ردیف + آزادسازی کش تصاویر در صورت فشار حافظه.
+            final android.os.Handler debounce = new android.os.Handler(android.os.Looper.getMainLooper());
+            final Runnable[] pending = {null};
+            Runnable fill = () -> {
+                try {
+                    res.removeAllViews();
+                    java.util.List<JSONObject> found = Db.customers(Ui.str(q));
+                    int n = Math.min(30, found.size());
+                    for (int i = 0; i < n; i++) { JSONObject cu = found.get(i); res.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(cu.optString("phone")), null, 0, () -> { customer = cu; d[0].dismiss(); renderCart(); })); }
+                    if (found.size() > n) res.addView(Ui.muted(c, "برای یافتن مشتری دقیق‌تر، جست‌وجو را کامل‌تر کنید (" + Ui.fa(String.valueOf(found.size())) + " نتیجه)"));
+                    if (found.isEmpty()) res.addView(Ui.muted(c, "مشتری‌ای یافت نشد — «ثبت مشتری جدید» را بزنید"));
+                } catch (OutOfMemoryError mem) {
+                    Images.MEM.evictAll(); Ui.tileCacheClear();
+                    res.removeAllViews(); res.addView(Ui.muted(c, "حافظهٔ گوشی پر شد — عبارت کوتاه‌تری جست‌وجو کنید"));
+                }
+            };
+            Runnable debounced = () -> { if (pending[0] != null) debounce.removeCallbacks(pending[0]); pending[0] = fill; debounce.postDelayed(fill, 250); };
+            q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { debounced.run(); } });
+            try { fill.run(); } catch (Throwable firstPaint) { /* اولین پرکردن هم محافظت می‌شود */ }
             d[0] = Ui.sheet(c, "انتخاب مشتری", l);
         }
         void newCustomer(String prefill, java.util.function.Consumer<JSONObject> cb) { Customers.newCustomer(a, prefill, cb); }
@@ -503,8 +523,11 @@ public final class SalesScreens {
         }
         void checkout(String method, double paidAmt, double total) {
             try {
+                // build-501 — هیچ عدد NaN/منفی به موتور فروش محلی یا رایانه نمی‌رود
+                if (!Double.isFinite(total) || total < 0) { Ui.toast("مبلغ فاکتور نامعتبر است؛ سبد را بازبینی کنید"); return; }
+                if (!Double.isFinite(paidAmt) || paidAmt < 0) paidAmt = 0;
                 JSONObject body = new JSONObject(); JSONArray items = new JSONArray();
-                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", l.optDouble("quantity")); it.put("price", l.optDouble("price")); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", l.optDouble("discount")); items.put(it); }
+                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", Math.max(0, l.optDouble("quantity", 1))); it.put("price", Math.max(0, l.optDouble("price", 0))); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", Math.max(0, l.optDouble("discount", 0))); items.put(it); }
                 body.put("items", items); JSONArray pays = new JSONArray(); JSONObject p = new JSONObject();
                 boolean credit = "CREDIT".equals(method) || (paidAmt < total && customer != null);
                 if (credit) { if (paidAmt > 0) { p.put("method", "CASH"); p.put("amount", paidAmt); pays.put(p); } JSONObject cr = new JSONObject(); cr.put("method", "CREDIT"); cr.put("amount", total - paidAmt); pays.put(cr); } else { p.put("method", method); p.put("amount", total); pays.put(p); }
@@ -540,7 +563,12 @@ public final class SalesScreens {
                 cart.clear(); customer = null; coupon = null; couponDiscount = 0; campaign = null; campaignDiscount = 0; invoiceDiscount = 0; resolvedBenefitsKey = ""; pendingBenefitsKey = ""; heldId = null; renderCart();
                 Ui.done(a, "فروش ثبت شد", "فاکتور " + Ui.fa(no) + " · " + Ui.money(total)
                         + (issuedCouponCodes.isEmpty() ? "" : "\nکد تخفیف خرید بعدی: " + issuedCouponCodes), null);
-            } catch (Exception e) { Ui.toast("خطا: " + e.getMessage()); }
+            } catch (Exception e) {
+                // build-501 — پیام خام org.json («Forbidden numeric value») به کاربر نمایش داده نمی‌شود
+                String m = String.valueOf(e.getMessage());
+                if (m.contains("Forbidden numeric") || m.contains("NaN")) Ui.toast("ثبت فروش ناموفق: مبلغی در سبد نامعتبر است — سطرها را بازبینی کنید");
+                else Ui.toast("خطا: " + m);
+            }
         }
     }
 

@@ -391,7 +391,7 @@ public final class Screens {
                     body.addView(stock);
                 }
             }
-            addTrendChart("روند فروش من · ۷ روز", data.optJSONArray("trend"), "sales");
+            addSalesLineChart("روند فروش من · ۷ روز", data.optJSONArray("trend"));
             addRecentInvoiceCard(data.optJSONArray("recent_invoices"));
             if (local != null && local.length > 2 && local[2] > 0) {
                 LinearLayout queue = Ui.card(c, "فروش‌های این گوشی");
@@ -427,7 +427,7 @@ public final class Screens {
             if (allowed("reports")) row.addView(qb("chart", "گزارش‌ها", Ui.TEAL, () -> a.route("reports")));
             actions.addView(row); body.addView(actions);
             if (storeScope) {
-                addTrendChart("روند فروش فروشگاه · ۷ روز", data.optJSONArray("trend"), "sales");
+                addSalesLineChart("روند فروش فروشگاه · ۷ روز", data.optJSONArray("trend"));
                 addRecentInvoiceCard(data.optJSONArray("recent_invoices"));
             }
             if (local != null && local.length > 2 && local[2] > 0) {
@@ -438,23 +438,6 @@ public final class Screens {
         }
         private String moneyOrDash(JSONObject source, String key) {
             return source == null || source.isNull(key) ? "—" : Ui.money(source.optDouble(key));
-        }
-        private void addTrendChart(String title, JSONArray trend, String metric) {
-            if (trend == null || trend.length() == 0) return;
-            LinearLayout card = Ui.card(c, title); double max = 1;
-            for (int i = 0; i < trend.length(); i++) { JSONObject item = trend.optJSONObject(i); if (item != null) max = Math.max(max, item.optDouble(metric)); }
-            LinearLayout bars = Ui.row(c); bars.setGravity(android.view.Gravity.BOTTOM);
-            bars.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(112)));
-            for (int i = 0; i < trend.length(); i++) {
-                JSONObject item = trend.optJSONObject(i); if (item == null) continue;
-                LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
-                LinearLayout.LayoutParams cp = Ui.weight(1); cp.height = ViewGroup.LayoutParams.MATCH_PARENT; col.setLayoutParams(cp);
-                View bar = new View(c); bar.setBackground(Ui.rounded(Ui.PRIMARY, 0, 4));
-                bar.setLayoutParams(Ui.lp(Ui.dp(13), Math.max(Ui.dp(3), (int) (Ui.dp(76) * item.optDouble(metric) / max)))); col.addView(bar);
-                String label = item.optString("label", item.optString("date")); if (label.length() > 5) label = label.substring(label.length() - 5);
-                TextView day = Ui.muted(c, Ui.fa(label)); day.setTextSize(9); col.addView(day); bars.addView(col);
-            }
-            card.addView(bars); body.addView(card);
         }
         private void addRecentInvoiceCard(JSONArray invoices) {
             LinearLayout card = Ui.card(c, "آخرین فاکتورها");
@@ -588,19 +571,35 @@ public final class Screens {
             col.addView(Ui.text(c, value, 17, color, true)); col.addView(Ui.muted(c, label)); return col;
         }
         private void renderManagementActions(String profile) {
-            LinearLayout panel = Ui.card(c, "مرکز " + ("administrator".equals(profile) ? "مدیریت کل" : "نظارت عملیاتی"));
-            panel.addView(Ui.muted(c, "نمای مدیریتی فروشگاه · میان‌برها فقط برای دسترسی‌های فعال این حساب نمایش داده می‌شوند."));
-            LinearLayout operations = Ui.row(c), governance = Ui.row(c);
-            if (allowed("reports")) operations.addView(qb("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
-            if (allowed("inventory")) operations.addView(qb("box", "موجودی", 0xFF4F8CFF, () -> a.route("inventory")));
-            if (allowed("receive")) operations.addView(qb("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
-            if (allowed("accounting")) operations.addView(qb("wallet", "دفتر مالی", Ui.GREEN, () -> a.route("accounting")));
-            if (allowed("shifts")) governance.addView(qb("clock", "شیفت‌ها", Ui.AMBER, () -> a.route("shifts")));
-            if (allowed("users")) governance.addView(qb("users", "کاربران", Ui.VIOLET, () -> a.route("users")));
-            if (allowed("settings")) governance.addView(qb("gear", "تنظیمات", 0xFF4F8CFF, () -> a.route("settings")));
-            if (operations.getChildCount() > 0) panel.addView(operations);
-            if (governance.getChildCount() > 0) panel.addView(governance);
+            // build-501 — کارت «عملیات سریع فروشگاه» مثل تصویر مرجع: سه کاشی در هر ردیف، صندوق فروش اول
+            LinearLayout panel = Ui.card(c, "عملیات سریع فروشگاه");
+            panel.addView(Ui.muted(c, "میان‌برها فقط برای دسترسی‌های فعال این حساب نمایش داده می‌شوند."));
+            LinearLayout[] rows = {Ui.row(c), Ui.row(c), Ui.row(c)};
+            int[] slot = {0};
+            java.util.List<LinearLayout> cells = new java.util.ArrayList<>();
+            if (allowed("pos")) cells.add(actionCell("cart", "صندوق فروش", Ui.GREEN, () -> a.route("pos")));
+            if (allowed("receive")) cells.add(actionCell("truck", "دریافت کالا", Ui.VIOLET, () -> a.route("receive")));
+            if (allowed("inventory")) cells.add(actionCell("box", "موجودی", 0xFF4F8CFF, () -> a.route("inventory")));
+            if (allowed("customers")) cells.add(actionCell("user", "مشتریان", 0xFFF4657A, () -> a.route("customers")));
+            if (allowed("reports")) cells.add(actionCell("chart", "گزارش فروش", Ui.TEAL, () -> a.route("reports")));
+            if (allowed("accounting")) cells.add(actionCell("wallet", "دفتر مالی", Ui.GOLD, () -> a.route("accounting")));
+            if (allowed("shifts")) cells.add(actionCell("clock", "شیفت‌ها", Ui.AMBER, () -> a.route("shifts")));
+            if (allowed("users")) cells.add(actionCell("users", "کاربران", Ui.VIOLET, () -> a.route("users")));
+            if (allowed("settings")) cells.add(actionCell("gear", "تنظیمات", 0xFF4F8CFF, () -> a.route("settings")));
+            for (LinearLayout cell : cells) { rows[Math.min(2, slot[0] / 3)].addView(cell); slot[0]++; }
+            for (LinearLayout row : rows) if (row.getChildCount() > 0) panel.addView(row);
             body.addView(panel);
+        }
+        /** build-501 — کاشی مربع عملیات سریع (آیکون بزرگ بالا، برچسب پایین) مثل ردیف اکشن‌های مرجع. */
+        private LinearLayout actionCell(String icon, String label, int accent, Runnable r) {
+            LinearLayout t = Ui.col(c); t.setGravity(android.view.Gravity.CENTER);
+            int tint = (accent & 0x00FFFFFF) | (Ui.dark ? 0x36000000 : 0x24000000);
+            t.setBackground(Ui.rounded(tint, Ui.dark ? 0x33FFFFFF : 0x14000000, 16));
+            t.setPadding(Ui.dp(6), Ui.dp(14), Ui.dp(6), Ui.dp(12));
+            LinearLayout.LayoutParams p = Ui.weight(1); p.setMargins(Ui.dp(4), Ui.dp(4), Ui.dp(4), Ui.dp(4)); t.setLayoutParams(p);
+            t.addView(Icons.view(c, icon, accent, 24));
+            TextView l = Ui.text(c, label, 11.5f, Ui.TEXT, true); l.setPadding(0, Ui.dp(7), 0, 0); t.addView(l);
+            t.setClickable(true); t.setOnClickListener(v -> r.run()); return t;
         }
         private void render(JSONObject d, double[] loc) {
             JSONObject sales = d.optJSONObject("sales"), inv = d.optJSONObject("inventory"), rec = d.optJSONObject("receivables"), sms = d.optJSONObject("sms"), sys = d.optJSONObject("system"), acc = d.optJSONObject("accounting"), exp = d.optJSONObject("expiry"), pr = d.optJSONObject("pricing"), profit = d.optJSONObject("profit");
@@ -609,14 +608,22 @@ public final class Screens {
             boolean storeScope = can("reports.view_all") && "store".equals(d.optString("scope"));
             if ("accountant".equals(profile)) { renderAccountantDashboard(d, loc); return; }
             if ("seller".equals(profile)) { renderCashierDashboard(d, loc); return; }
-            if ("administrator".equals(profile) || "supervisor".equals(profile)) renderManagementActions(profile);
-            // 1-2 sales / invoices
-            JSONArray tr0 = d.optJSONArray("trend"); double[] wk = new double[tr0 == null ? 0 : tr0.length()]; for (int i = 0; i < wk.length; i++) wk[i] = d(tr0.optJSONObject(i), "sales");
+            // build-501 — ترتیب مرجع (تصاویر مرجع مالک): کاشی‌های KPI → عملیات سریع → نمودار روند →
+            // دونات فروش روزانه + پرفروش‌ترین‌ها → آخرین فاکتورها → پیشنهادها/هوش → کارت‌های فرعی → اطلاعیه/به‌روزرسانی → سامانه
             double sToday = d(sales, "today"), sYest = d(sales, "yesterday"); int iToday = (int) d(sales, "invoice_count_today"), iYest = (int) d(sales, "invoice_count_yesterday");
             TextView sTr = Ui.muted(c, sYest > 0 ? (sToday >= sYest ? "▲ " : "▼ ") + Ui.fa(String.valueOf(Math.round(Math.abs(sToday - sYest) * 100 / sYest))) + "٪ نسبت به دیروز" : "ثبت امروز");
             TextView iTr = Ui.muted(c, iYest > 0 ? (iToday >= iYest ? "▲ " : "▼ ") + Ui.fa(String.valueOf(Math.round(Math.abs(iToday - iYest) * 100.0 / iYest))) + "٪ نسبت به دیروز" : "ثبت امروز");
-            if (showSales) body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(sToday), sTr), Ui.tile(c, "receipt", Ui.VIOLET, "فاکتورهای من", Ui.num(iToday), iTr)));
+            if (showSales) body.addView(Ui.grid2(c, Ui.tile(c, "trend", Ui.GREEN, "فروش امروز", Ui.money(sToday), sTr), Ui.tile(c, "receipt", Ui.VIOLET, "فاکتورهای امروز", Ui.num(iToday), iTr)));
             if (storeScope) body.addView(Ui.grid2(c, Ui.tile(c, "users", Ui.AMBER, "مشتریان", Ui.num(Db.count("customers")), null), Ui.tile(c, "box", 0xFF4F8CFF, "موجودی کل محصولات", Ui.num(d(inv, "product_count")), null)));
+            renderManagementActions(profile);
+            if (showSales) {
+                addSalesLineChart(storeScope ? "فروش فروشگاه · ۷ روز اخیر" : "روند فروش · ۷ روز اخیر", d.optJSONArray("trend"));
+                View donutCard = dailySalesDonutCard(d.optJSONArray("today_by_payment"), sToday);
+                View topCard = topProductsCard(d.optJSONArray("top_products"));
+                if (donutCard != null && topCard != null) body.addView(Ui.grid2(c, donutCard, topCard));
+                else { if (donutCard != null) body.addView(donutCard); if (topCard != null) body.addView(topCard); }
+                addRecentInvoiceCard(d.optJSONArray("recent_invoices"));
+            }
             // build-486 — «پیشنهادات هوشمند» (همان ردیف‌های ریل تصویر مرجع، دادهٔ واقعی محلی)
             if (storeScope) {
                 LinearLayout sg = Ui.card(c, null);
@@ -639,116 +646,119 @@ public final class Screens {
                 if (added == 0) sg.addView(Ui.muted(c, "هشدار فعالی نیست؛ همه‌چیز مرتب است."));
                 body.addView(sg);
             }
-            // build-488 — اطلاعیه‌های داخلی (§۱۴–۱۷): آخرین اطلاعیه‌های مجاز کاربر؛ آفلاین بی‌صدا مخفی
-            {
-                final LinearLayout an = Ui.card(c, "اطلاعیه‌های فروشگاه");
-                an.addView(Ui.muted(c, "در حال دریافت…"));
-                Api.get("/hr/announcements", o -> {
-                    an.removeAllViews();
-                    JSONArray arr = (JSONArray) o;
-                    if (arr == null || arr.length() == 0) { an.addView(Ui.muted(c, "اطلاعیه‌ای نیست")); return; }
-                    int n = Math.min(3, arr.length());
-                    for (int i = 0; i < n; i++) {
-                        JSONObject r = arr.optJSONObject(i);
-                        an.addView(SugRow("bell", Ui.VIOLET, r.optString("title"), r.optString("body"), () -> {}));
-                    }
-                }, e -> { an.removeAllViews(); an.addView(Ui.muted(c, "در دسترس نیست (آفلاین)")); });
-                body.addView(an);
-            }
-            // build-488 — به‌روزرسانی (§۴۳–۴۴): فقط نسخهٔ اندروید، بدون وابستگی به لایسنس؛ اعلان هر نسخه یک بار
-            {
-                final LinearLayout up = Ui.card(c, "به‌روزرسانی");
-                up.addView(Ui.muted(c, "در حال بررسی نسخه…"));
-                Api.get("/system/update/check?platform=android", o -> {
-                    up.removeAllViews();
-                    JSONObject r = (JSONObject) o;
-                    JSONObject latestObj = r == null ? null : r.optJSONObject("latest");
-                    String latest = latestObj == null ? "" : latestObj.optString("version");
-                    final String link = latestObj == null ? "" : latestObj.optString("html_url", "");
-                    if (r != null && r.optBoolean("update_available")) {
-                        up.addView(SugRow("star", Ui.AMBER, "نسخهٔ جدید در دسترس است", latest.length() > 0 ? "نسخهٔ " + Ui.fa(latest) : "دریافت از مخزن انتشار", () -> { try { a.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(link.length() > 0 ? link : "https://github.com/khajavy8056/Rasasys/releases"))); } catch (Exception ex) { Ui.toast("مرورگر در دسترس نیست"); } }));
-                        up.addView(Ui.muted(c, "نسخهٔ فعلی: " + Ui.fa(r.optString("current_version", ""))));
-                    } else {
-                        up.addView(Ui.kv(c, "وضعیت", "برنامه به‌روز است", Ui.GREEN));
-                    }
-                }, e -> { up.removeAllViews(); up.addView(Ui.muted(c, "بررسی به‌روزرسانی ممکن نشد (آفلاین)")); });
-                body.addView(up);
-            }
             if (storeScope) {
                 // v3.0 — store intelligence: measured profit impact of executed suggestions
                 InsightScreens.dashboardCard(this, body, a);
-            // 3-4 month / profit
-            body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", moneyOrDash(profit, "today"), moneyOrDash(profit, "month"), Ui.VIOLET)));
-            // 5-6 inventory / low stock
-            int low = inv == null ? 0 : inv.optInt("low_stock_count"), none = inv == null ? 0 : inv.optInt("no_stock_count");
-            body.addView(Ui.grid2(c, Ui.kpi(c, "ارزش موجودی", moneyOrDash(inv, "value"), Ui.num(d(inv, "product_count")) + " کالا", Ui.AMBER), Ui.kpi(c, "کمبود / بدون موجودی", Ui.fa(low + " / " + none), null, low + none > 0 ? Ui.RED : Ui.GREEN)));
-            // 7 expiry
-            LinearLayout ex = Ui.card(c, "انقضا"); int te = 0; String[][] EK = {{"EXPIRED", "منقضی"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "۳ روز"}, {"EXPIRING_7_DAYS", "۷ روز"}, {"EXPIRING_30_DAYS", "۳۰ روز"}};
-            LinearLayout er = Ui.row(c); for (String[] k : EK) { int n = exp == null || exp.optJSONArray(k[0]) == null ? 0 : Math.max(exp.optInt("total_" + k[0]), exp.optJSONArray(k[0]).length()); te += n; LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1)); col.addView(Ui.text(c, Ui.fa(String.valueOf(n)), 17, n > 0 ? ("EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER) : Ui.TEXT, true)); col.addView(Ui.muted(c, k[1])); er.addView(col); }
-            ex.addView(er); if (te == 0) ex.addView(Ui.muted(c, "هیچ کالایی نزدیک انقضا نیست")); ex.setOnClickListener(v -> a.open(new AdminScreens.Reports(a, 3), true)); body.addView(ex);
-            // 8 receivables
-            LinearLayout rc = Ui.card(c, "مطالبات و بدهکاران"); rc.addView(Ui.kv(c, "بدهی مشتریان", Ui.money(d(rec, "customer_debt")), Ui.AMBER)); rc.addView(Ui.kv(c, "تعداد بدهکار", Ui.num(d(rec, "debtor_count")), 0)); rc.addView(Ui.kv(c, "فاکتور در انتظار پرداخت", Ui.num(d(rec, "pending_count")) + " · " + Ui.money(d(rec, "pending_amount")), 0)); rc.setOnClickListener(v -> a.route("customers")); body.addView(rc);
-            // 9 top products
-            LinearLayout tp = Ui.card(c, "پرفروش‌ترین کالاها"); JSONArray top = d.optJSONArray("top_products"); if (top == null || top.length() == 0) tp.addView(Ui.muted(c, "هنوز فروشی ثبت نشده")); else for (int i = 0; i < Math.min(5, top.length()); i++) { JSONObject t = top.optJSONObject(i); tp.addView(Ui.kv(c, t.optString("name"), Ui.num(d(t, "qty")) + " · " + Ui.money(d(t, "revenue")), Ui.GOLD)); } body.addView(tp);
-            // build-484 — «توزیع فروش بر اساس دسته‌بندی» (هم‌ارز دونات مرجع؛ روی موبیل نوارهای پاستلی)
-            JSONArray cats = d.optJSONArray("sales_by_category");
-            if (cats != null && cats.length() > 0) {
-                LinearLayout cc = Ui.card(c, "توزیع فروش بر اساس دسته‌بندی");
-                double mx = 1; for (int i = 0; i < cats.length(); i++) mx = Math.max(mx, cats.optJSONObject(i).optDouble("sales"));
-                int[] PAL = {Ui.GREEN, Ui.VIOLET, Ui.AMBER, 0xFF4F8CFF, 0xFFF4657A, Ui.TEAL};
-                for (int i = 0; i < cats.length(); i++) {
-                    JSONObject t = cats.optJSONObject(i);
-                    LinearLayout crow = Ui.col(c); crow.setPadding(0, Ui.dp(4), 0, Ui.dp(4));
-                    crow.addView(Ui.kv(c, s(t, "name", "سایر"), Ui.fa(String.valueOf(t.optDouble("share_pct"))) + "٪ · " + Ui.money(t.optDouble("sales")), PAL[i % PAL.length]));
-                    View track = new View(c); track.setBackground(Ui.rounded(Ui.dark ? 0x22FFFFFF : 0x14000000, 0, 5));
-                    LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(6)); track.setLayoutParams(tl); crow.addView(track);
-                    View fill = new View(c); fill.setBackground(Ui.rounded(PAL[i % PAL.length], 0, 5));
-                    LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(Math.max(Ui.dp(6), (int) (Ui.dp(220) * t.optDouble("sales") / mx)), Ui.dp(6));
-                    fill.setLayoutParams(fl); crow.addView(fill);
-                    cc.addView(crow);
+                // 3-4 month / profit
+                body.addView(Ui.grid2(c, Ui.kpi(c, "فروش ماه", Ui.money(d(sales, "month")), null, Ui.TEAL), Ui.kpi(c, "سود امروز / ماه", moneyOrDash(profit, "today"), moneyOrDash(profit, "month"), Ui.VIOLET)));
+                // 5-6 inventory / low stock
+                int low = inv == null ? 0 : inv.optInt("low_stock_count"), none = inv == null ? 0 : inv.optInt("no_stock_count");
+                body.addView(Ui.grid2(c, Ui.kpi(c, "ارزش موجودی", moneyOrDash(inv, "value"), Ui.num(d(inv, "product_count")) + " کالا", Ui.AMBER), Ui.kpi(c, "کمبود / بدون موجودی", Ui.fa(low + " / " + none), null, low + none > 0 ? Ui.RED : Ui.GREEN)));
+                // 7 expiry
+                LinearLayout ex = Ui.card(c, "انقضا"); int te = 0; String[][] EK = {{"EXPIRED", "منقضی"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "۳ روز"}, {"EXPIRING_7_DAYS", "۷ روز"}, {"EXPIRING_30_DAYS", "۳۰ روز"}};
+                LinearLayout er = Ui.row(c); for (String[] k : EK) { int n = exp == null || exp.optJSONArray(k[0]) == null ? 0 : Math.max(exp.optInt("total_" + k[0]), exp.optJSONArray(k[0]).length()); te += n; LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.CENTER); col.setLayoutParams(Ui.weight(1)); col.addView(Ui.text(c, Ui.fa(String.valueOf(n)), 17, n > 0 ? ("EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER) : Ui.TEXT, true)); col.addView(Ui.muted(c, k[1])); er.addView(col); }
+                ex.addView(er); if (te == 0) ex.addView(Ui.muted(c, "هیچ کالایی نزدیک انقضا نیست")); ex.setOnClickListener(v -> a.open(new AdminScreens.Reports(a, 3), true)); body.addView(ex);
+                // 8 receivables
+                LinearLayout rc = Ui.card(c, "مطالبات و بدهکاران"); rc.addView(Ui.kv(c, "بدهی مشتریان", Ui.money(d(rec, "customer_debt")), Ui.AMBER)); rc.addView(Ui.kv(c, "تعداد بدهکار", Ui.num(d(rec, "debtor_count")), 0)); rc.addView(Ui.kv(c, "فاکتور در انتظار پرداخت", Ui.num(d(rec, "pending_count")) + " · " + Ui.money(d(rec, "pending_amount")), 0)); rc.setOnClickListener(v -> a.route("customers")); body.addView(rc);
+                // build-484 — «توزیع فروش بر اساس دسته‌بندی» (هم‌ارز دونات مرجع؛ روی موبایل نوارهای پاستلی)
+                JSONArray cats = d.optJSONArray("sales_by_category");
+                if (cats != null && cats.length() > 0) {
+                    LinearLayout cc = Ui.card(c, "توزیع فروش بر اساس دسته‌بندی");
+                    double mx = 1; for (int i = 0; i < cats.length(); i++) mx = Math.max(mx, cats.optJSONObject(i).optDouble("sales"));
+                    int[] PAL = {Ui.GREEN, Ui.VIOLET, Ui.AMBER, 0xFF4F8CFF, 0xFFF4657A, Ui.TEAL};
+                    for (int i = 0; i < cats.length(); i++) {
+                        JSONObject t = cats.optJSONObject(i);
+                        LinearLayout crow = Ui.col(c); crow.setPadding(0, Ui.dp(4), 0, Ui.dp(4));
+                        crow.addView(Ui.kv(c, s(t, "name", "سایر"), Ui.fa(String.valueOf(t.optDouble("share_pct"))) + "٪ · " + Ui.money(t.optDouble("sales")), PAL[i % PAL.length]));
+                        View track = new View(c); track.setBackground(Ui.rounded(Ui.dark ? 0x22FFFFFF : 0x14000000, 0, 5));
+                        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(6)); track.setLayoutParams(tl); crow.addView(track);
+                        View fill = new View(c); fill.setBackground(Ui.rounded(PAL[i % PAL.length], 0, 5));
+                        LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(Math.max(Ui.dp(6), (int) (Ui.dp(220) * t.optDouble("sales") / mx)), Ui.dp(6));
+                        fill.setLayoutParams(fl); crow.addView(fill);
+                        cc.addView(crow);
+                    }
+                    body.addView(cc);
                 }
-                body.addView(cc);
-            }
-            }
-            if (showSales) {
-            // 10 trend (7 days, bar chart drawn with views)
-            LinearLayout tr = Ui.card(c, "روند فروش ۷ روز"); JSONArray trend = d.optJSONArray("trend"); if (trend != null && trend.length() > 0) { double mx = 1; for (int i = 0; i < trend.length(); i++) mx = Math.max(mx, d(trend.optJSONObject(i), "sales")); LinearLayout bars = Ui.row(c); bars.setGravity(android.view.Gravity.BOTTOM); bars.setLayoutParams(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(110))); for (int i = 0; i < trend.length(); i++) { JSONObject t = trend.optJSONObject(i); LinearLayout col = Ui.col(c); col.setGravity(android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL); LinearLayout.LayoutParams lp = Ui.weight(1); lp.height = ViewGroup.LayoutParams.MATCH_PARENT; col.setLayoutParams(lp); View bar = new View(c); bar.setBackground(Ui.rounded(Ui.PRIMARY, 0, 4)); bar.setLayoutParams(Ui.lp(Ui.dp(14), Math.max(Ui.dp(3), (int) (Ui.dp(80) * d(t, "sales") / mx)))); col.addView(bar); TextView lb = Ui.muted(c, Ui.fa(t.optString("label").substring(3))); lb.setTextSize(10); col.addView(lb); bars.addView(col); } tr.addView(bars); } body.addView(tr);
-            // 11 recent invoices
-            LinearLayout ri = Ui.card(c, "آخرین فاکتورها"); JSONArray rinv = d.optJSONArray("recent_invoices"); if (rinv == null || rinv.length() == 0) ri.addView(Ui.muted(c, "—")); else for (int i = 0; i < Math.min(5, rinv.length()); i++) { JSONObject t = rinv.optJSONObject(i); ri.addView(Ui.kv(c, Ui.fa(t.optString("invoice_number")) + " · " + Ui.jdate(t.optString("created_at")).substring(11), Ui.money(d(t, "total")), stColor(t.optString("status")))); } ri.setOnClickListener(v -> a.route("invoices")); body.addView(ri);
-            // build-485 — «گزارش فروش روزانه» (همان جدول تصویر مرجع؛ روی گوشی از دادهٔ محلی)
-            JSONArray byPay = d.optJSONArray("today_by_payment");
-            if (byPay != null && byPay.length() > 0) {
-                LinearLayout dp = Ui.card(c, "گزارش فروش روزانه");
-                double tot = 0;
-                for (int i = 0; i < byPay.length(); i++) {
-                    JSONObject t = byPay.optJSONObject(i); tot += t.optDouble("sales");
-                    dp.addView(Ui.kv(c, s(t, "name", "نقدی"), Ui.num(t.optInt("invoice_count")) + " فاکتور · " + Ui.money(t.optDouble("sales")), 0));
+                // build-486 — «وضعیت فروشگاه» (همان کارت حلقه‌های مرجع؛ سه شاخص واقعی)
+                {
+                    LinearLayout sc2 = Ui.card(c, "وضعیت فروشگاه");
+                    double targetDay = d(sales, "month") / 30.0; int goal = targetDay > 0 ? (int) Math.min(100, Math.round(d(sales, "today") * 100 / targetDay)) : 0;
+                    int stockPct = d(inv, "product_count") > 0 ? (int) Math.round((d(inv, "product_count") - d(inv, "no_stock_count")) * 100 / d(inv, "product_count")) : 100;
+                    String sysS = s(sys, "status", "OK");
+                    LinearLayout gr = Ui.row(c);
+                    gr.addView(StatCol("فروش امروز", Ui.fa(String.valueOf(goal)) + "٪", goal >= 50 ? Ui.GREEN : Ui.AMBER));
+                    gr.addView(StatCol("موجودی در قفسه", Ui.fa(String.valueOf(stockPct)) + "٪", stockPct >= 70 ? Ui.GREEN : Ui.RED));
+                    gr.addView(StatCol("سلامت سامانه", sysS, stColor(sysS)));
+                    sc2.addView(gr);
+                    sc2.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور", loc[2] > 0 ? Ui.AMBER : Ui.GREEN));
+                    body.addView(sc2);
                 }
-                dp.addView(Ui.kv(c, "جمع کل", Ui.money(tot), Ui.GOLD));
-                body.addView(dp);
             }
-            }
-            if (storeScope) {
-            // build-486 — «وضعیت فروشگاه» (همان کارت حلقه‌های مرجع؛ سه شاخص واقعی)
-            {
-                LinearLayout sc2 = Ui.card(c, "وضعیت فروشگاه");
-                double targetDay = d(sales, "month") / 30.0; int goal = targetDay > 0 ? (int) Math.min(100, Math.round(d(sales, "today") * 100 / targetDay)) : 0;
-                int stockPct = d(inv, "product_count") > 0 ? (int) Math.round((d(inv, "product_count") - d(inv, "no_stock_count")) * 100 / d(inv, "product_count")) : 100;
-                String sysS = s(sys, "status", "OK");
-                LinearLayout gr = Ui.row(c);
-                gr.addView(StatCol("فروش امروز", Ui.fa(String.valueOf(goal)) + "٪", goal >= 50 ? Ui.GREEN : Ui.AMBER));
-                gr.addView(StatCol("موجودی در قفسه", Ui.fa(String.valueOf(stockPct)) + "٪", stockPct >= 70 ? Ui.GREEN : Ui.RED));
-                gr.addView(StatCol("سلامت سامانه", sysS, stColor(sysS)));
-                sc2.addView(gr);
-                sc2.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور", loc[2] > 0 ? Ui.AMBER : Ui.GREEN));
-                body.addView(sc2);
-            }
-            }
+            addAnnouncementsAndUpdates();
             // 12 system + sms + accounting + pricing conflicts — privileged diagnostics only
             if (can("settings.manage")) {
                 LinearLayout sy = Ui.card(c, "وضعیت سامانه"); sy.addView(Ui.kv(c, "نسخهٔ رایانه", Ui.fa(s(sys, "version")), 0)); sy.addView(Ui.kv(c, "وضعیت", s(sys, "status", "OK"), stColor(s(sys, "status", "OK")))); sy.addView(Ui.kv(c, "فضای آزاد دیسک", Ui.fa(String.valueOf(d(sys, "disk_free_gb"))) + " GB", 0)); sy.addView(Ui.kv(c, "صف همگام‌سازی رایانه", Ui.num(d(sys, "sync_queued")) + " · خطا " + Ui.num(d(sys, "sync_failed")), 0)); sy.addView(Ui.kv(c, "پیامک", (sms != null && sms.optBoolean("configured") ? "فعال" : "پیکربندی‌نشده") + " · در صف " + Ui.num(d(sms, "pending")), 0)); sy.addView(Ui.kv(c, "تعارض قیمت", Ui.num(d(pr, "price_conflict_count")), d(pr, "price_conflict_count") > 0 ? Ui.AMBER : 0)); sy.addView(Ui.kv(c, "صندوق / بانک", Ui.money(d(acc, "cash")) + " / " + Ui.money(d(acc, "bank")), 0)); sy.addView(Ui.kv(c, "بدهی به تأمین‌کننده", Ui.money(d(acc, "payables")), 0)); sy.addView(Ui.kv(c, "این گوشی امروز", Ui.num(loc[0]) + " فاکتور · " + (loc[2] > 0 ? Ui.num(loc[2]) + " در صف" : "همگام"), loc[2] > 0 ? Ui.AMBER : Ui.GREEN)); body.addView(sy);
             }
         }
+        /** build-501 — نمودار خطی روند فروش (همان کارت «فروش فروشگاه» تصویر مرجع) با پرکنندهٔ ملایم. */
+        private void addSalesLineChart(String title, JSONArray trend) {
+            if (trend == null || trend.length() < 2) return;
+            java.util.List<Double> pts = new java.util.ArrayList<>();
+            String[] labels = new String[trend.length()];
+            for (int i = 0; i < trend.length(); i++) {
+                JSONObject t = trend.optJSONObject(i); if (t == null) { pts.add(Double.NaN); labels[i] = null; continue; }
+                pts.add(d(t, "sales"));
+                String label = t.optString("label", t.optString("date"));
+                if (label.length() > 5) label = label.substring(label.length() - 5);
+                labels[i] = i % 2 == 0 || trend.length() <= 4 ? Ui.fa(label) : null;
+            }
+            LinearLayout card = Ui.card(c, title);
+            java.util.List<Chart.Series> ss = new java.util.ArrayList<>();
+            ss.add(new Chart.Series("فروش روزانه", Ui.PRIMARY, Chart.arr(pts), false, true));
+            card.addView(Chart.line(c, ss, labels, null, null, 130));
+            card.addView(Chart.legend(c, ss));
+            body.addView(card);
+        }
+        /** build-501 — کارت دونات «گزارش فروش روزانه» بر حسب روش پرداخت (تصویر مرجع). */
+        private View dailySalesDonutCard(JSONArray byPay, double todayTotal) {
+            if (byPay == null || byPay.length() == 0) return null;
+            LinearLayout card = Ui.card(c, "گزارش فروش روزانه");
+            java.util.List<String> labels = new java.util.ArrayList<>();
+            java.util.List<Double> values = new java.util.ArrayList<>();
+            java.util.List<Integer> colors = new java.util.ArrayList<>();
+            int[] PAL = {Ui.GREEN, Ui.VIOLET, Ui.AMBER, 0xFF4F8CFF, 0xFFF4657A, Ui.TEAL};
+            double tot = 0;
+            for (int i = 0; i < Math.min(6, byPay.length()); i++) {
+                JSONObject t = byPay.optJSONObject(i); if (t == null) continue;
+                double v = Math.max(0, t.optDouble("sales", 0)); tot += v;
+                labels.add(s(t, "name", "نقدی"));
+                values.add(v); colors.add(PAL[i % PAL.length]);
+            }
+            if (values.isEmpty()) return null;
+            String centre = Ui.moneyShort(tot > 0 ? tot : todayTotal);
+            card.addView(Chart.donut(c, labels, values, colors, centre));
+            return card;
+        }
+        /** build-501 — کارت «محبوب‌ترین محصولات» با نوارهای افقی چارت (تصویر مرجع). */
+        private View topProductsCard(JSONArray top) {
+            if (top == null || top.length() == 0) return null;
+            LinearLayout card = Ui.card(c, "محبوب‌ترین محصولات");
+            java.util.List<String> labels = new java.util.ArrayList<>();
+            java.util.List<Double> values = new java.util.ArrayList<>();
+            java.util.List<Integer> colors = new java.util.ArrayList<>();
+            int[] PAL = {Ui.GOLD, Ui.GREEN, Ui.VIOLET, Ui.AMBER, 0xFF4F8CFF};
+            for (int i = 0; i < Math.min(5, top.length()); i++) {
+                JSONObject t = top.optJSONObject(i); if (t == null) continue;
+                labels.add(s(t, "name", "کالا"));
+                values.add(d(t, "qty"));
+                colors.add(PAL[i % PAL.length]);
+            }
+            if (values.isEmpty()) return null;
+            card.addView(Chart.bars(c, labels, values, colors, "عدد فروش"));
+            card.setOnClickListener(v -> a.route("reports"));
+            return card;
+        }
+
     }
 
     /* ---------------- Sync ---------------- */

@@ -535,7 +535,11 @@ public final class Local {
     }
     static boolean offerHasStarted(String value, String now) { return value == null || value.isEmpty() || value.compareTo(now) <= 0; }
     static boolean offerHasEnded(String value, String now) { return value != null && !value.isEmpty() && value.compareTo(now) < 0; }
+    /** build-501 — NaN مصون‌سازی: مقادیر عددی غیرمتناهی (NULL/کلید غایب) صفر می‌شوند تا هرگز به SQLite نرسند. */
+    static double fin(double v) { return Double.isFinite(v) ? v : 0; }
+    static double optFin(JSONObject o, String key, double def) { double v = o.optDouble(key, def); return Double.isFinite(v) ? v : def; }
     static double offerDiscount(String type, double value, double max, double amount) {
+        value = fin(value); max = fin(max); amount = fin(amount);   // build-501 — NaN از ستون‌های NULL دیتابیس هرگز تخفیف NaN نسازد
         double discount = "PERCENT".equalsIgnoreCase(type) ? amount * value / 100.0 : value;
         if (max > 0) discount = Math.min(discount, max);
         discount = Math.min(discount, amount);
@@ -640,10 +644,11 @@ public final class Local {
             if (campaign != null && !"ACTIVE".equals(campaign.optString("status")))
                 return obj("valid", false, "ok", false, "reason", "کمپین این کد فعال نیست");
         }
-        double amount = request.optDouble("amount", request.optDouble("total", request.optDouble("subtotal", 0)));
-        if (amount < coupon.optDouble("min_purchase")) return obj("valid", false, "ok", false, "reason", "حداقل خرید " + Ui.money(coupon.optDouble("min_purchase")));
-        double discount = offerDiscount(coupon.optString("discount_type", "PERCENT"), coupon.optDouble("discount_value"),
-                coupon.optDouble("max_discount"), amount);
+        double amount = optFin(request, "amount", optFin(request, "total", optFin(request, "subtotal", 0)));
+        double minPurchase = optFin(coupon, "min_purchase", 0);
+        if (amount < minPurchase) return obj("valid", false, "ok", false, "reason", "حداقل خرید " + Ui.money(minPurchase));
+        double discount = offerDiscount(coupon.optString("discount_type", "PERCENT"), optFin(coupon, "discount_value", 0),
+                optFin(coupon, "max_discount", 0), amount);
         if (discount <= 0) return obj("valid", false, "ok", false, "reason", "این کد برای این سبد تخفیفی ایجاد نمی‌کند");
         return obj("valid", true, "ok", true, "discount", discount, "code", coupon.optString("code"),
                 "campaign", campaignId > 0 ? campaignId : JSONObject.NULL);
@@ -651,16 +656,16 @@ public final class Local {
     static JSONArray eligibleLocalCampaigns(JSONObject request) throws Exception {
         JSONArray eligible = new JSONArray(), ids = request.optJSONArray("product_ids");
         JSONObject lineAmounts = request.optJSONObject("line_amounts");
-        String now = offerNowUtc(); double amount = request.optDouble("amount", 0); long customerId = request.optLong("customer_id", 0);
+        String now = offerNowUtc(); double amount = optFin(request, "amount", 0); long customerId = request.optLong("customer_id", 0);
         for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' ORDER BY priority ASC,pc_id DESC,id DESC")) {
             boolean localCampaign = campaign.optInt("is_local", 0) == 1;
             if (localCampaign && !Api.standalone()) continue;
             if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) continue;
             if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
-            if (amount <= 0 || amount < campaign.optDouble("min_purchase")) continue;
-            double maximumPurchase = campaign.optDouble("max_purchase", 0);
+            if (amount <= 0 || amount < optFin(campaign, "min_purchase", 0)) continue;
+            double maximumPurchase = optFin(campaign, "max_purchase", 0);
             if (maximumPurchase > 0 && amount > maximumPurchase) continue;
-            if (!campaign.isNull("auto_issue_threshold") && campaign.optDouble("discount_value") == 0) continue;
+            if (!campaign.isNull("auto_issue_threshold") && optFin(campaign, "discount_value", 0) == 0) continue;
             int usageLimit = campaign.isNull("usage_limit") ? Integer.MAX_VALUE : campaign.optInt("usage_limit", Integer.MAX_VALUE);
             if (campaign.optInt("used_count") >= usageLimit) continue;
             double eligibleBase = amount;
@@ -691,13 +696,13 @@ public final class Local {
                 if (used >= customerLimit) continue;
             }
             double discount = offerDiscount(campaign.optString("discount_type", "PERCENT"),
-                    campaign.optDouble("discount_value"), campaign.optDouble("max_discount"), eligibleBase);
-            if (discount <= 0) continue;
+                    optFin(campaign, "discount_value", 0), optFin(campaign, "max_discount", 0), eligibleBase);
+            if (discount <= 0 || !Double.isFinite(discount)) continue;
             eligible.put(obj("campaign_id", campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id"),
                     "name", campaign.optString("name"), "discount", discount,
-                    "discount_type", campaign.optString("discount_type"), "discount_value", campaign.optDouble("discount_value"),
-                    "min_purchase", campaign.optDouble("min_purchase"), "max_purchase", campaign.isNull("max_purchase") ? JSONObject.NULL : campaign.optDouble("max_purchase"),
-                    "max_discount", campaign.isNull("max_discount") ? JSONObject.NULL : campaign.optDouble("max_discount"),
+                    "discount_type", campaign.optString("discount_type"), "discount_value", optFin(campaign, "discount_value", 0),
+                    "min_purchase", optFin(campaign, "min_purchase", 0), "max_purchase", campaign.isNull("max_purchase") ? JSONObject.NULL : optFin(campaign, "max_purchase", 0),
+                    "max_discount", campaign.isNull("max_discount") ? JSONObject.NULL : optFin(campaign, "max_discount", 0),
                     "scope_amount", eligibleBase, "target_type", campaign.optString("target_type", "ALL"),
                     "stackable", campaign.optInt("stackable") == 1, "auto_apply", campaign.optInt("auto_apply") == 1,
                     "priority", campaign.optInt("priority", 3), "_local", localCampaign));
@@ -717,13 +722,13 @@ public final class Local {
             JSONObject lineAmounts = new JSONObject(); double gross = 0, lineDiscount = 0;
             for (int i = 0; items != null && i < items.length(); i++) {
                 JSONObject item = items.optJSONObject(i); if (item == null) continue;
-                long productId = item.optLong("product_id"); double qty = item.optDouble("quantity", 1);
-                double price = item.optDouble("price"), discount = item.optDouble("discount");
+                long productId = item.optLong("product_id"); double qty = fin(item.optDouble("quantity", 1));
+                double price = fin(item.optDouble("price", 0)), discount = Math.max(0, fin(item.optDouble("discount", 0)));
                 gross += qty * price; lineDiscount += discount;
                 if (productId > 0) productIds.put(productId);
                 lineAmounts.put(String.valueOf(productId), lineAmounts.optDouble(String.valueOf(productId)) + qty * price - discount);
             }
-            double invoiceDiscount = b.optDouble("invoice_discount", 0);
+            double invoiceDiscount = fin(b.optDouble("invoice_discount", 0));
             if (invoiceDiscount < 0 || invoiceDiscount > Math.max(0, gross - lineDiscount))
                 throw new Api.ApiError(422, "INVALID_DISCOUNT", "تخفیف فاکتور از مبلغ سبد بیشتر است");
             double baseAmount = Math.max(0, gross - lineDiscount - invoiceDiscount);
@@ -732,7 +737,7 @@ public final class Local {
                 JSONObject couponRequest = new JSONObject(b.toString()); couponRequest.put("amount", baseAmount);
                 JSONObject coupon = validateLocalCoupon(couponRequest);
                 if (!coupon.optBoolean("valid")) throw new Api.ApiError(422, "COUPON_INVALID", coupon.optString("reason", "کوپن معتبر نیست"));
-                couponDiscount = coupon.optDouble("discount"); b.put("coupon_discount", couponDiscount);
+                couponDiscount = fin(coupon.optDouble("discount", 0)); b.put("coupon_discount", couponDiscount);
             }
             long campaignId = b.optLong("campaign_id", 0); double campaignDiscount = 0;
             JSONObject chosenCampaign = null;
@@ -747,17 +752,22 @@ public final class Local {
                 if (chosenCampaign == null) throw new Api.ApiError(422, "CAMPAIGN_INVALID", "جشنواره برای این سبد واجد شرایط نیست");
                 if (couponDiscount > 0 && !chosenCampaign.optBoolean("stackable"))
                     throw new Api.ApiError(422, "CAMPAIGN_NOT_STACKABLE", "این جشنواره با کوپن قابل ترکیب نیست");
-                campaignDiscount = chosenCampaign.optDouble("discount");
+                campaignDiscount = fin(chosenCampaign.optDouble("discount", 0));
                 b.put("campaign_name", chosenCampaign.optString("name")); b.put("campaign_discount", campaignDiscount);
                 b.put("campaign_local", chosenCampaign.optBoolean("_local"));
             }
             double taxable = Math.max(0, baseAmount - couponDiscount - campaignDiscount);
-            double taxRate = b.has("tax_rate") ? b.optDouble("tax_rate") : Double.parseDouble(setting("pos.tax_rate", "0"));
+            double taxRate = b.has("tax_rate") ? fin(b.optDouble("tax_rate", 0)) : 0;
+            try { if (!b.has("tax_rate")) taxRate = fin(Double.parseDouble(setting("pos.tax_rate", "0"))); } catch (NumberFormatException badTax) { taxRate = 0; }
+            if (taxRate < 0) taxRate = 0;
             double tax = Math.floor((taxable * taxRate / 100.0) * 100.0 + 0.5) / 100.0;
             double total = taxable + tax;
             JSONArray pays = b.optJSONArray("payments"); double paid = 0;
-            for (int i = 0; pays != null && i < pays.length(); i++) paid += pays.optJSONObject(i).optDouble("amount");
+            for (int i = 0; pays != null && i < pays.length(); i++) paid += fin(pays.optJSONObject(i).optDouble("amount", 0));
             if (pays != null && Math.abs(paid - total) > 0.01) throw new Api.ApiError(422, "PAYMENT_MISMATCH", "مبلغ پرداخت با جمع فاکتور برابر نیست");
+            // build-501 — گارد نهایی: هرگز مقدار NaN/بی‌نهایت به SQLite (Db.localSale) نمی‌رسد؛
+            // خطای «Forbidden numeric value: NaN» با پیام روشن فارسی جایگزین می‌شود.
+            if (!Double.isFinite(total) || total < 0) throw new Api.ApiError(422, "BAD_TOTAL", "محاسبهٔ مبلغ فاکتور نامعتبر شد؛ سبد را بازبینی و دوباره تلاش کنید");
             b.put("coupon_discount", couponDiscount); b.put("campaign_discount", campaignDiscount);
             b.put("tax", tax); b.put("tax_rate", taxRate);
             String no = Db.localSale(b, total);

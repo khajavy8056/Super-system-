@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,12 +24,25 @@ def _maybe_redact(user: User, payload):
     return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
+def _require_finite(name: str, v: Decimal) -> Decimal:
+    """build-501 — NaN/∞ (از JSON خراب یا کلاینت معیوب) در مبدأ ۴۲۲ می‌شود، نه خطای ۵۰۰.
+    هم‌ارزِ سمت گوشی: «Forbidden numeric value: NaN» دیگر هیچ‌مسیری به دیتابیس ندارد."""
+    if not v.is_finite():
+        raise ValueError(f"{name} must be a finite number")
+    return v
+
+
 class CartLineIn(BaseModel):
     product_id: int
     #: decimal quantities are first-class (12.500 Kg) — §25
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
     batch_id: int | None = None
     discount: Decimal = Field(default=Decimal("0"), ge=0)
+
+    @field_validator("quantity", "discount")
+    @classmethod
+    def _finite_line(cls, v: Decimal, info) -> Decimal:
+        return _require_finite(str(info.field_name), v)
 
 
 class CartIn(BaseModel):
@@ -45,6 +58,11 @@ class CartIn(BaseModel):
 class PaymentIn(BaseModel):
     method: str = "CASH"
     amount: Decimal = Field(ge=0)
+
+    @field_validator("amount")
+    @classmethod
+    def _finite_amount(cls, v: Decimal) -> Decimal:
+        return _require_finite("amount", v)
 
 
 from .customers import norm_phone as _norm_phone
@@ -69,6 +87,11 @@ class CheckoutIn(BaseModel):
     client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
+
+    @field_validator("tax_rate", "invoice_discount")
+    @classmethod
+    def _finite_optional(cls, v: Decimal | None, info) -> Decimal | None:
+        return None if v is None else _require_finite(str(info.field_name), v)
 
 
 # --- Kiosk / lock mode (§7) ---------------------------------------------------
