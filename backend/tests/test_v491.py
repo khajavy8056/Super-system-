@@ -130,5 +130,5 @@ def test_v491_version_pins():
     assert __version__ >= "1.0.491"
     assert build >= 49100
     appjs = io.open(REPO / "frontend/app.js", encoding="utf-8").read()
-    assert "const UI_BUILD = 49" in appjs
-    assert 'state.version || "1.0.49' in appjs
+    assert "const UI_BUILD = 50" in appjs
+    assert 'state.version || "1.0.50' in appjs

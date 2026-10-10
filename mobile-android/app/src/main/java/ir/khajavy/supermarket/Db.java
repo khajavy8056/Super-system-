@@ -597,6 +597,16 @@ public final class Db extends SQLiteOpenHelper {
         }
         d.execSQL("UPDATE local_payroll SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
     }
+    /** build-500 — وضعیت حقوق پس از تأیید/پرداخت (اتصال کارکنان↔حسابداری) به‌روز شود. */
+    public static void markPayrollStatus(long id, String status, String paymentRef) {
+        if (id == 0 || status == null || status.isEmpty()) return;
+        ContentValues cv = new ContentValues();
+        cv.put("status", status);
+        if (paymentRef != null && !paymentRef.isEmpty()) cv.put("payment_ref", paymentRef);
+        cv.put("updated_at", now());
+        w().update("local_payroll", cv, "id=?", new String[]{String.valueOf(id)});
+    }
+
     public static void markAnnouncementSynced(long localId, long remoteId) {
         if (localId == 0 || remoteId <= 0) return;
         kv("hr_announcement_remote_" + localId, String.valueOf(remoteId));

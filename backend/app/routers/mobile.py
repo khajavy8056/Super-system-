@@ -511,10 +511,17 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
                 return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
             if kind == "PAYROLL_APPROVE":
                 res = hr_router.approve_payroll(payroll_id, db=db, user=user)  # type: ignore[arg-type]
-                return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
+                # build-500 — وضعیت نهایی برنگردد، بخش «کارکنان» گوشی برای همیشه
+                # «در انتظار همگام‌سازی» می‌ماند در حالی که حسابداری پرداخت را دیده است.
+                return {"id": op.id, "status": "APPLIED", "result": {
+                    "payroll_id": res.get("id") if isinstance(res, dict) else payroll_id,
+                    "status": res.get("status", "APPROVED") if isinstance(res, dict) else "APPROVED"}}
             if kind == "PAYROLL_PAY":
                 res = hr_router.pay_payroll(payroll_id, db=db, user=user)  # type: ignore[arg-type]
-                return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
+                return {"id": op.id, "status": "APPLIED", "result": {
+                    "payroll_id": res.get("id") if isinstance(res, dict) else payroll_id,
+                    "status": res.get("status", "PAID") if isinstance(res, dict) else "PAID",
+                    "payment_ref": res.get("payment_ref") if isinstance(res, dict) else None}}
         return {"id": op.id, "status": "REJECTED", "error": f"نوع عملیات ناشناخته: {op.type}"}
     except HTTPException as exc:
         db.rollback()

@@ -154,9 +154,9 @@ def test_ui_and_android_pins():
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
     app_js = (root / "frontend" / "app.js").read_text(encoding="utf-8")
-    assert "const UI_BUILD = 49" in app_js
+    assert "const UI_BUILD = 50" in app_js
     assert '["reports", "گزارش‌ها", "reports.view_all"' in app_js
     assert "inventory.adjust||inventory.stocktake" in app_js
     ins = (root / "frontend" / "insights.js").read_text(encoding="utf-8").replace(" ", "")
     assert "prodImgs" in ins and "ins-prod-img" in ins
-    assert "1.0.49" in (root / "backend" / "app" / "__init__.py").read_text(encoding="utf-8")
+    assert "1.0.50" in (root / "backend" / "app" / "__init__.py").read_text(encoding="utf-8")

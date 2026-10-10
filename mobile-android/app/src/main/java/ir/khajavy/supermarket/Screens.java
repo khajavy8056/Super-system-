@@ -159,7 +159,12 @@ public final class Screens {
         protected Screen(AppActivity a) { this.a = a; this.c = a; body = Ui.col(a); body.setPadding(Ui.dp(14), Ui.dp(14), Ui.dp(14), Ui.dp(24)); }
         public abstract String key();
         public abstract String title();
-        public View view() { scroll = Ui.scroll(a, body); return scroll; }
+        public View view() {
+            // build-500 — back() همان نمونهٔ Screen را دوباره نشان می‌دهد؛ بدنه هنوز
+            // فرزند اسکرولر قبلی بود و addView با «child already has a parent» کرش می‌کرد.
+            if (body.getParent() instanceof ViewGroup) ((ViewGroup) body.getParent()).removeView(body);
+            scroll = Ui.scroll(a, body); return scroll;
+        }
         public void load() {}
         public void refresh() { load(); }
         public boolean autoRefresh() { return false; }
@@ -223,21 +228,32 @@ public final class Screens {
             addShiftCard();
             if (can("shifts.view") || can("shifts.manage")) addTeamAttendanceCard();
             final double[] loc = Db.todayStats();
-            final View ph = Ui.empty(c, "در حال دریافت داشبورد…"); body.addView(ph);
             final long gen = ++loadGen;
-            final View[] pend = {ph};
-            // اگر ساخت داده طول بکشد، کارت «صبر کنید» می‌آید ولی تلاش ادامه می‌یابد و هر نتیجه‌ای
-            // (شبکه یا محلی) جای آن را می‌گیرد — هیچ‌وقت صفحهٔ خالی یا ارور بی‌دلیل نمی‌ماند.
-            Api.ui(() -> {
-                if (gen == loadGen && pend[0] != null && pend[0].getParent() == body) {
-                    body.removeView(pend[0]);
-                    // پین تست v33: هرگز اسپینر بی‌پایان — کارت شکست/تلاش دوباره باید وجود داشته باشد
-                    LinearLayout cd = Ui.card(c, "داشبورد آماده نشد");
-                    cd.addView(Ui.body(c, "آماده‌سازی داشبورد طول کشید — داده‌های در دسترس به‌محض آماده شدن نمایش داده می‌شود."));
-                    cd.addView(Ui.primary(c, "تلاش دوباره", this::load));
-                    body.addView(cd); pend[0] = cd;
-                }
-            }, 12000);
+            // build-500 — داشبورد «یک‌پارچه و آنی»: آخرین وضعیت از کشِ همین گوشی بلافاصله
+            // رندر می‌شود (نه هیرو + اسپینر)، سپس دادهٔ تازه در همان‌جا جایگزین می‌شود.
+            final int dataStart = body.getChildCount();
+            boolean paintedCache = false;
+            try {
+                String cached = Db.kv("dash_cache_v1");
+                if (cached != null && cached.length() > 40) { render(new JSONObject(cached), loc); paintedCache = true; }
+            } catch (Throwable ignore) { paintedCache = false; }
+            final View[] pend = {null};
+            if (!paintedCache) {
+                final View ph = Ui.empty(c, "در حال دریافت داشبورد…"); body.addView(ph); pend[0] = ph;
+                // اگر ساخت داده طول بکشد، کارت «صبر کنید» می‌آید ولی تلاش ادامه می‌یابد و هر نتیجه‌ای
+                // (شبکه یا محلی) جای آن را می‌گیرد — هیچ‌وقت صفحهٔ خالی یا ارور بی‌دلیل نمی‌ماند.
+                Api.ui(() -> {
+                    if (gen == loadGen && pend[0] != null && pend[0].getParent() == body) {
+                        body.removeView(pend[0]);
+                        // پین تست v33: هرگز اسپینر بی‌پایان — کارت شکست/تلاش دوباره باید وجود داشته باشد
+                        LinearLayout cd = Ui.card(c, "داشبورد آماده نشد");
+                        cd.addView(Ui.body(c, "آماده‌سازی داشبورد طول کشید — داده‌های در دسترس به‌محض آماده شدن نمایش داده می‌شود."));
+                        cd.addView(Ui.primary(c, "تلاش دوباره", this::load));
+                        body.addView(cd); pend[0] = cd;
+                    }
+                }, 12000);
+            }
+            final boolean fromCache = paintedCache;
             Api.bg(() -> {
                 Object r = null;
                 try { r = Api.call("GET", "/reports/dashboard", null, null); } catch (Throwable ignore) {}
@@ -248,8 +264,11 @@ public final class Screens {
                 Api.ui(() -> {
                     if (gen != loadGen) return;
                     if (pend[0] != null && pend[0].getParent() == body) body.removeView(pend[0]);
+                    // بخش دادهٔ قبلی (رندر کش) برداشته می‌شود تا داشبورد دوتکه نشود
+                    try { while (body.getChildCount() > dataStart) body.removeView(body.getChildAt(body.getChildCount() - 1)); } catch (Throwable ignore) {}
+                    if (j.length() > 0) { try { Db.kv("dash_cache_v1", j.toString()); } catch (Throwable ignore) {} }
                     try { render(j, loc); }
-                    catch (Throwable e) { body.addView(Ui.empty(c, "خطا در نمایش داشبورد: " + e)); }
+                    catch (Throwable e) { if (!fromCache) body.addView(Ui.empty(c, "خطا در نمایش داشبورد: " + e)); }
                 });
             });
         }

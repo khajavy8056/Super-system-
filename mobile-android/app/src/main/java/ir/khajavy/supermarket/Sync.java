@@ -117,6 +117,12 @@ public final class Sync {
                                 } else if (opType.startsWith("PAYROLL_")) {
                                     localId = original.optLong("local_payroll_id"); remoteId = result.optLong("payroll_id", result.optLong("id"));
                                     if (localId != 0 && remoteId > 0) Db.markPayrollSynced(localId, remoteId);
+                                    // build-500 — اتصال کارکنان↔حسابداری: با تأیید/پرداخت روی
+                                    // رایانه، وضعیت «حقوق» در بخش کارکنان همان لحظه درست شود.
+                                    if ("PAYROLL_APPROVE".equals(opType))
+                                        Db.markPayrollStatus(remoteId != 0 ? remoteId : localId, result.optString("status", "APPROVED"), null);
+                                    else if ("PAYROLL_PAY".equals(opType))
+                                        Db.markPayrollStatus(remoteId != 0 ? remoteId : localId, result.optString("status", "PAID"), result.optString("payment_ref", ""));
                                 }
                             }
                             if (result.has("invoice_number") && !src.isNull("local_no")) Db.markInvoiceSynced(src.optString("local_no"), result.optString("invoice_number"));

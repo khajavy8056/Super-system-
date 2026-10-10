@@ -143,7 +143,12 @@ public final class Ui {
     /** card containing a single muted note. */
     public static LinearLayout note(Context c, String title, String text) { LinearLayout l = card(c, title); l.addView(muted(c, text)); return l; }
     public static LinearLayout card(Context c, String title) { LinearLayout l = card(c); if (title != null) l.addView(h2(c, title)); return l; }
-    public static ScrollView scroll(Context c, View inner) { ScrollView s = new ScrollView(c); s.setFillViewport(true); s.setVerticalScrollBarEnabled(false); s.addView(inner); return s; }
+    public static ScrollView scroll(Context c, View inner) {
+        // build-500 — اگر inner هنوز والد داشته باشد addView با IllegalStateException
+        // («child already has a parent») کرش می‌کند؛ همیشه اول جدا می‌شود.
+        if (inner.getParent() instanceof ViewGroup) ((ViewGroup) inner.getParent()).removeView(inner);
+        ScrollView s = new ScrollView(c); s.setFillViewport(true); s.setVerticalScrollBarEnabled(false); s.addView(inner); return s;
+    }
     public static View divider(Context c) { View v = new View(c); v.setBackgroundColor(BORDER); v.setLayoutParams(margin(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)), 0, 8, 0, 8)); return v; }
     public static View space(Context c, int h) { View v = new View(c); v.setLayoutParams(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(h))); return v; }
 

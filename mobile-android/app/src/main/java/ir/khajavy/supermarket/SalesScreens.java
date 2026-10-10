@@ -479,9 +479,11 @@ public final class SalesScreens {
             if (!taxConfigured) { Ui.toast("در حال دریافت نرخ مالیات صندوق؛ چند لحظه دیگر دوباره پرداخت را بزنید"); loadPosTaxConfig(); return; }
             String key = benefitsKey();
             if (!key.equals(resolvedBenefitsKey)) {
-                if (key.equals(pendingBenefitsKey)) Ui.toast("در حال بررسی کوپن و جشنواره؛ لحظه‌ای صبر کنید");
-                else { refreshBenefits(); Ui.toast("پیش از پرداخت، مزایا دوباره بررسی می‌شوند"); }
-                return;
+                if (key.equals(pendingBenefitsKey)) { Ui.toast("در حال بررسی کوپن و جشنواره؛ لحظه‌ای صبر کنید"); return; }
+                // build-500 — خطای بررسی مزایا هرگز نباید فروش را ببندد: سرور همان
+                // لحظه در /pos/checkout کوپن و جشنواره را دوباره راستی‌آزمایی می‌کند؛
+                // جدول پرداخت بی‌درنگ باز می‌شود و بررسی در پس‌زمینه ادامه می‌یابد.
+                refreshBenefits();
             }
             double total;
             try { total = payableTotal(); }
