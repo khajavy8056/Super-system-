@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 import tempfile
 from pathlib import Path
 
@@ -108,3 +109,39 @@ def test_memory_trim_covers_all_levels():
     assert "TRIM_MEMORY_RUNNING_MODERATE" in diag
     assert "TRIM_MEMORY_RUNNING_LOW" in diag
     assert "tileCacheClear" in diag and "onLowMemory" in diag
+
+
+@pytest.mark.timeout(600)   # دو اجرای کامل CLI (تازه + ادامه) ~۳ دقیقه
+def test_cli_fresh_start_with_resume_dir_then_resume_continues(tmp_path):
+    """build-506 — رگرسیون کولب: «شروع تازه» با --resume-dir نباید NO_SIMULATION_TO_RESUME بدهد؛
+    و اجرای دوبارهٔ همان پوشه باید از checkpoint ادامه دهد. دقیقاً همان مسیر سلول ۴ کولب."""
+    import sys
+    sys_path = str(ROOT / "tools")
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import simulate_year
+
+    out = tmp_path / "sim.db.gz"
+    work = tmp_path / "work"
+    work.mkdir()
+    base = ["--seed", "5", "--out", str(out), "--resume-dir", str(work)]
+
+    # ۱) اجرای اول — شروع تازه در پوشهٔ خالی (قبل از رفع: ValueError NO_SIMULATION_TO_RESUME)
+    assert simulate_year.main(["--days", "2", "--per-day", "3"] + base) == 0
+    assert out.is_file() and out.stat().st_size > 0
+
+    # ۲) اجرای دوبارهٔ همان پوشه — ادامه از checkpoint (پایگاه کامل است)
+    assert simulate_year.main(["--days", "2", "--per-day", "3"] + base) == 0
+    assert out.is_file()
+
+    # ۳) پوشهٔ کثیف بدون checkpoint — پیام روشن، نه سکوت
+    dirty = tmp_path / "dirty"
+    dirty.mkdir()
+    (dirty / "stray.txt").write_text("x", encoding="utf-8")
+    try:
+        simulate_year.main(["--days", "1", "--per-day", "2", "--seed", "5",
+                            "--out", str(tmp_path / "x.db.gz"), "--resume-dir", str(dirty)])
+        raised = False
+    except ValueError as exc:
+        raised = "WORK_DIRECTORY_NOT_EMPTY" in str(exc) or "NO_COMPLETED_CHECKPOINT" in str(exc)
+    assert raised, "پوشهٔ کثیف باید خطای روشن بدهد"

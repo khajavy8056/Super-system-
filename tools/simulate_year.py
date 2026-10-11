@@ -124,11 +124,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  روز {done}/{total} — {ev.get('invoices', 0):,} فاکتور ثبت شد", flush=True)
 
     main._last = 0.0
+    # build-506 — شروع تازه در برابر ادامه: «--resume-dir» فقط یعنی پوشهٔ کارِ قابل‌ادامه؛
+    # resume واقعی فقط وقتی که پوشه واقعاً demo.db کامل داشته باشد — وگرنه شروع تازهٔ تمیز.
+    # (رفع خطای NO_SIMULATION_TO_RESUME در اجرای اولِ کولب)
+    resume = bool(args.resume_dir) and (Path(args.resume_dir) / "demo.db").is_file()
     summary = generate_backup_file(
         out, days=args.days, seed=args.seed, invoices_per_day=args.per_day,
         compress=not args.no_compress, full_catalog=not args.no_full_catalog,
         progress=on_progress, event_callback=on_event,
-        work_dir=args.resume_dir, resume=bool(args.resume_dir),
+        work_dir=args.resume_dir, resume=resume,
     )
     bar.close()
 
