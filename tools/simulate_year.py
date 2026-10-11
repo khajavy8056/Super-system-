@@ -155,6 +155,30 @@ def main(argv: list[str] | None = None) -> int:
     ]
     for k, v in rows:
         print(f"  {k:<38} {v}")
+    # ---- build-505: پروفایل عملکرد کارکنان و مراسم مدال ----
+    hr = summary.get("hr") or {}
+    staff = hr.get("staff") or []
+    if staff:
+        print()
+        print("پروفایل عملکرد کارکنان (از دادهٔ واقعی سال):")
+        print(f"  {'کارمند':<24}{'مدال':<4}{'فاکتور':>8}{'فروش (تومان)':>16}{'حضور':>8}{'تأخیر(د)':>10}{'اضافه‌کاری(س)':>14}")
+        for x in staff:
+            print(f"  {x.get('full_name','?'):<24}{x.get('medal','—'):<4}"
+                  f"{x.get('invoices',0):>8,}{x.get('revenue',0):>16,.0f}"
+                  f"{x.get('attendance_days',0):>8}{x.get('late_minutes',0):>10,}"
+                  f"{x.get('overtime_hours',0):>14,.1f}")
+        medals = hr.get("medals") or []
+        if medals:
+            print()
+            print("🎖 مراسم اهدای مدال سال (پاداش از مسیر حقوق ثبت شده است):")
+            for x in medals:
+                print(f"  {x.get('emoji','')} {x.get('full_name','?')} — {x.get('title','')} · پاداش {x.get('bonus',0):,} تومان")
+        print(f"  {'حقوق پرداخت‌شده / در انتظار':<38} {hr.get('payroll_paid',0):,} / {hr.get('payroll_pending',0):,}")
+        print(f"  {'شیفت‌ها / روزهای حضور ثبت‌شده':<38} {hr.get('shifts',0):,} / {hr.get('attendance_days',0):,}")
+        print(f"  {'اطلاعیه‌های داخلی مراسم':<38} {hr.get('announcements',0):,}")
+        if hr.get("errors"):
+            print(f"  {'یادداشت':<38} {len(hr['errors']):,} مورد جزئی رد شد (سال فروشگاه سالم است)")
+
     size = out.stat().st_size if out.exists() else 0
     print(f"  {'حجم فایل پشتیبان':<38} {size / 1048576:.1f} مگابایت")
     print()

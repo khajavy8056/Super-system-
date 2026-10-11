@@ -880,6 +880,15 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             stamp_expiries()
             db.commit()
 
+        # ---- build-505: سال کامل منابع انسانی (شیفت/حضور/حقوق/مدال/اطلاعیه) ----
+        try:
+            stats["hr"] = _simulate_hr_year(db, admin=admin, start=start, end=today, rnd=rnd, stats=stats)
+            db.commit()
+        except Exception:
+            db.rollback()
+            stats["hr"] = {"errors": ["HR_PHASE_FAILED"]}
+            log.exception("demo: HR year failed (the store is still valid without it)")
+
         # ---- v3.5.9: run the model on the FINAL data and actually act on it -----------------
         # A stress file that only *contains* sales proves nothing about the intelligence engine.
         # So: run every generator over the finished year, accept the strongest suggestions through
@@ -1132,6 +1141,216 @@ with file_lock(_cfg["worker_lock"]) if _cfg.get("worker_lock") else nullcontext(
         sys.exit(75)
 print("__DEMO__" + json.dumps(s))
 """
+
+
+def _jalali_periods(start: date, end: date) -> list[str]:
+    """دوره‌های حقوق جلالی («1404-07») برای بازهٔ شبیه‌سازی — به‌ترتیب، بدون تکرار."""
+    from .timeservice import to_jalali
+    periods: list[str] = []
+    seen: set[str] = set()
+    cur = start.replace(day=1)
+    while cur <= end:
+        mid = (cur + timedelta(days=14))
+        jy, jm, _jd = to_jalali(datetime.combine(mid, datetime.min.time()))
+        per = f"{jy}-{jm:02d}"
+        if per not in seen:
+            seen.add(per)
+            periods.append(per)
+        cur = (cur + timedelta(days=32)).replace(day=1)
+    return periods
+
+
+def _simulate_hr_year(db, *, admin, start, end, rnd, stats) -> dict:
+    """build-505 — سال کامل منابع انسانی با سرویس‌های واقعی برنامه:
+    شیفت‌ها و تخصیص دائمی، حضور روزانه (ورود/خروج با ساعت شبیه‌سازی، تأخیر/ترک زودهنگام/غیبت)،
+    حقوق ماهانه (DRAFT → APPROVED → PAID؛ دورهٔ آخر عمداً پرداخت‌نشده می‌ماند)،
+    «مراسم اهدای مدال» بر پایهٔ عملکرد واقعی سال (فروش/انضباط/فوق‌العاده) با پاداش مالی
+    که از مسیر خودِ حقوق (فیلد bonus) ثبت می‌شود، و اطلاعیه‌های داخلی برای مراسم.
+    هر شکستِ جزئی فقط همان تکه را رد می‌کند — سال فروشگاه همیشه سالم می‌ماند."""
+    from ..models.hr import Announcement
+    from ..models import Invoice, ShiftAttendance
+    from . import payroll as pay_svc
+    from . import shifts as shift_svc
+    from .timeservice import to_jalali
+
+    hr: dict = {"shifts": 0, "attendance_days": 0, "late_minutes": 0,
+                "payroll_paid": 0, "payroll_pending": 0, "announcements": 0,
+                "medals": [], "staff": [], "errors": []}
+    staff = [u for u in db.execute(select(User).where(User.is_active.is_(True))).scalars()
+             if u.username != "admin"][:6]
+    if not staff:
+        hr["errors"].append("NO_STAFF")
+        return hr
+
+    # ---- ۱) شیفت‌ها + تخصیص دائمی (الگوی هفتگی، day="") ----
+    specs = [("شیفت صبح — فروشگاه شبیه‌سازی", "07:30", "15:30"),
+             ("شیفت عصر — فروشگاه شبیه‌سازی", "15:00", "22:30"),
+             ("شیفت پیک — فروشگاه شبیه‌سازی", "11:00", "19:00")]
+    shifts = []
+    for nm, st_t, en_t in specs:
+        try:
+            sh = shift_svc.create_shift(db, name=nm, start_time=st_t, end_time=en_t,
+                                        workdays=[], store="فروشگاه شبیه‌سازی‌شده",
+                                        department="صندوق", user=admin)
+            shifts.append(sh)
+            hr["shifts"] += 1
+        except Exception as exc:
+            db.rollback()
+            hr["errors"].append(f"SHIFT:{exc}")
+    for i, u in enumerate(staff):
+        if shifts:
+            try:
+                shift_svc.assign(db, shifts[i % len(shifts)], u.id, actor=admin)
+            except Exception as exc:
+                db.rollback()
+                hr["errors"].append(f"ASSIGN:{u.username}:{exc}")
+
+    def _parse_hhmm(v: str) -> tuple[int, int]:
+        a, b = v.split(":")
+        return int(a), int(b)
+
+    # ---- ۲) حضور روزانه با سرویس واقعی (ورود/خروج روی ساعت شبیه‌سازی) ----
+    if shifts:
+        d = start
+        while d <= end:
+            roster = [u for i, u in enumerate(staff) if (d.toordinal() + i) % 7 != 3]   # چرخش روز استراحت
+            for k, u in enumerate(roster):
+                sh = shifts[k % len(shifts)]
+                h1, m1 = _parse_hhmm(sh.start_time)
+                h2, m2 = _parse_hhmm(sh.end_time)
+                base_in = datetime.combine(d, datetime.min.time()) + timedelta(hours=h1, minutes=m1)
+                base_out = datetime.combine(d, datetime.min.time()) + timedelta(hours=h2, minutes=m2)
+                try:
+                    # سرویس شیفت خودش commit می‌کند؛ SAVEPOINT اینجا معنا ندارد
+                    shift_svc.clock_in(db, u, shift_id=sh.id, day=d.isoformat(),
+                                       at=base_in + timedelta(minutes=rnd.choice([0, 0, 0, 0, 0, 0, 0, 4, 9, 14, 23, 38])))
+                    shift_svc.clock_out(db, u, day=d.isoformat(),
+                                        at=base_out + timedelta(minutes=rnd.choice([0, 0, 0, 0, 10, 25, 45, 75])))
+                    hr["attendance_days"] += 1
+                except Exception as exc:
+                    db.rollback()
+                    hr["errors"].append(f"ATT:{u.username}:{d}:{exc}")
+            d += timedelta(days=1)
+        db.commit()
+
+    # ---- ۳) عملکرد واقعی سال از روی داده (نه عدد ساختگی) ----
+    sales_rows = db.execute(text(
+        "SELECT created_by AS user_id, COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS s "
+        "FROM invoices WHERE status<>'VOID' AND created_by IS NOT NULL GROUP BY created_by")).mappings().all()
+    sales_by_user = {int(r["user_id"]): (int(r["n"]), float(r["s"])) for r in sales_rows}
+    att_rows = db.execute(text(
+        "SELECT user_id, COUNT(*) AS days, COALESCE(SUM(late_minutes),0) AS late, "
+        "COALESCE(SUM(CAST((julianday(ended_at)-julianday(started_at))*24 AS REAL)),0) AS hours "
+        "FROM hr_shift_attendance WHERE started_at IS NOT NULL AND ended_at IS NOT NULL GROUP BY user_id")).mappings().all()
+    att_by_user = {int(r["user_id"]): dict(r) for r in att_rows}
+
+    # ---- ۴) حقوق ماهانه (همهٔ دوره‌ها؛ دورهٔ آخر برای مدال/وضعیت پرداخت‌نشده نگه داشته می‌شود) ----
+    periods = _jalali_periods(start, end)
+    rows_by_user_period: dict[tuple[int, str], object] = {}
+    for pi, per in enumerate(periods):
+        last_of_year = (pi == len(periods) - 1)
+        for si, u in enumerate(staff):
+            base = 12_000_000 + 1_000_000 * si
+            worked = round(rnd.uniform(150, 190), 1)
+            overtime = 0 if si == len(staff) - 1 and rnd.random() < 0.3 else round(rnd.uniform(0, 26), 1)
+            bonus = rnd.choice([0, 0, 0, 500_000, 800_000, 1_500_000])
+            benefits = 1_500_000
+            try:
+                # سرویس حقوق خودش commit می‌کند؛ SAVEPOINT اینجا معنا ندارد
+                row = pay_svc.create_entry(
+                    db, user_id=u.id, period=per, user=admin,
+                    base_salary=base, hourly_pay=round(base / 176 / 1000) * 1000,
+                    worked_hours=worked, overtime_hours=overtime,
+                    bonus=bonus, benefits=benefits, deductions=0, penalty=0,
+                    note="دورهٔ شبیه‌سازی‌شدهٔ فروشگاه")
+                if not last_of_year:
+                    pay_svc.approve(db, row)
+                    pay_svc.pay(db, row, user=admin)
+                    hr["payroll_paid"] += 1
+                else:
+                    hr["payroll_pending"] += 1
+                rows_by_user_period[(u.id, per)] = row
+            except Exception as exc:
+                db.rollback()
+                hr["errors"].append(f"PAYROLL:{u.username}:{per}:{exc}")
+        db.commit()
+    last_period = periods[-1] if periods else None
+
+    # ---- ۵) مراسم اهدای مدال — بر پایهٔ عملکرد واقعی سال، با پاداش مالی از مسیر حقوق ----
+    def _metric(u):
+        n, rev = sales_by_user.get(u.id, (0, 0.0))
+        a = att_by_user.get(u.id, {})
+        return {"user": u, "invoices": n, "revenue": rev,
+                "days": int(a.get("days", 0)), "late": int(a.get("late", 0)),
+                "hours": float(a.get("hours", 0.0)),
+                "overtime": round(float(a.get("hours", 0.0)) - 8.0 * int(a.get("days", 0)), 1)}
+
+    board = sorted((_metric(u) for u in staff), key=lambda m: m["revenue"], reverse=True)
+    medals: dict[int, dict] = {}
+    RANK = [("🥇", "مدال طلای فروش سال", 5_000_000), ("🥈", "مدال نقرهٔ فروش سال", 3_000_000),
+            ("🥉", "مدال برنز فروش سال", 2_000_000)]
+    for i, m in enumerate(board[:3]):
+        emoji, title, bonus = RANK[i]
+        medals[m["user"].id] = {"emoji": emoji, "title": title, "bonus": bonus, "m": m}
+    with_life = [m for m in board if m["days"] > 0]
+    if with_life:
+        punct = min(with_life, key=lambda m: m["late"])
+        if punct["user"].id not in medals:
+            medals[punct["user"].id] = {"emoji": "⏱", "title": "مدال منضبط‌ترین سال", "bonus": 1_000_000, "m": punct}
+    if board:
+        tireless = max(board, key=lambda m: max(0.0, m["overtime"]))
+        if tireless["user"].id not in medals:
+            medals[tireless["user"].id] = {"emoji": "🌟", "title": "مدال پرتلاش‌ترین سال", "bonus": 1_000_000, "m": tireless}
+
+    for uid, medal in medals.items():
+        m = medal["m"]; u = m["user"]
+        row = rows_by_user_period.get((uid, last_period)) if last_period else None
+        try:
+            if row is not None:
+                pay_svc.update_entry(db, row, bonus=float((row.bonus or 0)) + medal["bonus"],
+                                     note=f"پاداش {medal['title']} {medal['emoji']}")
+                pay_svc.approve(db, row)   # دورهٔ آخر تأیید می‌شود ولی عمداً پرداخت‌نشده می‌ماند
+            hr["medals"].append({"username": u.username, "full_name": u.full_name,
+                                 "emoji": medal["emoji"], "title": medal["title"],
+                                 "bonus": medal["bonus"],
+                                 "invoices": m["invoices"], "revenue": round(m["revenue"]),
+                                 "attendance_days": m["days"], "late_minutes": m["late"],
+                                 "overtime_hours": max(0.0, m["overtime"])})
+        except Exception as exc:
+            db.rollback()
+            hr["errors"].append(f"MEDAL:{u.username}:{exc}")
+    db.commit()
+
+    # ---- ۶) اطلاعیه‌های مراسم (مثل اعلان واقعی مدیر در برنامه) ----
+    ceremony_time = datetime.combine(end, datetime.min.time()) + timedelta(hours=10)
+    try:
+        lines = [f"{medal['emoji']} {medal['full_name']} — {medal['title']} · پاداش {medal['bonus']:,} تومان"
+                 for medal in hr["medals"]]
+        ann = Announcement(title="🎖 مراسم اهدای مدال سال فروشگاه",
+                           body="به پاس یک سال تلاش:\n" + "\n".join(lines),
+                           created_by=admin.id, status="PUBLISHED", priority=2,
+                           target_kind="ALL")
+        db.add(ann)
+        db.flush()
+        _fix_created(db, "announcements", [ann.id], ceremony_time)
+        hr["announcements"] += 1
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        hr["errors"].append(f"ANNOUNCE:{exc}")
+
+    # ---- ۷) پروفایل عملکرد هر کارمند (در خلاصهٔ ماشین‌خوان شبیه‌سازی) ----
+    for m in board:
+        medal = medals.get(m["user"].id) or {}
+        hr["staff"].append({"username": m["user"].username, "full_name": m["user"].full_name,
+                            "medal": medal.get("emoji", "—"), "medal_title": medal.get("title", ""),
+                            "medal_bonus": medal.get("bonus", 0),
+                            "invoices": m["invoices"], "revenue": round(m["revenue"]),
+                            "attendance_days": m["days"], "late_minutes": m["late"],
+                            "worked_hours": round(m["hours"], 1),
+                            "overtime_hours": max(0.0, m["overtime"])})
+    hr["late_minutes"] = sum(int(a.get("late", 0)) for a in att_by_user.values())
+    return hr
 
 
 def generate_backup_file(path, *, days: int = 365, seed: int = 1404,
