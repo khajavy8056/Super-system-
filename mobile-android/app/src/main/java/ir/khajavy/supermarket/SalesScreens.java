@@ -564,11 +564,14 @@ public final class SalesScreens {
                 Ui.done(a, "فروش ثبت شد", "فاکتور " + Ui.fa(no) + " · " + Ui.money(total)
                         + (issuedCouponCodes.isEmpty() ? "" : "\nکد تخفیف خرید بعدی: " + issuedCouponCodes), null);
             } catch (Exception e) {
-                // build-501 — پیام خام org.json («Forbidden numeric value») به کاربر نمایش داده نمی‌شود
+                // build-503 — پیام خطا «شناسنامه» دارد: شمارهٔ نسخهٔ دقیق + علت فنی واقعی.
+                // هدف: هر گزارش کاربر در یک نگاه قابل ریشه‌یابی باشد (نه پیام‌های مبهمِ تکرارشونده).
                 String m = String.valueOf(e.getMessage());
-                if (m.contains("Forbidden numeric") || m.contains("NaN")) Ui.toast("ثبت فروش ناموفق: مبلغی در سبد نامعتبر است — سطرها را بازبینی کنید");
-                else if (m.contains("invalid POS tax")) Ui.toast("نرخ مالیات صندوق نامعتبر است — از تنظیمات صندوق اصلاح کنید");
-                else Ui.toast("خطا: " + m);
+                android.util.Log.e("POS", "checkout failed", e);
+                String detail = e.getClass().getSimpleName() + ": " + m;
+                if (m.contains("invalid POS tax")) Ui.toast("نرخ مالیات صندوق نامعتبر است — از تنظیمات صندوق اصلاح کنید [" + Version.NAME + "]");
+                else if (m.contains("Forbidden numeric") || m.contains("NaN")) Ui.toast("ثبت فروش ناموفق [" + Version.NAME + "]: مقدار عددی نامعتبر (" + detail + ")");
+                else Ui.toast("ثبت فروش ناموفق [" + Version.NAME + "]: " + detail);
             }
         }
     }
