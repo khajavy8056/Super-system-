@@ -66,7 +66,12 @@ public final class Local {
             }
         } catch (Api.ApiError e) { throw e;
         } catch (OutOfMemoryError e) { throw new Api.ApiError(500, "LOCAL", "حافظهٔ گوشی برای این گزارش کافی نبود — بازهٔ کوتاه‌تری انتخاب کنید");   // v3.3: never crash the app
-        } catch (Throwable e) { throw new Api.ApiError(500, "LOCAL", "خطای داخلی گوشی: " + e.getMessage()); }
+        } catch (Throwable e) {
+            // build-504 — شناسنامهٔ دقیق: کلاس استثنا + فایل/خطِ مبدأ در خود پیام؛ پایان حدس‌زدن
+            StackTraceElement top = e.getStackTrace() != null && e.getStackTrace().length > 0 ? e.getStackTrace()[0] : null;
+            String where = top == null ? "" : " @ " + top.getClassName().substring(top.getClassName().lastIndexOf('.') + 1) + ":" + top.getLineNumber();
+            throw new Api.ApiError(500, "LOCAL", "خطای داخلی گوشی: " + e.getMessage() + where);
+        }
         throw new Api.ApiError(404, "NOT_FOUND", "این بخش روی گوشی در دسترس نیست: " + path);
     }
 
@@ -748,60 +753,91 @@ public final class Local {
         if ("batch-options".equals(seg[1])) { JSONObject p=Db.sellableProductById(Long.parseLong(seg[2])); if(p==null) throw new Api.ApiError(404,"PRODUCT_NOT_FOUND","کالا موجود یا فعال نیست"); return obj("product_id",p.optLong("id"),"product_name",p.optString("name"),"options",p.optJSONArray("batches")); }
         if ("search".equals(seg[1])) { JSONArray a = new JSONArray(); for (JSONObject p : Db.searchProducts(q.optString("q"), q.optInt("limit", 8))) a.put(p); return obj("items", a); }
         if ("checkout".equals(seg[1])) {
-            JSONArray items = b.optJSONArray("items"), productIds = new JSONArray();
-            JSONObject lineAmounts = new JSONObject(); double gross = 0, lineDiscount = 0;
-            for (int i = 0; items != null && i < items.length(); i++) {
+            // build-504 — بازسازی ساختاری ثبت فروش در ۵ فاز مستقل:
+            //   ۰) پاک‌سازی عمیق بار؛ ۱) محاسبهٔ خالص؛ ۲) راستی‌آزمایی قاعده‌ای مزایا (خطای فنی ≠ انسداد)؛
+            //   ۳) نوشتن؛ ۴) ساخت پاسخ. «ثبت فروش» فقط به فاز ۳ وابسته است — نه به JSON‌سازی.
+            final JSONObject safe = sanitizePayload(b);
+            JSONArray items = safe.optJSONArray("items");
+            if (items == null || items.length() == 0) throw new Api.ApiError(422, "EMPTY_CART", "سبد فروش خالی است");
+            // ---- فاز ۱: محاسبهٔ خالص (بدون عملیات JSON که بتواند خطای عددی بدهد) ----
+            double gross = 0, lineDiscount = 0;
+            JSONArray productIds = new JSONArray();
+            JSONObject lineAmounts = new JSONObject();
+            for (int i = 0; i < items.length(); i++) {
                 JSONObject item = items.optJSONObject(i); if (item == null) continue;
-                long productId = item.optLong("product_id"); double qty = fin(item.optDouble("quantity", 1));
-                double price = fin(item.optDouble("price", 0)), discount = Math.max(0, fin(item.optDouble("discount", 0)));
+                long productId = item.optLong("product_id");
+                double qty = Math.max(0, fin(item.optDouble("quantity", 1)));
+                double price = Math.max(0, fin(item.optDouble("price", 0)));
+                double discount = Math.max(0, fin(item.optDouble("discount", 0)));
                 gross += qty * price; lineDiscount += discount;
-                if (productId > 0) productIds.put(productId);
-                lineAmounts.put(String.valueOf(productId), lineAmounts.optDouble(String.valueOf(productId)) + qty * price - discount);
+                item.put("quantity", qty); item.put("price", price); item.put("discount", discount);   // نرمال‌سازی خودِ ردیف
+                if (productId > 0) { productIds.put(productId); lineAmounts.put(String.valueOf(productId), lineAmounts.optDouble(String.valueOf(productId), 0) + qty * price - discount); }
             }
-            double invoiceDiscount = fin(b.optDouble("invoice_discount", 0));
-            if (invoiceDiscount < 0 || invoiceDiscount > Math.max(0, gross - lineDiscount))
-                throw new Api.ApiError(422, "INVALID_DISCOUNT", "تخفیف فاکتور از مبلغ سبد بیشتر است");
+            double invoiceDiscount = Math.max(0, fin(safe.optDouble("invoice_discount", 0)));
+            if (invoiceDiscount > Math.max(0, gross - lineDiscount)) throw new Api.ApiError(422, "INVALID_DISCOUNT", "تخفیف فاکتور از مبلغ سبد بیشتر است");
             double baseAmount = Math.max(0, gross - lineDiscount - invoiceDiscount);
+            // ---- فاز ۲: راستی‌آزمایی قاعده‌ای کوپن/جشنواره ----
+            // خطای «قاعده‌ای» (کوپن نامعتبر و…) واقعی و قابل نمایش است؛ اما خطای «فنی»
+            // (هر Exception دیگر) هرگز فروش را نمی‌بندد — سرور در همگام‌سازی دوباره می‌سنجد.
             double couponDiscount = 0;
-            if (!b.optString("coupon_code").isEmpty()) {
-                JSONObject couponRequest = new JSONObject(b.toString()); couponRequest.put("amount", baseAmount);
-                JSONObject coupon = validateLocalCoupon(couponRequest);
-                if (!coupon.optBoolean("valid")) throw new Api.ApiError(422, "COUPON_INVALID", coupon.optString("reason", "کوپن معتبر نیست"));
-                couponDiscount = fin(coupon.optDouble("discount", 0)); b.put("coupon_discount", couponDiscount);
-            }
-            long campaignId = b.optLong("campaign_id", 0); double campaignDiscount = 0;
-            JSONObject chosenCampaign = null;
-            if (campaignId > 0) {
-                JSONObject eligibility = new JSONObject(); eligibility.put("amount", baseAmount); eligibility.put("product_ids", productIds);
-                eligibility.put("line_amounts", lineAmounts); eligibility.put("customer_id", b.optLong("customer_id", 0));
-                JSONArray eligible = eligibleLocalCampaigns(eligibility);
-                for (int i = 0; i < eligible.length(); i++) {
-                    JSONObject candidate = eligible.optJSONObject(i);
-                    if (candidate != null && candidate.optLong("campaign_id") == campaignId) { chosenCampaign = candidate; break; }
+            if (!safe.optString("coupon_code").isEmpty()) {
+                try {
+                    JSONObject couponRequest = new JSONObject(safe.toString());
+                    couponRequest.put("amount", baseAmount);
+                    JSONObject coupon = validateLocalCoupon(couponRequest);
+                    if (!coupon.optBoolean("valid")) throw new Api.ApiError(422, "COUPON_INVALID", coupon.optString("reason", "کوپن معتبر نیست"));
+                    couponDiscount = fin(coupon.optDouble("discount", 0));
+                    safe.put("coupon_discount", couponDiscount);
+                } catch (Api.ApiError business) { throw business;
+                } catch (Throwable techCoupon) {
+                    android.util.Log.w("Local", "coupon revalidation skipped", techCoupon);
+                    // اعتماد به محاسبهٔ خودِ صندوق تا جمع فاکتور با مبلغ پرداخت هم‌خوان بماند
+                    couponDiscount = Math.max(0, fin(safe.optDouble("coupon_discount", 0)));
                 }
-                if (chosenCampaign == null) throw new Api.ApiError(422, "CAMPAIGN_INVALID", "جشنواره برای این سبد واجد شرایط نیست");
-                if (couponDiscount > 0 && !chosenCampaign.optBoolean("stackable"))
-                    throw new Api.ApiError(422, "CAMPAIGN_NOT_STACKABLE", "این جشنواره با کوپن قابل ترکیب نیست");
-                campaignDiscount = fin(chosenCampaign.optDouble("discount", 0));
-                b.put("campaign_name", chosenCampaign.optString("name")); b.put("campaign_discount", campaignDiscount);
-                b.put("campaign_local", chosenCampaign.optBoolean("_local"));
+            }
+            double campaignDiscount = 0;
+            long campaignId = safe.optLong("campaign_id", 0);
+            if (campaignId > 0) {
+                try {
+                    JSONObject eligibility = new JSONObject(); eligibility.put("amount", baseAmount); eligibility.put("product_ids", productIds);
+                    eligibility.put("line_amounts", lineAmounts); eligibility.put("customer_id", safe.optLong("customer_id", 0));
+                    JSONArray eligible = eligibleLocalCampaigns(eligibility);
+                    JSONObject chosenCampaign = null;
+                    for (int i = 0; i < eligible.length(); i++) {
+                        JSONObject candidate = eligible.optJSONObject(i);
+                        if (candidate != null && candidate.optLong("campaign_id") == campaignId) { chosenCampaign = candidate; break; }
+                    }
+                    if (chosenCampaign == null) throw new Api.ApiError(422, "CAMPAIGN_INVALID", "جشنواره برای این سبد واجد شرایط نیست");
+                    if (couponDiscount > 0 && !chosenCampaign.optBoolean("stackable"))
+                        throw new Api.ApiError(422, "CAMPAIGN_NOT_STACKABLE", "این جشنواره با کوپن قابل ترکیب نیست");
+                    campaignDiscount = fin(chosenCampaign.optDouble("discount", 0));
+                    safe.put("campaign_name", chosenCampaign.optString("name")); safe.put("campaign_discount", campaignDiscount);
+                    safe.put("campaign_local", chosenCampaign.optBoolean("_local"));
+                } catch (Api.ApiError business) { throw business;
+                } catch (Throwable techCampaign) {
+                    android.util.Log.w("Local", "campaign revalidation skipped", techCampaign);
+                    campaignDiscount = Math.max(0, fin(safe.optDouble("campaign_discount", 0)));
+                }
             }
             double taxable = Math.max(0, baseAmount - couponDiscount - campaignDiscount);
-            double taxRate = b.has("tax_rate") ? fin(b.optDouble("tax_rate", 0)) : 0;
-            try { if (!b.has("tax_rate")) taxRate = fin(Double.parseDouble(setting("pos.tax_rate", "0"))); } catch (NumberFormatException badTax) { taxRate = 0; }
+            double taxRate = 0;
+            try { taxRate = safe.has("tax_rate") ? fin(safe.optDouble("tax_rate", 0)) : fin(Double.parseDouble(setting("pos.tax_rate", "0"))); } catch (NumberFormatException badTax) { taxRate = 0; }
             if (taxRate < 0) taxRate = 0;
             double tax = Math.floor((taxable * taxRate / 100.0) * 100.0 + 0.5) / 100.0;
             double total = taxable + tax;
-            JSONArray pays = b.optJSONArray("payments"); double paid = 0;
+            JSONArray pays = safe.optJSONArray("payments"); double paid = 0;
             for (int i = 0; pays != null && i < pays.length(); i++) paid += fin(pays.optJSONObject(i).optDouble("amount", 0));
             if (pays != null && Math.abs(paid - total) > 0.01) throw new Api.ApiError(422, "PAYMENT_MISMATCH", "مبلغ پرداخت با جمع فاکتور برابر نیست");
-            // build-501 — گارد نهایی: هرگز مقدار NaN/بی‌نهایت به SQLite (Db.localSale) نمی‌رسد؛
-            // خطای «Forbidden numeric value: NaN» با پیام روشن فارسی جایگزین می‌شود.
             if (!Double.isFinite(total) || total < 0) throw new Api.ApiError(422, "BAD_TOTAL", "محاسبهٔ مبلغ فاکتور نامعتبر شد؛ سبد را بازبینی و دوباره تلاش کنید");
-            b.put("coupon_discount", couponDiscount); b.put("campaign_discount", campaignDiscount);
-            b.put("tax", tax); b.put("tax_rate", taxRate);
-            String no = Db.localSale(b, total);
-            return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no));
+            safe.put("tax", tax); safe.put("tax_rate", taxRate);
+            // ---- فاز ۳: نوشتن — تنها نقطه‌ای که شکستش یعنی مشکل واقعی دیتابیس ----
+            String no;
+            try { no = Db.localSale(safe, total); }
+            catch (Api.ApiError business) { throw business; }
+            catch (Throwable writeFail) { android.util.Log.e("Local", "sale write failed", writeFail); throw new Api.ApiError(500, "SALE_WRITE", "نوشتن فروش در حافظهٔ گوشی ناموفق بود: " + writeFail.getClass().getSimpleName()); }
+            // ---- فاز ۴: پاسخ — فاکتور ثبت شده؛ خرابی JSON‌سازی پاسخ نباید آن را بکشد ----
+            try { return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no)); }
+            catch (Throwable outFail) { android.util.Log.w("Local", "invoiceOut degraded response", outFail); return obj("local_no", no, "invoice_number", no, "local", true); }
         }
         if ("kiosk".equals(seg[1])) {
             JSONObject config = obj("shortcut", "", "enabled", false);
@@ -1415,7 +1451,8 @@ public final class Local {
     static String[] args(Object... a) { String[] s = new String[a.length]; for (int i = 0; i < a.length; i++) s[i] = a[i] == null ? null : String.valueOf(a[i]); return s; }
     public static List<JSONObject> rows(String sql, Object... a) {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = Db.db().rawQuery(sql, args(a))) { String[] cols = c.getColumnNames(); while (c.moveToNext()) { JSONObject o = new JSONObject(); for (int i = 0; i < cols.length; i++) { try { switch (c.getType(i)) { case Cursor.FIELD_TYPE_NULL: o.put(cols[i], JSONObject.NULL); break; case Cursor.FIELD_TYPE_INTEGER: o.put(cols[i], c.getLong(i)); break; case Cursor.FIELD_TYPE_FLOAT: o.put(cols[i], c.getDouble(i)); break; default: o.put(cols[i], c.getString(i)); } } catch (Exception ignore) {} } out.add(o); } }
+        try (Cursor c = Db.db().rawQuery(sql, args(a))) { String[] cols = c.getColumnNames(); while (c.moveToNext()) { JSONObject o = new JSONObject(); for (int i = 0; i < cols.length; i++) { try { switch (c.getType(i)) { case Cursor.FIELD_TYPE_NULL: o.put(cols[i], JSONObject.NULL); break; case Cursor.FIELD_TYPE_INTEGER: o.put(cols[i], c.getLong(i)); break; case Cursor.FIELD_TYPE_FLOAT: double dv = c.getDouble(i); o.put(cols[i], Double.isFinite(dv) ? dv : 0); break;   // build-504 — سلول REAL نامعتبر (NaN/∞ قدیمی) هرگز به JSON موتور نمی‌رود
+                default: o.put(cols[i], c.getString(i)); } } catch (Exception ignore) {} } out.add(o); } }
         catch (Exception e) { android.util.Log.w("Local", "sql: " + sql + " → " + e); }
         return out;
     }
