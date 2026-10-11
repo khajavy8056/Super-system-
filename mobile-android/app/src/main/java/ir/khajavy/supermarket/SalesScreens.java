@@ -134,13 +134,13 @@ public final class SalesScreens {
             JSONObject b = batch != null ? batch : bs.optJSONObject(0);
             long pid = p.optLong("product_id", p.optLong("id")), bid = b.optLong("batch_id", b.optLong("id"));
             Sfx.play("add");
-            for (JSONObject l : cart) if (l.optLong("product_id") == pid && l.optLong("batch_id") == bid) { try { l.put("quantity", l.optDouble("quantity") + 1); } catch (Exception ignore) {} renderCart(); return; }
+            for (JSONObject l : cart) if (l.optLong("product_id") == pid && l.optLong("batch_id") == bid) { try { l.put("quantity", l.optDouble("quantity", 0) + 1); } catch (Exception ignore) {} renderCart(); return; }
             try { JSONObject l = new JSONObject(); l.put("product_id", pid); l.put("name", p.optString("name")); l.put("barcode", p.optString("barcode")); l.put("batch_id", bid); l.put("batch_number", b.optString("batch_number")); l.put("quantity", 1); l.put("price", b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))); l.put("discount", 0); l.put("avail", b.optDouble("current_qty", 0)); l.put("expiry", b.isNull("expiry_date") ? "" : b.optString("expiry_date")); cart.add(0, l); } catch (Exception ignore) {}
             renderCart();
         }
         void chooseBatch(JSONObject p, JSONArray bs) {
             LinearLayout l = Ui.col(c); l.addView(Ui.muted(c, "چند بچ با قیمت/انقضای متفاوت موجود است. بچ پیشنهادی (FEFO) بالاست.")); Dialog[] d = new Dialog[1];
-            Ui.paged(l, bs, 50, b -> Ui.item(c, Ui.money(b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))) + (b.optBoolean("is_recommended") ? "  ★ پیشنهادی" : ""), "بچ " + Ui.fa(b.optString("batch_number")) + " · موجودی " + Ui.num(b.optDouble("current_qty")) + (b.isNull("expiry_date") ? "" : " · انقضا " + Ui.jdate(b.optString("expiry_date"))), null, 0, () -> { d[0].dismiss(); add(p, b); }));
+            Ui.paged(l, bs, 50, b -> Ui.item(c, Ui.money(b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))) + (b.optBoolean("is_recommended") ? "  ★ پیشنهادی" : ""), "بچ " + Ui.fa(b.optString("batch_number")) + " · موجودی " + Ui.num(b.optDouble("current_qty", 0)) + (b.isNull("expiry_date") ? "" : " · انقضا " + Ui.jdate(b.optString("expiry_date"))), null, 0, () -> { d[0].dismiss(); add(p, b); }));
             d[0] = Ui.sheet(c, p.optString("name"), l);
         }
         /* ---- v4.7.0: POS suggestions (both platforms, owner's rule) ---- */
@@ -234,7 +234,7 @@ public final class SalesScreens {
         }
         double amountBeforeBenefits() {
             double amount = 0;
-            for (JSONObject line : cart) amount += line.optDouble("quantity") * line.optDouble("price") - line.optDouble("discount");
+            for (JSONObject line : cart) amount += line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
             return Math.max(0, amount - invoiceDiscount);
         }
         JSONObject campaignRequest() throws Exception {
@@ -243,7 +243,7 @@ public final class SalesScreens {
                 long productId = line.optLong("product_id");
                 if (productId > 0) productIds.put(productId);
                 String key = String.valueOf(productId);
-                double lineAmount = line.optDouble("quantity") * line.optDouble("price") - line.optDouble("discount");
+                double lineAmount = line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
                 lineAmounts.put(key, lineAmounts.optDouble(key) + lineAmount);
             }
             request.put("amount", amountBeforeBenefits()); request.put("product_ids", productIds);
@@ -256,7 +256,7 @@ public final class SalesScreens {
             key.append(customer == null ? 0 : customer.optLong("id")).append('|').append(coupon == null ? "" : coupon).append('|')
                     .append(campaign == null ? 0 : campaign.optLong("campaign_id")).append('|').append(invoiceDiscount);
             for (JSONObject line : cart) key.append('|').append(line.optLong("product_id")).append(':').append(line.optLong("batch_id"))
-                    .append(':').append(line.optDouble("quantity")).append(':').append(line.optDouble("price")).append(':').append(line.optDouble("discount"));
+                    .append(':').append(line.optDouble("quantity", 0)).append(':').append(line.optDouble("price", 0)).append(':').append(line.optDouble("discount", 0));
             return key.toString();
         }
         void requestBenefitData(String path, JSONObject request, Api.Cb<Object> ok, Api.ErrCb error) {
@@ -352,7 +352,7 @@ public final class SalesScreens {
                 LinearLayout r2 = Ui.row(c); r2.setPadding(0, Ui.dp(4), 0, 0);
                 r2.addView(qbtn("−", () -> { double nq = q - 1; if (nq <= 0) cart.remove(l); else set(l, "quantity", nq); renderCart(); }));
                 TextView qt = Ui.text(c, Ui.num(q), 15, Ui.TEXT, true); qt.setGravity(Gravity.CENTER); qt.setMinWidth(Ui.dp(44)); qt.setOnClickListener(v -> Ui.prompt(c, "تعداد / مقدار", "مثلاً 2 یا 1.5 (کیلوگرم)", true, s -> { try { double nq = Double.parseDouble(Db.norm(s)); if (nq > 0) { set(l, "quantity", nq); renderCart(); } } catch (Exception ignore) {} })); r2.addView(qt);
-                r2.addView(qbtn("+", () -> { if (q + 1 > l.optDouble("avail", 1e9) && l.optDouble("avail", 0) > 0) Ui.toast("بیش از موجودی بچ (" + Ui.num(l.optDouble("avail")) + ")"); set(l, "quantity", q + 1); renderCart(); }));
+                r2.addView(qbtn("+", () -> { if (q + 1 > l.optDouble("avail", 1e9) && l.optDouble("avail", 0) > 0) Ui.toast("بیش از موجودی بچ (" + Ui.num(l.optDouble("avail", 0)) + ")"); set(l, "quantity", q + 1); renderCart(); }));
                 View sp = new View(c); sp.setLayoutParams(Ui.weight(1)); r2.addView(sp);
                 r2.addView(Ui.small(c, "تخفیف", () -> Ui.prompt(c, "تخفیف این ردیف (مبلغ)", "0", true, s -> { try { set(l, "discount", Math.max(0, Double.parseDouble(Db.norm(s).isEmpty() ? "0" : Db.norm(s)))); } catch (Exception ignore) {} renderCart(); })));
                 r2.addView(Ui.small(c, "حذف", () -> { cart.remove(l); renderCart(); }));
@@ -455,11 +455,11 @@ public final class SalesScreens {
                     JSONObject offer = offers.optJSONObject(i); if (offer == null) continue;
                     String title = offer.optString("name") + (offer.optBoolean("auto_apply") ? " · خودکار" : "");
                     String detail = ("PERCENT".equalsIgnoreCase(offer.optString("discount_type"))
-                            ? Ui.num(offer.optDouble("discount_value")) + "٪ تخفیف" : "تخفیف ثابت")
-                            + " · حداقل خرید " + Ui.money(offer.optDouble("min_purchase"));
-                    content.addView(Ui.item(c, title, detail, "−" + Ui.money(offer.optDouble("discount")), Ui.GREEN, () -> {
+                            ? Ui.num(offer.optDouble("discount_value", 0)) + "٪ تخفیف" : "تخفیف ثابت")
+                            + " · حداقل خرید " + Ui.money(offer.optDouble("min_purchase", 0));
+                    content.addView(Ui.item(c, title, detail, "−" + Ui.money(offer.optDouble("discount", 0)), Ui.GREEN, () -> {
                         Runnable apply = () -> {
-                            campaign = offer; campaignDiscount = offer.optDouble("discount");
+                            campaign = offer; campaignDiscount = offer.optDouble("discount", 0);
                             if (sheet[0] != null) sheet[0].dismiss(); renderCart();
                         };
                         if (couponDiscount > 0 && !offer.optBoolean("stackable"))
@@ -567,6 +567,7 @@ public final class SalesScreens {
                 // build-501 — پیام خام org.json («Forbidden numeric value») به کاربر نمایش داده نمی‌شود
                 String m = String.valueOf(e.getMessage());
                 if (m.contains("Forbidden numeric") || m.contains("NaN")) Ui.toast("ثبت فروش ناموفق: مبلغی در سبد نامعتبر است — سطرها را بازبینی کنید");
+                else if (m.contains("invalid POS tax")) Ui.toast("نرخ مالیات صندوق نامعتبر است — از تنظیمات صندوق اصلاح کنید");
                 else Ui.toast("خطا: " + m);
             }
         }
@@ -580,7 +581,7 @@ public final class SalesScreens {
             clear(); try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); if (held.length() == 0) { body.addView(Ui.empty(c, "فاکتور نگه‌داشته‌ای نیست. در صندوق «نگه‌داشتن» را بزنید.")); return; }
                 body.addView(Ui.muted(c, Ui.num(held.length()) + " از " + Ui.fa("10") + " — برای بازگردانی ضربه بزنید"));
                 for (int i = held.length() - 1; i >= 0; i--) { JSONObject hj = held.optJSONObject(i); JSONObject cu = hj.optJSONObject("customer"); String id = hj.optString("id");
-                    LinearLayout it = Ui.item(c, hj.optString("label"), Ui.jdate(hj.optString("at")) + (cu == null ? " · مشتری آزاد" : " · " + cu.optString("name")) + " · " + Ui.num(hj.optJSONArray("cart").length()) + " قلم", Ui.money(hj.optDouble("total")), Ui.PRIMARY, () -> { Prefs.set("pos_restore", id); a.route("pos"); });
+                    LinearLayout it = Ui.item(c, hj.optString("label"), Ui.jdate(hj.optString("at")) + (cu == null ? " · مشتری آزاد" : " · " + cu.optString("name")) + " · " + Ui.num(hj.optJSONArray("cart").length()) + " قلم", Ui.money(hj.optDouble("total", 0)), Ui.PRIMARY, () -> { Prefs.set("pos_restore", id); a.route("pos"); });
                     it.setOnLongClickListener(v -> { Ui.confirm(c, "این فاکتور نگه‌داشته حذف شود؟", () -> { Pos.removeHeld(id); load(); }); return true; }); body.addView(it); }
                 body.addView(Ui.muted(c, "نگه‌داشتن طولانی روی هر مورد → حذف"));
             } catch (Exception e) { body.addView(Ui.empty(c, "—")); }
@@ -595,10 +596,10 @@ public final class SalesScreens {
         public boolean autoRefresh() { return tab == 0; }
         public void load() {
             clear(); body.addView(tabs(new String[]{Api.standalone() ? "همهٔ فاکتورها (ابطال / مرجوعی)" : "فاکتورهای رایانه", "فاکتورهای این گوشی"}, tab, t -> { tab = t; load(); }));
-            if (tab == 1) { java.util.List<JSONObject> li = Db.localInvoices(); LinearLayout ll = Ui.col(c); body.addView(ll); Ui.paged(ll, li.size(), 40, ix -> { JSONObject o = li.get(ix); return Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total")), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, () -> a.open(new LocalInvoiceDetail(a, o.optLong("id")), true)); }); if (li.isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
+            if (tab == 1) { java.util.List<JSONObject> li = Db.localInvoices(); LinearLayout ll = Ui.col(c); body.addView(ll); Ui.paged(ll, li.size(), 40, ix -> { JSONObject o = li.get(ix); return Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total", 0)), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, () -> a.open(new LocalInvoiceDetail(a, o.optLong("id")), true)); }); if (li.isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
             body.addView(Ui.empty(c, "…")); get("/invoices?limit=400", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "فاکتوری نیست")); LinearLayout list = Ui.col(c); body.addView(list);
                 // v3.5 — staged: 40 rows per page, next page on demand (no ANR with thousands of invoices)
-                Ui.paged(list, ar, 40, inv -> Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); });
+                Ui.paged(list, ar, 40, inv -> Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount", 0)), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); });
         }
     }
     public static final class LocalInvoiceDetail extends Screens.Screen {
@@ -623,13 +624,13 @@ public final class SalesScreens {
             summary.addView(Ui.kv(c, "تاریخ", Ui.jdate(invoice.optString("created_at")), 0));
             summary.addView(Ui.kv(c, "وضعیت", "PAID".equals(status) ? "پرداخت‌شده" : "PARTIALLY_REFUNDED".equals(status) ? "مرجوعی جزئی" : status, stColor(status)));
             summary.addView(Ui.kv(c, "پرداخت", Screens.Screen.label(invoice.optString("payment_method"), Screens.Screen.PAY), 0));
-            summary.addView(Ui.kv(c, "جمع کالاها", Ui.money(invoice.optDouble("subtotal")), 0));
-            summary.addView(Ui.kv(c, "تخفیف کل", Ui.money(invoice.optDouble("discount")), Ui.GREEN));
-            if (invoice.optDouble("invoice_discount") > 0) summary.addView(Ui.kv(c, "تخفیف فاکتور", Ui.money(invoice.optDouble("invoice_discount")), Ui.GREEN));
-            if (invoice.optDouble("coupon_discount") > 0) summary.addView(Ui.kv(c, "تخفیف کوپن " + invoice.optString("coupon"), Ui.money(invoice.optDouble("coupon_discount")), Ui.GREEN));
-            if (invoice.optDouble("campaign_discount") > 0) summary.addView(Ui.kv(c, "تخفیف جشنواره " + invoice.optString("campaign_name"), Ui.money(invoice.optDouble("campaign_discount")), Ui.GREEN));
-            if (invoice.optDouble("tax") > 0) summary.addView(Ui.kv(c, "مالیات", Ui.money(invoice.optDouble("tax")), 0));
-            summary.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(invoice.optDouble("total_amount")), Ui.GREEN));
+            summary.addView(Ui.kv(c, "جمع کالاها", Ui.money(invoice.optDouble("subtotal", 0)), 0));
+            summary.addView(Ui.kv(c, "تخفیف کل", Ui.money(invoice.optDouble("discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("invoice_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف فاکتور", Ui.money(invoice.optDouble("invoice_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("coupon_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف کوپن " + invoice.optString("coupon"), Ui.money(invoice.optDouble("coupon_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("campaign_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف جشنواره " + invoice.optString("campaign_name"), Ui.money(invoice.optDouble("campaign_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("tax", 0) > 0) summary.addView(Ui.kv(c, "مالیات", Ui.money(invoice.optDouble("tax", 0)), 0));
+            summary.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(invoice.optDouble("total_amount", 0)), Ui.GREEN));
             String issued = invoice.optString("auto_issued_coupon_codes", "");
             if (!issued.isEmpty()) summary.addView(Ui.kv(c, "کد خرید بعدی", issued, Ui.VIOLET));
             body.addView(summary);
@@ -638,11 +639,11 @@ public final class SalesScreens {
             JSONArray lines = invoice.optJSONArray("items"); boolean hasReturnableLine = false;
             for (int i = 0; lines != null && i < lines.length(); i++) {
                 JSONObject line = lines.optJSONObject(i); if (line == null) continue;
-                double remaining = Math.max(0, line.optDouble("qty") - line.optDouble("returned_qty"));
-                String sub = Ui.num(line.optDouble("qty")) + " × " + Ui.money(line.optDouble("unit_sell_price"));
-                if (line.optDouble("discount") > 0) sub += " · تخفیف " + Ui.money(line.optDouble("discount"));
-                if (remaining < line.optDouble("qty")) sub += " · مرجوع‌شده " + Ui.num(line.optDouble("returned_qty"));
-                LinearLayout row = Ui.item(c, line.optString("name", "کالا"), sub, Ui.money(line.optDouble("subtotal")), 0, null);
+                double remaining = Math.max(0, line.optDouble("qty", 0) - line.optDouble("returned_qty", 0));
+                String sub = Ui.num(line.optDouble("qty", 0)) + " × " + Ui.money(line.optDouble("unit_sell_price", 0));
+                if (line.optDouble("discount", 0) > 0) sub += " · تخفیف " + Ui.money(line.optDouble("discount", 0));
+                if (remaining < line.optDouble("qty", 0)) sub += " · مرجوع‌شده " + Ui.num(line.optDouble("returned_qty", 0));
+                LinearLayout row = Ui.item(c, line.optString("name", "کالا"), sub, Ui.money(line.optDouble("subtotal", 0)), 0, null);
                 boolean returnable = "PAID".equals(status) || "PARTIALLY_REFUNDED".equals(status);
                 if (Screens.can("pos.return") && returnable && remaining > 0) {
                     hasReturnableLine = true; row.setOnClickListener(v -> returnItem(line, remaining));
@@ -724,11 +725,11 @@ public final class SalesScreens {
         void render() {
             clear(); LinearLayout hd = Ui.card(c, Ui.fa(inv.optString("invoice_number")));
             hd.addView(Ui.kv(c, "تاریخ", Ui.jdate(inv.optString("created_at")), 0)); hd.addView(Ui.kv(c, "وضعیت", label(inv.optString("status"), INV_ST), stColor(inv.optString("status")))); hd.addView(Ui.kv(c, "پرداخت", label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("payment_status"), INV_ST), 0));
-            hd.addView(Ui.kv(c, "جمع", Ui.money(inv.optDouble("subtotal")), 0)); hd.addView(Ui.kv(c, "تخفیف", Ui.money(inv.optDouble("discount")), 0)); hd.addView(Ui.kv(c, "مالیات", Ui.money(inv.optDouble("tax")), 0)); hd.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(inv.optDouble("total_amount")), Ui.GREEN)); body.addView(hd);
+            hd.addView(Ui.kv(c, "جمع", Ui.money(inv.optDouble("subtotal", 0)), 0)); hd.addView(Ui.kv(c, "تخفیف", Ui.money(inv.optDouble("discount", 0)), 0)); hd.addView(Ui.kv(c, "مالیات", Ui.money(inv.optDouble("tax", 0)), 0)); hd.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(inv.optDouble("total_amount", 0)), Ui.GREEN)); body.addView(hd);
             LinearLayout its = Ui.card(c, "اقلام"); JSONArray ar = inv.optJSONArray("items");
-            for (int i = 0; ar != null && i < ar.length(); i++) { JSONObject it = ar.optJSONObject(i); JSONObject p = Db.productById(it.optLong("product_id")); String name = p == null ? "کالا #" + it.optLong("product_id") : p.optString("name"); LinearLayout row = Ui.item(c, name, Ui.num(it.optDouble("qty")) + " × " + Ui.money(it.optDouble("unit_sell_price")) + (it.optDouble("discount") > 0 ? " − " + Ui.money(it.optDouble("discount")) : ""), Ui.money(it.optDouble("subtotal")), 0, null);
+            for (int i = 0; ar != null && i < ar.length(); i++) { JSONObject it = ar.optJSONObject(i); JSONObject p = Db.productById(it.optLong("product_id")); String name = p == null ? "کالا #" + it.optLong("product_id") : p.optString("name"); LinearLayout row = Ui.item(c, name, Ui.num(it.optDouble("qty", 0)) + " × " + Ui.money(it.optDouble("unit_sell_price", 0)) + (it.optDouble("discount", 0) > 0 ? " − " + Ui.money(it.optDouble("discount", 0)) : ""), Ui.money(it.optDouble("subtotal", 0)), 0, null);
                 boolean returnable = "PAID".equals(inv.optString("status")) || "PARTIALLY_REFUNDED".equals(inv.optString("status"));
-                double remainingQty = Math.max(0, it.optDouble("qty") - it.optDouble("returned_qty"));
+                double remainingQty = Math.max(0, it.optDouble("qty", 0) - it.optDouble("returned_qty", 0));
                 if (Screens.can("pos.return") && returnable && remainingQty > 0) { row.setOnClickListener(v -> returnItem(it, name)); }
                 its.addView(row); }
             boolean returnable = "PAID".equals(inv.optString("status")) || "PARTIALLY_REFUNDED".equals(inv.optString("status"));
@@ -741,7 +742,7 @@ public final class SalesScreens {
         }
         void voidInvoice() { LinearLayout l = Ui.col(c); EditText reason = Ui.input(c, "دلیل ابطال"); l.addView(reason); EditText pw = Ui.input(c, "رمز مدیر (برای فاکتور پرداخت‌شده)"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); l.addView(pw); Dialog[] d = new Dialog[1]; l.addView(Ui.danger(c, "تأیید ابطال", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putIf(b, "admin_password", Ui.str(pw)); post("/invoices/" + id + "/void", b, r -> { Sfx.play("void"); Ui.toast("فاکتور باطل شد"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "ابطال " + Ui.fa(inv.optString("invoice_number")), l); }
         void returnItem(JSONObject it, String name) {
-            double remaining = Math.max(0, it.optDouble("qty") - it.optDouble("returned_qty"));
+            double remaining = Math.max(0, it.optDouble("qty", 0) - it.optDouble("returned_qty", 0));
             if (remaining <= 0) { Ui.toast("مقدار قابل مرجوعی باقی نمانده است"); return; }
             LinearLayout content = Ui.col(c);
             content.addView(Ui.body(c, name + " — ماندهٔ قابل مرجوعی: " + Ui.num(remaining)));
@@ -771,7 +772,7 @@ public final class SalesScreens {
             if (tab == 1) { body.addView(Ui.empty(c, "…")); get("/customers/debtors", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "بدهکاری نیست")); Ui.paged(body, ar, 50, cu -> Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")), Ui.money(cu.optDouble("balance", cu.optDouble("debt", 0))), Ui.RED, () -> a.open(new CustomerDetail(a, cu), true))); }); return; }
             LinearLayout sr = Ui.row(c); q = Ui.input(c, "جست‌وجو نام / موبایل"); q.setLayoutParams(Ui.weight(1)); sr.addView(q); View add = Ui.primary(c, "+ جدید", () -> newCustomer(a, Ui.str(q), cu -> load())); add.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(44)), 6, 0, 0, 6)); sr.addView(add); body.addView(sr);
             LinearLayout list = Ui.col(c); body.addView(list);
-            Runnable fill = () -> { list.removeAllViews(); List<JSONObject> cs = Db.customers(Ui.str(q)); if (cs.isEmpty()) list.addView(Ui.empty(c, "مشتری‌ای نیست")); for (JSONObject cu : cs) list.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")) + (cu.optBoolean("_local") ? " · در انتظار ارسال" : ""), cu.optDouble("credit_limit") > 0 ? "سقف " + Ui.money(cu.optDouble("credit_limit")) : null, Ui.MUTED, () -> a.open(new CustomerDetail(a, cu), true))); };
+            Runnable fill = () -> { list.removeAllViews(); List<JSONObject> cs = Db.customers(Ui.str(q)); if (cs.isEmpty()) list.addView(Ui.empty(c, "مشتری‌ای نیست")); for (JSONObject cu : cs) list.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")) + (cu.optBoolean("_local") ? " · در انتظار ارسال" : ""), cu.optDouble("credit_limit", 0) > 0 ? "سقف " + Ui.money(cu.optDouble("credit_limit", 0)) : null, Ui.MUTED, () -> a.open(new CustomerDetail(a, cu), true))); };
             q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { fill.run(); } }); fill.run();
         }
         static void newCustomer(AppActivity a, String prefill, java.util.function.Consumer<JSONObject> cb) {
@@ -787,18 +788,18 @@ public final class SalesScreens {
         CustomerDetail(AppActivity a, JSONObject cu) { super(a); this.cu = cu; id = cu.optLong("id"); }
         public String key() { return "customers"; } public String title() { return "پروندهٔ مشتری"; }
         public void load() {
-            clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit") > 0 ? Ui.money(cu.optDouble("credit_limit")) : "بدون سقف", 0)); body.addView(hd);
+            clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit", 0) > 0 ? Ui.money(cu.optDouble("credit_limit", 0)) : "بدون سقف", 0)); body.addView(hd);
             if (id < 0 && !Api.standalone()) { body.addView(Ui.note(c, null, "این مشتری هنوز به رایانه ارسال نشده؛ دفتر حساب پس از همگام‌سازی در دسترس است.")); return; }
             LinearLayout act = Ui.row(c); act.addView(Ui.small(c, "فروش به این مشتری", () -> { Prefs.set("pos_restore", ""); a.route("pos"); ((Pos) a.current()).customer = cu; ((Pos) a.current()).renderCart(); })); act.addView(Ui.small(c, "ویرایش", this::edit)); body.addView(act);
             LinearLayout led = Ui.card(c, "دفتر حساب"); body.addView(led); LinearLayout invs = Ui.card(c, "فاکتورها"); body.addView(invs);
-            getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance"); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged")) + " / " + Ui.money(lg.optDouble("total_paid")), 0));
+            getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance", 0); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged", 0)) + " / " + Ui.money(lg.optDouble("total_paid", 0)), 0));
                 LinearLayout br = Ui.row(c); if (Screens.can("customers.settle")) { br.addView(Ui.small(c, "تسویه", () -> settle(bal))); br.addView(Ui.small(c, "اصلاح دستی", this::adjust)); } br.addView(Ui.small(c, "پیامک یادآوری", () -> post("/customers/" + id + "/debt-reminder", j(), x -> Ui.toast("پیامک در صف ارسال قرار گرفت")))); led.addView(br);
-                JSONArray en = lg.optJSONArray("entries"); for (int i = 0; en != null && i < Math.min(30, en.length()); i++) { JSONObject e = en.optJSONObject(i); String ty = s(e, "entry_type", s(e, "type")); led.addView(Ui.kv(c, Ui.jdate(s(e, "created_at")) + " · " + label(ty, new String[][]{{"SALE", "خرید نسیه"}, {"CHARGE", "خرید نسیه"}, {"PAYMENT", "پرداخت"}, {"SETTLEMENT", "تسویه"}, {"ADJUSTMENT_DEBIT", "اصلاح بدهکار"}, {"ADJUSTMENT_CREDIT", "اصلاح بستانکار"}}), Ui.money(e.optDouble("amount")), ty.contains("PAY") || ty.contains("SETTLE") || ty.contains("CREDIT") ? Ui.GREEN : Ui.AMBER)); } if (en == null || en.length() == 0) led.addView(Ui.muted(c, "گردشی ندارد")); });
-            getQuiet("/customers/" + id + "/invoices", r -> { JSONArray ar = arr(r); if (ar.length() == 0) invs.addView(Ui.muted(c, "—")); for (int i = 0; i < Math.min(20, ar.length()); i++) { JSONObject inv = ar.optJSONObject(i); invs.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
+                JSONArray en = lg.optJSONArray("entries"); for (int i = 0; en != null && i < Math.min(30, en.length()); i++) { JSONObject e = en.optJSONObject(i); String ty = s(e, "entry_type", s(e, "type")); led.addView(Ui.kv(c, Ui.jdate(s(e, "created_at")) + " · " + label(ty, new String[][]{{"SALE", "خرید نسیه"}, {"CHARGE", "خرید نسیه"}, {"PAYMENT", "پرداخت"}, {"SETTLEMENT", "تسویه"}, {"ADJUSTMENT_DEBIT", "اصلاح بدهکار"}, {"ADJUSTMENT_CREDIT", "اصلاح بستانکار"}}), Ui.money(e.optDouble("amount", 0)), ty.contains("PAY") || ty.contains("SETTLE") || ty.contains("CREDIT") ? Ui.GREEN : Ui.AMBER)); } if (en == null || en.length() == 0) led.addView(Ui.muted(c, "گردشی ندارد")); });
+            getQuiet("/customers/" + id + "/invoices", r -> { JSONArray ar = arr(r); if (ar.length() == 0) invs.addView(Ui.muted(c, "—")); for (int i = 0; i < Math.min(20, ar.length()); i++) { JSONObject inv = ar.optJSONObject(i); invs.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount", 0)), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
         }
         void settle(double bal) { LinearLayout l = Ui.col(c); l.addView(Ui.body(c, "ماندهٔ فعلی: " + Ui.money(bal))); EditText amt = Ui.input(c, "مبلغ (خالی = تسویهٔ کامل)", true); l.addView(amt); final String[] m = {"CASH"}; LinearLayout ch = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { ch.removeAllViews(); for (String[] p : new String[][]{{"CASH", "نقدی"}, {"CARD", "کارت"}, {"TRANSFER", "کارت‌به‌کارت"}}) ch.addView(Ui.chip(c, p[1], p[0].equals(m[0]), () -> { m[0] = p[0]; rd[0].run(); })); }; rd[0].run(); l.addView(ch); EditText note = Ui.input(c, "توضیح"); l.addView(note); Dialog[] d = new Dialog[1]; l.addView(Ui.success(c, "ثبت تسویه", () -> { d[0].dismiss(); JSONObject b = j("method", m[0], "note", Ui.str(note)); if (!Ui.str(amt).isEmpty()) putNum(b, "amount", Ui.numVal(amt, 0)); post("/customers/" + id + "/settle", b, r -> { Ui.done(Ui.ctx, "تسویه ثبت شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "تسویهٔ بدهی", l); }
         void adjust() { LinearLayout l = Ui.col(c); final String[] t = {"ADJUSTMENT_DEBIT"}; LinearLayout ch = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { ch.removeAllViews(); ch.addView(Ui.chip(c, "افزایش بدهی", t[0].endsWith("DEBIT"), () -> { t[0] = "ADJUSTMENT_DEBIT"; rd[0].run(); })); ch.addView(Ui.chip(c, "کاهش بدهی", t[0].endsWith("CREDIT"), () -> { t[0] = "ADJUSTMENT_CREDIT"; rd[0].run(); })); }; rd[0].run(); l.addView(ch); EditText amt = Ui.input(c, "مبلغ", true); l.addView(amt); EditText note = Ui.input(c, "توضیح *"); l.addView(note); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ثبت", () -> { if (Ui.str(note).isEmpty()) { Ui.toast("توضیح لازم است"); return; } d[0].dismiss(); JSONObject b = j("entry_type", t[0], "note", Ui.str(note)); putNum(b, "amount", Ui.numVal(amt, 0)); post("/customers/" + id + "/ledger/adjust", b, r -> { Ui.done(Ui.ctx, "ثبت شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "اصلاح دستی دفتر حساب", l); }
-        void edit() { LinearLayout l = Ui.col(c); EditText name = Ui.input(c, "نام"); name.setText(s(cu, "name")); EditText last = Ui.input(c, "نام خانوادگی"); last.setText(s(cu, "last_name")); EditText phone = Ui.input(c, "موبایل", true); phone.setText(s(cu, "phone")); EditText addr = Ui.input(c, "آدرس"); addr.setText(s(cu, "address")); EditText limit = Ui.input(c, "سقف اعتبار", true); limit.setText(Ui.num(cu.optDouble("credit_limit"))); l.addView(name); l.addView(last); l.addView(phone); l.addView(addr); l.addView(limit); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); JSONObject b = j("name", Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); putNum(b, "credit_limit", Ui.numVal(limit, 0)); patch("/customers/" + id, b, r -> { cu = (JSONObject) r; Db.putCustomer(cu, false); Ui.done(Ui.ctx, "ذخیره شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "ویرایش مشتری", l); }
+        void edit() { LinearLayout l = Ui.col(c); EditText name = Ui.input(c, "نام"); name.setText(s(cu, "name")); EditText last = Ui.input(c, "نام خانوادگی"); last.setText(s(cu, "last_name")); EditText phone = Ui.input(c, "موبایل", true); phone.setText(s(cu, "phone")); EditText addr = Ui.input(c, "آدرس"); addr.setText(s(cu, "address")); EditText limit = Ui.input(c, "سقف اعتبار", true); limit.setText(Ui.num(cu.optDouble("credit_limit", 0))); l.addView(name); l.addView(last); l.addView(phone); l.addView(addr); l.addView(limit); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); JSONObject b = j("name", Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); putNum(b, "credit_limit", Ui.numVal(limit, 0)); patch("/customers/" + id, b, r -> { cu = (JSONObject) r; Db.putCustomer(cu, false); Ui.done(Ui.ctx, "ذخیره شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "ویرایش مشتری", l); }
     }
 
     /* ---------------- Marketing: campaigns + coupons ---------------- */
@@ -808,9 +809,9 @@ public final class SalesScreens {
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value")) + "٪" : Ui.money(cp.optDouble("discount_value"))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase")) + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> { String next = "ACTIVE".equals(cp.optString("status")) ? "PAUSED" : "ACTIVE"; Ui.confirm(c, "وضعیت به «" + ("ACTIVE".equals(next) ? "فعال" : "متوقف") + "» تغییر کند؟", () -> patch("/marketing/campaigns/" + cp.optLong("id"), j("status", next), x -> load())); }); list.addView(it); } }); }
-            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value")) + "٪" : Ui.money(cp.optDouble("discount_value"))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
-            else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns")), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons")), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value")), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0)) + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> { String next = "ACTIVE".equals(cp.optString("status")) ? "PAUSED" : "ACTIVE"; Ui.confirm(c, "وضعیت به «" + ("ACTIVE".equals(next) ? "فعال" : "متوقف") + "» تغییر کند؟", () -> patch("/marketing/campaigns/" + cp.optLong("id"), j("status", next), x -> load())); }); list.addView(it); } }); }
+            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
+            else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
         }
         void newCampaign() {
             LinearLayout form = Ui.col(c);

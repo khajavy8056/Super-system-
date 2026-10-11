@@ -74,7 +74,7 @@ public final class Db extends SQLiteOpenHelper {
         android.database.sqlite.SQLiteStatement st = d.compileStatement("INSERT INTO journal_lines(jid,code,debit,credit) VALUES(?,?,?,?)");
         d.beginTransaction();
         try (Cursor c = d.rawQuery("SELECT id, lines FROM journal", null)) {
-            while (c.moveToNext()) { try { JSONArray ls = new JSONArray(c.getString(1)); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); st.clearBindings(); st.bindLong(1, c.getLong(0)); st.bindString(2, l.optString("code")); st.bindDouble(3, l.optDouble("debit")); st.bindDouble(4, l.optDouble("credit")); st.executeInsert(); } } catch (Exception ignore) {} }
+            while (c.moveToNext()) { try { JSONArray ls = new JSONArray(c.getString(1)); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); st.clearBindings(); st.bindLong(1, c.getLong(0)); st.bindString(2, l.optString("code")); st.bindDouble(3, l.optDouble("debit", 0)); st.bindDouble(4, l.optDouble("credit", 0)); st.executeInsert(); } } catch (Exception ignore) {} }
             d.setTransactionSuccessful();
         } finally { d.endTransaction(); st.close(); }
     }
@@ -434,11 +434,11 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("discount_type", campaign.optString("discount_type", "PERCENT"));
         cv.put("discount_value", campaign.optDouble("discount_value", 0));
         cv.put("min_purchase", campaign.optDouble("min_purchase", 0));
-        if (campaign.isNull("max_purchase")) cv.putNull("max_purchase"); else cv.put("max_purchase", campaign.optDouble("max_purchase"));
-        if (campaign.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", campaign.optDouble("max_discount"));
+        if (campaign.isNull("max_purchase")) cv.putNull("max_purchase"); else cv.put("max_purchase", campaign.optDouble("max_purchase", 0));
+        if (campaign.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", campaign.optDouble("max_discount", 0));
         cv.put("valid_from", campaign.isNull("valid_from") ? null : campaign.optString("valid_from"));
         cv.put("valid_until", campaign.isNull("valid_until") ? null : campaign.optString("valid_until"));
-        if (campaign.isNull("auto_issue_threshold")) cv.putNull("auto_issue_threshold"); else cv.put("auto_issue_threshold", campaign.optDouble("auto_issue_threshold"));
+        if (campaign.isNull("auto_issue_threshold")) cv.putNull("auto_issue_threshold"); else cv.put("auto_issue_threshold", campaign.optDouble("auto_issue_threshold", 0));
         cv.put("auto_issue_validity_days", campaign.optInt("auto_issue_validity_days", 30));
         cv.put("auto_issue_sms", campaign.optBoolean("auto_issue_sms", true) ? 1 : 0);
         cv.put("target_type", campaign.optString("target_type", "ALL"));
@@ -462,7 +462,7 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("customer_phone", coupon.isNull("customer_phone") ? null : coupon.optString("customer_phone"));
         cv.put("discount_type", coupon.optString("discount_type", "PERCENT")); cv.put("discount_value", coupon.optDouble("discount_value", 0));
         cv.put("min_purchase", coupon.optDouble("min_purchase", 0));
-        if (coupon.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", coupon.optDouble("max_discount"));
+        if (coupon.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", coupon.optDouble("max_discount", 0));
         cv.put("valid_from", coupon.isNull("valid_from") ? null : coupon.optString("valid_from"));
         cv.put("valid_until", coupon.isNull("valid_until") ? null : coupon.optString("valid_until"));
         if (coupon.isNull("usage_limit")) cv.putNull("usage_limit"); else cv.put("usage_limit", coupon.optInt("usage_limit", 1));
@@ -1188,7 +1188,7 @@ public final class Db extends SQLiteOpenHelper {
             if(!c.moveToFirst()) return null;
             JSONObject p=withBatches(c.getString(0)); JSONArray all=p.optJSONArray("batches"), good=new JSONArray(); double total=0;
             boolean block="true".equals(Local.setting("expiry.block_sale","true")); String today=Jalali.todayIso().substring(0,10);
-            for(int i=0;all!=null&&i<all.length();i++){JSONObject b=all.optJSONObject(i);String expiry=b.isNull("expiry_date")?"":b.optString("expiry_date");if(block&&!expiry.isEmpty()&&expiry.compareTo(today)<0)continue;good.put(b);total+=b.optDouble("current_qty");}
+            for(int i=0;all!=null&&i<all.length();i++){JSONObject b=all.optJSONObject(i);String expiry=b.isNull("expiry_date")?"":b.optString("expiry_date");if(block&&!expiry.isEmpty()&&expiry.compareTo(today)<0)continue;good.put(b);total+=b.optDouble("current_qty", 0);}
             p.put("batches",good);p.put("available_qty",total);return p;
         } catch(Exception e) { return null; }
     }
@@ -1288,6 +1288,9 @@ public final class Db extends SQLiteOpenHelper {
     public static String localSale(JSONObject payload, double total) throws Exception {
         // build-501 — NaN هرگز به ContentValues/execSQL نمی‌رسد («Forbidden numeric value» در مبدأ خنثی می‌شود)
         if (!Double.isFinite(total)) throw new IllegalStateException("مبلغ فاکتور نامعتبر است");
+        // build-502 — سد نهایی: کل بارِ فروش (هم شاخهٔ آنلاین و هم موتور محلی) بازگشتی پاک‌سازی می‌شود؛
+        // هیچ Double غیرمتناهی در خودِ payload یا هر تودرتوی آن باقی نمی‌ماند.
+        payload = Local.sanitizePayload(payload);
         try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {}   // v4.8.0 — تخفیف سررسیدشده پیش از فروش (مثل صندوق رایانه)
         SQLiteDatabase d = w(); d.beginTransaction();
         try {
@@ -1297,7 +1300,11 @@ public final class Db extends SQLiteOpenHelper {
                 if (bid != 0) d.execSQL("UPDATE batches SET current_qty=MAX(0, current_qty-?) WHERE id=?", new Object[]{it.optDouble("quantity", 1), bid});
             }
             String no = "M-" + String.format("%06d", counter("inv_no"));
-            JSONObject issuedCodes = Local.issueLocalAutoCoupons(payload, no, total);
+            // build-502 — صدور کوپن خودکار «پاداشِ» فروش است، نه پیش‌نیاز آن؛ هر خطایی در آن
+            // (مثل ستون NULL جشنواره) هرگز نباید کل فروش را rollback کند.
+            JSONObject issuedCodes;
+            try { issuedCodes = Local.issueLocalAutoCoupons(payload, no, total); }
+            catch (Throwable couponFailure) { issuedCodes = new JSONObject(); android.util.Log.w("Db", "auto-coupon issue skipped", couponFailure); }
             if (issuedCodes.length() > 0) payload.put("client_issued_coupon_codes", issuedCodes);
             ContentValues cv = new ContentValues(); cv.put("local_no", no); cv.put("total", total); cv.put("item_count", items == null ? 0 : items.length());
             JSONArray pays = payload.optJSONArray("payments"); String method = pays != null && pays.length() > 0 ? pays.optJSONObject(0).optString("method", "CASH") : "CASH";
