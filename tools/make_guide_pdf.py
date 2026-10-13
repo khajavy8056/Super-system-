@@ -18,11 +18,11 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 SHOTS = ROOT / "docs" / "screenshots"
-OUT = ROOT / "docs" / "معرف‌نامه-رسا-سیستم-1.0.507.pdf"
+OUT = ROOT / "docs" / "معرف‌نامه-رسا-سیستم-1.0.508.pdf"
 FONT_R = BACKEND / "app" / "assets" / "fonts" / "Vazirmatn-Regular.ttf"
 FONT_B = BACKEND / "app" / "assets" / "fonts" / "Vazirmatn-Bold.ttf"
 
-VERSION = "1.0.507"
+VERSION = "1.0.508"
 try:
     sys.path.insert(0, str(BACKEND))
     from app.services.timeservice import to_jalali  # noqa: E402
@@ -288,7 +288,7 @@ pdf.ln(2)
 pdf.set_fill_color(*BG)
 pdf.set_draw_color(*LINE)
 rows = [
-    ("نسخهٔ سند", f"همراه نسخهٔ {VERSION} برنامه (build 50700)"),
+    ("نسخهٔ سند", f"همراه نسخهٔ {VERSION} برنامه (build 50800)"),
     ("پلتفرم‌ها", "ویندوز (برنامهٔ رومیزی بومی) + اندروید (اپلیکیشن بومی)"),
     ("معماری داده", "موتور محلی آفلاین‌اول؛ همه‌چیز بدون اینترنت کار می‌کند"),
     ("تاریخ تنظیم", JDATE),
@@ -664,7 +664,7 @@ bullets([
     "همگام‌سازی موبایل با صف Job و حل تعارض؛ گزارش آمار همگام‌سازی.",
     "کیفیت: بیش از ۸۳۰ تست خودکار (شامل تست سرتاسری بازیابی، شبیه‌ساز سال، سخت‌افزار و بومی‌سازی) — انتشار فقط پس از سبز بودن کامل.",
     "بومی‌سازی عمیق: جلالی در همهٔ گزارش‌ها/رسیدها، اعداد فارسی، فونت وزیرمتن.",
-    "نسخهٔ این سند: 1.0.507 — versionCode اندروید 50700.",
+    "نسخهٔ این سند: 1.0.508 — versionCode اندروید 50800.",
 ])
 shot("42-setup-builder-gui.png", "ابزار ساخت نصب‌کننده — بخشی از زنجیرهٔ انتشار")
 note("فایل این معرف‌نامه به‌صورت خودکار با اسکریپت tools/make_guide_pdf.py از سورس برنامه و تصاویر رسمی docs/screenshots ساخته می‌شود؛ یعنی با هر نسخهٔ جدید قابل به‌روزرسانی است.")

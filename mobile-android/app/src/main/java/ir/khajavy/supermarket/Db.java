@@ -1182,6 +1182,27 @@ public final class Db extends SQLiteOpenHelper {
     public static JSONObject productById(long id) {
         try (Cursor c = w().rawQuery("SELECT json FROM products WHERE id=?", new String[]{String.valueOf(id)})) { return c.moveToFirst() ? withBatches(c.getString(0)) : null; }
     }
+
+    /** build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای فروش محلی
+     *  (فاکتورهای ابطال‌نشده) که همین حالا قابل فروش‌اند (بچ فعال با موجودی). خروجی همان
+     *  شکل نتایج جست‌وجوست، پس لمس هر کاشی مستقیماً همان مسیر افزودن به سبد را می‌رود. */
+    public static List<JSONObject> fastMovers(int limit) {
+        List<JSONObject> out = new ArrayList<>();
+        int cap = Math.max(1, Math.min(60, limit)), scan = cap * 3;
+        String sql = "SELECT ii.product_id, SUM(ii.qty) sq FROM invoice_items ii JOIN invoices i ON i.id=ii.invoice_id" +
+                     " WHERE ii.product_id>0 AND IFNULL(i.status,'PAID')<>'VOID' GROUP BY ii.product_id ORDER BY sq DESC LIMIT ?";
+        try (Cursor c = w().rawQuery(sql, new String[]{String.valueOf(scan)})) {
+            while (c.moveToNext() && out.size() < cap) {
+                JSONObject p = productById(c.getLong(0));
+                if (p == null || !p.optBoolean("is_active", true)) continue;
+                JSONArray bs = p.optJSONArray("batches");
+                if (bs == null || bs.length() == 0 || p.optDouble("available_qty", 0) <= 0) continue;
+                try { p.put("sold_qty", c.getDouble(1)); } catch (Exception ignore) {}
+                out.add(p);
+            }
+        } catch (Exception ignore) {}
+        return out;
+    }
     /** Live eligibility for a POS action, distinct from inventory (which must show expired stock). */
     public static JSONObject sellableProductById(long id) {
         try (Cursor c=w().rawQuery("SELECT json FROM products WHERE id=? AND is_active=1",new String[]{String.valueOf(id)})) {

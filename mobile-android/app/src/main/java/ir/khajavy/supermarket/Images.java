@@ -51,8 +51,36 @@ public final class Images {
             org.json.JSONArray ps = x.optJSONArray("products");
             org.json.JSONObject p = (ps != null && ps.length() > 0) ? ps.optJSONObject(0) : null;
             if (p == null) {
+                // build-508 — جست‌وجوی کامل شناسهٔ کالا وقتی API رکورد Product ندارد (حالت مستقل گوشی):
+                // metric (product_id/a/b) → شواهد (product_id/سطرها) → اقدام‌ها (params) — همان قواعد
+                // product_ids_of موتور ویندوز، تا هیچ پیشنهادِ «کالای مشخص» بدون تصویر نماند.
+                long pid = 0;
                 org.json.JSONObject spec = x.optJSONObject("metric");
-                long pid = spec == null ? 0 : spec.optLong("product_id");
+                if (spec != null) pid = spec.optLong("product_id", spec.optLong("a", spec.optLong("b", 0)));
+                if (pid <= 0) {
+                    org.json.JSONObject ev = x.optJSONObject("evidence");
+                    if (ev != null) {
+                        pid = ev.optLong("product_id", 0);
+                        if (pid <= 0) {
+                            org.json.JSONArray rows = ev.optJSONArray("rows");
+                            if (rows == null) rows = ev.optJSONArray("table");
+                            if (rows != null && rows.length() > 0 && rows.optJSONObject(0) != null) pid = rows.optJSONObject(0).optLong("product_id", 0);
+                        }
+                    }
+                }
+                if (pid <= 0) {
+                    org.json.JSONArray acts = x.optJSONArray("actions");
+                    for (int i = 0; acts != null && i < acts.length() && pid <= 0; i++) {
+                        org.json.JSONObject act = acts.optJSONObject(i), pr = act == null ? null : act.optJSONObject("params");
+                        if (pr == null) continue;
+                        pid = pr.optLong("product_id", pr.optLong("a", 0));
+                        if (pid <= 0) {
+                            org.json.JSONArray pp = pr.optJSONArray("product_ids");
+                            if (pp == null) pp = pr.optJSONArray("products");
+                            if (pp != null && pp.length() > 0) pid = pp.optLong(0, 0);
+                        }
+                    }
+                }
                 if (pid > 0) p = Local.one("SELECT id, name, image_url, gallery FROM products WHERE id=?", pid);
             }
             if (p != null) {

@@ -1144,19 +1144,21 @@ print("__DEMO__" + json.dumps(s))
 
 
 def _jalali_periods(start: date, end: date) -> list[str]:
-    """دوره‌های حقوق جلالی («1404-07») برای بازهٔ شبیه‌سازی — به‌ترتیب، بدون تکرار."""
+    """دوره‌های حقوق جلالی («1404-07») برای بازهٔ شبیه‌سازی — به‌ترتیب، بدون تکرار.
+
+    build-508 — مبنا اولِ **ماه جلالی** است، نه میلادی؛ نسخهٔ قبلی `start.replace(day=1)`
+    را روی تاریخ میلادی می‌گرفت و برای پنجره‌های کوتاهِ اوایل ماه میلادی فقط یک دوره
+    برمی‌گرداند — یعنی «پرداخت‌شده/در انتظار» وابسته به روزِ اجرا می‌شد.
+    """
     from .timeservice import to_jalali
+    jy, jm, _jd = to_jalali(datetime.combine(start, datetime.min.time()))
+    ey, em, _ejd = to_jalali(datetime.combine(end, datetime.min.time()))
     periods: list[str] = []
-    seen: set[str] = set()
-    cur = start.replace(day=1)
-    while cur <= end:
-        mid = (cur + timedelta(days=14))
-        jy, jm, _jd = to_jalali(datetime.combine(mid, datetime.min.time()))
-        per = f"{jy}-{jm:02d}"
-        if per not in seen:
-            seen.add(per)
-            periods.append(per)
-        cur = (cur + timedelta(days=32)).replace(day=1)
+    while (jy, jm) <= (ey, em):
+        periods.append(f"{jy}-{jm:02d}")
+        jm += 1
+        if jm > 12:
+            jm, jy = 1, jy + 1
     return periods
 
 
@@ -1246,6 +1248,18 @@ def _simulate_hr_year(db, *, admin, start, end, rnd, stats) -> dict:
 
     # ---- ۴) حقوق ماهانه (همهٔ دوره‌ها؛ دورهٔ آخر برای مدال/وضعیت پرداخت‌نشده نگه داشته می‌شود) ----
     periods = _jalali_periods(start, end)
+    # build-508 — تضمینِ تاریخ‌مستقل «پرداخت‌شده + یک دوره در انتظار»: یک دورهٔ کاملِ
+    # قبل از شروع هم به دوره‌ها اضافه و کامل پرداخت می‌شود (فروشگاه نمونه، قبل از
+    # شبیه‌سازی هم فعالیت داشته) — وگرنه در پنجره‌های کوتاهِ اوایل ماه جلالی فقط
+    # «یک دورهٔ پرداخت‌نشده» تولید می‌شد و دمو/تست‌ها به روزِ اجرا وابسته می‌شدند.
+    if periods:
+        pjy, pjm, _pd = to_jalali(datetime.combine(start, datetime.min.time()))
+        pjm -= 1
+        if pjm == 0:
+            pjm, pjy = 12, pjy - 1
+        prev = f"{pjy}-{pjm:02d}"
+        if prev not in periods:
+            periods.insert(0, prev)
     rows_by_user_period: dict[tuple[int, str], object] = {}
     for pi, per in enumerate(periods):
         last_of_year = (pi == len(periods) - 1)

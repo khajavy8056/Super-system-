@@ -149,6 +149,22 @@ tr:hover td { background: rgba(59,130,246,0.06); }
 .pos-screen { display: flex; flex-direction: column; gap: 10px; height: 100%; }
 .pos-header { display: flex; align-items: center; gap: 14px; padding: 10px 14px;
   background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+/* build-508 — نوار «پرفروش‌ها»: کاشی‌های تصویریِ اسکرول‌افقی برای افزودن با یک کلیک */
+.pos-fast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; overflow-x: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px; scrollbar-width: thin; }
+.pos-fast.hidden { display: none; }
+.pos-fast-title { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 800;
+  color: var(--primary); white-space: nowrap; padding-inline-end: 4px; border-inline-end: 1px solid var(--border); }
+.pos-fast-item { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; min-width: 84px;
+  max-width: 84px; padding: 7px 6px 5px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg2); cursor: pointer; transition: transform .08s ease, border-color .12s ease; }
+.pos-fast-item:hover { transform: translateY(-1px); border-color: var(--primary); }
+.pos-fast-item img, .pos-fast-item .pos-fast-noimg { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; }
+.pos-fast-item .pos-fast-noimg { display: inline-flex; align-items: center; justify-content: center;
+  background: var(--card); color: var(--muted); }
+.pos-fast-name { font-size: 11px; font-weight: 700; max-width: 76px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.pos-fast-sub { font-size: 10px; color: var(--muted); white-space: nowrap; }
 .pos-store { font-size: 16px; font-weight: 800; }
 .pos-register { color: var(--muted); font-size: 12px; }
 .pos-clock { margin-inline-start: auto; font-variant-numeric: tabular-nums; color: var(--muted); }

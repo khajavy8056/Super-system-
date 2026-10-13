@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-507 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-508 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 507;
+const UI_BUILD = 508;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -2138,6 +2138,7 @@ RENDER.pos = async () => {
         <div class="pos-clock" id="pos-clock"></div>
         <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "خروج از قفل" : "قفل صندوق (میان‌بر)"}</button>
       </div>
+      <div class="pos-fast hidden" id="pos-fast"></div>
       <div class="pos-main">
         <div class="pos-cart">
           <div class="pos-cart-head"><h3 id="pos-cart-title">سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
@@ -2168,6 +2169,7 @@ RENDER.pos = async () => {
     </div>`;
   $("#pos-hold-btn").addEventListener("click", () => posHold());
   renderHeldDock();
+  loadFastMovers();   // build-508 — نوار پرفروش‌ها با تصویر، برای افزودن با یک کلیک
   $("#pos-scan").addEventListener("keydown", async (e) => {
     if (e.key === "ArrowDown") {
       const first = document.querySelector(".pos-suggest .sug");
@@ -2206,6 +2208,32 @@ RENDER.pos = async () => {
   renderPosCart();
   $("#pos-scan").focus();
 };
+
+/* build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای روزهای
+ * اخیر با تصویر واقعی، به‌شکل نواری افقی بالای صندوق؛ کلیک روی هر کاشی همان مسیر
+ * افزودن جست‌وجو را می‌رود (posAddResolved → انتخاب بچ/تعداد خودکار). اگر فروشی
+ * نباشد یا سرور در دسترس نباشد، نوار اصلاً نشان داده نمی‌شود و صندوق مثل قبل است. */
+async function loadFastMovers() {
+  const box = $("#pos-fast");
+  if (!box) return;
+  try {
+    const r = await api("/pos/fast-movers?days=30&limit=16");
+    const items = (r && r.items) || [];
+    if (!items.length) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>` + items.map((i) => `
+      <button class="pos-fast-item" data-id="${i.product_id}" title="${esc(i.name)} — موجودی ${qty(i.available_qty)}">
+        ${i.image_url ? `<img src="${esc(i.image_url)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'pos-fast-noimg',textContent:'…'}))" />`
+                      : `<span class="pos-fast-noimg">${icon("box", 20)}</span>`}
+        <span class="pos-fast-name">${esc(i.name)}</span>
+        <span class="pos-fast-sub">${fa(Number(i.sold_qty || 0).toLocaleString("en-US"))} فروش</span>
+      </button>`).join("");
+    box.classList.remove("hidden");
+    box.querySelectorAll(".pos-fast-item").forEach((node) => node.addEventListener("click", async () => {
+      const item = items.find((x) => String(x.product_id) === node.dataset.id);
+      if (item) await posAddResolved(item);
+    }));
+  } catch (e) { box.classList.add("hidden"); }
+}
 
 function hideSuggest() {
   const box = $("#pos-suggest");

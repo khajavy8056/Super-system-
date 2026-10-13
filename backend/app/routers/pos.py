@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -483,3 +483,59 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "batches": [o.as_dict() for o in options],
         })
     return _maybe_redact(user, {"query": term, "count": len(items), "items": items})
+
+
+@router.get("/fast-movers")
+def pos_fast_movers(days: int = 30, limit: int = 16, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("pos.sell"))):
+    """build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای
+    روزهای اخیر با تصویر، به‌شکل نواری افقی بالای صندوق تا صندوق‌دار با یک لمس
+    پرفروش‌ها را به سبد بیفزاید — بدون تایپ و جست‌وجو.
+
+    خروجی عیناً همان شکل آیتم‌های /pos/search است (batches/unit/available_qty)،
+    یعنی کلیک روی هر کاشی مستقیماً همان مسیر افزودن جست‌وجو را می‌رود (انتخاب بچ/
+    تعداد خودکار). فقط کالایی که همین حالا قابل فروش است (بچ فعال با موجودی) نشان
+    داده می‌شود؛ فاکتورهای ابطال‌شده در شمارش پرفروشی نمی‌آیند.
+    """
+    from sqlalchemy import desc, func
+
+    from ..models import Invoice, InvoiceItem, Unit
+    days = max(1, min(int(days), 365))
+    limit = max(1, min(int(limit), 40))
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = db.execute(
+        select(InvoiceItem.product_id,
+               func.sum(InvoiceItem.qty).label("sq"),
+               func.sum(InvoiceItem.subtotal).label("st"))
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .where(InvoiceItem.created_at >= since, Invoice.status != "VOID")
+        .group_by(InvoiceItem.product_id)
+        .order_by(desc("sq"), InvoiceItem.product_id)
+        .limit(limit * 3)   # چند ردیف اضافه: کالای حذف‌شده/بی‌موجودی بعداً حذف می‌شود
+    ).all()
+    items = []
+    for pid, sq, st in rows:
+        if len(items) >= limit:
+            break
+        p = db.get(Product, pid)
+        if p is None or p.deleted_at is not None or not p.is_active:
+            continue
+        options = pos_svc.get_batch_options(db, p)
+        total = float(sum((o.batch.current_qty for o in options), 0))
+        if total <= 0:
+            continue   # نوار پرفروش‌ها فقط «الان قابل فروش» را پیشنهاد می‌دهد
+        unit = db.get(Unit, p.unit_id) if p.unit_id else None
+        items.append({
+            "product_id": p.id, "name": p.name, "barcode": p.barcode, "sku": p.sku,
+            "image_url": p.image_url,
+            "unit": {"name": unit.name, "symbol": unit.symbol,
+                     "allow_decimal": unit.allow_decimal,
+                     "decimals": unit.decimals} if unit else None,
+            "available_qty": total,
+            "price_count": len({float(o.batch.sell_price) for o in options}),
+            "exact": False,
+            "batches": [o.as_dict() for o in options],
+            "sold_qty": float(sq or 0),
+            "sold_total": float(st or 0),
+        })
+    return _maybe_redact(user, {"days": days, "count": len(items), "items": items})

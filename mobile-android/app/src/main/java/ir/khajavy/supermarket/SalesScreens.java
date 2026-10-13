@@ -48,6 +48,7 @@ public final class SalesScreens {
             root.addView(sr);
             search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (pending != null) h.removeCallbacks(pending); pending = () -> suggest(e.toString().trim()); h.postDelayed(pending, 220); } });
             search.setOnEditorActionListener((v, id, ev) -> { if (ev != null && ev.getAction() != android.view.KeyEvent.ACTION_DOWN) return true; String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
+            buildFastStrip(root);   // build-508 — نوار «پرفروش‌ها» با تصویر (افزودن با یک لمس)
             sugg = Ui.col(c); root.addView(sugg);
             // customer, coupon, campaign and invoice-discount controls
             benefitsStrip = Ui.row(c); benefitsStrip.setPadding(0, Ui.dp(4), 0, Ui.dp(2));
@@ -98,6 +99,28 @@ public final class SalesScreens {
         @Override public void refresh() { renderCart(); if (search != null) suggest(Ui.str(search)); }
 
         /* ---- search / add ---- */
+        /** build-508 — نوار «پرفروش‌ها» (درخواست مالک): کاشی‌های تصویریِ اسکرول‌افقی بالای
+         *  صندوق؛ پرفروش‌ترین‌های فروش واقعی (آفلاین، از پایگاه محلی) با تصویر کالا — صندوق‌دار
+         *  بدون تایپ، با یک لمس پرفروش‌ها را به سبد می‌افزاید (همان مسیر افزودن جست‌وجو). */
+        void buildFastStrip(LinearLayout root) {
+            try {
+                List<JSONObject> picks = Db.fastMovers(12);
+                if (picks.isEmpty()) return;
+                LinearLayout inner = new LinearLayout(c); inner.setOrientation(LinearLayout.HORIZONTAL); inner.setGravity(Gravity.CENTER_VERTICAL);
+                TextView cap = Ui.text(c, "پرفروش‌ها", 12, Ui.PRIMARY, true); cap.setPadding(0, 0, Ui.dp(8), 0); inner.addView(cap);
+                for (JSONObject p : picks) {
+                    LinearLayout tile = Ui.col(c); tile.setGravity(Gravity.CENTER_HORIZONTAL); tile.setBackground(Ui.surface(12)); tile.setPadding(Ui.dp(6), Ui.dp(6), Ui.dp(6), Ui.dp(5));
+                    tile.addView(Ui.thumb(c, p, 44));
+                    TextView nm = Ui.text(c, p.optString("name"), 10.5f, Ui.TEXT, true); nm.setMaxLines(1); nm.setGravity(Gravity.CENTER_HORIZONTAL); nm.setEllipsize(android.text.TextUtils.TruncateAt.END); nm.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT), 0, 2, 0, 0)); tile.addView(nm);
+                    tile.addView(Ui.muted(c, Ui.fa(String.valueOf(p.optDouble("sold_qty", 0))) + " فروش"));
+                    tile.setOnClickListener(v -> { add(p, null); if (search != null) search.setText(""); if (sugg != null) sugg.removeAllViews(); });
+                    LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(Ui.dp(84), ViewGroup.LayoutParams.WRAP_CONTENT); tl.setMargins(Ui.dp(3), Ui.dp(3), Ui.dp(3), Ui.dp(3)); tile.setLayoutParams(tl);
+                    inner.addView(tile);
+                }
+                root.addView(Ui.chips(c, inner));   // اسکرول افقی RTL — قبل از فهرست پیشنهاد جست‌وجو
+            } catch (Exception ignore) {}
+        }
+
         void suggest(String q) {
             sugg.removeAllViews(); if (q.length() < 2) return;
             List<JSONObject> local = Db.searchProducts(q, 8); showSugg(local);
