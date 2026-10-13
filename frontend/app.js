@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-509 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-510 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 509;
+const UI_BUILD = 510;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -1534,7 +1534,7 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۷ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ${esc(state.version || "1.0.510")} · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>` : ""}
         ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
@@ -1605,7 +1605,8 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>` : ""}
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.500")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    ${state.build && state.build < UI_BUILD * 100 ? `<div class="alert alert-warn" style="margin:0 0 12px;border:1px solid #f59e0b55;background:#f59e0b18;border-radius:10px;padding:10px 14px">⚠️ رابط شما نسخهٔ ${fa(UI_BUILD)} است اما <b>بک‌اند نصب‌شده قدیمی‌تر</b> است (بیلد ${fa(String(state.build))}). امکان‌های تازه (پرفروش‌ها، جشنواره‌ها، …) تا نصب Setup جدید کار نمی‌کنند — از پوشهٔ <code>installer/windows</code> گزینهٔ <b>BUILD-SETUP.bat</b> را اجرا و نصب کنید و یک‌بار صفحه را با Ctrl+F5 تازه کنید.</div>` : ""}
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.510")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
@@ -2219,7 +2220,11 @@ async function loadFastMovers() {
   try {
     const r = await api("/pos/fast-movers?days=30&limit=16");
     const items = (r && r.items) || [];
-    if (!items.length) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    if (!items.length) {   // build-510 — بخش همیشه دیده شود؛ نه اینکه بی‌صدا حذف شود
+      box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>
+        <span class="muted" style="align-self:center">پس از ثبت چند فاکتور، پرفروش‌ترین کالاها با یک کلیک اینجا می‌آیند.</span>`;
+      box.classList.remove("hidden"); return;
+    }
     box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>` + items.map((i) => `
       <button class="pos-fast-item" data-id="${i.product_id}" title="${esc(i.name)} — موجودی ${qty(i.available_qty)}">
         ${i.image_url ? `<img src="${esc(i.image_url)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'pos-fast-noimg',textContent:'…'}))" />`
@@ -5907,6 +5912,10 @@ window.smsDebtReminder = async (id) => {
 
 /* ---------- boot ---------- */
 async function boot() {
+  /* build-510 — ضدتلهٔ «آپدیت دیدنی نیست»: نسخهٔ واقعی بک‌اند از همان ابتدا خوانده
+   * می‌شود تا (الف) پانویس داشبورد نسخهٔ درست را نشان دهد و (ب) اگر رابط تازه ولی
+   * بک‌اندِ نصب‌شده قدیمی باشد (Setup نصب‌نشده)، هشدار صریح بالا صفحه بیاید. */
+  try { const h = await api("/system/health"); state.version = h.version || state.version; state.build = h.build || 0; } catch (_) {}
   if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {

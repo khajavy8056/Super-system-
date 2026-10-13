@@ -372,10 +372,26 @@ def _find_frontend_dir() -> Path | None:
 _MEDIA_DIR = Path(settings.MEDIA_DIR)
 _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
+from fastapi.staticfiles import StaticFiles  # build-510 — پیش از زیرکلاسِ ضدکش
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """build-510 — پایان تلهٔ «آپدیت نصب شد ولی رابط عوض نشد».
+
+    WebView2/مرورگر می‌توانست پاسخ قدیمی `app.js` را از کش خودش اجرا کند (پین
+    نسخهٔ `?v=` ماه‌ها ثابت مانده بود). با `Cache-Control: no-cache` کش باید پیش
+    از هر استفاده با سرور چک کند (ETag/Last-Modified سر جایش است، یعنی بدون
+    ترافیک اضافه) — فایل تازه همیشه همان بار اول می‌رسد؛ مستقل از پین نسخه.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 _FRONTEND_DIR = _find_frontend_dir()
 if _FRONTEND_DIR is not None:
-    from fastapi.staticfiles import StaticFiles
-
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
     # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
     _MOBILE_DIR = _FRONTEND_DIR / "mobile"
@@ -389,5 +405,5 @@ if _FRONTEND_DIR is not None:
         def _mobile_root():
             return RedirectResponse(url="/m/", status_code=307)
 
-        app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+        app.mount("/m", _RevalidatingStaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
+    app.mount("/", _RevalidatingStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

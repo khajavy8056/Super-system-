@@ -738,6 +738,9 @@ public final class Local {
                     "discount_type", campaign.optString("discount_type"), "discount_value", optFin(campaign, "discount_value", 0),
                     "min_purchase", optFin(campaign, "min_purchase", 0), "max_purchase", campaign.isNull("max_purchase") ? JSONObject.NULL : optFin(campaign, "max_purchase", 0),
                     "max_discount", campaign.isNull("max_discount") ? JSONObject.NULL : optFin(campaign, "max_discount", 0),
+                    /* build-510 — راهنمای «با همین فاکتور کوپن خرید بعدی می‌گیری» در حالت آفلاین */
+                    "auto_issue_threshold", campaign.isNull("auto_issue_threshold") ? JSONObject.NULL : optFin(campaign, "auto_issue_threshold", 0),
+                    "auto_issue_validity_days", campaign.optInt("auto_issue_validity_days", 0),
                     "scope_amount", eligibleBase, "target_type", campaign.optString("target_type", "ALL"),
                     "stackable", campaign.optInt("stackable") == 1, "auto_apply", campaign.optInt("auto_apply") == 1,
                     "priority", campaign.optInt("priority", 3), "_local", localCampaign));

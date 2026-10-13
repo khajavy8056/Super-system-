@@ -34,13 +34,13 @@ def test_version_is_the_single_source_of_truth_everywhere():
     build-490 (§۸–۱۰) — ساختار نسخه Major.Minor.Build شد («1.0.491»): رقم سوم
     همان Build Number است. این pin مثل migration-head با انتشار جلو می‌رود.
     """
-    assert VERSION == "1.0.509", VERSION
+    assert VERSION == "1.0.510", VERSION
     setup = (ROOT / "installer" / "windows" / "setup.iss").read_text(encoding="utf-8")
     assert f'#define MyAppVersion "{VERSION}"' in setup, "نسخهٔ نصب‌کنندهٔ ویندوز با بک‌اند یکی نیست"
     assert "RASA SYSTEM" in setup and "RasaSystem" in setup, "نام برند در نصب‌کننده نیست"
-    # بیلد ۵۰۹ = 50900 و از نسخهٔ قبلی (50800) بزرگ‌تر است (INSTALL_FAILED_VERSION_DOWNGRADE)
+    # بیلد ۵۱۰ = 51000 و از نسخهٔ قبلی (50900) بزرگ‌تر است (INSTALL_FAILED_VERSION_DOWNGRADE)
     build = (ROOT / "mobile-android" / "BUILD").read_text(encoding="utf-8").strip()
-    assert build.isdigit() and int(build) == 50900, build
+    assert build.isdigit() and int(build) == 51000, build
     major, minor, build_no = (int(x) for x in VERSION.split("."))
     assert build_no == int(build) // 100, "در ساختار جدید، رقم سوم Version = Build"
     assert int(build) > 49900
@@ -68,7 +68,7 @@ def test_windows_ui_bundle_carries_the_new_look():
         assert "frontend/ui-refresh.css" in names, "لایهٔ بازآرایی ظاهر در بسته نیست"
         assert "frontend/rasa-ui.css" in names, "لایهٔ طراحی v1.0.0 (RASA) در بسته نیست"
         index = z.read("frontend/index.html").decode("utf-8")
-        assert 'href="ui-refresh.css"' in index and 'href="rasa-ui.css"' in index
+        assert 'href="ui-refresh.css?v=' in index and 'href="rasa-ui.css?v=' in index  # build-510 — پین نسخه‌دار
         assert index.index("desktop.css") < index.index("ui-refresh.css"), "باید بعد از desktop.css بارگذاری شود"
         assert index.index("ui-refresh.css") < index.index("rasa-ui.css"), "rasa-ui.css باید لایهٔ آخر باشد"
         sw = z.read("frontend/sw.js").decode("utf-8")

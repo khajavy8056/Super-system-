@@ -48,7 +48,8 @@ def _css_files_in_order() -> list[Path]:
     html = (FRONTEND / "index.html").read_text(encoding="utf-8")
     files = []
     for href in _CSS_RE.findall(html):
-        p = FRONTEND / href.lstrip("/")
+        # build-510 — href ممکن است پین نسخه (?v=1.0.510) داشته باشد؛ بخش کوئری مسیر نیست
+        p = FRONTEND / href.split("?")[0].lstrip("/")
         assert p.exists(), f"index.html references a missing stylesheet: {href}"
         files.append(p)
     return files

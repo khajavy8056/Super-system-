@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__
+from .. import BUILD, __version__
 from ..config import settings
 from ..database import get_db
 from ..models import Notification, SystemSetting, User
@@ -27,6 +27,8 @@ router = APIRouter(tags=["system"])
 def health(db: Session = Depends(get_db)):
     db.execute(select(Notification.id).limit(1))
     return {"status": "ok", "app": settings.APP_NAME, "version": __version__,
+            #: build-510 — شناسهٔ بیلد برای جفت‌سازی رابط/بک‌اند در خود برنامه
+            "build": BUILD,
             "environment": settings.ENVIRONMENT, "time": datetime.utcnow().isoformat()}
 
 

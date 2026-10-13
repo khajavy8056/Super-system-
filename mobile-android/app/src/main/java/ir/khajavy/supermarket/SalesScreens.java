@@ -482,6 +482,39 @@ public final class SalesScreens {
                 JSONArray offers = response.optJSONArray("campaigns");
                 if (offers == null || offers.length() == 0) { Ui.toast("جشنوارهٔ واجد شرایطی برای این سبد فعال نیست"); return; }
                 LinearLayout content = Ui.col(c); content.addView(Ui.muted(c, "فقط جشنواره‌های سازگار با همین سبد نمایش داده می‌شوند؛ شرایط هنگام ثبت فروش دوباره بررسی می‌شود."));
+                /* build-510 — بنر «با همین فاکتور کد تخفیف خرید بعدی صادر می‌شود»:
+                 * اول پاسخ سرور (issue_on_checkout)، وگرنه ردیف‌های محلیِ دارای آستانه. */
+                String issueHint = null;
+                JSONArray issueNow = response.optJSONArray("issue_on_checkout");
+                if (issueNow != null) {
+                    StringBuilder b = new StringBuilder();
+                    for (int i = 0; i < issueNow.length(); i++) {
+                        JSONObject x = issueNow.optJSONObject(i); if (x == null) continue;
+                        if (b.length() > 0) b.append(" + ");
+                        b.append(x.optString("name", "جشنواره")).append(" (")
+                         .append("PERCENT".equalsIgnoreCase(x.optString("discount_type"))
+                                 ? Ui.num(x.optDouble("discount_value", 0)) + "٪" : Ui.money(x.optDouble("discount_value", 0)))
+                         .append(")");
+                    }
+                    if (b.length() > 0) issueHint = "کد تخفیف خرید بعدی صادر می‌شود: " + b + " — روی فاکتور و پیامک هم می‌آید";
+                }
+                if (issueHint == null) {
+                    StringBuilder b = new StringBuilder();
+                    double cartAmount = request.optDouble("amount", 0);
+                    for (int i = 0; i < offers.length(); i++) {
+                        JSONObject o = offers.optJSONObject(i);
+                        if (o == null || o.optDouble("auto_issue_threshold", 0) <= 0) continue;
+                        if (cartAmount + 0.5 < o.optDouble("auto_issue_threshold", 0)) continue;
+                        if (b.length() > 0) b.append(" + ");
+                        b.append(o.optString("name", "جشنواره")).append(" (")
+                         .append("PERCENT".equalsIgnoreCase(o.optString("discount_type"))
+                                 ? Ui.num(o.optDouble("discount_value", 0)) + "٪" : Ui.money(o.optDouble("discount_value", 0)))
+                         .append(o.optInt("auto_issue_validity_days", 0) > 0 ? " · اعتبار " + Ui.fa(String.valueOf(o.optInt("auto_issue_validity_days", 0))) + " روز" : "")
+                         .append(")");
+                    }
+                    if (b.length() > 0) issueHint = "کد تخفیف خرید بعدی صادر می‌شود: " + b + " — روی فاکتور و پیامک هم می‌آید";
+                }
+                if (issueHint != null) content.addView(Ui.item(c, "🎁 با ثبت همین فاکتور…", issueHint, "", Ui.GREEN, () -> { }));
                 Dialog[] sheet = new Dialog[1];
                 for (int i = 0; i < offers.length(); i++) {
                     JSONObject offer = offers.optJSONObject(i); if (offer == null) continue;
