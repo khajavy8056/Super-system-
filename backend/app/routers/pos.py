@@ -168,12 +168,17 @@ def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
     Selecting one is a convenience; checkout re-validates everything (§25).
     """
     from ..services import coupons as coupon_svc
+    amount = Decimal(str(body.amount))
     rows = coupon_svc.eligible_campaigns(
-        db, amount=Decimal(str(body.amount)), product_ids=body.product_ids,
+        db, amount=amount, product_ids=body.product_ids,
         line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
         customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
     )
-    return {"campaigns": rows, "count": len(rows)}
+    # build-509 — «با ثبت این فاکتور کوپن خرید بعدی صادر می‌شود»: صندوق‌دار قبل از
+    # ثبت بداند کدام جشنواره‌های آستانه‌دار فعال‌اند (درخواست مالک برای شفافیت صندوق).
+    issue_now = coupon_svc.issue_on_checkout(
+        db, amount=amount, customer_id=body.customer_id)
+    return {"campaigns": rows, "count": len(rows), "issue_on_checkout": issue_now}
 
 
 @router.post("/cart/validate")
@@ -335,9 +340,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
         # build-481: do NOT echo body.campaign_id over the applied one — for an
         # auto-applied threshold festival the request carries None while the
         # invoice really was discounted by a campaign.
+        # build-509 — جزئیات کامل کوپن صادرشده برای نمایش در صندوق و رسید
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
-                                 if issued.valid_until else None} if issued else None)
+                                 if issued.valid_until else None,
+                                 "discount_type": issued.discount_type,
+                                 "discount_value": float(issued.discount_value),
+                                 "min_purchase": float(issued.min_purchase or 0),
+                                 "campaign_name": (issued.campaign.name if issued.campaign else None)}
+                                if issued else None)
         db.commit()
         return _maybe_redact(user, out)
     except PosError as e:

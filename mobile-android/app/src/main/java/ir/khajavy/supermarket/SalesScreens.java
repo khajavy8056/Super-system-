@@ -260,18 +260,27 @@ public final class SalesScreens {
             for (JSONObject line : cart) amount += line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
             return Math.max(0, amount - invoiceDiscount);
         }
-        JSONObject campaignRequest() throws Exception {
+        /* build-509 — ضدخطای «اطلاعات سبد برای بررسی جشنواره آماده نشد»: هیچ عددِ
+         * ناسالم (NaN/∞ از سطر خراب) به JSON نمی‌رود (put با NaN می‌شکند) و هر سطر
+         * جداگانه محافظت شده؛ در بدترین حالت، درخواستِ حداقلیِ «مبلغ کل» می‌رود. */
+        JSONObject campaignRequest() {
             JSONObject request = new JSONObject(); JSONArray productIds = new JSONArray(); JSONObject lineAmounts = new JSONObject();
             for (JSONObject line : cart) {
-                long productId = line.optLong("product_id");
-                if (productId > 0) productIds.put(productId);
-                String key = String.valueOf(productId);
-                double lineAmount = line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
-                lineAmounts.put(key, lineAmounts.optDouble(key) + lineAmount);
+                try {
+                    long productId = line.optLong("product_id");
+                    if (productId > 0) productIds.put(productId);
+                    String key = String.valueOf(productId);
+                    double lineAmount = line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
+                    lineAmounts.put(key, finBenefit(finBenefit(lineAmounts.optDouble(key)) + finBenefit(lineAmount)));
+                } catch (Exception ignore) { /* one bad line never blocks the festival list */ }
             }
-            request.put("amount", amountBeforeBenefits()); request.put("product_ids", productIds);
-            request.put("line_amounts", lineAmounts); request.put("include_auto_apply", true);
-            if (customer != null) request.put("customer_id", customer.optLong("id"));
+            try {
+                request.put("amount", finBenefit(amountBeforeBenefits()));
+                request.put("product_ids", productIds);
+                request.put("line_amounts", lineAmounts);
+                request.put("include_auto_apply", true);
+                if (customer != null) request.put("customer_id", customer.optLong("id"));
+            } catch (Exception ignore) {}
             return request;
         }
         String benefitsKey() {

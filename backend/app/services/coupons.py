@@ -431,6 +431,41 @@ def consume(
     return red
 
 
+def issue_on_checkout(db: Session, *, amount: Decimal, customer_id: int | None = None,
+                      now: datetime | None = None, limit: int = 5) -> list[dict]:
+    """build-509 — کدام جشنواره‌های آستانه‌دار با همین فاکتور کوپن «خرید بعدی» می‌دهند؟
+
+    فقط خواندنی و برای شفافیت صندوق: هر جشنوارهٔ ACTIVE با آستانهٔ عبورشده، با نام،
+    درصد/مبلغ و اعتبار کوپن آینده — تا صندوق‌دار به مشتری بگوید «کد تخفیف فردا
+    همین حالا برایتان صادر می‌شود».
+    """
+    now = now or datetime.utcnow()
+    out: list[dict] = []
+    rows = db.execute(
+        select(Campaign).where(
+            Campaign.status == "ACTIVE",
+            Campaign.auto_issue_threshold.is_not(None),
+        ).order_by(Campaign.auto_issue_threshold.desc())
+    ).scalars().all()
+    for c in rows:
+        if c.valid_from and c.valid_from > now:
+            continue
+        if c.valid_until and c.valid_until < now:
+            continue
+        if Decimal(amount) < Decimal(c.auto_issue_threshold):
+            continue
+        out.append({
+            "campaign_id": c.id, "name": c.name,
+            "discount_type": c.discount_type, "discount_value": float(c.discount_value),
+            "threshold": float(c.auto_issue_threshold),
+            "validity_days": max(1, c.auto_issue_validity_days),
+            "sms": bool(c.auto_issue_sms),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def issue_next_purchase_coupon(
     db: Session,
     *,
@@ -446,7 +481,7 @@ def issue_next_purchase_coupon(
         select(Campaign).where(
             Campaign.status == "ACTIVE",
             Campaign.auto_issue_threshold.is_not(None),
-        ).order_by(Campaign.auto_issue_threshold.desc())
+        ).order_by(Campaign.auto_issue_threshold.desc(), Campaign.priority.asc(), Campaign.id.desc())
     ).scalars().all()
 
     for c in campaigns:

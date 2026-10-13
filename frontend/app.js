@@ -329,10 +329,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-508 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-509 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 508;
+const UI_BUILD = 509;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -2432,7 +2432,7 @@ window.posClearCampaign = () => { posState.campaign = null; posState.campaignInf
 async function posCampaignModal() {
   if (!posState.cart.length) { toast("سبد خالی است؛ ابتدا کالا اضافه کنید", "err"); return; }
   const gross = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
-  let rows = [];
+  let rows = [], issueNow = [];
   try {
     const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
       amount: gross,
@@ -2440,7 +2440,10 @@ async function posCampaignModal() {
       customer_id: posState.customer ? posState.customer.id : null,
       include_auto_apply: true }) });
     rows = r.campaigns || [];
-  } catch (e) { toast(e.message, "err"); return; }
+    issueNow = r.issue_on_checkout || [];   // build-509 — کدام جشنواره‌ها با همین فاکتور کوپن می‌دهند
+  } catch (e) {
+    toast("بخش جشنواره در دسترس نیست: " + (e.message || "خطای نامشخص"), "err"); return;
+  }
   const list = rows.map((c) => `
     <label class="row" style="gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--shell-border, #333)">
       <input type="radio" name="camp-pick" value="${c.campaign_id}" ${posState.campaign === c.campaign_id ? "checked" : ""} />
@@ -2454,6 +2457,7 @@ async function posCampaignModal() {
   openModal(`<h3>جشنواره‌های قابل اعمال</h3>
     <p class="muted">فقط جشنواره‌هایی که شرایطشان برای همین سبد برقرار است نمایش داده می‌شوند؛
       سرور هنگام ثبت فروش دوباره بررسی می‌کند.</p>
+    ${issueNow.length ? `<p class="muted" style="background:var(--bg2);border:1px dashed var(--border);border-radius:8px;padding:8px">🎁 ${issueNow.map((x) => `«${esc(x.name)}»: با ثبت همین فاکتور، کد تخفیف خرید بعدی (${x.discount_type === "PERCENT" ? fmt(x.discount_value) + "٪" : money(x.discount_value)}) به‌صورت خودکار صادر و روی رسید و پیامک فاکتور می‌آید`).join("<br/>")}</p>` : ""}
     <div id="camp-list">${list}</div>
     <button id="camp-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال جشنواره</button>
     ${posState.campaign ? `<button id="camp-clear" class="btn btn-block" style="margin-top:8px">حذف جشنوارهٔ انتخابی</button>` : ""}`);
@@ -2627,10 +2631,13 @@ async function doCheckout(total) {
       toast(`جشنواره «${inv.campaign_name}» روی فاکتور اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
     }
     if (inv.issued_coupon) {
-      openModal(`<h3>🎁 کوپن خرید بعدی</h3>
-        <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
-        <p class="muted">${inv.issued_coupon.valid_until ? "اعتبار تا " + esc(inv.issued_coupon.valid_until.slice(0, 10)) : ""}
-          — همراه پیامک فاکتور ارسال می‌شود.</p>
+      const ic = inv.issued_coupon;
+      const val = ic.discount_type === "PERCENT" ? fmt(ic.discount_value) + "٪" : money(ic.discount_value);
+      openModal(`<h3>🎁 کوپن خرید بعدی صادر شد</h3>
+        <p>کد تخفیف <code style="font-size:20px;font-weight:800">${esc(ic.code)}</code> به ارزش <b>${val}</b>
+          ${ic.campaign_name ? ` از «${esc(ic.campaign_name)}»` : ""} برای این مشتری صادر شد.</p>
+        <p class="muted">${ic.valid_until ? "اعتبار تا " + faDateTime(ic.valid_until, false) + " · " : ""}
+          روی رسید چاپ شد، در پیامک فاکتور می‌آید و در پروندهٔ مشتری هم ذخیره است.</p>
         <button class="btn btn-primary btn-block" onclick="closeModal()">باشه</button>`);
     }
     try {
@@ -5292,6 +5299,7 @@ window._blockCoupon = async (id) => {
   } catch (e) { toast(e.message, "err"); }
 };
 
+const _campaignCache = {};
 async function loadCampaigns() {
   const tableEl = $("#mk-camps");
   if (!tableEl || !tableEl.isConnected) return;
@@ -5300,18 +5308,41 @@ async function loadCampaigns() {
     const target = $("#mk-camps");
     if (!target || !target.isConnected) return;
     const rows = Array.isArray(raw) ? raw : [];
+    rows.forEach((c) => { _campaignCache[c.id] = c; });
+    const canManage = can("marketing.manage");
+    const STATUS_FA = { ACTIVE: "فعال", PAUSED: "مکث", ENDED: "پایان‌یافته" };
     const body = rows.map((c) => `<tr>
-        <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
+        <td><b>${esc(c.name)}</b>${c.description ? `<div class="muted">${esc(c.description)}</div>` : ""}
+          ${c.auto_issue_threshold ? `<div class="muted">🎁 صدور خودکار بالای ${money(c.auto_issue_threshold)} — کوپن ${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}، اعتبار ${fa(c.auto_issue_validity_days)} روز${c.auto_issue_sms ? " + پیامک" : ""}</div>` : ""}
+          ${c.target_type === "PRODUCTS" ? `<div class="muted">فقط کالاهای: ${(c.target_ids || []).map(fa).join("، ")}</div>` : ""}
+          ${c.first_purchase_only ? `<div class="muted">فقط اولین خرید مشتری</div>` : ""}
+          ${(c.valid_from || c.valid_until) ? `<div class="muted">بازه: ${c.valid_from ? faDateTime(c.valid_from, false) : "—"} تا ${c.valid_until ? faDateTime(c.valid_until, false) : "—"}</div>` : ""}</td>
         <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
         <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
+        <td>${fa(c.used_count || 0)}</td>
+        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : c.status === "PAUSED" ? "amber" : ""}">${STATUS_FA[c.status] || esc(c.status)}</span></td>
+        <td>${canManage ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="campaignModal(_campaignCache[${c.id}])">ویرایش</button>
+            ${c.status === "ACTIVE" ? `<button class="btn btn-sm" onclick="campaignSetStatus(${c.id}, 'PAUSED')">توقف</button>` : c.status === "PAUSED" ? `<button class="btn btn-sm btn-primary" onclick="campaignSetStatus(${c.id}, 'ACTIVE')">ادامه</button>` : ""}
+            ${c.status !== "ENDED" ? `<button class="btn btn-sm btn-ghost" onclick="campaignSetStatus(${c.id}, 'ENDED')">پایان</button>` : ""}
+          </div>` : ""}</td>
       </tr>`).join("");
-    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
-      <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>استفاده</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="6" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
   } catch (e) {
     const target = $("#mk-camps");
     if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
   }
+}
+
+async function campaignSetStatus(id, status) {
+  try {
+    const cur = (await api("/marketing/campaigns")).find((x) => x.id === id);
+    if (!cur) return;
+    await api(`/marketing/campaigns/${id}`, { method: "PATCH", body: JSON.stringify({ ...cur, status }) });
+    toast(status === "PAUSED" ? "کمپین متوقف شد" : status === "ENDED" ? "کمپین پایان یافت" : "کمپین فعال شد");
+    loadCampaigns(); loadMarketingStats();
+  } catch (e) { toast(e.message, "err"); }
 }
 
 function couponModal() {
@@ -5354,52 +5385,109 @@ function couponModal() {
   });
 }
 
-function campaignModal() {
-  openModal(`<h3>کمپین / جشنواره جدید</h3>
-    <label>نام</label><input id="cm-name" placeholder="جشنواره پاییز" />
+/* build-509 — فرم کامل کمپین/جشنواره: ساخت «انواع» جشنواره با همهٔ توانمندی‌های مدل
+ * (بازهٔ اعتبار جلالی، هدف‌گیری کالا، فقط اولین خرید، سقف هر مشتری، اولویت، پیامک
+ * کوپن، اعمال خودکار، ترکیب‌پذیری) — و ویرایش همان جشنواره با یک دیالوگ. */
+function campaignModal(camp) {
+  const c = camp || {};
+  const jdate = (iso) => {
+    if (!iso) return "";
+    try { const d = new Date(iso); const j = window.jalali ? jalali.toJalali(d.getFullYear(), d.getMonth() + 1, d.getDate()) : null;
+      return j ? `${j.jy}/${String(j.jm).padStart(2, "0")}/${String(j.jd).padStart(2, "0")}` : ""; } catch (e) { return ""; }
+  };
+  const gdate = (txt) => {
+    txt = (txt || "").trim(); if (!txt) return null;
+    const m = txt.match(/^(1[34]\d{2})\/(\d{1,2})\/(\d{1,2})$/);   // 1405/07/21
+    if (!m) return null;
+    try { const g = jalali.toGregorian(+m[1], +m[2], +m[3]);
+      return new Date(g.gy, g.gm - 1, g.gd, 12, 0, 0).toISOString(); } catch (e) { return null; }
+  };
+  const targets = (c.target_ids || []).join(", ");
+  openModal(`<h3>${camp ? "ویرایش کمپین / جشنواره" : "کمپین / جشنواره جدید"}</h3>
+    <label>نام</label><input id="cm-name" value="${esc(c.name || "")}" placeholder="جشنواره پاییز" />
+    <label>توضیح (اختیاری)</label><input id="cm-desc" value="${esc(c.description || "")}" placeholder="توضیح کوتاه برای گزارش‌ها" />
     <div class="form-row">
       <div><label>نوع تخفیف</label><select id="cm-type">
-        <option value="PERCENT">درصدی</option><option value="FIXED">مبلغ ثابت</option></select></div>
-      <div><label>مقدار</label><input id="cm-value" type="number" value="10" /></div>
+        <option value="PERCENT" ${c.discount_type !== "FIXED" ? "selected" : ""}>درصدی</option>
+        <option value="FIXED" ${c.discount_type === "FIXED" ? "selected" : ""}>مبلغ ثابت</option></select></div>
+      <div><label>مقدار</label><input id="cm-value" type="number" value="${c.discount_value != null ? c.discount_value : 10}" /></div>
     </div>
     <div class="form-row">
-      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="400000" /></div>
-      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" placeholder="بدون سقف" /></div>
+      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="${c.min_purchase != null ? c.min_purchase : 0}" /></div>
+      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" value="${c.max_purchase || ""}" placeholder="بدون سقف" /></div>
     </div>
     <div class="form-row">
-      <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="1000000" /></div>
-      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" placeholder="نامحدود" /></div>
+      <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="${c.max_discount || ""}" placeholder="بدون سقف" /></div>
+      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" value="${c.usage_limit || ""}" placeholder="نامحدود" /></div>
     </div>
     <div class="form-row">
-      <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="1000000" /></div>
-      <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="30" /></div>
+      <div><label>سقف هر مشتری</label><input id="cm-percust" type="number" value="${c.per_customer_limit || ""}" placeholder="نامحدود" /></div>
+      <div><label>اولویت (۱ = اول)</label><input id="cm-prio" type="number" min="1" max="5" value="${c.priority || 3}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>از تاریخ (جلالی ۱۴۰۵/۰۷/۰۱)</label><input id="cm-from" placeholder="اختیاری" value="${jdate(c.valid_from)}" /></div>
+      <div><label>تا تاریخ (جلالی)</label><input id="cm-until" placeholder="اختیاری" value="${jdate(c.valid_until)}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>هدف تخفیف</label><select id="cm-target">
+        <option value="ALL" ${c.target_type !== "PRODUCTS" ? "selected" : ""}>کل سبد</option>
+        <option value="PRODUCTS" ${c.target_type === "PRODUCTS" ? "selected" : ""}>فقط کالاهای مشخص</option></select></div>
+      <div><label>شناسهٔ کالاها (با کاما)</label><input id="cm-ids" placeholder="مثلاً ۱۲,۳۴" value="${esc(targets)}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="${c.auto_issue_threshold != null ? c.auto_issue_threshold : ""}" placeholder="خاموش" /></div>
+      <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="${c.auto_issue_validity_days || 30}" /></div>
     </div>
     <div class="form-row">
       <div><label>نوع اعمال در صندوق</label><select id="cm-apply">
-        <option value="SELECT">انتخاب توسط صندوق‌دار (F10)</option>
-        <option value="AUTO">اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
+        <option value="SELECT" ${!c.auto_apply ? "selected" : ""}>انتخاب توسط صندوق‌دار (F10)</option>
+        <option value="AUTO" ${c.auto_apply ? "selected" : ""}>اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
       <div><label>ترکیب با کوپن</label><select id="cm-stack">
-        <option value="0">خیر</option><option value="1">بله</option></select></div>
+        <option value="0" ${!c.stackable ? "selected" : ""}>خیر</option>
+        <option value="1" ${c.stackable ? "selected" : ""}>بله</option></select></div>
     </div>
-    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.
-      جشنواره‌های «اعمال خودکار» هنگام ثبت فروش، به‌شرط برقراری شرایط، روی فاکتور اعمال و ثبت می‌شوند.</p>
-    <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کمپین</button>`);
+    <div class="form-row">
+      <div><label>فقط اولین خرید مشتری</label><select id="cm-first">
+        <option value="0" ${!c.first_purchase_only ? "selected" : ""}>خیر</option>
+        <option value="1" ${c.first_purchase_only ? "selected" : ""}>بله</option></select></div>
+      <div><label>وضعیت</label><select id="cm-status">
+        <option value="ACTIVE" ${(c.status || "ACTIVE") === "ACTIVE" ? "selected" : ""}>فعال</option>
+        <option value="PAUSED" ${c.status === "PAUSED" ? "selected" : ""}>مکث</option>
+        <option value="ENDED" ${c.status === "ENDED" ? "selected" : ""}>پایان‌یافته</option></select></div>
+    </div>
+    <p class="muted">وقتی مبلغ فاکتور از «صدور خودکار» عبور کند، یک کد تخفیف برای خرید بعدی مشتری صادر می‌شود؛ روی رسید چاپ، در پیامک فاکتور ارسال و در پروندهٔ مشتری ذخیره می‌شود. تاریخ‌ها را جلالی وارد کنید (خالی = همیشه).</p>
+    <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">${camp ? "ذخیرهٔ تغییرات" : "ثبت کمپین"}</button>`);
   $("#cm-save").addEventListener("click", async () => {
+    const bad = [];
+    const from = gdate($("#cm-from").value), until = gdate($("#cm-until").value);
+    if ($("#cm-from").value.trim() && !from) bad.push("«از تاریخ» جلالی نامعتبر است");
+    if ($("#cm-until").value.trim() && !until) bad.push("«تا تاریخ» جلالی نامعتبر است");
+    if (bad.length) { toast(bad.join(" · "), "err"); return; }
     try {
-      await api("/marketing/campaigns", { method: "POST", body: JSON.stringify({
+      const body = {
         name: $("#cm-name").value.trim() || "کمپین",
+        description: $("#cm-desc").value.trim() || null,
         discount_type: $("#cm-type").value,
         discount_value: Number($("#cm-value").value || 0),
         min_purchase: Number($("#cm-min").value || 0),
         max_discount: Number($("#cm-max").value || 0) || null,
         max_purchase: Number($("#cm-maxpurchase").value || 0) || null,
         usage_limit: Number($("#cm-usage").value || 0) || null,
-        auto_apply: $("#cm-apply") ? $("#cm-apply").value === "AUTO" : false,
-        stackable: $("#cm-stack") ? $("#cm-stack").value === "1" : false,
+        per_customer_limit: Number($("#cm-percust").value || 0) || null,
+        priority: Math.min(5, Math.max(1, Number($("#cm-prio").value || 3))),
+        valid_from: from, valid_until: until,
+        target_type: $("#cm-target").value,
+        target_ids: ($("#cm-ids").value || "").split(/[،,\s]+/).map((x) => parseInt(x, 10)).filter((x) => x > 0),
+        first_purchase_only: $("#cm-first").value === "1",
+        auto_apply: $("#cm-apply").value === "AUTO",
+        stackable: $("#cm-stack").value === "1",
         auto_issue_threshold: Number($("#cm-thr").value || 0) || null,
         auto_issue_validity_days: Number($("#cm-days").value || 30),
-      }) });
-      closeModal(); toast("کمپین ثبت شد"); loadCampaigns(); loadMarketingStats();
+        status: $("#cm-status").value,
+      };
+      if (camp) await api(`/marketing/campaigns/${camp.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/marketing/campaigns", { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast(camp ? "تغییرات ذخیره شد" : "کمپین ثبت شد"); loadCampaigns(); loadMarketingStats();
     } catch (e) { toast(e.message, "err"); }
   });
 }
