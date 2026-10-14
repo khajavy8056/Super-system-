@@ -538,8 +538,42 @@ public final class Local {
         format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
         return format.format(new java.util.Date());
     }
-    static boolean offerHasStarted(String value, String now) { return value == null || value.isEmpty() || value.compareTo(now) <= 0; }
-    static boolean offerHasEnded(String value, String now) { return value != null && !value.isEmpty() && value.compareTo(now) < 0; }
+    /* build-513 — قاعدهٔ امنِ بازه: تاریخ خالی/ناقابل‌تجزیه = بدون محدودیت (هیچ
+     * جشنواره‌ای به‌خاطر شکلِ متن تاریخِ خراب، بی‌صدا از اعمال و صدور حذف نمی‌شود). */
+    static boolean offerHasStarted(String value, String now) {
+        long v = windowKey(value);
+        return v <= 0 || v <= windowKey(now);
+    }
+    static boolean offerHasEnded(String value, String now) {
+        long v = windowKey(value);
+        return v > 0 && v < windowKey(now);
+    }
+    /** "yyyy-MM-dd[ T HH:mm[:ss]]" → عدد مقایسه‌پذیر yyyymmddHHMMSS؛ ناقابل‌تجزیه → 0 */
+    static long windowKey(String value) {
+        if (value == null) return 0;
+        String v = value.trim().replace(' ', 'T');
+        if (v.length() < 10) return 0;
+        try {
+            long y = Long.parseLong(v.substring(0, 4));
+            long mo = Long.parseLong(v.substring(5, 7));
+            long d = Long.parseLong(v.substring(8, 10));
+            long h = 0, mi = 0, s = 0;
+            if (v.length() >= 13) h = Long.parseLong(v.substring(11, 13));
+            if (v.length() >= 16) mi = Long.parseLong(v.substring(14, 16));
+            if (v.length() >= 19) s = Long.parseLong(v.substring(17, 19));
+            if (mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+            return ((((y * 100 + mo) * 100 + d) * 100 + h) * 100 + mi) * 100 + s;
+        } catch (Exception badDate) { return 0; }
+    }
+    static String offerWindowReason(JSONObject campaign, String now) {
+        String until = campaign.optString("valid_until", "");
+        if (!until.isEmpty() && offerHasEnded(until, now))
+            return "بازهٔ جشنواره به پایان رسیده (تا " + Ui.jdate(until) + ") — تاریخ «پایان» را تمدید کنید";
+        String from = campaign.optString("valid_from", "");
+        if (!from.isEmpty() && !offerHasStarted(from, now))
+            return "جشنواره هنوز شروع نشده (از " + Ui.jdate(from) + ")";
+        return "خارج از بازهٔ زمانی جشنواره است";
+    }
     /** build-501 — NaN مصون‌سازی: مقادیر عددی غیرمتناهی (NULL/کلید غایب) صفر می‌شوند تا هرگز به SQLite نرسند. */
     static double fin(double v) { return Double.isFinite(v) ? v : 0; }
     static double optFin(JSONObject o, String key, double def) { double v = o.optDouble(key, def); return Double.isFinite(v) ? v : def; }
@@ -614,7 +648,12 @@ public final class Local {
              * (is_local=1) در حالت اتصال به PC هم صادق است؛ فاکتور روی گوشی ساخته و با
              * همان تخفیف همگام می‌شود، پس کوپن خرید بعدی هم باید همین‌جا صادر شود.
              * (ریشهٔ «جشنوارهٔ ۱۰ میلیونی هیچ کاری نمی‌کند» در گزارش مالک.) */
-            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
+            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) {
+                /* build-513 — صدور بی‌صدا ممنوع: دلیل رد شدن در دفتر حسابرسی ثبت می‌شود */
+                audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(campaign.optLong("id")), null,
+                        obj("reason", offerWindowReason(campaign, now), "invoice", invoiceNo));
+                continue;
+            }
             long campaignId = campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id");
             if (one("SELECT id FROM coupons WHERE campaign_id=? AND note=?", campaignId, note) != null) continue;
             String code = null;
@@ -722,12 +761,12 @@ public final class Local {
              * فیلتر قدیمی `localCampaign && !standalone → skip` عامل پیام
              * «جشنوارهٔ متناسب با این سبد وجود ندارد» برای جشنواره‌های ساخته‌شده روی گوشی بود. */
             String name = campaign.optString("name", "جشنواره");
-            if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) {
-                if (rejections != null) rejections.put(obj("name", name, "reason", "در حالت «اعمال خودکار» است و در فهرست انتخاب صندوق‌دار نمی‌آید"));
-                continue;
-            }
+            boolean pickerExclude = !request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1;
+            /* build-513 — ترتیب تشخیص: اول موانع واقعی (بازه/حداقل/سقف/…) تا دلیل
+             * درست دیده شود؛ «اعمال خودکار» فقط اگر مانع دیگری نبود، آخر توضیح می‌آید.
+             * (قبلاً «خودکار» جلوی دیدن دلیل واقعی — مثلاً گذشته بودن پایان — را می‌گرفت.) */
             if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) {
-                if (rejections != null) rejections.put(obj("name", name, "reason", "خارج از بازهٔ زمانی جشنواره است"));
+                if (rejections != null) rejections.put(obj("name", name, "reason", offerWindowReason(campaign, now)));
                 continue;
             }
             if (amount <= 0 || amount < optFin(campaign, "min_purchase", 0)) {
@@ -791,6 +830,10 @@ public final class Local {
                     optFin(campaign, "discount_value", 0), optFin(campaign, "max_discount", 0), eligibleBase);
             if (discount <= 0 || !Double.isFinite(discount)) {
                 if (rejections != null) rejections.put(obj("name", name, "reason", "مقدار تخفیف این جشنواره صفر است"));
+                continue;
+            }
+            if (pickerExclude) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "خودکار اعمال می‌شود و در فهرست انتخاب نمی‌آید؛ هنگام ثبت فروش خودش اعمال می‌شود"));
                 continue;
             }
             eligible.put(obj("campaign_id", campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id"),

@@ -629,7 +629,15 @@ public final class SalesScreens {
                 if (Api.standalone() || !Api.online) {
                     JSONObject stored = (JSONObject) Local.handle("POST", "/pos/checkout", body.toString());
                     no = stored.optString("local_no", stored.optString("invoice_number"));
-                } else no = Db.localSale(body, total);
+                } else {
+                    no = Db.localSale(body, total);
+                    /* build-513 — مسیر جفت‌شدهٔ آنلاین هم باید پاداش خرید بعدی را صادر کند
+                     * (قبلاً فقط مسیر موتور محلی وصل بود؛ این‌جا صدور اجرا نمی‌شد). */
+                    try {
+                        JSONObject saleRow = Local.one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no);
+                        if (saleRow != null) Local.issueLocalAutoCoupons(saleRow, no, total);
+                    } catch (Throwable rewardFail) { android.util.Log.w("POS", "auto coupon issue skipped", rewardFail); }
+                }
                 if (no.isEmpty()) throw new IllegalStateException("شمارهٔ فاکتور محلی ساخته نشد");
                 if (heldId != null) removeHeld(heldId);
                 String issuedCouponCodes = Local.issuedCouponCodesForInvoice(no);

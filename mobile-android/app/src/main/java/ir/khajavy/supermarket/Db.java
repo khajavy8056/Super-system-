@@ -1242,7 +1242,8 @@ public final class Db extends SQLiteOpenHelper {
         String qty = "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0)";
         StringBuilder sql = new StringBuilder(
             "SELECT p.id, p.name, p.barcode, p.min_stock_alert, " + qty + ","
-            + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0)"
+            + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0),"
+            + " IFNULL(p.image_url,''), IFNULL((SELECT bk.category FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')"
             + " FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1");
         java.util.List<String> args = new ArrayList<>();
         if (!f.isEmpty()) { sql.append(" AND (p.name LIKE ? OR p.barcode LIKE ?)"); args.add("%" + f + "%"); args.add("%" + f + "%"); }
@@ -1259,6 +1260,8 @@ public final class Db extends SQLiteOpenHelper {
                     o.put("product_id", c.getLong(0)); o.put("name", c.getString(1)); o.put("barcode", c.getString(2));
                     o.put("min_stock_alert", c.getDouble(3)); o.put("total_stock", c.getDouble(4));
                     o.put("total_qty", c.getDouble(4)); o.put("value_at_cost", c.getDouble(5));
+                    /* build-513 — تصویر و دسته برای فهرست انبار (کاشی تصویری مثل «کالاها») */
+                    o.put("image_url", c.getString(6)); o.put("category_name", c.getString(7));
                 } catch (Exception ignore) {}
                 out.add(o);
             }

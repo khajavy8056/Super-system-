@@ -113,8 +113,29 @@ class ReceiveDialog(QDialog):
         self.accept()
 
 
+def _local_icon(image_url: str | None):
+    """build-513 — آیکون ۳۲px از فایل محلی (مسیر /media/…)؛ شبکه لازم نیست."""
+    if not image_url or "/media/" not in image_url:
+        return None
+    from pathlib import Path as _Path
+    from PySide6.QtGui import QIcon, QPixmap
+    try:
+        from app.config import settings
+        name = image_url.rsplit("/media/", 1)[1].split("?")[0]
+        f = _Path(settings.MEDIA_DIR) / name
+        if not f.exists():
+            return None
+        pm = QPixmap(str(f))
+        if pm.isNull():
+            return None
+        return QIcon(pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation))
+    except Exception:
+        return None
+
+
 class ProductsPage(QWidget):
-    HEADERS = ["کالا", "بارکد", "موجودی", "قیمت فروش", "انقضای نزدیک‌ترین Batch"]
+    HEADERS = ["کالا", "بارکد", "دسته", "موجودی", "قیمت فروش", "انقضای نزدیک‌ترین Batch"]
 
     def __init__(self, ctx: Context):
         super().__init__()
@@ -168,6 +189,10 @@ class ProductsPage(QWidget):
             if term:
                 like = f"%{term}%"
                 stmt = stmt.having((Product.name.ilike(like)) | (Product.barcode.ilike(like)))
+            # build-513 — نام دسته‌ها یک‌جا (بدون 1+N) + مسیر تصویرهای محلی
+            categories = dict(db.execute(
+                select(__import__("app.models.catalog", fromlist=["Category"]).Category.id,
+                       __import__("app.models.catalog", fromlist=["Category"]).Category.name)).all())
             rows = db.execute(stmt.order_by(Product.name.asc()).limit(300)).all()
             # نزدیک‌ترین Batch فعالِ همهٔ کالاها در «یک» کوئری (بهینه‌سازی 1+N):
             # ردیف‌های فعال مرتب بر اساس (کالا، انقضا) → اولینِ هر کالا
@@ -187,8 +212,13 @@ class ProductsPage(QWidget):
                 self.table.insertRow(r)
                 ui_kit.fill_row(self.table, r, [
                     product.name, product.barcode or "—",
+                    categories.get(product.category_id, "") or "—",
                     fa(float(qty)) + " " + (product.unit.name if product.unit else ""),
                     money(batch_price) if batch_price is not None else "—", expiry])
                 self.table.item(r, 0).setData(Qt.UserRole, product.id)
+                # build-513 — تصویر کالا در خود سطر (فایل محلی؛ بدون درخواست شبکه)
+                icon = _local_icon(product.image_url)
+                if icon is not None:
+                    self.table.item(r, 0).setIcon(icon)
         finally:
             db.close()

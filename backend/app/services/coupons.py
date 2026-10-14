@@ -324,9 +324,8 @@ def eligible_campaigns(
     ).scalars().all()
     out: list[dict] = []
     for c in rows:
-        if not include_auto_apply and c.auto_apply:
-            _reject(c, "در حالت «اعمال خودکار» است و در فهرست انتخاب صندوق‌دار نمی‌آید")
-            continue
+        # build-513 — ترتیب تشخیص: اول موانع واقعی؛ «خودکار» فقط در پایان توضیح می‌آید
+        # تا دلیل واقعی (مثلاً حداقل خرید یا بازهٔ گذشته) پشت آن پنهان نشود.
         if c.valid_from and c.valid_from > now:
             _reject(c, "هنوز شروع نشده است")
             continue
@@ -343,6 +342,9 @@ def eligible_campaigns(
             )
         except CampaignError as ce:
             _reject(c, getattr(ce, "message", "") or "شرایط جشنواره با این سبد جمع نشد")
+            continue
+        if not include_auto_apply and c.auto_apply:
+            _reject(c, "خودکار اعمال می‌شود و در فهرست انتخاب نمی‌آید؛ هنگام ثبت فروش خودش اعمال می‌شود")
             continue
         out.append(ev)
         if len(out) >= limit:
