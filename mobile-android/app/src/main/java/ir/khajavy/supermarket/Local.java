@@ -658,7 +658,32 @@ public final class Local {
             else if (applied != null) audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(applied.optLong("id")), null,
                     obj("reason", "جشنوارهٔ اعمال‌شده دیگر فعال نیست", "invoice", invoiceNo));
         }
+        /* build-515 — جشنواره‌های «بعد از N خرید»: وقتی تعداد خرید مشتری به مضرب N
+         * رسید، کوپن خرید بعدی صادر می‌شود (سه‌چهار بار خرید، پاداش بگیر). */
+        if (customerId != 0) {
+            JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
+            int localOnly = customer == null ? 0 : customer.optInt("is_local");
+            JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+                    + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
+            int cnt = (customer == null ? 0 : customer.optInt("lifetime_purchase_count")) + (purchases == null ? 0 : purchases.optInt("n"));
+            for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND min_purchase_count>0")) {
+                int n = campaign.optInt("min_purchase_count", 0);
+                if (n <= 0 || cnt == 0 || cnt % n != 0) {
+                    if (n > 0 && cnt % n != 0)
+                        audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(campaign.optLong("id")), String.valueOf(customerId),
+                                obj("reason", "خرید شمارهٔ " + cnt + " است؛ این جشنواره در خرید شمارهٔ " + n + " صادر می‌شود", "invoice", invoiceNo));
+                    continue;
+                }
+                if (campaign.isNull("auto_issue_threshold") || optFin(campaign, "auto_issue_threshold", 0) <= 0 || total >= optFin(campaign, "auto_issue_threshold", 0))
+                    picked.put(campaign.optLong("id"), campaign);
+            }
+        }
         for (JSONObject campaign : picked.values()) {
+            if ("GIFT".equalsIgnoreCase(campaign.optString("discount_type"))) {
+                audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(campaign.optLong("id")), String.valueOf(customerId),
+                        obj("reason", "پاداش این جشنواره هدیهٔ رایگان روی همین خرید است، نه کوپن خرید بعدی", "invoice", invoiceNo));
+                continue;
+            }
             boolean localCampaign = campaign.optInt("is_local", 1) == 1;
             /* build-511 — پایان تبعیضِ حالت جفت‌شده: جشنواره‌ای که روی خود گوشی ساخته شده
              * (is_local=1) در حالت اتصال به PC هم صادق است؛ فاکتور روی گوشی ساخته و با
@@ -789,9 +814,30 @@ public final class Local {
                 if (rejections != null) rejections.put(obj("name", name, "reason", "حداقل خرید " + Ui.money(optFin(campaign, "min_purchase", 0)) + " تومان است؛ سبد شما " + Ui.money(amount) + " تومان"));
                 continue;
             }
+            /* build-515 — شرط تعداد خرید: «بعد از N خرید» (خرید جاری شمرده می‌شود) */
+            int minCount = campaign.optInt("min_purchase_count", 0);
+            if (minCount > 0) {
+                int done = 0;
+                if (customerId != 0) {
+                    JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
+                    int localOnly = customer == null ? 0 : customer.optInt("is_local");
+                    JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+                            + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
+                    done = (customer == null ? 0 : customer.optInt("lifetime_purchase_count")) + (purchases == null ? 0 : purchases.optInt("n"));
+                }
+                if (done + 1 < minCount) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "این جشنواره از خرید شمارهٔ " + Ui.fa(String.valueOf(minCount)) + " فعال می‌شود؛ این خرید شمارهٔ " + Ui.fa(String.valueOf(done + 1)) + " شماست"));
+                    continue;
+                }
+            }
             double maximumPurchase = optFin(campaign, "max_purchase", 0);
             if (maximumPurchase > 0 && amount > maximumPurchase) {
                 if (rejections != null) rejections.put(obj("name", name, "reason", "فقط تا سقف خرید " + Ui.money(maximumPurchase) + " تومان اعمال می‌شود"));
+                continue;
+            }
+            if (campaign.optInt("reward_next_only", 0) == 1) {
+                /* build-515 — نوع «هدیهٔ خرید بعدی» جادوگر: پاداش کوپنِ خرید بعدی است */
+                if (rejections != null) rejections.put(obj("name", name, "reason", "پاداش این جشنواره کوپن خرید بعدی است و روی همین فاکتور اعمال نمی‌شود"));
                 continue;
             }
             if (!campaign.isNull("auto_issue_threshold") && optFin(campaign, "discount_value", 0) == 0) {
@@ -804,6 +850,29 @@ public final class Local {
                 continue;
             }
             double eligibleBase = amount;
+            if ("CATEGORY".equalsIgnoreCase(campaign.optString("target_type", "ALL"))) {
+                /* build-515 — هدف‌گیری دسته‌ای: target_ids = نام دسته؛ دستهٔ هر خط از بانک کالا */
+                JSONArray targets;
+                try { targets = new JSONArray(campaign.optString("target_ids", "[]")); }
+                catch (org.json.JSONException invalidTargets) { if (rejections != null) rejections.put(obj("name", name, "reason", "فهرست دسته‌های هدف نامعتبر است")); continue; }
+                JSONObject lineCats = request.optJSONObject("line_categories");
+                if (targets.length() == 0 || lineCats == null) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "هیچ کالایی از دسته‌های هدف در سبد نیست"));
+                    continue;
+                }
+                eligibleBase = 0;
+                for (int i = 0; i < targets.length(); i++) {
+                    String cat = targets.optString(i);
+                    for (java.util.Iterator<String> it = lineCats.keys(); it.hasNext();) {
+                        String key = it.next();
+                        if (cat.equals(lineCats.optString(key))) eligibleBase += lineAmounts.optDouble(key, 0);
+                    }
+                }
+                if (eligibleBase <= 0) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "هیچ کالایی از دسته‌های هدف در سبد نیست"));
+                    continue;
+                }
+            }
             if ("PRODUCTS".equalsIgnoreCase(campaign.optString("target_type", "ALL"))) {
                 JSONArray targets;
                 try { targets = new JSONArray(campaign.optString("target_ids", "[]")); }
@@ -842,8 +911,30 @@ public final class Local {
                     continue;
                 }
             }
-            double discount = offerDiscount(campaign.optString("discount_type", "PERCENT"),
-                    optFin(campaign, "discount_value", 0), optFin(campaign, "max_discount", 0), eligibleBase);
+            double discount;
+            String giftNote = "";
+            if ("GIFT".equalsIgnoreCase(campaign.optString("discount_type", "PERCENT"))) {
+                /* build-515 — هدیهٔ رایگان: تا N عدد از کالای هدف رایگان می‌شود (target_ids=[pid]) */
+                JSONArray giftTarget;
+                try { giftTarget = new JSONArray(campaign.optString("target_ids", "[]")); }
+                catch (org.json.JSONException invalidGift) { if (rejections != null) rejections.put(obj("name", name, "reason", "کالای هدیه نامعتبر است")); continue; }
+                long giftPid = giftTarget.length() > 0 ? giftTarget.optLong(0) : 0;
+                double lineAmount = lineAmounts == null ? 0 : lineAmounts.optDouble(String.valueOf(giftPid), 0);
+                int lineQty = Math.max(1, request.optJSONObject("line_qtys") == null ? 1 : request.optJSONObject("line_qtys").optInt(String.valueOf(giftPid), 1));
+                int giftQty = Math.max(1, (int) optFin(campaign, "discount_value", 1));
+                if (lineAmount <= 0) {
+                    JSONObject gp = one("SELECT name FROM products WHERE id=?", giftPid);
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "کالای هدیه («" + (gp == null ? "—" : gp.optString("name")) + "») در سبد نیست"));
+                    continue;
+                }
+                int freeUnits = Math.min(giftQty, lineQty);
+                double unit = lineAmount / lineQty;
+                discount = Math.min(lineAmount, unit * freeUnits);
+                giftNote = freeUnits + " عدد رایگان";
+            } else {
+                discount = offerDiscount(campaign.optString("discount_type", "PERCENT"),
+                        optFin(campaign, "discount_value", 0), optFin(campaign, "max_discount", 0), eligibleBase);
+            }
             if (discount <= 0 || !Double.isFinite(discount)) {
                 if (rejections != null) rejections.put(obj("name", name, "reason", "مقدار تخفیف این جشنواره صفر است"));
                 continue;
@@ -860,7 +951,8 @@ public final class Local {
                     /* build-510 — راهنمای «با همین فاکتور کوپن خرید بعدی می‌گیری» در حالت آفلاین */
                     "auto_issue_threshold", campaign.isNull("auto_issue_threshold") ? JSONObject.NULL : optFin(campaign, "auto_issue_threshold", 0),
                     "auto_issue_validity_days", campaign.optInt("auto_issue_validity_days", 0),
-                    "scope_amount", eligibleBase, "target_type", campaign.optString("target_type", "ALL"),
+                    "scope_amount", eligibleBase, "target_type", campaign.optString("target_type", "ALL"), "gift_note", giftNote,
+                    "min_purchase_count", campaign.optInt("min_purchase_count", 0),
                     "stackable", campaign.optInt("stackable") == 1, "auto_apply", campaign.optInt("auto_apply") == 1,
                     "priority", campaign.optInt("priority", 3), "_local", localCampaign));
             if (eligible.length() >= 20) break;
@@ -1113,6 +1205,9 @@ public final class Local {
         if (b.has("discount_type")) v.put("discount_type", b.optString("discount_type", "PERCENT"));
         if (b.has("discount_value")) v.put("discount_value", b.optDouble("discount_value", 0));
         if (b.has("min_purchase")) v.put("min_purchase", b.optDouble("min_purchase", 0));
+        /* build-515 — شرط تعداد خرید از سرور/جادوگر */
+        v.put("min_purchase_count", b.optInt("min_purchase_count", 0));
+        v.put("reward_next_only", b.optInt("reward_next_only", 0));
         if (b.has("target_type")) v.put("target_type", b.optString("target_type", "ALL"));
         if (b.has("first_purchase_only")) v.put("first_purchase_only", offerFlag(b, "first_purchase_only") ? 1 : 0);
         if (b.has("stackable")) v.put("stackable", offerFlag(b, "stackable") ? 1 : 0);

@@ -154,6 +154,8 @@ class CampaignListIn(BaseModel):
     amount: Decimal = Field(ge=0)
     product_ids: list[int] | None = None
     line_amounts: dict[int, Decimal] | None = None
+    #: build-515 — تعداد هر خط (برای پاداش «هدیهٔ رایگان»)
+    line_qtys: dict[int, Decimal] | None = None
     customer_id: int | None = None
     include_auto_apply: bool = True
 
@@ -173,6 +175,7 @@ def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
     rows = coupon_svc.eligible_campaigns(
         db, amount=amount, product_ids=body.product_ids,
         line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
+        line_qtys={int(k): Decimal(str(v)) for k, v in (body.line_qtys or {}).items()},
         customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
         rejected=rejections,
     )
@@ -225,15 +228,17 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depe
         if body.campaign_id:
             from ..services import coupons as camp_svc
             line_amounts: dict[int, Decimal] = {}
+            line_qtys: dict[int, Decimal] = {}
             for i in items:
                 line_amounts[i.product_id] = line_amounts.get(i.product_id, Decimal("0")) + (
                     (i.unit_sell_price or Decimal("0")) * i.quantity - i.discount)
+                line_qtys[i.product_id] = line_qtys.get(i.product_id, Decimal("0")) + i.quantity
             try:
                 ev = camp_svc.evaluate_campaign(
                     db, campaign_id=body.campaign_id,
                     amount=Decimal(str(totals["subtotal"])),
                     product_ids=[i.product_id for i in items], line_amounts=line_amounts,
-                    customer_id=body.customer_id)
+                    line_qtys=line_qtys, customer_id=body.customer_id)
                 campaign = {"campaign_id": ev["campaign_id"], "name": ev["name"],
                             "discount": float(ev["discount"]), "ok": True,
                             "stackable": ev["stackable"]}

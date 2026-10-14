@@ -672,6 +672,9 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                 "auto_issue_threshold": float(c.auto_issue_threshold) if c.auto_issue_threshold is not None else None,
                 "auto_issue_validity_days": c.auto_issue_validity_days,
                 "auto_issue_sms": bool(c.auto_issue_sms),
+                # build-515 — جادوگر: شرط تعداد خرید + «پاداش فقط خرید بعدی»
+                "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+                "reward_next_only": bool(getattr(c, "reward_next_only", False)),
                 "target_type": c.target_type, "target_ids": c.target_ids,
                 "first_purchase_only": bool(c.first_purchase_only),
                 "usage_limit": c.usage_limit, "per_customer_limit": c.per_customer_limit,

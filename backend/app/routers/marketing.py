@@ -22,9 +22,12 @@ router = APIRouter(prefix="/marketing", tags=["marketing"])
 class CampaignIn(BaseModel):
     name: str
     description: str | None = None
-    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED)$")
+    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED|GIFT)$")
     discount_value: Decimal = Field(default=Decimal("0"), ge=0)
     min_purchase: Decimal = Field(default=Decimal("0"), ge=0)
+    #: build-515 — شرط تعداد خرید (جادوگر گام ۲): «بعد از N خرید»
+    min_purchase_count: int = Field(default=0, ge=0, le=10000)
+    reward_next_only: bool = False
     max_discount: Decimal | None = Field(default=None, ge=0)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
@@ -35,8 +38,9 @@ class CampaignIn(BaseModel):
     # build-481 — executable benefit rules (§23): only the capabilities that fit
     # this business model and architecture are modelled; everything else stays out.
     max_purchase: Decimal | None = Field(default=None, ge=0)
-    target_type: str = Field(default="ALL", pattern="^(ALL|PRODUCTS)$")
-    target_ids: list[int] | None = None
+    target_type: str = Field(default="ALL", pattern="^(ALL|PRODUCTS|CATEGORY)$")
+    #: build-515 — برای PRODUCTS شناسهٔ کالا؛ برای CATEGORY نام دسته
+    target_ids: list[int | str] | None = None
     first_purchase_only: bool = False
     usage_limit: int | None = Field(default=None, ge=1)
     per_customer_limit: int | None = Field(default=None, ge=1)
@@ -50,7 +54,7 @@ class CouponIn(BaseModel):
     campaign_id: int | None = None
     customer_id: int | None = None
     customer_phone: str | None = None
-    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED)$")
+    discount_type: str | None = Field(default=None, pattern="^(PERCENT|FIXED|GIFT)$")
     discount_value: Decimal = Field(default=Decimal("0"), ge=0)
     min_purchase: Decimal = Field(default=Decimal("0"), ge=0)
     max_discount: Decimal | None = Field(default=None, ge=0)
@@ -72,6 +76,8 @@ def _campaign_out(c: Campaign) -> dict:
         "id": c.id, "name": c.name, "description": c.description,
         "discount_type": c.discount_type, "discount_value": float(c.discount_value),
         "min_purchase": float(c.min_purchase),
+        "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+        "reward_next_only": bool(getattr(c, "reward_next_only", False)),
         "max_discount": float(c.max_discount) if c.max_discount is not None else None,
         "valid_from": c.valid_from.isoformat() if c.valid_from else None,
         "valid_until": c.valid_until.isoformat() if c.valid_until else None,
@@ -81,7 +87,9 @@ def _campaign_out(c: Campaign) -> dict:
         "status": c.status,
         "max_purchase": float(c.max_purchase) if c.max_purchase is not None else None,
         "target_type": c.target_type,
-        "target_ids": json.loads(c.target_ids) if c.target_ids else None,
+        # build-515 — اعداد همان int قدیمی برمی‌گردند (سازگاری)؛ نام دسته رشته می‌ماند
+        "target_ids": ([int(x) if str(x).strip().isdigit() else str(x) for x in json.loads(c.target_ids)]
+                       if c.target_ids else None),
         "first_purchase_only": bool(c.first_purchase_only),
         "usage_limit": c.usage_limit,
         "per_customer_limit": c.per_customer_limit,
@@ -99,6 +107,8 @@ def _coupon_out(c: Coupon) -> dict:
         "customer_id": c.customer_id, "customer_phone": c.customer_phone,
         "discount_type": c.discount_type, "discount_value": float(c.discount_value),
         "min_purchase": float(c.min_purchase),
+        "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+        "reward_next_only": bool(getattr(c, "reward_next_only", False)),
         "max_discount": float(c.max_discount) if c.max_discount is not None else None,
         "valid_from": c.valid_from.isoformat() if c.valid_from else None,
         "valid_until": c.valid_until.isoformat() if c.valid_until else None,
@@ -120,7 +130,8 @@ def list_campaigns(db: Session = Depends(get_db),
 def _campaign_values(body: CampaignIn) -> dict:
     data = body.model_dump()
     targets = data.pop("target_ids", None)
-    data["target_ids"] = json.dumps([int(x) for x in targets], ensure_ascii=False) if targets else None
+    # build-515 — PRODUCTS شناسهٔ عددی؛ CATEGORY نام دسته (رشته) — هر دو مجازند
+    data["target_ids"] = json.dumps([str(x).strip() for x in targets], ensure_ascii=False) if targets else None
     return data
 
 

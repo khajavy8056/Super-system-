@@ -267,6 +267,9 @@ public final class Db extends SQLiteOpenHelper {
     /** v4.9.6 — keep next-purchase coupon rules in the on-device POS snapshot. */
     static void v12PosAutoIssue(SQLiteDatabase d) {
         addColumn(d, "campaigns", "auto_issue_validity_days INTEGER NOT NULL DEFAULT 30");
+        /* build-515 — شرط تعداد خرید (جادوگر گام ۲): «بعد از N خرید» */
+        addColumn(d, "campaigns", "min_purchase_count INTEGER NOT NULL DEFAULT 0");
+        addColumn(d, "campaigns", "reward_next_only INTEGER NOT NULL DEFAULT 0");
         addColumn(d, "campaigns", "auto_issue_sms INTEGER NOT NULL DEFAULT 1");
     }
 

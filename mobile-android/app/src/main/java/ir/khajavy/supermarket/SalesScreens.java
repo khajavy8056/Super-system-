@@ -2,6 +2,7 @@ package ir.khajavy.supermarket;
 
 import android.app.Dialog;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
@@ -264,7 +265,7 @@ public final class SalesScreens {
          * ناسالم (NaN/∞ از سطر خراب) به JSON نمی‌رود (put با NaN می‌شکند) و هر سطر
          * جداگانه محافظت شده؛ در بدترین حالت، درخواستِ حداقلیِ «مبلغ کل» می‌رود. */
         JSONObject campaignRequest() {
-            JSONObject request = new JSONObject(); JSONArray productIds = new JSONArray(); JSONObject lineAmounts = new JSONObject();
+            JSONObject request = new JSONObject(); JSONArray productIds = new JSONArray(); JSONObject lineAmounts = new JSONObject(); JSONObject lineQtys = new JSONObject(), lineCats = new JSONObject();
             for (JSONObject line : cart) {
                 try {
                     long productId = line.optLong("product_id");
@@ -272,12 +273,21 @@ public final class SalesScreens {
                     String key = String.valueOf(productId);
                     double lineAmount = line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
                     lineAmounts.put(key, finBenefit(finBenefit(lineAmounts.optDouble(key)) + finBenefit(lineAmount)));
+                    /* build-515 — دسته و تعداد هر خط: برای جشنوارهٔ دسته‌ای و «هدیهٔ رایگان» */
+                    lineQtys.put(key, finBenefit(finBenefit(lineQtys.optDouble(key)) + line.optDouble("quantity", 0)));
+                    String lbc = Db.norm(line.optString("barcode"));
+                    if (!lbc.isEmpty()) {
+                        JSONObject bk = Local.one("SELECT category FROM bank WHERE barcode=? LIMIT 1", lbc);
+                        if (bk != null && !bk.isNull("category") && !bk.optString("category").isEmpty()) lineCats.put(key, bk.optString("category"));
+                    }
                 } catch (Exception ignore) { /* one bad line never blocks the festival list */ }
             }
             try {
                 request.put("amount", finBenefit(amountBeforeBenefits()));
                 request.put("product_ids", productIds);
                 request.put("line_amounts", lineAmounts);
+                request.put("line_qtys", lineQtys);
+                request.put("line_categories", lineCats);
                 request.put("include_auto_apply", true);
                 if (customer != null) request.put("customer_id", customer.optLong("id"));
             } catch (Exception ignore) {}
@@ -899,7 +909,7 @@ public final class SalesScreens {
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::campaignWizardNew)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
                         /* build-514 — عملکرد هر جشنواره روی خود ردیف: استفاده، کوپن صادره، ارزش مصرف */
                         long cid = cp.optLong("id"); int issued = Local.countWhere("coupons", "campaign_id=?", cid);
                         double spent = Local.sumInvoices("campaign_discount", cid);
@@ -908,7 +918,7 @@ public final class SalesScreens {
                                 + " · استفاده " + Ui.fa(String.valueOf(cp.optInt("used_count"))) + (cp.isNull("usage_limit") ? "" : "/" + Ui.fa(String.valueOf(cp.optInt("usage_limit")))) + " بار"
                                 + " · کوپن صادره " + Ui.fa(String.valueOf(issued)) + (spent > 0 ? " · تخفیف داده‌شده " + Ui.money(spent) : "") + (lastUse.isEmpty() ? "" : " · آخرین " + Ui.jdate(lastUse))
                                 + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until")));
-                        LinearLayout it = Ui.item(c, cp.optString("name"), sub, label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignForm(cp));
+                        LinearLayout it = Ui.item(c, cp.optString("name"), sub, label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignWizard(cp));
                         it.setOnLongClickListener(v -> { campaignReport(cp, issued, spent); return true; });
                         list.addView(it); } }); }
             else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
@@ -935,94 +945,525 @@ public final class SalesScreens {
         }
         /* build-511 — فرم واحد ساخت/ویرایش: با cp غیر null، فیلدها پیش‌پر می‌شوند و
          * ذخیره روی PATCH می‌رود؛ وضعیت هم داخل فرم قابل تغییر است. */
-        void campaignForm(JSONObject cp) {
-            final boolean editing = cp != null;
-            LinearLayout form = Ui.col(c);
-            EditText name = Ui.input(c, "نام جشنواره *");
-            EditText value = Ui.input(c, "مقدار تخفیف", true);
-            EditText minimum = Ui.input(c, "حداقل خرید", true);
-            EditText maximumPurchase = Ui.input(c, "سقف خرید (اختیاری)", true);
-            EditText maximumDiscount = Ui.input(c, "سقف تخفیف (اختیاری)", true);
-            EditText usageLimit = Ui.input(c, "سقف استفادهٔ کل (خالی = نامحدود)", true);
-            EditText until = DatePicker.field(c, "پایان (اختیاری)");
-            EditText issueThreshold = Ui.input(c, "صدور کوپن خرید بعدی از مبلغ (اختیاری)", true);
-            EditText issueDays = Ui.input(c, "اعتبار کوپن بعدی (روز)", true); issueDays.setText("30");
-            if (editing) {
-                name.setText(cp.optString("name"));
-                value.setText(trimNum(cp.optDouble("discount_value", 0)));
-                minimum.setText(trimNum(cp.optDouble("min_purchase", 0)));
-                if (!cp.isNull("max_purchase")) maximumPurchase.setText(trimNum(cp.optDouble("max_purchase", 0)));
-                if (!cp.isNull("max_discount")) maximumDiscount.setText(trimNum(cp.optDouble("max_discount", 0)));
-                if (!cp.isNull("usage_limit")) usageLimit.setText(String.valueOf(cp.optInt("usage_limit")));
-                if (!cp.isNull("auto_issue_threshold")) issueThreshold.setText(trimNum(cp.optDouble("auto_issue_threshold", 0)));
-                issueDays.setText(String.valueOf(cp.optInt("auto_issue_validity_days", 30)));
-            }
-            final String[] type = {editing ? cp.optString("discount_type", "PERCENT") : "PERCENT"};
-            final boolean[] autoApply = {editing && Local.offerFlag(cp, "auto_apply")};
-            final boolean[] stackable = {editing && Local.offerFlag(cp, "stackable")};
-            final String[] status = {editing ? cp.optString("status", "ACTIVE") : "ACTIVE"};
-            LinearLayout typeRow = Ui.row(c), applyRow = Ui.row(c), stackRow = Ui.row(c);
-            Runnable[] renderType = new Runnable[1];
-            renderType[0] = () -> {
-                typeRow.removeAllViews();
-                typeRow.addView(Ui.chip(c, "درصدی", type[0].equals("PERCENT"), () -> { type[0] = "PERCENT"; renderType[0].run(); }));
-                typeRow.addView(Ui.chip(c, "مبلغ ثابت", type[0].equals("FIXED"), () -> { type[0] = "FIXED"; renderType[0].run(); }));
-            };
-            Runnable[] renderRules = new Runnable[1];
-            renderRules[0] = () -> {
-                applyRow.removeAllViews();
-                applyRow.addView(Ui.chip(c, "انتخاب صندوق‌دار", !autoApply[0], () -> { autoApply[0] = false; renderRules[0].run(); }));
-                applyRow.addView(Ui.chip(c, "اعمال خودکار", autoApply[0], () -> { autoApply[0] = true; renderRules[0].run(); }));
-                stackRow.removeAllViews();
-                stackRow.addView(Ui.chip(c, "بدون ترکیب با کوپن", !stackable[0], () -> { stackable[0] = false; renderRules[0].run(); }));
-                stackRow.addView(Ui.chip(c, "ترکیب با کوپن", stackable[0], () -> { stackable[0] = true; renderRules[0].run(); }));
-            };
-            LinearLayout statusRow = Ui.row(c);
-            Runnable[] renderStatus = new Runnable[1];
-            renderStatus[0] = () -> {
-                statusRow.removeAllViews();
-                for (String[] s : new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}})
-                    statusRow.addView(Ui.chip(c, s[1], status[0].equals(s[0]), () -> { status[0] = s[0]; renderStatus[0].run(); }));
-            };
-            renderType[0].run(); renderRules[0].run();
-            if (editing) renderStatus[0].run();
-            form.addView(name); form.addView(Ui.muted(c, "نوع تخفیف")); form.addView(typeRow);
-            form.addView(value); form.addView(minimum); form.addView(maximumPurchase); form.addView(maximumDiscount); form.addView(usageLimit);
-            form.addView(until); form.addView(issueThreshold); form.addView(issueDays);
-            form.addView(Ui.muted(c, "اعمال در صندوق")); form.addView(applyRow);
-            form.addView(Ui.muted(c, "ترکیب با کوپن")); form.addView(stackRow);
-            if (editing) { form.addView(Ui.muted(c, "وضعیت")); form.addView(statusRow); }
-            form.addView(Ui.muted(c, "صدور کوپن خرید بعدی پس از رسیدن فروش به آستانه؛ کد در رسید/پیامک فاکتور ثبت می‌شود."));
-            Dialog[] dialog = new Dialog[1];
-            form.addView(Ui.primary(c, editing ? "ذخیرهٔ تغییرات" : "ایجاد جشنواره", () -> {
-                try {
-                    JSONObject request = j("name", Ui.str(name), "discount_type", type[0]);
-                    request.put("auto_apply", autoApply[0]); request.put("stackable", stackable[0]); request.put("auto_issue_sms", true);
-                    putNum(request, "discount_value", Ui.numVal(value, 0));
-                    putNum(request, "min_purchase", Ui.numVal(minimum, 0));
-                    if (!Ui.str(maximumPurchase).isEmpty() && Ui.numVal(maximumPurchase, 0) > 0)
-                        putNum(request, "max_purchase", Ui.numVal(maximumPurchase, 0));
-                    if (!Ui.str(maximumDiscount).isEmpty() && Ui.numVal(maximumDiscount, 0) > 0)
-                        putNum(request, "max_discount", Ui.numVal(maximumDiscount, 0));
-                    if (!Ui.str(usageLimit).isEmpty()) putNum(request, "usage_limit", (int) Ui.numVal(usageLimit, 0));
-                    String endDate = dateIn(until);
-                    if (endDate != null) request.put("valid_until", endDate + "T23:59:59");
-                    if (!Ui.str(issueThreshold).isEmpty() && Ui.numVal(issueThreshold, 0) > 0)
-                        putNum(request, "auto_issue_threshold", Ui.numVal(issueThreshold, 0));
-                    putNum(request, "auto_issue_validity_days", Math.max(1, Math.min(3650, (int) Ui.numVal(issueDays, 30))));
-                    request.put("status", status[0]);
-                    dialog[0].dismiss();
-                    if (editing) patch("/marketing/campaigns/" + cp.optLong("id"), request, result -> { Ui.toast("تغییرات ذخیره شد"); load(); });
-                    else post("/marketing/campaigns", request, result -> { Ui.toast("جشنواره ایجاد شد"); load(); });
-                } catch (IllegalArgumentException invalid) { /* dateIn already shows a precise date error */ }
-                catch (org.json.JSONException error) { Ui.toast("اطلاعات جشنواره ذخیره نشد: " + error.getMessage()); }
-            }));
-            dialog[0] = Ui.sheet(c, editing ? "ویرایش جشنواره" : "جشنوارهٔ جدید", form);
+        /* ================= build-515 — جادوگر ۸ گامی تعریف جشنواره =================
+         * به‌جای فرمِ طولانی، گام‌به‌گام (مطابق طرح مالک): نوع جشنواره → شرط خرید
+         * (مبلغ یا تعداد) → محصولات/دسته‌ها → زمان → پاداش → تنظیمات تکمیلی → نام و
+         * پیش‌نمایش → تایید. هر گام یک پرسشِ روشن با کارت‌های قابل‌لمس + نوار پیشرفت.
+         * ویرایش هم با همین جادوگر باز می‌شود (همهٔ گام‌ها پیش‌پر شده). */
+        Dialog wDialog; LinearLayout wBody; int wStep = 1; JSONObject wDraft = new JSONObject(); JSONObject wEdit;
+        EditText wName; EditText wUntil; EditText wSearch;
+        LinearLayout wPickList; java.util.LinkedHashSet<String> wPicked = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> wCats = new java.util.LinkedHashSet<>();
+
+        static JSONObject wput(JSONObject d, String k, Object v) { try { d.put(k, v); } catch (Exception ignore) {} return d; }
+
+        JSONObject wizardDraft(JSONObject cp) {
+            JSONObject d = new JSONObject();
+            wput(d, "condMode", "SPEND"); wput(d, "spend", 0); wput(d, "count", 3);
+            wput(d, "scope", "ALL"); wput(d, "time", "NONE"); wput(d, "days", 30);
+            wput(d, "rewardType", "PERCENT"); wput(d, "value", 0); wput(d, "couponDays", 30);
+            wput(d, "autoApply", false); wput(d, "stackable", false); wput(d, "firstOnly", false);
+            wput(d, "usageLimit", 0); wput(d, "perCustomer", 0); wput(d, "status", "ACTIVE");
+            if (cp == null) return d;
+            String dt = s(cp, "discount_type", "PERCENT");
+            wput(d, "kind", cp.optInt("reward_next_only", 0) == 1 ? "NEXT" : ("GIFT".equalsIgnoreCase(dt) ? "GIFT" : dt));
+            wput(d, "name", s(cp, "name"));
+            int mpc = cp.optInt("min_purchase_count", 0);
+            double minp = cp.optDouble("min_purchase", 0), thr = cp.isNull("auto_issue_threshold") ? 0 : cp.optDouble("auto_issue_threshold", 0);
+            wput(d, "condMode", mpc > 0 ? "COUNT" : (minp > 0 ? "SPEND" : "NONE"));
+            wput(d, "spend", Math.max(minp, thr));
+            wput(d, "count", Math.max(1, mpc));
+            wput(d, "scope", s(cp, "target_type", "ALL").isEmpty() ? "ALL" : s(cp, "target_type", "ALL"));
+            try { wput(d, "targetIds", cp.isNull("target_ids") ? new JSONArray() : new JSONArray(cp.optString("target_ids", "[]"))); } catch (Exception ignore) {}
+            wput(d, "time", cp.isNull("valid_until") ? "NONE" : "DATE");
+            wput(d, "value", cp.optDouble("discount_value", 0));
+            wput(d, "rewardType", "FIXED".equals(dt) ? "FIXED" : "PERCENT");
+            wput(d, "couponDays", cp.optInt("auto_issue_validity_days", 30));
+            wput(d, "maxDiscount", cp.isNull("max_discount") ? 0 : cp.optDouble("max_discount", 0));
+            wput(d, "autoApply", cp.optInt("auto_apply", 0) == 1);
+            wput(d, "stackable", Local.offerFlag(cp, "stackable"));
+            wput(d, "firstOnly", Local.offerFlag(cp, "first_purchase_only"));
+            wput(d, "usageLimit", cp.isNull("usage_limit") ? 0 : cp.optInt("usage_limit", 0));
+            wput(d, "perCustomer", cp.isNull("per_customer_limit") ? 0 : cp.optInt("per_customer_limit", 0));
+            wput(d, "status", s(cp, "status", "ACTIVE"));
+            return d;
         }
+
+        void campaignWizard(JSONObject cp) {
+            wEdit = cp; wStep = 1; wDraft = wizardDraft(cp); wPicked.clear(); wCats.clear();
+            try {
+                JSONArray tg = wDraft.optJSONArray("targetIds");
+                if (tg != null) for (int i = 0; i < tg.length(); i++) wPicked.add(tg.optString(i));
+            } catch (Exception ignore) {}
+            wDialog = new Dialog(c);
+            wDialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+            LinearLayout root = Ui.col(c);
+            root.setBackground(Ui.rounded(Ui.BG2, 0, 22));
+            root.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(14));
+            wBody = Ui.col(c);
+            android.widget.ScrollView sc = Ui.scroll(c, wBody);
+            wDialog.setContentView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            root.addView(sc, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+            wDialog.show();
+            wDialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            wRender();
+        }
+
+        TextView wDot(int n, int current) {
+            TextView t = new TextView(c);
+            t.setText(Ui.fa(String.valueOf(n)));
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setTextSize(11f);
+            t.setTextColor(n == current ? Color.WHITE : n < current ? Ui.PRIMARY : Ui.MUTED);
+            t.setBackground(Ui.rounded(n == current ? Ui.PRIMARY : n < current ? 0xE8EEFF : Ui.CARD2, 0, 999));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Ui.dp(26), Ui.dp(26));
+            lp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0);
+            t.setLayoutParams(lp);
+            return t;
+        }
+
+        void wRender() {
+            wBody.removeAllViews();
+            LinearLayout head = Ui.row(c);
+            TextView title = new TextView(c);
+            title.setText(wEdit == null ? "تعریف جشنواره جدید" : "ویرایش جشنواره");
+            title.setTextSize(17f); title.setTypeface(Typeface.DEFAULT_BOLD); title.setTextColor(Ui.TEXT);
+            head.addView(title);
+            android.widget.Space sp = new android.widget.Space(c); sp.setLayoutParams(new LinearLayout.LayoutParams(1, 1, 1f)); head.addView(sp);
+            for (int i = 1; i <= 8; i++) head.addView(wDot(i, wStep));
+            wBody.addView(head);
+            wBody.addView(space(Ui.dp(6)));
+            if (wStep == 1) wStepKind();
+            else if (wStep == 2) wStepCond();
+            else if (wStep == 3) wStepScope();
+            else if (wStep == 4) wStepTime();
+            else if (wStep == 5) wStepReward();
+            else if (wStep == 6) wStepExtras();
+            else if (wStep == 7) wStepReview();
+            else wStepDone();
+            if (wStep < 8) {
+                LinearLayout nav = Ui.row(c);
+                if (wStep > 1 && wStep < 8) nav.addView(Ui.ghost(c, "بازگشت", () -> { wStep--; wRender(); }));
+                TextView pad = new TextView(c); pad.setLayoutParams(new LinearLayout.LayoutParams(1, 1, 1f)); nav.addView(pad);
+                nav.addView(Ui.primary(c, wStep == 7 ? (wEdit == null ? "ایجاد جشنواره ✓" : "ذخیرهٔ تغییرات ✓") : "مرحلهٔ بعد", () -> {
+                    if (!wValidate(wStep)) return;
+                    if (wStep == 7) { wSave(); return; }
+                    wStep++; wRender();
+                }));
+                nav.setPadding(0, Ui.dp(8), 0, Ui.dp(4));
+                wBody.addView(nav);
+            }
+        }
+
+        android.widget.Space space(float h) { android.widget.Space s = new android.widget.Space(c); s.setLayoutParams(new LinearLayout.LayoutParams(1, Ui.dp(h))); return s; }
+
+        LinearLayout wOption(String title, String sub, boolean selected, Runnable pick) {
+            LinearLayout card = Ui.row(c);
+            card.setBackground(Ui.rounded(selected ? 0xE8EEFF : Ui.CARD2, selected ? Ui.PRIMARY : 0, 14));
+            card.setPadding(Ui.dp(12), Ui.dp(11), Ui.dp(12), Ui.dp(11));
+            TextView radio = new TextView(c);
+            radio.setText(selected ? "◉" : "○");
+            radio.setTextColor(selected ? Ui.PRIMARY : Ui.MUTED);
+            radio.setTextSize(16f);
+            radio.setPadding(0, 0, Ui.dp(9), 0);
+            card.addView(radio);
+            LinearLayout txt = Ui.col(c);
+            TextView t = new TextView(c); t.setText(title); t.setTextSize(14.5f); t.setTypeface(Typeface.DEFAULT_BOLD); t.setTextColor(Ui.TEXT); txt.addView(t);
+            TextView st = new TextView(c); st.setText(sub); st.setTextSize(11.5f); st.setTextColor(Ui.MUTED); txt.addView(st);
+            card.addView(txt);
+            card.setOnClickListener(v -> pick.run());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(0, 0, 0, Ui.dp(8));
+            card.setLayoutParams(lp);
+            return card;
+        }
+
+        void wQuestion(String q, String hint) {
+            TextView h = new TextView(c); h.setText(q); h.setTextSize(15.5f); h.setTypeface(Typeface.DEFAULT_BOLD); h.setTextColor(Ui.TEXT); wBody.addView(h);
+            if (hint != null && !hint.isEmpty()) { TextView m = Ui.muted(c, hint); m.setPadding(0, Ui.dp(2), 0, Ui.dp(8)); wBody.addView(m); }
+            else wBody.addView(space(Ui.dp(8)));
+        }
+
+        LinearLayout wStepper(String label, int[] val, int min, int max, int stepBy) {
+            LinearLayout r = Ui.row(c);
+            TextView lb = new TextView(c); lb.setText(label); lb.setTextColor(Ui.MUTED); lb.setTextSize(13f);
+            lb.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            r.addView(lb);
+            android.widget.Button minus = Ui.ghost(c, "−", () -> { val[0] = Math.max(min, val[0] - stepBy); wRender(); });
+            minus.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(52), ViewGroup.LayoutParams.WRAP_CONTENT));
+            r.addView(minus);
+            TextView num = new TextView(c); num.setText(Ui.fa(String.valueOf(val[0]))); num.setTextSize(15f); num.setTypeface(Typeface.DEFAULT_BOLD); num.setGravity(android.view.Gravity.CENTER); num.setMinWidth(Ui.dp(44));
+            r.addView(num);
+            android.widget.Button plus = Ui.ghost(c, "+", () -> { val[0] = Math.min(max, val[0] + stepBy); wRender(); });
+            plus.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(52), ViewGroup.LayoutParams.WRAP_CONTENT));
+            r.addView(plus);
+            return r;
+        }
+
+        boolean wValidate(int step) {
+            String kind = wDraft.optString("kind", "");
+            if (step == 1 && kind.isEmpty()) { Ui.toast("نوع جشنواره را انتخاب کنید"); return false; }
+            if (step == 2) {
+                String cm = wDraft.optString("condMode", "NONE");
+                if ("SPEND".equals(cm) && wDraft.optDouble("spend", 0) <= 0) { Ui.toast("مبلغ شرط خرید را وارد کنید"); return false; }
+                if ("COUNT".equals(cm) && wDraft.optInt("count", 0) < 1) { Ui.toast("تعداد خرید باید حداقل ۱ باشد"); return false; }
+                if ("NEXT".equals(kind) && "NONE".equals(cm)) { Ui.toast("برای پاداش خرید بعدی، یک شرط لازم است"); return false; }
+            }
+            if (step == 3) {
+                String sc = wDraft.optString("scope", "ALL");
+                if ("CATEGORY".equals(sc) && wCats.isEmpty()) { Ui.toast("حداقل یک دسته انتخاب کنید"); return false; }
+                if ("PRODUCTS".equals(sc) && wPicked.isEmpty()) { Ui.toast("حداقل یک کالا انتخاب کنید"); return false; }
+            }
+            if (step == 4 && "DATE".equals(wDraft.optString("time")) && dateIn(wUntil) == null) return false;
+            if (step == 5) {
+                if ("NEXT".equals(kind)) {
+                    if (wDraft.optDouble("value", 0) <= 0) { Ui.toast("مقدار پاداش کوپن را وارد کنید"); return false; }
+                    if (Ui.numVal(wCouponDays, 30) < 1) { Ui.toast("اعتبار کوپن باید حداقل ۱ روز باشد"); return false; }
+                } else if ("GIFT".equals(kind)) {
+                    if (wGiftPid == 0) { Ui.toast("کالای هدیه را انتخاب کنید"); return false; }
+                    if (wDraft.optDouble("value", 0) < 1) { Ui.toast("تعداد رایگان حداقل ۱ است"); return false; }
+                } else if (wDraft.optDouble("value", 0) <= 0) { Ui.toast("مقدار تخفیف را وارد کنید"); return false; }
+            }
+            if (step == 7 && Ui.str(wName).isEmpty()) { Ui.toast("نام جشنواره را بنویسید"); return false; }
+            return true;
+        }
+
+        EditText wCouponDays; long wGiftPid = 0; String wGiftName = "";
+
+        void wStepKind() {
+            wQuestion("نوع جشنواره را انتخاب کنید", "بعداً هم می‌توانید از فهرست جشنواره‌ها ویرایشش کنید.");
+            String k = wDraft.optString("kind", "");
+            wBody.addView(wOption("هدیهٔ خرید بعدی", "مشتری با این خرید، کوپنِ تخفیف خرید بعدی می‌گیرد", "NEXT".equals(k), () -> { wput(wDraft, "kind", "NEXT"); wRender(); }));
+            wBody.addView(wOption("تخفیف درصدی", "مثلاً ۲۰٪ تخفیف روی همین خرید اعمال شود", "PERCENT".equals(k), () -> { wput(wDraft, "kind", "PERCENT"); wRender(); }));
+            wBody.addView(wOption("تخفیف مبلغی", "مثلاً ۵۰٫۰۰۰ تومان تخفیف روی همین خرید", "FIXED".equals(k), () -> { wput(wDraft, "kind", "FIXED"); wRender(); }));
+            wBody.addView(wOption("هدیه رایگان", "مثلاً ۲ عدد بخرد، ۱ عدد رایگان", "GIFT".equals(k), () -> { wput(wDraft, "kind", "GIFT"); wput(wDraft, "value", 1); wRender(); }));
+        }
+
+        void wStepCond() {
+            wQuestion("شرط خرید را مشخص کنید", "پاداش وقتی می‌آید که مشتری این شرط را داشته باشد.");
+            String k = wDraft.optString("kind", "");
+            String cm = wDraft.optString("condMode", "SPEND");
+            Ui.Flow mode = Ui.wrap(c);
+            mode.addView(Ui.chip(c, "مبلغ خرید", "SPEND".equals(cm), () -> { wput(wDraft, "condMode", "SPEND"); wRender(); }));
+            mode.addView(Ui.chip(c, "تعداد خرید", "COUNT".equals(cm), () -> { wput(wDraft, "condMode", "COUNT"); wRender(); }));
+            if (!"NEXT".equals(k)) mode.addView(Ui.chip(c, "بدون شرط", "NONE".equals(cm), () -> { wput(wDraft, "condMode", "NONE"); wRender(); }));
+            wBody.addView(mode);
+            wBody.addView(space(Ui.dp(6)));
+            if ("SPEND".equals(cm)) {
+                wBody.addView(Ui.muted(c, "مشتری حداقل چقدر خرید کند؟ (تومان)"));
+                EditText spend = Ui.input(c, "مثلاً ۱۰٫۰۰۰٫۰۰۰", true);
+                spend.setText(wDraft.optDouble("spend", 0) > 0 ? Ui.num(wDraft.optDouble("spend", 0)) : "");
+                wBody.addView(spend);
+                Ui.Flow quick = Ui.wrap(c);
+                for (double q : new double[]{500000, 1000000, 5000000, 10000000, 20000000})
+                    quick.addView(Ui.chip(c, Ui.moneyShort(q), Math.abs(wDraft.optDouble("spend", 0) - q) < 1, () -> { wput(wDraft, "spend", q); wRender(); }));
+                wBody.addView(quick);
+                spend.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "spend", Ui.numVal(spend, 0)); } catch (Exception ignore) {} }
+                });
+            } else if ("COUNT".equals(cm)) {
+                wBody.addView(Ui.muted(c, "مشتری چند بار خرید کند تا پاداش بگیرد؟ (هر N خرید یک بار)"));
+                int[] cnt = {Math.max(1, wDraft.optInt("count", 3))};
+                wBody.addView(wStepper("تعداد خرید", cnt, 1, 999, 1));
+                wput(wDraft, "count", cnt[0]);
+                wBody.addView(Ui.muted(c, "مثلاً ۳ = بعد از هر ۳ خرید، پاداشِ خرید بعدی صادر می‌شود."));
+            } else {
+                wBody.addView(Ui.muted(c, "بدون شرط: هر مشتری در هر خرید مشمول می‌شود."));
+            }
+        }
+
+        void wStepScope() {
+            wQuestion("محصولات و دسته‌ها", "این جشنواره روی چه کالاهایی اعمال شود؟");
+            String sc = wDraft.optString("scope", "ALL");
+            LinearLayout opts = Ui.col(c);
+            opts.addView(wOption("همهٔ محصولات", "کل سبد خرید مشمول می‌شود", "ALL".equals(sc), () -> { wput(wDraft, "scope", "ALL"); wPicked.clear(); wCats.clear(); wRender(); }));
+            opts.addView(wOption("دسته‌های خاص", "فقط کالاهای دسته‌های انتخابی", "CATEGORY".equals(sc), () -> { wput(wDraft, "scope", "CATEGORY"); wPicked.clear(); wRender(); }));
+            opts.addView(wOption("محصولات مشخص", "فقط کالاهای انتخابی", "PRODUCTS".equals(sc), () -> { wput(wDraft, "scope", "PRODUCTS"); wCats.clear(); wRender(); }));
+            wBody.addView(opts);
+            if ("CATEGORY".equals(sc)) {
+                wBody.addView(Ui.muted(c, "دسته‌ها را انتخاب کنید:"));
+                Ui.Flow chips = Ui.wrap(c);
+                for (JSONObject b : Local.rows("SELECT DISTINCT category FROM bank WHERE IFNULL(category,'')<>'' ORDER BY category LIMIT 60")) {
+                    String cat = b.optString("category");
+                    chips.addView(Ui.chip(c, cat, wCats.contains(cat), () -> { if (!wCats.add(cat)) wCats.remove(cat); wRender(); }));
+                }
+                wBody.addView(chips);
+            } else if ("PRODUCTS".equals(sc)) {
+                if (wSearch == null) wSearch = Ui.input(c, "جست‌وجوی نام یا بارکد کالا…");
+                wSearch.setText(""); wBody.addView(wSearch);
+                wPickList = Ui.col(c); wBody.addView(wPickList);
+                wSearch.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { wFillPick(Ui.str(wSearch)); }
+                });
+                wFillPick("");
+                Ui.Flow sel = Ui.wrap(c);
+                for (String pid : wPicked) {
+                    JSONObject p = Local.one("SELECT name FROM products WHERE id=?", Long.parseLong(pid));
+                    sel.addView(Ui.chip(c, p == null ? "کالا #" + pid : p.optString("name"), true, () -> { wPicked.remove(pid); wRender(); }));
+                }
+                if (!wPicked.isEmpty()) wBody.addView(sel);
+            }
+        }
+
+        void wFillPick(String q) {
+            if (wPickList == null) return;
+            wPickList.removeAllViews();
+            for (JSONObject p : Db.searchProducts(q, 12, 0)) {
+                if (p == null) continue;
+                String pid = String.valueOf(p.optLong("id"));
+                boolean on = wPicked.contains(pid);
+                LinearLayout it = Ui.item(c, p.optString("name"), s(p, "barcode"), null, on ? Ui.PRIMARY : 0, () -> { if (!wPicked.add(pid)) wPicked.remove(pid); wFillPick(Ui.str(wSearch)); });
+                wPickList.addView(it);
+            }
+        }
+
+        void wStepTime() {
+            wQuestion("زمان اجرا را مشخص کنید", null);
+            String tm = wDraft.optString("time", "NONE");
+            wBody.addView(wOption("بدون محدودیت زمانی", "تا وقتی خودتان متوقفش کنید", "NONE".equals(tm), () -> { wput(wDraft, "time", "NONE"); wRender(); }));
+            wBody.addView(wOption("تاریخ مشخص", "در تاریخ انتخابی پایان می‌یابد", "DATE".equals(tm), () -> { wput(wDraft, "time", "DATE"); wRender(); }));
+            wBody.addView(wOption("مدت زمان", "چند روز از امروز فعال بماند", "DAYS".equals(tm), () -> { wput(wDraft, "time", "DAYS"); wRender(); }));
+            if ("DATE".equals(tm)) {
+                if (wUntil == null) wUntil = DatePicker.field(c, "تاریخ پایان (مثلاً ۱۴۰۴/۰۶/۱۵)");
+                wBody.addView(wUntil);
+            } else if ("DAYS".equals(tm)) {
+                int[] dys = {Math.max(1, wDraft.optInt("days", 7))};
+                wBody.addView(wStepper("مدت (روز)", dys, 1, 3650, 1));
+                wput(wDraft, "days", dys[0]);
+            }
+        }
+
+        void wStepReward() {
+            String k = wDraft.optString("kind", "");
+            if ("NEXT".equals(k)) {
+                wQuestion("پاداش خرید بعدی چقدر باشد؟", "کوپن مخصوص همان مشتری صادر می‌شود؛ روی فاکتور می‌آید و پیامک می‌گیرد.");
+                String rt = wDraft.optString("rewardType", "PERCENT");
+                Ui.Flow tr = Ui.wrap(c);
+                tr.addView(Ui.chip(c, "درصدی", "PERCENT".equals(rt), () -> { wput(wDraft, "rewardType", "PERCENT"); wRender(); }));
+                tr.addView(Ui.chip(c, "مبلغی", "FIXED".equals(rt), () -> { wput(wDraft, "rewardType", "FIXED"); wRender(); }));
+                wBody.addView(tr);
+                wBody.addView(Ui.muted(c, "PERCENT".equals(rt) ? "چند درصد تخفیف برای خرید بعدی؟" : "چقدر تخفیف مبلغی برای خرید بعدی؟ (تومان)"));
+                EditText v = Ui.input(c, "مقدار پاداش", true);
+                v.setText(wDraft.optDouble("value", 0) > 0 ? Ui.num(wDraft.optDouble("value", 0)) : "");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Ui.numVal(v, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+                if (wCouponDays == null) wCouponDays = Ui.input(c, "اعتبار کوپن (روز)", true);
+                if (Ui.str(wCouponDays).isEmpty()) wCouponDays.setText(String.valueOf(wDraft.optInt("couponDays", 30)));
+                wBody.addView(wCouponDays);
+            } else if ("GIFT".equals(k)) {
+                wQuestion("کالای هدیه را انتخاب کنید", "به‌ازای خرید، تعداد مشخصی از این کالا رایگان می‌شود.");
+                if (wGiftPid > 0) wBody.addView(Ui.muted(c, "هدیهٔ انتخابی: " + wGiftName));
+                if (wSearch == null) wSearch = Ui.input(c, "جست‌وجوی نام یا بارکد کالا…");
+                wBody.addView(wSearch);
+                wPickList = Ui.col(c); wBody.addView(wPickList);
+                wSearch.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { wFillPick(Ui.str(wSearch)); }
+                });
+                wFillPick("");
+                wBody.addView(Ui.muted(c, "چند عدد رایگان؟"));
+                EditText v = Ui.input(c, "تعداد رایگان", true);
+                v.setText(wDraft.optDouble("value", 0) >= 1 ? Ui.num(wDraft.optDouble("value", 1)) : "1");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Math.max(1, (int) Ui.numVal(v, 1))); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+            } else {
+                wQuestion("مقدار پاداش را مشخص کنید", "روی همین خرید اعمال می‌شود؛ بعد از ثبت فاکتور هم کوپن خرید بعدی صادر می‌شود.");
+                wBody.addView(Ui.muted(c, "PERCENT".equals(k) ? "چند درصد تخفیف؟" : "چقدر تخفیف مبلغی؟ (تومان)"));
+                EditText v = Ui.input(c, "مقدار تخفیف", true);
+                v.setText(wDraft.optDouble("value", 0) > 0 ? Ui.num(wDraft.optDouble("value", 0)) : "");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Ui.numVal(v, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+                wBody.addView(Ui.muted(c, "سقف تخفیف (اختیاری — برای درصدی)"));
+                EditText cap = Ui.input(c, "مثلاً ۵۰۰٫۰۰۰", true);
+                if (wDraft.optDouble("maxDiscount", 0) > 0) cap.setText(Ui.num(wDraft.optDouble("maxDiscount", 0)));
+                cap.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "maxDiscount", Ui.numVal(cap, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(cap);
+            }
+        }
+
+        void wStepExtras() {
+            wQuestion("تنظیمات تکمیلی", "همه اختیاری‌اند — با پیش‌فرض‌ها هم جشنواره درست کار می‌کند.");
+            boolean aa = wDraft.optBoolean("autoApply", false), st = wDraft.optBoolean("stackable", false), fo = wDraft.optBoolean("firstOnly", false);
+            Ui.Flow rules = Ui.wrap(c);
+            rules.addView(Ui.chip(c, aa ? "اعمال خودکار ✓" : "انتخاب صندوق‌دار", aa, () -> { wput(wDraft, "autoApply", !aa); wRender(); }));
+            rules.addView(Ui.chip(c, st ? "ترکیب با کوپن ✓" : "بدون ترکیب", st, () -> { wput(wDraft, "stackable", !st); wRender(); }));
+            rules.addView(Ui.chip(c, fo ? "فقط اولین خرید ✓" : "همهٔ خریدها", fo, () -> { wput(wDraft, "firstOnly", !fo); wRender(); }));
+            wBody.addView(rules);
+            wBody.addView(Ui.muted(c, "سقف استفادهٔ کل (خالی = نامحدود)"));
+            EditText ul = Ui.input(c, "مثلاً ۱۰۰ بار", true);
+            if (wDraft.optInt("usageLimit", 0) > 0) ul.setText(String.valueOf(wDraft.optInt("usageLimit", 0)));
+            ul.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "usageLimit", (int) Ui.numVal(ul, 0)); } catch (Exception ignore) {} }
+            });
+            wBody.addView(ul);
+            wBody.addView(Ui.muted(c, "سقف برای هر مشتری (خالی = نامحدود)"));
+            EditText pc = Ui.input(c, "مثلاً ۱ بار برای هر مشتری", true);
+            if (wDraft.optInt("perCustomer", 0) > 0) pc.setText(String.valueOf(wDraft.optInt("perCustomer", 0)));
+            pc.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "perCustomer", (int) Ui.numVal(pc, 0)); } catch (Exception ignore) {} }
+            });
+            wBody.addView(pc);
+            if (wEdit != null) {
+                wBody.addView(Ui.muted(c, "وضعیت"));
+                Ui.Flow sr = Ui.wrap(c);
+                String cs = wDraft.optString("status", "ACTIVE");
+                for (String[] stt : new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}})
+                    sr.addView(Ui.chip(c, stt[1], stt[0].equals(cs), () -> { wput(wDraft, "status", stt[0]); wRender(); }));
+                wBody.addView(sr);
+            }
+        }
+
+        String wAutoName() {
+            String k = wDraft.optString("kind", ""), cm = wDraft.optString("condMode", "NONE");
+            if ("NEXT".equals(k)) {
+                if ("COUNT".equals(cm)) return "هدیهٔ خرید بعدی پس از " + Ui.fa(String.valueOf(wDraft.optInt("count", 3))) + " خرید";
+                return "هدیهٔ خرید بعدی بالای " + Ui.money(wDraft.optDouble("spend", 0));
+            }
+            if ("GIFT".equals(k)) return "هدیهٔ " + Ui.fa(String.valueOf(Math.max(1, (int) wDraft.optDouble("value", 1)))) + " عدد " + (wGiftName.isEmpty() ? "کالای منتخب" : wGiftName);
+            if ("FIXED".equals(k)) return "تخفیف " + Ui.money(wDraft.optDouble("value", 0)) + " تومانی";
+            return "تخفیف " + Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + " درصدی";
+        }
+
+        String wCondText() {
+            String cm = wDraft.optString("condMode", "NONE");
+            if ("SPEND".equals(cm)) return "حداقل خرید " + Ui.money(wDraft.optDouble("spend", 0)) + " تومان";
+            if ("COUNT".equals(cm)) return "هر " + Ui.fa(String.valueOf(wDraft.optInt("count", 3))) + " خرید";
+            return "بدون شرط";
+        }
+
+        String wRewardText() {
+            String k = wDraft.optString("kind", "");
+            if ("NEXT".equals(k)) return "کوپن خرید بعدی " + ("FIXED".equals(wDraft.optString("rewardType")) ? Ui.money(wDraft.optDouble("value", 0)) + " تومان" : Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + "٪") + " (اعتبار " + Ui.fa(String.valueOf(wDraft.optInt("couponDays", 30))) + " روز)";
+            if ("GIFT".equals(k)) return Ui.fa(String.valueOf(Math.max(1, (int) wDraft.optDouble("value", 1)))) + " عدد «" + (wGiftName.isEmpty() ? "کالای منتخب" : wGiftName) + "» رایگان";
+            return "PERCENT".equals(k) ? Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + "٪ تخفیف" : Ui.money(wDraft.optDouble("value", 0)) + " تومان تخفیف";
+        }
+
+        String wScopeText() {
+            String sc = wDraft.optString("scope", "ALL");
+            if ("CATEGORY".equals(sc)) return "دسته‌ها: " + String.join("، ", wCats);
+            if ("PRODUCTS".equals(sc)) return Ui.fa(String.valueOf(wPicked.size())) + " کالای مشخص";
+            return "همهٔ محصولات";
+        }
+
+        String wTimeText() {
+            String tm = wDraft.optString("time", "NONE");
+            if ("DATE".equals(tm)) return "تا " + Ui.str(wUntil);
+            if ("DAYS".equals(tm)) return Ui.fa(String.valueOf(wDraft.optInt("days", 7))) + " روز از امروز";
+            return "بدون محدودیت زمانی";
+        }
+
+        void wStepReview() {
+            wQuestion("پیش‌نمایش و تایید", "نام جشنواره را بنویسید؛ همه‌چیز را چک کنید و ثبت کنید.");
+            if (wName == null) wName = Ui.input(c, "نام جشنواره *");
+            if (Ui.str(wName).isEmpty()) wName.setText(wAutoName());
+            wBody.addView(wName);
+            LinearLayout card = Ui.col(c);
+            card.setBackground(Ui.rounded(Ui.PRIMARY, 0, 18));
+            card.setPadding(Ui.dp(14), Ui.dp(14), Ui.dp(14), Ui.dp(14));
+            TextView hero = new TextView(c);
+            hero.setText("🎁 " + Ui.str(wName));
+            hero.setTextSize(16f); hero.setTypeface(Typeface.DEFAULT_BOLD); hero.setTextColor(Color.WHITE);
+            card.addView(hero);
+            TextView heroSub = new TextView(c);
+            heroSub.setText(wRewardText() + " با " + wCondText());
+            heroSub.setTextSize(12.5f); heroSub.setTextColor(0xE6FFFFFF);
+            heroSub.setPadding(0, Ui.dp(4), 0, 0);
+            card.addView(heroSub);
+            wBody.addView(card);
+            LinearLayout info = Ui.card(c, "خلاصه");
+            info.addView(Ui.kv(c, "پاداش", wRewardText(), Ui.GREEN));
+            info.addView(Ui.kv(c, "شرط", wCondText(), 0));
+            info.addView(Ui.kv(c, "محدوده", wScopeText(), 0));
+            info.addView(Ui.kv(c, "زمان", wTimeText(), 0));
+            info.addView(Ui.kv(c, "نحوهٔ اعمال", wDraft.optBoolean("autoApply", false) ? "خودکار در صندوق" : "انتخاب صندوق‌دار", 0));
+            if ("NEXT".equals(wDraft.optString("kind")))
+                info.addView(Ui.muted(c, "هنگام ثبت فاکتورِ واجد شرط، کوپن مخصوص مشتری صادر و پیامک می‌شود."));
+            wBody.addView(info);
+        }
+
+        void wSave() {
+            try { wSaveInner(); } catch (org.json.JSONException error) { Ui.toast("اطلاعات جشنواره ذخیره نشد: " + error.getMessage()); }
+        }
+        void wSaveInner() throws org.json.JSONException {
+            String name = Ui.str(wName);
+            JSONObject req = j("name", name, "status", wDraft.optString("status", "ACTIVE"));
+            String k = wDraft.optString("kind", ""), cm = wDraft.optString("condMode", "NONE");
+            boolean nextOnly = "NEXT".equals(k);
+            String dt = nextOnly ? ("FIXED".equals(wDraft.optString("rewardType")) ? "FIXED" : "PERCENT") : ("GIFT".equals(k) ? "GIFT" : k);
+            req.put("discount_type", dt);
+            putNum(req, "discount_value", "GIFT".equals(k) ? Math.max(1, (int) wDraft.optDouble("value", 1)) : wDraft.optDouble("value", 0));
+            putNum(req, "min_purchase", !nextOnly && "SPEND".equals(cm) ? wDraft.optDouble("spend", 0) : 0);
+            req.put("min_purchase_count", "COUNT".equals(cm) ? wDraft.optInt("count", 0) : 0);
+            req.put("reward_next_only", nextOnly);
+            if (nextOnly && "SPEND".equals(cm)) putNum(req, "auto_issue_threshold", wDraft.optDouble("spend", 0));
+            req.put("auto_issue_validity_days", Math.max(1, Math.min(3650, wDraft.optInt("couponDays", 30))));
+            req.put("auto_issue_sms", true);
+            String scope = wDraft.optString("scope", "ALL");
+            req.put("target_type", scope);
+            JSONArray ids = new JSONArray();
+            try {
+                if ("PRODUCTS".equals(scope)) { for (String pid : wPicked) ids.put(Long.parseLong(pid)); }
+                else if ("CATEGORY".equals(scope)) { for (String cat : wCats) ids.put(cat); }
+                else if ("GIFT".equals(k)) ids.put(wGiftPid);
+            } catch (Exception ignore) {}
+            req.put("target_ids", ids);
+            req.put("auto_apply", wDraft.optBoolean("autoApply", false));
+            req.put("stackable", wDraft.optBoolean("stackable", false));
+            req.put("first_purchase_only", wDraft.optBoolean("firstOnly", false));
+            if (wDraft.optInt("usageLimit", 0) > 0) putNum(req, "usage_limit", wDraft.optInt("usageLimit", 0));
+            if (wDraft.optInt("perCustomer", 0) > 0) putNum(req, "per_customer_limit", wDraft.optInt("perCustomer", 0));
+            String tm = wDraft.optString("time", "NONE");
+            if ("DATE".equals(tm)) { String ed = dateIn(wUntil); if (ed != null) req.put("valid_until", ed + "T23:59:59"); }
+            else if ("DAYS".equals(tm)) {
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.add(java.util.Calendar.DAY_OF_YEAR, Math.max(1, wDraft.optInt("days", 7)));
+                req.put("valid_until", new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.getTime()) + "T23:59:59");
+            }
+            if (wEdit != null) patch("/marketing/campaigns/" + wEdit.optLong("id"), req, r -> { wStep = 8; wRender(); });
+            else post("/marketing/campaigns", req, r -> { wStep = 8; wRender(); });
+        }
+
+        void wStepDone() {
+            LinearLayout ok = Ui.col(c);
+            ok.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            ok.setPadding(0, Ui.dp(30), 0, 0);
+            TextView tick = new TextView(c); tick.setText("✓"); tick.setTextSize(44f); tick.setTextColor(Ui.GREEN); tick.setGravity(android.view.Gravity.CENTER);
+            tick.setBackground(Ui.rounded(0x2222CBA6, 0, 999));
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(Ui.dp(86), Ui.dp(86)); tlp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            tick.setLayoutParams(tlp); tick.setGravity(android.view.Gravity.CENTER);
+            ok.addView(tick);
+            TextView t1 = new TextView(c); t1.setText(wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
+            ok.addView(t1);
+            TextView t2 = Ui.muted(c, "می‌توانید از لیست جشنواره‌ها آن را مشاهده و در صورت نیاز ویرایش کنید.");
+            t2.setGravity(android.view.Gravity.CENTER); t2.setPadding(0, Ui.dp(6), 0, 0);
+            ok.addView(t2);
+            wBody.addView(ok);
+            wBody.addView(space(Ui.dp(18)));
+            wBody.addView(Ui.primary(c, "مشاهدهٔ جشنواره‌ها", () -> { wDialog.dismiss(); load(); }));
+            wBody.addView(space(Ui.dp(8)));
+            wBody.addView(Ui.ghost(c, "ایجاد جشنوارهٔ جدید", () -> { wEdit = null; wStep = 1; wDraft = wizardDraft(null); wName = null; wGiftPid = 0; wGiftName = ""; wPicked.clear(); wCats.clear(); wRender(); }));
+        }
+
+        void campaignWizardNew() { campaignWizard(null); }
         static String trimNum(double v) {
             return v == Math.floor(v) ? String.valueOf((long) v) : String.valueOf(v);
         }
-        void newCampaign() { campaignForm(null); }
         void newCoupon() {
             LinearLayout form = Ui.col(c);
             EditText code = Ui.input(c, "کد (خالی = خودکار)");

@@ -341,10 +341,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-514 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-515 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 514;
+const UI_BUILD = 515;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -5465,7 +5465,8 @@ function campaignModal(camp) {
       <div><label>مقدار</label><input id="cm-value" type="number" value="${c.discount_value != null ? c.discount_value : 10}" /></div>
     </div>
     <div class="form-row">
-      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="${c.min_purchase != null ? c.min_purchase : 0}" /></div>
+      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="${c.min_purchase != null ? c.min_purchase : 0}" />
+      <div><label>تعداد خرید (بعد از N بار)</label><input id="cm-count" type="number" min="0" value="${c.min_purchase_count || 0}"></div></div>
       <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" value="${c.max_purchase || ""}" placeholder="بدون سقف" /></div>
     </div>
     <div class="form-row">
@@ -5522,6 +5523,8 @@ function campaignModal(camp) {
         discount_type: $("#cm-type").value,
         discount_value: Number($("#cm-value").value || 0),
         min_purchase: Number($("#cm-min").value || 0),
+        min_purchase_count: Number($("#cm-count").value || 0),
+        reward_next_only: false,
         max_discount: Number($("#cm-max").value || 0) || null,
         max_purchase: Number($("#cm-maxpurchase").value || 0) || null,
         usage_limit: Number($("#cm-usage").value || 0) || null,
