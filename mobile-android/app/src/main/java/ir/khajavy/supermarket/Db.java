@@ -1243,7 +1243,8 @@ public final class Db extends SQLiteOpenHelper {
         StringBuilder sql = new StringBuilder(
             "SELECT p.id, p.name, p.barcode, p.min_stock_alert, " + qty + ","
             + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0),"
-            + " IFNULL(p.image_url,''), IFNULL((SELECT bk.category FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')"
+            + " IFNULL(NULLIF(p.image_url,''), IFNULL((SELECT bk.image_url FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')),"
+            + " IFNULL((SELECT bk.category FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')"
             + " FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1");
         java.util.List<String> args = new ArrayList<>();
         if (!f.isEmpty()) { sql.append(" AND (p.name LIKE ? OR p.barcode LIKE ?)"); args.add("%" + f + "%"); args.add("%" + f + "%"); }

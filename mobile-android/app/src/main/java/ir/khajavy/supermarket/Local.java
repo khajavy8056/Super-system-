@@ -642,7 +642,23 @@ public final class Local {
         String now = offerNowUtc(), note = "صادر شده پس از فاکتور " + invoiceNo;
         long customerId = sale.isNull("customer_id") ? 0 : sale.optLong("customer_id", 0);
         String customerPhone = Db.norm(sale.optString("customer_phone"));
+        /* build-514 — دو منبع صدور کوپن خرید بعدی:
+         * ۱) جشنواره‌های آستانه‌دار که فروش به آستانه‌شان رسیده (خرید بالای ۱۰ میلیون و…)؛
+         * ۲) جشنواره‌ای که روی همین فاکتور اعمال شده (خودکار یا انتخاب صندوق‌دار) — حتی اگر
+         *    آستانه نداشته باشد؛ این دقیقاً انتظار مالک است: «جشنواره شناسایی/اعمال شد ⇒
+         *    برای همین مشتری کوپن تخفیف خرید بعدی ساخته شود، روی فاکتور بیاید و پیامک بگیرد». */
+        java.util.LinkedHashMap<Long, JSONObject> picked = new java.util.LinkedHashMap<>();
         for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND auto_issue_threshold IS NOT NULL AND auto_issue_threshold<=? ORDER BY auto_issue_threshold DESC,priority ASC,id DESC", total)) {
+            picked.put(campaign.optLong("id"), campaign);
+        }
+        long appliedId = sale.optLong("campaign_id", 0);
+        if (appliedId > 0) {
+            JSONObject applied = one("SELECT * FROM campaigns WHERE id=? OR pc_id=?", appliedId, appliedId);
+            if (applied != null && "ACTIVE".equals(applied.optString("status", "ACTIVE"))) picked.put(applied.optLong("id"), applied);
+            else if (applied != null) audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(applied.optLong("id")), null,
+                    obj("reason", "جشنوارهٔ اعمال‌شده دیگر فعال نیست", "invoice", invoiceNo));
+        }
+        for (JSONObject campaign : picked.values()) {
             boolean localCampaign = campaign.optInt("is_local", 1) == 1;
             /* build-511 — پایان تبعیضِ حالت جفت‌شده: جشنواره‌ای که روی خود گوشی ساخته شده
              * (is_local=1) در حالت اتصال به PC هم صادق است؛ فاکتور روی گوشی ساخته و با
@@ -1631,4 +1647,20 @@ public final class Local {
     public static JSONObject one(String sql, Object... a) { List<JSONObject> r = rows(sql, a); return r.isEmpty() ? null : r.get(0); }
     public static void exec(String sql, Object... a) { Db.db().execSQL(sql, a); }
     static int count(String table) { JSONObject r = one("SELECT COUNT(*) AS n FROM " + table); return r == null ? 0 : r.optInt("n"); }
+    /* build-514 — آمار جشنواره برای گزارش ردیف/شیت */
+    static int countWhere(String table, String where, Object... args) {
+        JSONObject r = one("SELECT COUNT(*) AS n FROM " + table + " WHERE " + where, args);
+        return r == null ? 0 : r.optInt("n");
+    }
+    /** مجموع تخفیف اعمال‌شدهٔ یک جشنواره روی فاکتورهای پرداخت‌شده (ارزش مصرف). */
+    static double sumInvoices(String column, long campaignId) {
+        JSONObject r = one("SELECT IFNULL(SUM(" + column + "),0) AS v FROM invoices WHERE campaign_id=? AND status='PAID'", campaignId);
+        double v = r == null ? 0 : r.optDouble("v", 0);
+        return Double.isFinite(v) ? v : 0;
+    }
+    /** تاریخ آخرین فاکتوری که از این جشنواره استفاده کرده (خالی = هیچ). */
+    static String lastInvoiceUse(long campaignId) {
+        JSONObject r = one("SELECT MAX(at) AS t FROM invoices WHERE campaign_id=? AND status='PAID'", campaignId);
+        return r == null || r.isNull("t") ? "" : r.optString("t", "");
+    }
 }

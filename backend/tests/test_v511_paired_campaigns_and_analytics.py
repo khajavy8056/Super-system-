@@ -98,7 +98,8 @@ def test_windows_portable_package_is_complete_system():
         app_js = z.read("frontend/app.js").decode("utf-8")
     for must in ("RUN.bat", "backend/app/main.py", "backend/requirements-desktop.txt",
                  "installer/windows/run_supermarket.py", "frontend/index.html",
-                 "backend/alembic/env.py", "README-WINDOWS.fa.md"):
+                 "backend/alembic/env.py", "README-WINDOWS.fa.md",
+                 "desktop/main.py", "desktop/screens/pos.py"):
         assert must in names, f"بستهٔ پرتابل فاقد {must}"
     assert "run_supermarket.py" in run and "requirements-desktop.txt" in run
     assert f"const UI_BUILD = {BUILD // 100};" in app_js, "پرتابل، رابط کهنه را بسته!"

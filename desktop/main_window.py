@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         from .screens.dashboard import DashboardPage
         from .screens.pos import PosPage
         from .screens.products import ProductsPage
+        from .screens.campaigns import CampaignsPage
         from .screens.customers import CustomersPage
         from .screens.invoices import InvoicesPage
         from .screens.users import UsersPage
@@ -98,6 +99,8 @@ class MainWindow(QMainWindow):
             pages.append(("فاکتورها", InvoicesPage(ctx)))
         if ctx.can("reports.view"):
             pages.append(("گزارش‌ها", ReportsPage(ctx)))
+        if ctx.can("marketing.view") or ctx.can("marketing.manage"):
+            pages.append(("جشنواره‌ها", CampaignsPage(ctx)))
         if ctx.can("users.manage"):
             pages.append(("کاربران", UsersPage(ctx)))
         if ctx.can("settings.manage"):

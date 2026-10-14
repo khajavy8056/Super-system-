@@ -91,6 +91,7 @@ def build(version: str) -> Path:
     OUT.mkdir(parents=True, exist_ok=True)
     out = OUT / f"RasaSystem-Windows-Portable-{version}.zip"
     include = [
+        ("desktop", "desktop"),
         ("backend/app", "backend/app"),
         ("backend/alembic", "backend/alembic"),
         ("backend/requirements.txt", "backend/requirements.txt"),

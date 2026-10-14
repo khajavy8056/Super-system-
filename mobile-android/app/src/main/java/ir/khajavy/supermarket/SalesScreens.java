@@ -899,9 +899,39 @@ public final class SalesScreens {
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0)) + " · استفاده " + Ui.fa(String.valueOf(cp.optInt("used_count"))) + (cp.isNull("usage_limit") ? "" : "/" + Ui.fa(String.valueOf(cp.optInt("usage_limit")))) + " بار" + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignForm(cp)); list.addView(it); } }); }
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
+                        /* build-514 — عملکرد هر جشنواره روی خود ردیف: استفاده، کوپن صادره، ارزش مصرف */
+                        long cid = cp.optLong("id"); int issued = Local.countWhere("coupons", "campaign_id=?", cid);
+                        double spent = Local.sumInvoices("campaign_discount", cid);
+                        String lastUse = Local.lastInvoiceUse(cid);
+                        String sub = ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0))
+                                + " · استفاده " + Ui.fa(String.valueOf(cp.optInt("used_count"))) + (cp.isNull("usage_limit") ? "" : "/" + Ui.fa(String.valueOf(cp.optInt("usage_limit")))) + " بار"
+                                + " · کوپن صادره " + Ui.fa(String.valueOf(issued)) + (spent > 0 ? " · تخفیف داده‌شده " + Ui.money(spent) : "") + (lastUse.isEmpty() ? "" : " · آخرین " + Ui.jdate(lastUse))
+                                + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until")));
+                        LinearLayout it = Ui.item(c, cp.optString("name"), sub, label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignForm(cp));
+                        it.setOnLongClickListener(v -> { campaignReport(cp, issued, spent); return true; });
+                        list.addView(it); } }); }
             else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
             else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
+        }
+        /* build-514 — گزارش کامل یک جشنواره (لمس طولانی روی ردیف) */
+        void campaignReport(JSONObject cp, int issued, double spent) {
+            LinearLayout l = Ui.col(c);
+            long cid = cp.optLong("id");
+            int used = cp.optInt("used_count");
+            l.addView(Ui.kv(c, "وضعیت", label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status"))));
+            l.addView(Ui.kv(c, "مقدار تخفیف", "PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0)) + " تومان", 0));
+            l.addView(Ui.kv(c, "حداقل خرید", Ui.money(cp.optDouble("min_purchase", 0)) + " تومان", 0));
+            l.addView(Ui.kv(c, "دفعات استفاده", Ui.fa(String.valueOf(used)) + (cp.isNull("usage_limit") ? " (بدون سقف)" : " از " + Ui.fa(String.valueOf(cp.optInt("usage_limit")))), 0));
+            l.addView(Ui.kv(c, "کوپن خرید بعدی صادرشده", Ui.fa(String.valueOf(issued)) + " کد", 0));
+            l.addView(Ui.kv(c, "مجموع تخفیف داده‌شده", Ui.money(spent) + " تومان", spent > 0 ? Ui.GREEN : 0));
+            String lastUse = Local.lastInvoiceUse(cid);
+            l.addView(Ui.kv(c, "آخرین استفاده", lastUse.isEmpty() ? "— هنوز استفاده نشده" : Ui.jdate(lastUse), 0));
+            double thr = cp.optDouble("auto_issue_threshold", 0);
+            if (thr > 0) l.addView(Ui.kv(c, "صدور خودکار کوپن از", Ui.money(thr) + " تومان · اعتبار " + Ui.fa(String.valueOf(cp.optInt("auto_issue_validity_days", 30))) + " روز" + (Local.offerFlag(cp, "auto_issue_sms") ? " + پیامک" : ""), 0));
+            if (!cp.isNull("valid_until")) l.addView(Ui.kv(c, "پایان جشنواره", Ui.jdate(cp.optString("valid_until")), 0));
+            l.addView(Ui.muted(c, "برای ویرایش، روی خود ردیف ضربه بزنید."));
+            Ui.sheet(c, "گزارش «" + cp.optString("name") + "»", l);
         }
         /* build-511 — فرم واحد ساخت/ویرایش: با cp غیر null، فیلدها پیش‌پر می‌شوند و
          * ذخیره روی PATCH می‌رود؛ وضعیت هم داخل فرم قابل تغییر است. */
