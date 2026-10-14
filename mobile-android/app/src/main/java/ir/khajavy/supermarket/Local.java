@@ -638,6 +638,20 @@ public final class Local {
             values.put("is_local", 1); values.put("pc_id", 0);
             long couponId = Db.db().insert("coupons", null, values);
             if (couponId < 0) continue;
+            /* build-512 — پیامک با یک-دو خط توضیح (درخواست مالک): مشتری باید بداند
+             * این کد برای خرید بعدی اوست و چطور استفاده می‌کند. */
+            if (campaign.optInt("auto_issue_sms", 1) == 1 && !customerPhone.isEmpty()) {
+                try {
+                    String valueTxt = "PERCENT".equalsIgnoreCase(campaign.optString("discount_type", "PERCENT"))
+                            ? Ui.num(optFin(campaign, "discount_value", 0)) + "٪ تخفیف"
+                            : Ui.money(optFin(campaign, "discount_value", 0)) + " تومان";
+                    String msg = Prefs.get("store_name", "فروشگاه") + " — هدیهٔ خرید شما از جشنوارهٔ «" + campaign.optString("name") + "»"
+                            + "\nکد تخفیف خرید بعدی: " + code + " به ارزش " + valueTxt
+                            + " (اعتبار تا " + Ui.jdate(offerUtcAfterDays(validityDays)) + ")"
+                            + "\nدر خرید بعدی همین کد را به صندوق‌دار بگویید.";
+                    SmsLocal.enqueueAndSend(customerPhone, msg, "auto_coupon");
+                } catch (Throwable smsFail) { android.util.Log.w("Local", "auto coupon sms skipped", smsFail); }
+            }
             if (!localCampaign && campaign.optLong("pc_id") > 0) remoteCodes.put(String.valueOf(campaign.optLong("pc_id")), code);
             audit("COUPON_ISSUED", "Coupon", String.valueOf(couponId), null,
                     obj("code", code, "campaign_id", campaignId, "invoice", invoiceNo));
@@ -692,6 +706,13 @@ public final class Local {
                 "campaign", campaignId > 0 ? campaignId : JSONObject.NULL);
     }
     static JSONArray eligibleLocalCampaigns(JSONObject request) throws Exception {
+        return evaluateCampaigns(request, null);
+    }
+
+    /* build-512 — پایان «جشنوارهٔ واجد شرایطی نیست» به‌صورت جعبهٔ سیاه: اگر هیچ
+     * جشنواره‌ای جمع نشد، «چرا» را هم داریم (rejections) تا صندوق‌دار دلیل دقیق
+     * هر جشنواره را ببیند؛ منطق قضاوت یکی است و فقط ثبتِ دلیل اضافه می‌شود. */
+    static JSONArray evaluateCampaigns(JSONObject request, JSONArray rejections) throws Exception {
         JSONArray eligible = new JSONArray(), ids = request.optJSONArray("product_ids");
         JSONObject lineAmounts = request.optJSONObject("line_amounts");
         String now = offerNowUtc(); double amount = optFin(request, "amount", 0); long customerId = request.optLong("customer_id", 0);
@@ -700,23 +721,48 @@ public final class Local {
             /* build-511 — جشنوارهٔ محلیِ گوشی در حالت جفت‌شده هم واجد شرایط است؛
              * فیلتر قدیمی `localCampaign && !standalone → skip` عامل پیام
              * «جشنوارهٔ متناسب با این سبد وجود ندارد» برای جشنواره‌های ساخته‌شده روی گوشی بود. */
-            if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) continue;
-            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
-            if (amount <= 0 || amount < optFin(campaign, "min_purchase", 0)) continue;
+            String name = campaign.optString("name", "جشنواره");
+            if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "در حالت «اعمال خودکار» است و در فهرست انتخاب صندوق‌دار نمی‌آید"));
+                continue;
+            }
+            if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "خارج از بازهٔ زمانی جشنواره است"));
+                continue;
+            }
+            if (amount <= 0 || amount < optFin(campaign, "min_purchase", 0)) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "حداقل خرید " + Ui.money(optFin(campaign, "min_purchase", 0)) + " تومان است؛ سبد شما " + Ui.money(amount) + " تومان"));
+                continue;
+            }
             double maximumPurchase = optFin(campaign, "max_purchase", 0);
-            if (maximumPurchase > 0 && amount > maximumPurchase) continue;
-            if (!campaign.isNull("auto_issue_threshold") && optFin(campaign, "discount_value", 0) == 0) continue;
+            if (maximumPurchase > 0 && amount > maximumPurchase) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "فقط تا سقف خرید " + Ui.money(maximumPurchase) + " تومان اعمال می‌شود"));
+                continue;
+            }
+            if (!campaign.isNull("auto_issue_threshold") && optFin(campaign, "discount_value", 0) == 0) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "این جشنواره فقط صادرکنندهٔ کوپن خرید بعدی است و تخفیف مستقیم ندارد"));
+                continue;
+            }
             int usageLimit = campaign.isNull("usage_limit") ? Integer.MAX_VALUE : campaign.optInt("usage_limit", Integer.MAX_VALUE);
-            if (campaign.optInt("used_count") >= usageLimit) continue;
+            if (campaign.optInt("used_count") >= usageLimit) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "سقف دفعات استفادهٔ جشنواره پر شده است"));
+                continue;
+            }
             double eligibleBase = amount;
             if ("PRODUCTS".equalsIgnoreCase(campaign.optString("target_type", "ALL"))) {
                 JSONArray targets;
                 try { targets = new JSONArray(campaign.optString("target_ids", "[]")); }
-                catch (org.json.JSONException invalidTargets) { continue; }
-                if (targets.length() == 0 || lineAmounts == null) continue;
+                catch (org.json.JSONException invalidTargets) { if (rejections != null) rejections.put(obj("name", name, "reason", "فهرست کالاهای هدف نامعتبر است")); continue; }
+                if (targets.length() == 0 || lineAmounts == null) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "هیچ‌کدام از کالاهای هدف در سبد نیست"));
+                    continue;
+                }
                 eligibleBase = 0;
                 for (int i = 0; i < targets.length(); i++) eligibleBase += lineAmounts.optDouble(targets.optString(i), 0);
-                if (eligibleBase <= 0) continue;
+                if (eligibleBase <= 0) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "هیچ‌کدام از کالاهای هدف در سبد نیست"));
+                    continue;
+                }
             }
             if (offerFlag(campaign, "first_purchase_only") && customerId != 0) {
                 JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
@@ -724,7 +770,10 @@ public final class Local {
                 JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
                         + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
                 int historical = customer == null ? 0 : customer.optInt("lifetime_purchase_count");
-                if (historical + (purchases == null ? 0 : purchases.optInt("n")) > 0) continue;
+                if (historical + (purchases == null ? 0 : purchases.optInt("n")) > 0) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "فقط برای اولین خرید مشتری است"));
+                    continue;
+                }
             }
             int customerLimit = campaign.isNull("per_customer_limit") ? Integer.MAX_VALUE : campaign.optInt("per_customer_limit", Integer.MAX_VALUE);
             if (customerLimit != Integer.MAX_VALUE && customerId != 0) {
@@ -733,11 +782,17 @@ public final class Local {
                 JSONObject localUses = one("SELECT COUNT(*) AS n FROM invoices WHERE campaign_id=? AND customer_id=? " + localInvoiceFilter,
                         localCampaign ? campaign.optLong("id") : campaign.optLong("pc_id"), customerId);
                 int used = (remoteUses == null ? 0 : remoteUses.optInt("n")) + (localUses == null ? 0 : localUses.optInt("n"));
-                if (used >= customerLimit) continue;
+                if (used >= customerLimit) {
+                    if (rejections != null) rejections.put(obj("name", name, "reason", "سقف استفادهٔ این مشتری از جشنواره پر شده است"));
+                    continue;
+                }
             }
             double discount = offerDiscount(campaign.optString("discount_type", "PERCENT"),
                     optFin(campaign, "discount_value", 0), optFin(campaign, "max_discount", 0), eligibleBase);
-            if (discount <= 0 || !Double.isFinite(discount)) continue;
+            if (discount <= 0 || !Double.isFinite(discount)) {
+                if (rejections != null) rejections.put(obj("name", name, "reason", "مقدار تخفیف این جشنواره صفر است"));
+                continue;
+            }
             eligible.put(obj("campaign_id", campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id"),
                     "name", campaign.optString("name"), "discount", discount,
                     "discount_type", campaign.optString("discount_type"), "discount_value", optFin(campaign, "discount_value", 0),
@@ -755,8 +810,23 @@ public final class Local {
     }
     static Object pos(String method, String[] seg, JSONObject q, JSONObject b) throws Exception {
         if (seg.length > 2 && "campaigns".equals(seg[1]) && "eligible".equals(seg[2])) {
-            JSONArray campaigns = eligibleLocalCampaigns(b);
-            return obj("campaigns", campaigns, "count", campaigns.length());
+            JSONArray rejections = new JSONArray();
+            JSONArray campaigns = evaluateCampaigns(b, rejections);
+            JSONObject response = obj("campaigns", campaigns, "count", campaigns.length());
+            /* build-512 — بنر «با همین فاکتور کوپن خرید بعدی صادر می‌شود» در موتور محلی */
+            JSONArray hints = new JSONArray(); double reqAmount = optFin(b, "amount", 0);
+            for (int i = 0; i < campaigns.length(); i++) {
+                JSONObject c = campaigns.optJSONObject(i); if (c == null) continue;
+                double thr = c.optDouble("auto_issue_threshold", 0);
+                if (thr > 0 && reqAmount + 0.5 >= thr)
+                    hints.put(obj("campaign_id", c.optLong("campaign_id"), "name", c.optString("name"),
+                            "discount_type", c.optString("discount_type"), "discount_value", c.optDouble("discount_value", 0),
+                            "threshold", thr, "validity_days", c.optInt("auto_issue_validity_days", 0)));
+            }
+            if (hints.length() > 0) response.put("issue_on_checkout", hints);
+            /* شیشه‌ای: اگر هیچ جشنواره‌ای جمع نشد، دلیل هر کدام برمی‌گردد */
+            if (campaigns.length() == 0) response.put("rejections", rejections);
+            return response;
         }
         if ("batch-options".equals(seg[1])) { JSONObject p=Db.sellableProductById(Long.parseLong(seg[2])); if(p==null) throw new Api.ApiError(404,"PRODUCT_NOT_FOUND","کالا موجود یا فعال نیست"); return obj("product_id",p.optLong("id"),"product_name",p.optString("name"),"options",p.optJSONArray("batches")); }
         if ("search".equals(seg[1])) { JSONArray a = new JSONArray(); for (JSONObject p : Db.searchProducts(q.optString("q"), q.optInt("limit", 8))) a.put(p); return obj("items", a); }
@@ -843,6 +913,20 @@ public final class Local {
             try { no = Db.localSale(safe, total); }
             catch (Api.ApiError business) { throw business; }
             catch (Throwable writeFail) { android.util.Log.e("Local", "sale write failed", writeFail); throw new Api.ApiError(500, "SALE_WRITE", "نوشتن فروش در حافظهٔ گوشی ناموفق بود: " + writeFail.getClass().getSimpleName()); }
+            /* ---- فاز ۳٫۵ (build-512): پاداش خرید — صدور خودکار کوپن خرید بعدی بالای
+             * آستانه + پیامک توضیحی. تا امروز این فراخوانی «کد مرده» بود و هرگز اجرا
+             * نمی‌شد؛ عامل اصلی «خرید بالای ۱۰ میلیون هیچ کوپنی نمی‌دهد». این فاز
+             * هرگز ثبت فروش را نمی‌بندد (خرابی فقط لاگ می‌شود). ---- */
+            try {
+                JSONObject saleRow = one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no);
+                if (saleRow != null) {
+                    if (!saleRow.isNull("customer_id")) {
+                        JSONObject cust = one("SELECT phone FROM customers WHERE id=?", saleRow.optLong("customer_id"));
+                        saleRow.put("customer_phone", cust == null ? "" : cust.optString("phone", ""));
+                    } else saleRow.put("customer_phone", "");
+                    issueLocalAutoCoupons(saleRow, no, total);
+                }
+            } catch (Throwable rewardFail) { android.util.Log.w("Local", "auto coupon issue skipped", rewardFail); }
             // ---- فاز ۴: پاسخ — فاکتور ثبت شده؛ خرابی JSON‌سازی پاسخ نباید آن را بکشد ----
             try { return invoiceOut(one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no)); }
             catch (Throwable outFail) { android.util.Log.w("Local", "invoiceOut degraded response", outFail); return obj("local_no", no, "invoice_number", no, "local", true); }

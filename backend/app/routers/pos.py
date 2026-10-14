@@ -169,16 +169,21 @@ def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
     """
     from ..services import coupons as coupon_svc
     amount = Decimal(str(body.amount))
+    rejections: list[dict] = []   # build-512 — دلیل رد شدن هر جشنوارهٔ فعال
     rows = coupon_svc.eligible_campaigns(
         db, amount=amount, product_ids=body.product_ids,
         line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
         customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
+        rejected=rejections,
     )
     # build-509 — «با ثبت این فاکتور کوپن خرید بعدی صادر می‌شود»: صندوق‌دار قبل از
     # ثبت بداند کدام جشنواره‌های آستانه‌دار فعال‌اند (درخواست مالک برای شفافیت صندوق).
     issue_now = coupon_svc.issue_on_checkout(
         db, amount=amount, customer_id=body.customer_id)
-    return {"campaigns": rows, "count": len(rows), "issue_on_checkout": issue_now}
+    # build-512 — rejections همیشه هست: صندوق (و هر کلاینتی) بلافاصله می‌فهمد چرا
+    # یک جشنوارهٔ خاص با این سبد جمع نشد؛ حتی وقتی جشنوارهٔ واجد شرایط دیگری هست.
+    return {"campaigns": rows, "count": len(rows), "issue_on_checkout": issue_now,
+            "rejections": rejections}
 
 
 @router.post("/cart/validate")

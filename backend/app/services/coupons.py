@@ -304,12 +304,20 @@ def eligible_campaigns(
     now: datetime | None = None,
     include_auto_apply: bool = True,
     limit: int = 20,
+    rejected: list[dict] | None = None,
 ) -> list[dict]:
     """The structured list a cashier chooses from (§24).
 
     Only campaigns whose conditions ALREADY hold for this basket are returned —
     the till never receives a campaign the server would reject at checkout.
+    build-512: pass ``rejected`` to also receive WHY each active campaign did
+    not qualify (پایانِ پیام مبهم «جشنواره‌ای وجود ندارد» — شیشه‌ای، نه جعبهٔ سیاه).
     """
+
+    def _reject(c: Campaign, reason: str) -> None:
+        if rejected is not None:
+            rejected.append({"campaign_id": c.id, "name": c.name, "reason": reason})
+
     now = now or datetime.utcnow()
     rows = db.execute(
         select(Campaign).where(Campaign.status == "ACTIVE").order_by(Campaign.priority.asc(), Campaign.id.desc())
@@ -317,19 +325,24 @@ def eligible_campaigns(
     out: list[dict] = []
     for c in rows:
         if not include_auto_apply and c.auto_apply:
+            _reject(c, "در حالت «اعمال خودکار» است و در فهرست انتخاب صندوق‌دار نمی‌آید")
             continue
         if c.valid_from and c.valid_from > now:
+            _reject(c, "هنوز شروع نشده است")
             continue
         if c.valid_until and c.valid_until < now:
+            _reject(c, "خارج از بازهٔ زمانی جشنواره است")
             continue
         if c.auto_issue_threshold is not None and c.discount_value == 0:
+            _reject(c, "این جشنواره فقط صادرکنندهٔ کوپن خرید بعدی است و تخفیف مستقیم ندارد")
             continue   # issue-only festival: its benefit is the future coupon, not a till discount
         try:
             ev = evaluate_campaign(
                 db, campaign_id=c.id, amount=amount, product_ids=product_ids,
                 line_amounts=line_amounts, customer_id=customer_id, now=now,
             )
-        except CampaignError:
+        except CampaignError as ce:
+            _reject(c, getattr(ce, "message", "") or "شرایط جشنواره با این سبد جمع نشد")
             continue
         out.append(ev)
         if len(out) >= limit:

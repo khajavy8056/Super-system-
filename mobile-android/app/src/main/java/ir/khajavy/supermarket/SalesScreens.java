@@ -480,7 +480,21 @@ public final class SalesScreens {
             requestBenefitData("/pos/campaigns/eligible", request, result -> {
                 JSONObject response = result instanceof JSONObject ? (JSONObject) result : new JSONObject();
                 JSONArray offers = response.optJSONArray("campaigns");
-                if (offers == null || offers.length() == 0) { Ui.toast("جشنوارهٔ واجد شرایطی برای این سبد فعال نیست"); return; }
+                if (offers == null || offers.length() == 0) {
+                    /* build-512 — پایان پیام مبهم: اگر هیچ جشنواره‌ای جمع نشد، «چرا» را
+                     * برای هر جشنوارهٔ فعال با دلیل دقیق نشان بده (شیشه‌ای، نه جعبهٔ سیاه). */
+                    JSONArray rejections = response.optJSONArray("rejections");
+                    if (rejections != null && rejections.length() > 0) {
+                        LinearLayout why = Ui.col(c);
+                        why.addView(Ui.muted(c, "هیچ جشنواره‌ای با این سبد جمع نشد؛ دلیل هر کدام:"));
+                        for (int i = 0; i < rejections.length(); i++) {
+                            JSONObject r = rejections.optJSONObject(i); if (r == null) continue;
+                            why.addView(Ui.item(c, r.optString("name", "جشنواره"), r.optString("reason", ""), "", Ui.RED, () -> { }));
+                        }
+                        Ui.sheet(c, "جشنواره‌های فعال", why);
+                    } else Ui.toast("جشنوارهٔ واجد شرایطی برای این سبد فعال نیست");
+                    return;
+                }
                 LinearLayout content = Ui.col(c); content.addView(Ui.muted(c, "فقط جشنواره‌های سازگار با همین سبد نمایش داده می‌شوند؛ شرایط هنگام ثبت فروش دوباره بررسی می‌شود."));
                 /* build-510 — بنر «با همین فاکتور کد تخفیف خرید بعدی صادر می‌شود»:
                  * اول پاسخ سرور (issue_on_checkout)، وگرنه ردیف‌های محلیِ دارای آستانه. */
