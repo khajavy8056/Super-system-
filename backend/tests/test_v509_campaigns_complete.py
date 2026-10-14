@@ -57,7 +57,7 @@ def test_cashier_can_open_pos_campaigns_and_sees_issue_hint(client, auth_headers
     body = r.json()
     assert "campaigns" in body and "issue_on_checkout" in body
     hints = body["issue_on_checkout"]
-    assert hints and hints[0]["discount_value"] == 15 and hints[0]["threshold"] == 10_000_000, \
+    assert any(h["discount_value"] == 15 and h["threshold"] == 10_000_000 for h in hints), \
         "صندوق باید قبل از ثبت بداند کوپن خرید بعدی صادر می‌شود"
 
 

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Campaign, Coupon, CouponRedemption, Customer, User
+from ..models import Campaign, CampaignRedemption, Coupon, CouponRedemption, Customer, User
 from ..security import require_permission
 from ..services import coupons as svc
 from ..services.audit import write_audit
@@ -242,6 +242,42 @@ def marketing_stats(db: Session = Depends(get_db),
     redeemed_value = float(db.execute(
         select(func.coalesce(func.sum(CouponRedemption.amount), 0))
     ).scalar_one())
+    # build-511 — تحلیلِ هر جشنواره (درخواست مالک: «همه‌چیز مشخص باشد، با نمودار و جدول»)
+    issued_sq = (
+        select(Coupon.campaign_id.label("cid"), func.count().label("n"))
+        .group_by(Coupon.campaign_id).subquery()
+    )
+    red_sq = (
+        select(CampaignRedemption.campaign_id.label("cid"),
+               func.count().label("n"),
+               func.coalesce(func.sum(CampaignRedemption.amount), 0).label("value"),
+               func.max(CampaignRedemption.created_at).label("last"))
+        .group_by(CampaignRedemption.campaign_id).subquery()
+    )
+    detail_rows = db.execute(
+        select(Campaign, func.coalesce(issued_sq.c.n, 0), func.coalesce(red_sq.c.n, 0),
+               func.coalesce(red_sq.c.value, 0), red_sq.c.last)
+        .outerjoin(issued_sq, issued_sq.c.cid == Campaign.id)
+        .outerjoin(red_sq, red_sq.c.cid == Campaign.id)
+        .order_by(Campaign.used_count.desc(), Campaign.id.desc())
+    ).all()
+    campaigns_detail = [{
+        "id": c.id, "name": c.name, "status": c.status,
+        "discount_type": c.discount_type, "discount_value": float(c.discount_value or 0),
+        "used_count": int(c.used_count or 0), "usage_limit": c.usage_limit,
+        "issued_coupons": int(issued or 0), "redemptions": int(red_n or 0),
+        "redeemed_value": float(red_v or 0),
+        "last_used": last.isoformat() if last else None,
+    } for c, issued, red_n, red_v, last in detail_rows]
+    by_day_rows = db.execute(
+        select(func.date(CampaignRedemption.created_at).label("day"), func.count())
+        .group_by(func.date(CampaignRedemption.created_at))
+        .order_by(func.date(CampaignRedemption.created_at).desc()).limit(30)
+    ).all()
+    by_day = [{"day": str(day), "n": int(n)} for day, n in reversed(by_day_rows)]
     return {"total_coupons": total, "by_status": by_status,
             "redeemed_value": redeemed_value,
-            "campaigns": int(db.execute(select(func.count()).select_from(Campaign)).scalar_one())}
+            "campaigns": int(db.execute(select(func.count()).select_from(Campaign)).scalar_one()),
+            #: build-511 — نمودار مصرف هر جشنواره + روند استفاده
+            "campaigns_detail": campaigns_detail,
+            "redemptions_by_day": by_day}

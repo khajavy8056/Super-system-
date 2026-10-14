@@ -877,11 +877,14 @@ public final class SalesScreens {
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0)) + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> { String next = "ACTIVE".equals(cp.optString("status")) ? "PAUSED" : "ACTIVE"; Ui.confirm(c, "وضعیت به «" + ("ACTIVE".equals(next) ? "فعال" : "متوقف") + "» تغییر کند؟", () -> patch("/marketing/campaigns/" + cp.optLong("id"), j("status", next), x -> load())); }); list.addView(it); } }); }
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0)) + " · استفاده " + Ui.fa(String.valueOf(cp.optInt("used_count"))) + (cp.isNull("usage_limit") ? "" : "/" + Ui.fa(String.valueOf(cp.optInt("usage_limit")))) + " بار" + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignForm(cp)); list.addView(it); } }); }
             else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
             else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
         }
-        void newCampaign() {
+        /* build-511 — فرم واحد ساخت/ویرایش: با cp غیر null، فیلدها پیش‌پر می‌شوند و
+         * ذخیره روی PATCH می‌رود؛ وضعیت هم داخل فرم قابل تغییر است. */
+        void campaignForm(JSONObject cp) {
+            final boolean editing = cp != null;
             LinearLayout form = Ui.col(c);
             EditText name = Ui.input(c, "نام جشنواره *");
             EditText value = Ui.input(c, "مقدار تخفیف", true);
@@ -892,8 +895,20 @@ public final class SalesScreens {
             EditText until = DatePicker.field(c, "پایان (اختیاری)");
             EditText issueThreshold = Ui.input(c, "صدور کوپن خرید بعدی از مبلغ (اختیاری)", true);
             EditText issueDays = Ui.input(c, "اعتبار کوپن بعدی (روز)", true); issueDays.setText("30");
-            final String[] type = {"PERCENT"};
-            final boolean[] autoApply = {false}, stackable = {false};
+            if (editing) {
+                name.setText(cp.optString("name"));
+                value.setText(trimNum(cp.optDouble("discount_value", 0)));
+                minimum.setText(trimNum(cp.optDouble("min_purchase", 0)));
+                if (!cp.isNull("max_purchase")) maximumPurchase.setText(trimNum(cp.optDouble("max_purchase", 0)));
+                if (!cp.isNull("max_discount")) maximumDiscount.setText(trimNum(cp.optDouble("max_discount", 0)));
+                if (!cp.isNull("usage_limit")) usageLimit.setText(String.valueOf(cp.optInt("usage_limit")));
+                if (!cp.isNull("auto_issue_threshold")) issueThreshold.setText(trimNum(cp.optDouble("auto_issue_threshold", 0)));
+                issueDays.setText(String.valueOf(cp.optInt("auto_issue_validity_days", 30)));
+            }
+            final String[] type = {editing ? cp.optString("discount_type", "PERCENT") : "PERCENT"};
+            final boolean[] autoApply = {editing && Local.offerFlag(cp, "auto_apply")};
+            final boolean[] stackable = {editing && Local.offerFlag(cp, "stackable")};
+            final String[] status = {editing ? cp.optString("status", "ACTIVE") : "ACTIVE"};
             LinearLayout typeRow = Ui.row(c), applyRow = Ui.row(c), stackRow = Ui.row(c);
             Runnable[] renderType = new Runnable[1];
             renderType[0] = () -> {
@@ -910,15 +925,24 @@ public final class SalesScreens {
                 stackRow.addView(Ui.chip(c, "بدون ترکیب با کوپن", !stackable[0], () -> { stackable[0] = false; renderRules[0].run(); }));
                 stackRow.addView(Ui.chip(c, "ترکیب با کوپن", stackable[0], () -> { stackable[0] = true; renderRules[0].run(); }));
             };
+            LinearLayout statusRow = Ui.row(c);
+            Runnable[] renderStatus = new Runnable[1];
+            renderStatus[0] = () -> {
+                statusRow.removeAllViews();
+                for (String[] s : new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}})
+                    statusRow.addView(Ui.chip(c, s[1], status[0].equals(s[0]), () -> { status[0] = s[0]; renderStatus[0].run(); }));
+            };
             renderType[0].run(); renderRules[0].run();
+            if (editing) renderStatus[0].run();
             form.addView(name); form.addView(Ui.muted(c, "نوع تخفیف")); form.addView(typeRow);
             form.addView(value); form.addView(minimum); form.addView(maximumPurchase); form.addView(maximumDiscount); form.addView(usageLimit);
             form.addView(until); form.addView(issueThreshold); form.addView(issueDays);
             form.addView(Ui.muted(c, "اعمال در صندوق")); form.addView(applyRow);
             form.addView(Ui.muted(c, "ترکیب با کوپن")); form.addView(stackRow);
+            if (editing) { form.addView(Ui.muted(c, "وضعیت")); form.addView(statusRow); }
             form.addView(Ui.muted(c, "صدور کوپن خرید بعدی پس از رسیدن فروش به آستانه؛ کد در رسید/پیامک فاکتور ثبت می‌شود."));
             Dialog[] dialog = new Dialog[1];
-            form.addView(Ui.primary(c, "ایجاد جشنواره", () -> {
+            form.addView(Ui.primary(c, editing ? "ذخیرهٔ تغییرات" : "ایجاد جشنواره", () -> {
                 try {
                     JSONObject request = j("name", Ui.str(name), "discount_type", type[0]);
                     request.put("auto_apply", autoApply[0]); request.put("stackable", stackable[0]); request.put("auto_issue_sms", true);
@@ -934,13 +958,19 @@ public final class SalesScreens {
                     if (!Ui.str(issueThreshold).isEmpty() && Ui.numVal(issueThreshold, 0) > 0)
                         putNum(request, "auto_issue_threshold", Ui.numVal(issueThreshold, 0));
                     putNum(request, "auto_issue_validity_days", Math.max(1, Math.min(3650, (int) Ui.numVal(issueDays, 30))));
+                    request.put("status", status[0]);
                     dialog[0].dismiss();
-                    post("/marketing/campaigns", request, result -> { Ui.toast("جشنواره ایجاد شد"); load(); });
+                    if (editing) patch("/marketing/campaigns/" + cp.optLong("id"), request, result -> { Ui.toast("تغییرات ذخیره شد"); load(); });
+                    else post("/marketing/campaigns", request, result -> { Ui.toast("جشنواره ایجاد شد"); load(); });
                 } catch (IllegalArgumentException invalid) { /* dateIn already shows a precise date error */ }
                 catch (org.json.JSONException error) { Ui.toast("اطلاعات جشنواره ذخیره نشد: " + error.getMessage()); }
             }));
-            dialog[0] = Ui.sheet(c, "جشنوارهٔ جدید", form);
+            dialog[0] = Ui.sheet(c, editing ? "ویرایش جشنواره" : "جشنوارهٔ جدید", form);
         }
+        static String trimNum(double v) {
+            return v == Math.floor(v) ? String.valueOf((long) v) : String.valueOf(v);
+        }
+        void newCampaign() { campaignForm(null); }
         void newCoupon() {
             LinearLayout form = Ui.col(c);
             EditText code = Ui.input(c, "کد (خالی = خودکار)");

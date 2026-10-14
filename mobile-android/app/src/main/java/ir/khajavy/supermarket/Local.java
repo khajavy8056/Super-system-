@@ -609,8 +609,11 @@ public final class Local {
         long customerId = sale.isNull("customer_id") ? 0 : sale.optLong("customer_id", 0);
         String customerPhone = Db.norm(sale.optString("customer_phone"));
         for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND auto_issue_threshold IS NOT NULL AND auto_issue_threshold<=? ORDER BY auto_issue_threshold DESC,priority ASC,id DESC", total)) {
-            boolean localCampaign = campaign.optInt("is_local", 0) == 1;
-            if (localCampaign != Api.standalone()) continue;
+            boolean localCampaign = campaign.optInt("is_local", 1) == 1;
+            /* build-511 — پایان تبعیضِ حالت جفت‌شده: جشنواره‌ای که روی خود گوشی ساخته شده
+             * (is_local=1) در حالت اتصال به PC هم صادق است؛ فاکتور روی گوشی ساخته و با
+             * همان تخفیف همگام می‌شود، پس کوپن خرید بعدی هم باید همین‌جا صادر شود.
+             * (ریشهٔ «جشنوارهٔ ۱۰ میلیونی هیچ کاری نمی‌کند» در گزارش مالک.) */
             if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
             long campaignId = campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id");
             if (one("SELECT id FROM coupons WHERE campaign_id=? AND note=?", campaignId, note) != null) continue;
@@ -694,7 +697,9 @@ public final class Local {
         String now = offerNowUtc(); double amount = optFin(request, "amount", 0); long customerId = request.optLong("customer_id", 0);
         for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' ORDER BY priority ASC,pc_id DESC,id DESC")) {
             boolean localCampaign = campaign.optInt("is_local", 0) == 1;
-            if (localCampaign && !Api.standalone()) continue;
+            /* build-511 — جشنوارهٔ محلیِ گوشی در حالت جفت‌شده هم واجد شرایط است؛
+             * فیلتر قدیمی `localCampaign && !standalone → skip` عامل پیام
+             * «جشنوارهٔ متناسب با این سبد وجود ندارد» برای جشنواره‌های ساخته‌شده روی گوشی بود. */
             if (!request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1) continue;
             if (!offerHasStarted(campaign.optString("valid_from", ""), now) || offerHasEnded(campaign.optString("valid_until", ""), now)) continue;
             if (amount <= 0 || amount < optFin(campaign, "min_purchase", 0)) continue;
@@ -957,31 +962,51 @@ public final class Local {
     }
 
     /* ===================== marketing ===================== */
+    /** build-511 — ساخت/ویرایش جشنواره از یک الگو؛ فقط کلیدهای موجود در بدن می‌آیند
+     * (پس همان هلپر هم برای POST کامل و هم PATCH جزئی به‌کار می‌رود). */
+    private static ContentValues campaignValues(JSONObject b) {
+        ContentValues v = new ContentValues();
+        if (b.has("name")) v.put("name", b.optString("name"));
+        if (b.has("discount_type")) v.put("discount_type", b.optString("discount_type", "PERCENT"));
+        if (b.has("discount_value")) v.put("discount_value", b.optDouble("discount_value", 0));
+        if (b.has("min_purchase")) v.put("min_purchase", b.optDouble("min_purchase", 0));
+        if (b.has("target_type")) v.put("target_type", b.optString("target_type", "ALL"));
+        if (b.has("first_purchase_only")) v.put("first_purchase_only", offerFlag(b, "first_purchase_only") ? 1 : 0);
+        if (b.has("stackable")) v.put("stackable", offerFlag(b, "stackable") ? 1 : 0);
+        if (b.has("auto_apply")) v.put("auto_apply", offerFlag(b, "auto_apply") ? 1 : 0);
+        if (b.has("auto_issue_sms")) v.put("auto_issue_sms", offerFlag(b, "auto_issue_sms") ? 1 : 0);
+        if (b.has("priority")) v.put("priority", b.optInt("priority", 3));
+        if (b.has("auto_issue_validity_days"))
+            v.put("auto_issue_validity_days", Math.max(1, Math.min(3650, b.optInt("auto_issue_validity_days", 30))));
+        if (b.has("target_ids")) {
+            JSONArray targetIds = b.optJSONArray("target_ids");
+            if (targetIds != null && targetIds.length() > 0) v.put("target_ids", targetIds.toString()); else v.putNull("target_ids");
+        }
+        for (String key : new String[]{"max_purchase", "max_discount", "auto_issue_threshold"}) {
+            if (!b.has(key)) continue;
+            if (b.isNull(key)) v.putNull(key); else v.put(key, b.optDouble(key));
+        }
+        for (String key : new String[]{"usage_limit", "per_customer_limit"}) {
+            if (!b.has(key)) continue;
+            if (b.isNull(key)) v.putNull(key); else v.put(key, b.optInt(key));
+        }
+        for (String key : new String[]{"valid_from", "valid_until"}) {
+            if (!b.has(key)) continue;
+            if (b.isNull(key)) v.putNull(key); else v.put(key, b.optString(key));
+        }
+        if (b.has("status")) v.put("status", b.optString("status", "ACTIVE"));
+        return v;
+    }
+
     static Object marketing(String method, String[] seg, JSONObject b) throws Exception {
         String what = seg[1];
         if ("stats".equals(what)) { JSONObject o = new JSONObject(); o.put("campaigns", count("campaigns")); o.put("total_coupons", count("coupons")); JSONObject rv = one("SELECT IFNULL(SUM(CASE WHEN discount_type='FIXED' THEN discount_value*used_count ELSE 0 END),0) AS v FROM coupons"); o.put("redeemed_value", rv.optDouble("v", 0)); JSONObject bs = new JSONObject(); for (JSONObject r : rows("SELECT status, COUNT(*) AS n FROM coupons GROUP BY status")) bs.put(r.optString("status"), r.optInt("n")); o.put("by_status", bs); return o; }
         if ("campaigns".equals(what)) {
             if (seg.length == 2) {
                 if ("POST".equals(method)) {
-                    ContentValues values = new ContentValues();
-                    values.put("name", b.optString("name")); values.put("discount_type", b.optString("discount_type", "PERCENT"));
-                    values.put("discount_value", b.optDouble("discount_value", 0)); values.put("min_purchase", b.optDouble("min_purchase", 0));
-                    values.put("status", "ACTIVE"); values.put("target_type", b.optString("target_type", "ALL"));
-                    values.put("first_purchase_only", offerFlag(b, "first_purchase_only") ? 1 : 0);
-                    values.put("stackable", offerFlag(b, "stackable") ? 1 : 0); values.put("auto_apply", offerFlag(b, "auto_apply") ? 1 : 0);
-                    values.put("auto_issue_sms", offerFlag(b, "auto_issue_sms") ? 1 : 0);
-                    values.put("priority", b.optInt("priority", 3)); values.put("used_count", 0);
-                    values.put("auto_issue_validity_days", Math.max(1, Math.min(3650, b.optInt("auto_issue_validity_days", 30))));
-                    JSONArray targetIds = b.optJSONArray("target_ids"); if (targetIds != null) values.put("target_ids", targetIds.toString());
-                    for (String key : new String[]{"max_purchase", "max_discount", "auto_issue_threshold"}) {
-                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optDouble(key));
-                    }
-                    for (String key : new String[]{"usage_limit", "per_customer_limit"}) {
-                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optInt(key));
-                    }
-                    for (String key : new String[]{"valid_from", "valid_until"}) {
-                        if (b.isNull(key)) values.putNull(key); else if (b.has(key)) values.put(key, b.optString(key));
-                    }
+                    ContentValues values = campaignValues(b);
+                    values.put("status", b.has("status") ? b.optString("status", "ACTIVE") : "ACTIVE");
+                    values.put("used_count", 0);
                     String createdAt = Db.now(); values.put("created_at", createdAt); values.put("updated_at", createdAt);
                     long id = Db.db().insert("campaigns", null, values);
                     if (id <= 0) throw new Api.ApiError(500, "CAMPAIGN_SAVE", "ذخیرهٔ جشنواره انجام نشد");
@@ -991,7 +1016,24 @@ public final class Local {
                 return arr(rows("SELECT * FROM campaigns ORDER BY id DESC"));
             }
             long id = Long.parseLong(seg[2]);
-            if (b.has("status")) exec("UPDATE campaigns SET status=?,updated_at=? WHERE id=?", b.optString("status"), Db.now(), id);
+            /* build-511 — ویرایش کامل (PATCH): هر فیلدی که در بدن بیاید به‌روز می‌شود؛
+             * وضعیت هم بخشی از همان است. فاکتورهای قبلی اسنپ‌شات خودشان را دارند (§22). */
+            ContentValues patch = campaignValues(b);
+            if (patch.size() > 0) {
+                patch.put("updated_at", Db.now());
+                StringBuilder cols = new StringBuilder();
+                Object[] args = new Object[patch.size() + 1];
+                int i = 0;
+                for (String key : new java.util.TreeSet<>(patch.keySet())) {
+                    if (cols.length() > 0) cols.append(',');
+                    cols.append(key).append("=?");
+                    args[i++] = patch.get(key);
+                }
+                cols.append(" WHERE id=?");
+                args[i] = id;
+                exec("UPDATE campaigns SET " + cols, args);
+                audit("CAMPAIGN_UPDATE", "Campaign", String.valueOf(id), null, b);
+            }
             return one("SELECT * FROM campaigns WHERE id=?", id);
         }
         if ("coupons".equals(what)) {

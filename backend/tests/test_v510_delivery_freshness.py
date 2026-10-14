@@ -22,8 +22,12 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "1.0.510"
-BUILD = 51000
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import app as _app  # noqa: E402 — نسخه از منبع واحد (build-511: ضدشکستن با bump)
+
+VERSION = _app.__version__
+BUILD = _app.BUILD
 
 
 def _pins(html: str) -> list[str]:

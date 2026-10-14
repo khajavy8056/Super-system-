@@ -154,6 +154,18 @@ function el(tag, attrs = {}, ...children) {
 function showLogin() {
   $("#app-view").classList.add("hidden");
   $("#login-view").classList.remove("hidden");
+  /* build-511 — شناسنامهٔ نسخه روی خود صفحهٔ ورود: اگر «بک‌اند» قدیمی بود،
+   * همین‌جا معلوم می‌شود نه بعد از اینکه امکان‌ها کار نکنند. */
+  const el = $("#login-build");
+  if (el) {
+    el.textContent = `رابط ${fa(UI_BUILD)}`;
+    api("/system/health").then((h) => {
+      const b = h && h.build ? fa(String(h.build)) : "؟";
+      el.textContent = `رابط ${fa(UI_BUILD)} · بک‌اند ${b} · نسخهٔ ${esc((h && h.version) || "؟")}`;
+      if (h && h.build && h.build < UI_BUILD * 100)
+        el.innerHTML += ` — <b style="color:#f59e0b">بک‌اند نصب‌شده قدیمی است؛ Setup/پرتابل جدید را نصب کنید.</b>`;
+    }).catch(() => {});
+  }
 }
 function showApp() {
   $("#login-view").classList.add("hidden");
@@ -329,10 +341,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-510 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-511 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 510;
+const UI_BUILD = 511;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -2237,7 +2249,13 @@ async function loadFastMovers() {
       const item = items.find((x) => String(x.product_id) === node.dataset.id);
       if (item) await posAddResolved(item);
     }));
-  } catch (e) { box.classList.add("hidden"); }
+  } catch (e) {
+    /* build-511 — پایان حذف بی‌صدا: اگر سرور پاسخ نداد (مثلاً بک‌اند قدیمی)،
+     * نوار با دلیل واقعی دیده می‌شود تا کاربر بداند چرا خالی است. */
+    box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>
+      <span class="muted" style="align-self:center">نمایش پرفروش‌ها به بک‌اند جدید نیاز دارد (${esc(e.message || "خطا")}) — Setup/پرتابل جدید را نصب کنید.</span>`;
+    box.classList.remove("hidden");
+  }
 }
 
 function hideSuggest() {
@@ -5214,7 +5232,7 @@ RENDER.marketing = async () => {
   const v = $("#view");
   if (!v) return;
   const canManage = can("marketing.manage");
-  v.innerHTML = `<div class="grid grid-4" id="mk-stats"></div>
+  v.innerHTML = `<div id="mk-campaign-chart"></div><div class="grid grid-4" id="mk-stats"></div>
     <div class="grid grid-2" style="margin-top:14px">
       <div class="card">
         <div class="card-head"><h3>کوپن‌ها</h3>
@@ -5257,6 +5275,34 @@ async function loadMarketingStats() {
       statCard("مصرف‌شده", fmt(by.USED || 0), ""),
       statCard("ارزش تخفیف داده‌شده", money(s ? s.redeemed_value : 0), ""),
     );
+    /* build-511 — تحلیل جشنواره‌ها: نمودار مصرف + روند ۳۰ روز + جزئیات برای جدول */
+    window._campaignStats = {};
+    const detail = (s && s.campaigns_detail) || [];
+    detail.forEach((d) => { window._campaignStats[d.id] = d; });
+    const chartEl = $("#mk-campaign-chart");
+    if (chartEl && chartEl.isConnected && detail.length) {
+      const top = detail.slice(0, 8);
+      const maxU = Math.max(1, ...top.map((c) => c.used_count || 0));
+      const bars = top.map((c) => {
+        const h = Math.round(((c.used_count || 0) / maxU) * 90) + 6;
+        return `<div class="mk-bar" title="${esc(c.name)} — ${fmt(c.used_count || 0)} بار استفاده · ${money(c.redeemed_value || 0)} تخفیف">
+          <span class="mk-bar-v">${fmt(c.used_count || 0)}</span>
+          <div class="mk-bar-f" style="height:${h}px;background:var(--primary,#4f8cff);border-radius:4px 4px 0 0;width:100%"></div>
+          <span class="mk-bar-l muted" style="font-size:11px">${esc(c.name.length > 14 ? c.name.slice(0, 13) + "…" : c.name)}</span></div>`;
+      }).join("");
+      const days = (s && s.redemptions_by_day) || [];
+      const maxD = Math.max(1, ...days.map((d) => d.n || 0));
+      const trend = days.map((d) => {
+        const h = Math.round(((d.n || 0) / maxD) * 34) + 3;
+        return `<div class="mk-day" title="${esc(d.day)} — ${fmt(d.n || 0)} استفاده" style="flex:1"><div style="height:${h}px;background:var(--accent,#22c55e);border-radius:2px 2px 0 0"></div></div>`;
+      }).join("");
+      chartEl.innerHTML = `<div class="card" style="margin:0 0 14px">
+        <h3 style="margin:0 0 8px">${icon("trend", 17)} مصرف جشنواره‌ها <span class="muted">بیشترین استفاده</span></h3>
+        <div style="display:flex;gap:12px;align-items:flex-end;overflow-x:auto;padding:4px 0">${bars}</div>
+        ${days.length ? `<h3 style="margin:12px 0 6px">${icon("clock", 15)} روند استفاده <span class="muted">۳۰ روز اخیر</span></h3>
+        <div style="display:flex;gap:2px;align-items:flex-end;height:40px">${trend}</div>` : ""}
+      </div>`;
+    }
   } catch (e) {
     const target = $("#mk-stats");
     if (target && target.isConnected) target.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p></div>`;
@@ -5324,7 +5370,8 @@ async function loadCampaigns() {
           ${(c.valid_from || c.valid_until) ? `<div class="muted">بازه: ${c.valid_from ? faDateTime(c.valid_from, false) : "—"} تا ${c.valid_until ? faDateTime(c.valid_until, false) : "—"}</div>` : ""}</td>
         <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
         <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-        <td>${fa(c.used_count || 0)}</td>
+        <td>${fa(c.used_count || 0)}${(() => { const d = window._campaignStats && window._campaignStats[c.id]; return `${d && d.issued_coupons ? `<div class="muted">کوپن صادره: ${fa(d.issued_coupons)}</div>` : ""}${d && d.last_used ? `<div class="muted">آخرین: ${faDateTime(d.last_used, false)}</div>` : ""}`; })()}</td>
+        <td>${(() => { const d = window._campaignStats && window._campaignStats[c.id]; return d ? money(d.redeemed_value || 0) : "—"; })()}</td>
         <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : c.status === "PAUSED" ? "amber" : ""}">${STATUS_FA[c.status] || esc(c.status)}</span></td>
         <td>${canManage ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-sm" onclick="campaignModal(_campaignCache[${c.id}])">ویرایش</button>
@@ -5332,8 +5379,8 @@ async function loadCampaigns() {
             ${c.status !== "ENDED" ? `<button class="btn btn-sm btn-ghost" onclick="campaignSetStatus(${c.id}, 'ENDED')">پایان</button>` : ""}
           </div>` : ""}</td>
       </tr>`).join("");
-    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>استفاده</th><th>وضعیت</th><th></th></tr></thead>
-      <tbody>${body || `<tr><td colspan="6" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>استفاده</th><th>تخفیف داده‌شده</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="7" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
   } catch (e) {
     const target = $("#mk-camps");
     if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
