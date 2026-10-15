@@ -47,8 +47,8 @@ def test_standalone_boolean_fix_survives():
     assert 'v.put("reward_next_only", offerFlag(b, "reward_next_only") ? 1 : 0);' in LOCAL
 
 
-def test_version_pins_518():
-    assert _app.__version__ == "1.0.518" and _app.BUILD == 51800
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51800"
-    assert "const UI_BUILD = 518;" in (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "?v=1.0.518" in (ROOT / "frontend/index.html").read_text("utf-8")
+def test_version_pins():
+    assert _app.__version__ == "1.0.519" and _app.BUILD == 51900
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51900"
+    assert "const UI_BUILD = 519;" in (ROOT / "frontend/app.js").read_text("utf-8")
+    assert "?v=1.0.519" in (ROOT / "frontend/index.html").read_text("utf-8")

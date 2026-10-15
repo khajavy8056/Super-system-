@@ -49,7 +49,15 @@ public final class Db extends SQLiteOpenHelper {
     /** v3.0: close before a restore replaces the file; the next db() call reopens and re-runs onOpen(). */
     public static synchronized void shutdown() { try { if (I != null) I.close(); } catch (Exception ignore) {} }
     @Override public void onConfigure(SQLiteDatabase d) { super.onConfigure(d); d.setLocale(new java.util.Locale("fa", "IR")); try { d.enableWriteAheadLogging(); } catch (Exception ignore) {} }   // v3.3: readers never block on a long write (restore/import)
-    @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} try { indexes(d); } catch (Exception ignore) {} }
+    @Override public void onOpen(SQLiteDatabase d) {
+        super.onOpen(d);
+        try { d.execSQL(Insights.DDL); } catch (Exception ignore) {}
+        try { indexes(d); } catch (Exception ignore) {}
+        /* build-519 — خودترمیمی اسکیما: در هر باز شدن دیتابیس، ستون‌های جدید
+         * جشنواره‌ها ایدمپوتنت بررسی/ساخته می‌شوند؛ اگر مسیر upgrade از قلم
+         * بیفتد یا فایل قدیمی restore شود، «no such column» دیگر ممکن نیست. */
+        try { v13CampaignWizard(d); } catch (Exception ignore) {}
+    }
     /** v3.3 — indexes for stores with years of history (tens of thousands of invoices): every dashboard /
      *  report query is now a range scan on an index instead of a full-table scan. Idempotent. */
     static final String[] V4_INDEX = {
@@ -105,7 +113,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
         "CREATE TABLE IF NOT EXISTS bank(barcode TEXT PRIMARY KEY, name TEXT, brand TEXT, unit TEXT, category TEXT, image_url TEXT, source TEXT, updated_at TEXT)",   // v2.7 بانک کالا
         "CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, symbol TEXT, allow_decimal INTEGER DEFAULT 0, decimals INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)",
-        "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, min_purchase_count INTEGER DEFAULT 0, reward_next_only INTEGER DEFAULT 0, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS price_history(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, price_type TEXT, price REAL, effective_from TEXT, is_active INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS stocktakes(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, area TEXT, status TEXT DEFAULT 'DRAFT', scheduled_for TEXT, created_at TEXT, started_at TEXT, completed_at TEXT, approved_at TEXT)",
@@ -178,7 +186,7 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 12;
+    static final int VERSION = 13;
     static void v9UserIdentity(SQLiteDatabase d) {
         try { d.execSQL("ALTER TABLE users ADD COLUMN pc_username TEXT"); } catch (Exception ignore) {}
         try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_users_pc_id ON users(pc_id)"); } catch (Exception ignore) {}
@@ -267,10 +275,15 @@ public final class Db extends SQLiteOpenHelper {
     /** v4.9.6 — keep next-purchase coupon rules in the on-device POS snapshot. */
     static void v12PosAutoIssue(SQLiteDatabase d) {
         addColumn(d, "campaigns", "auto_issue_validity_days INTEGER NOT NULL DEFAULT 30");
-        /* build-515 — شرط تعداد خرید (جادوگر گام ۲): «بعد از N خرید» */
+        addColumn(d, "campaigns", "auto_issue_sms INTEGER NOT NULL DEFAULT 1");
+    }
+    /** build-519 — جادوگر جشنواره: شرط تعداد خرید + «پاداش فقط خرید بعدی».
+     *  ریشهٔ خطای «no such column: min_purchase_count» روی گوشی‌هایی که دیتابیس‌شان
+     *  از قبل در نسخهٔ ۱۲ بود: ستون‌ها داخل بلوک v12 گره خورده بودند و هرگز اجرا
+     *  نمی‌شدند. حالا بلوک ارتقای مستقل + خودترمیمی در onOpen (پایین). */
+    static void v13CampaignWizard(SQLiteDatabase d) {
         addColumn(d, "campaigns", "min_purchase_count INTEGER NOT NULL DEFAULT 0");
         addColumn(d, "campaigns", "reward_next_only INTEGER NOT NULL DEFAULT 0");
-        addColumn(d, "campaigns", "auto_issue_sms INTEGER NOT NULL DEFAULT 1");
     }
 
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
@@ -284,6 +297,7 @@ public final class Db extends SQLiteOpenHelper {
         if (a < 10) v10OfflineAllowed(d); // per-user cached/offline sign-in permission
         if (a < 11) v11PosBenefits(d); // offline coupons/campaigns and invoice benefit snapshots
         if (a < 12) v12PosAutoIssue(d); // next-purchase offer settings for offline POS
+        if (a < 13) v13CampaignWizard(d); // build-519 — campaign wizard columns
     }
 
     /* ---------------- kv ---------------- */

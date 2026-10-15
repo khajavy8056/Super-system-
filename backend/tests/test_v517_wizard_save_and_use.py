@@ -167,7 +167,7 @@ def test_phone_side_fixes_locked():
 
 
 def test_version_pins_517():
-    assert _app.__version__ == "1.0.518" and _app.BUILD == 51800
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51800"
-    assert "const UI_BUILD = 518;" in (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "?v=1.0.518" in (ROOT / "frontend/index.html").read_text("utf-8")
+    assert _app.__version__ == "1.0.519" and _app.BUILD == 51900
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51900"
+    assert "const UI_BUILD = 519;" in (ROOT / "frontend/app.js").read_text("utf-8")
+    assert "?v=1.0.519" in (ROOT / "frontend/index.html").read_text("utf-8")
