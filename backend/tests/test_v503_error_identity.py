@@ -40,7 +40,7 @@ def test_build_503_version_pins_are_consistent():
     import sys
     sys.path.insert(0, str(ROOT / "backend"))
     app = import_module("app")
-    assert app.__version__ == "1.0.517"
-    assert app.BUILD == 51700
+    assert app.__version__ == "1.0.518"
+    assert app.BUILD == 51800
     build = (ROOT / "mobile-android" / "BUILD").read_text().strip()
-    assert build == "51700", build
+    assert build == "51800", build

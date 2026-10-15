@@ -922,9 +922,21 @@ public final class SalesScreens {
         int tab = 0;
         Marketing(AppActivity a) { super(a); }
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
+        /* build-518 — نسخهٔ مستقل/آفلاین: فهرست‌ها از حافظهٔ خود گوشی می‌آیند؛
+         * نبودِ رایانه فقط وقتی پیام می‌دهد که واقعاً هیچ داده‌ای محلی نباشد. */
+        void getWithOffline(String path, java.util.function.Consumer<Object> cb) {
+            Api.get(path, cb::accept, e -> {
+                Object local = null;
+                try { local = Local.handle("GET", path, "{}"); } catch (Throwable ignore) {}
+                if (local instanceof JSONArray && ((JSONArray) local).length() > 0) { cb.accept(local); return; }
+                if (local instanceof JSONObject) { cb.accept(local); return; }
+                if (e != null && e.offline()) offline(title());
+                else { clear(); body.addView(Ui.empty(c, e == null ? "خطای نامشخص" : e.getMessage())); }
+            });
+        }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::campaignWizardNew)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::campaignWizardNew)); getWithOffline("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
                         /* build-514 — عملکرد هر جشنواره روی خود ردیف: استفاده، کوپن صادره، ارزش مصرف */
                         long cid = cp.optLong("id"); int issued = Local.countWhere("coupons", "campaign_id=?", cid);
                         double spent = Local.sumInvoices("campaign_discount", cid);
@@ -936,8 +948,8 @@ public final class SalesScreens {
                         LinearLayout it = Ui.item(c, cp.optString("name"), sub, label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignWizard(cp));
                         it.setOnLongClickListener(v -> { campaignReport(cp, issued, spent); return true; });
                         list.addView(it); } }); }
-            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
-            else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
+            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); getWithOffline("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
+            else getWithOffline("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
         }
         /* build-514 — گزارش کامل یک جشنواره (لمس طولانی روی ردیف) */
         void campaignReport(JSONObject cp, int issued, double spent) {
@@ -966,7 +978,6 @@ public final class SalesScreens {
          * پیش‌نمایش → تایید. هر گام یک پرسشِ روشن با کارت‌های قابل‌لمس + نوار پیشرفت.
          * ویرایش هم با همین جادوگر باز می‌شود (همهٔ گام‌ها پیش‌پر شده). */
         Dialog wDialog; LinearLayout wBody; int wStep = 1; JSONObject wDraft = new JSONObject(); JSONObject wEdit;
-        boolean wOfflineSaved = false;
         EditText wName; EditText wUntil; EditText wSearch;
         LinearLayout wPickList; java.util.LinkedHashSet<String> wPicked = new java.util.LinkedHashSet<>();
         java.util.LinkedHashSet<String> wCats = new java.util.LinkedHashSet<>();
@@ -1040,11 +1051,11 @@ public final class SalesScreens {
 
         void wRender() {
             wBody.removeAllViews();
-            if (wOfflineSaved) {
+            if (wPushNote != null && !wPushNote.isEmpty()) {
                 LinearLayout note = Ui.col(c);
                 note.setBackground(Ui.rounded(0x1A22CBA6, 0, 12));
                 note.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
-                TextView nt = new TextView(c); nt.setText("ذخیرهٔ محلی انجام شد — جشنواره روی همین گوشی فعال است؛ برای ثبت روی رایانه، در حالت اتصال یک‌بار ذخیره/ویرایش کنید."); nt.setTextSize(12.5f); nt.setTextColor(Ui.GREEN);
+                TextView nt = new TextView(c); nt.setText("✓ " + wPushNote); nt.setTextSize(12.5f); nt.setTextColor(Ui.GREEN);
                 note.addView(nt);
                 wBody.addView(note);
                 wBody.addView(space(Ui.dp(6)));
@@ -1446,17 +1457,44 @@ public final class SalesScreens {
             wBody.addView(info);
         }
 
-        /* build-517 — «مرحلهٔ آخر ذخیره نمی‌شود» (گزارش مالک): در حالت جفت‌شده وقتی
-         * رایانه در دسترس نبود، POST فقط یک Toast زودگذر می‌داد و جشنواره هیچ‌جا
-         * ذخیره نمی‌شد. حالا: خطا به‌جای Toast، خط سرخِ دائمی داخل جادوگر است و در
-         * قطع اتصال، جشنواره «محلی» ذخیره می‌شود (روی همین گوشی فوراً فعال است). */
+        /* build-518 — معماری واقعی محصول: نسخهٔ اندروید «مستقل» است؛ ذخیرهٔ جشنواره
+         * همیشه و اول روی خود گوشی انجام می‌شود (فوری، بدون هیچ نیاز به رایانه).
+         * اگر رایانهٔ جفت‌شده در دسترس بود، همان جشنواره در پس‌زمینه به آن هم
+         * منتقل می‌شود (به‌ترین‌تلاش = همگام‌سازی)؛ در دسترس نبودنش «خطا» نیست —
+         * فقط یک یادآوری کوچک است. هیچ پیام «اتصال به رایانه» در مسیر ذخیره نیست. */
         String wSaveError = "";
-        void wSaveError(String msg) { wSaveError = msg == null ? "" : msg; wRender(); }
+        String wPushNote = "";
         void wSave() {
-            try { wSaveError = ""; wSaveInner(); }
-            catch (Throwable error) { wSaveError("ذخیره انجام نشد: " + error.getMessage()); }
+            try { wSaveError = ""; wPushNote = ""; wSaveLocalFirst(); }
+            catch (Throwable error) {
+                String msg = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                wSaveError("ذخیره انجام نشد: " + msg);
+            }
         }
-        void wSaveInner() throws org.json.JSONException {
+        void wSaveLocalFirst() throws Exception {
+            JSONObject req = wBuildRequest();
+            String method = wEdit != null ? "PATCH" : "POST";
+            String path = wEdit != null ? "/marketing/campaigns/" + wEdit.optLong("id") : "/marketing/campaigns";
+            long localRow = wEdit == null ? 0 : wEdit.optLong("id");
+            Object res = Local.handle(method, path, req.toString());
+            if (wEdit == null && res instanceof JSONObject) localRow = ((JSONObject) res).optLong("id");
+            if (Api.standalone() || localRow == 0) { wStep = 8; wRender(); return; }
+            final long lrow = localRow;
+            final long pcId = wEdit == null ? 0 : wEdit.optLong("pc_id", 0);
+            Runnable done = () -> { wStep = 8; wRender(); };
+            if (wEdit != null && pcId > 0)
+                Api.patch("/marketing/campaigns/" + pcId, req, r -> done.run(),
+                        e -> { wPushNote = "روی گوشی ذخیره شد؛ همگام‌سازی با رایانه بعد از اتصال انجام می‌شود"; done.run(); });
+            else
+                Api.post("/marketing/campaigns", req, r -> {
+                    try { long sid = r instanceof JSONObject ? ((JSONObject) r).optLong("id") : 0;
+                          if (sid > 0) Local.exec("UPDATE campaigns SET pc_id=?, is_local=0 WHERE id=?", sid, lrow); } catch (Throwable ignore) {}
+                    done.run();
+                }, e -> { wPushNote = "روی گوشی ذخیره شد؛ همگام‌سازی با رایانه بعد از اتصال انجام می‌شود"; done.run(); });
+        }
+        void wSaveError(String msg) { wSaveError = msg == null ? "" : msg; wRender(); }
+
+        JSONObject wBuildRequest() throws org.json.JSONException {
             String name = Ui.str(wName);
             JSONObject req = j("name", name, "status", wDraft.optString("status", "ACTIVE"));
             String k = wDraft.optString("kind", ""), cm = wDraft.optString("condMode", "NONE");
@@ -1492,33 +1530,7 @@ public final class SalesScreens {
                 cal.add(java.util.Calendar.DAY_OF_YEAR, Math.max(1, wDraft.optInt("days", 7)));
                 req.put("valid_until", new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.getTime()) + "T23:59:59");
             }
-            if (wEdit != null)
-                Api.patch("/marketing/campaigns/" + wEdit.optLong("id"), req,
-                        r -> { wStep = 8; wRender(); },
-                        e -> wSaveFallback(e, "به‌روزرسانی", req));
-            else
-                Api.post("/marketing/campaigns", req,
-                        r -> { wStep = 8; wRender(); },
-                        e -> wSaveFallback(e, "ایجاد", req));
-        }
-        /** قطع اتصال با رایانه → ذخیرهٔ محلی (جشنواره روی همین گوشی فوراً کار می‌کند)؛
-         *  بقیهٔ خطاها → خط سرخ دائمی داخل جادوگر، نه Toast زودگذر. */
-        void wSaveFallback(Api.ApiError e, String verb, JSONObject req) {
-            if (e != null && e.offline() && !Api.standalone()) {
-                try {
-                    JSONObject local = new JSONObject(req.toString());
-                    local.put("is_local", 1);
-                    Local.handle(req.has("status") && wEdit != null ? "PATCH" : "POST",
-                            wEdit != null ? "/marketing/campaigns/" + wEdit.optLong("id") : "/marketing/campaigns",
-                            local.toString());
-                    wSaveError = "";
-                    wStep = 8;
-                    wOfflineSaved = true;
-                    wRender();
-                    return;
-                } catch (Throwable localFail) { wSaveError("ذخیرهٔ محلی هم انجام نشد: " + localFail.getMessage()); return; }
-            }
-            wSaveError((e == null ? "خطای نامشخص" : e.getMessage()) + " — اتصال به رایانه را بررسی کنید یا کمی بعد دوباره تلاش کنید.");
+            return req;
         }
 
         void wStepDone() {
@@ -1530,7 +1542,7 @@ public final class SalesScreens {
             LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(Ui.dp(86), Ui.dp(86)); tlp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
             tick.setLayoutParams(tlp); tick.setGravity(android.view.Gravity.CENTER);
             ok.addView(tick);
-            TextView t1 = new TextView(c); t1.setText(wOfflineSaved ? "ذخیرهٔ محلی انجام شد ✓" : wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
+            TextView t1 = new TextView(c); t1.setText(wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
             ok.addView(t1);
             TextView t2 = Ui.muted(c, "می‌توانید از لیست جشنواره‌ها آن را مشاهده و در صورت نیاز ویرایش کنید.");
             t2.setGravity(android.view.Gravity.CENTER); t2.setPadding(0, Ui.dp(6), 0, 0);

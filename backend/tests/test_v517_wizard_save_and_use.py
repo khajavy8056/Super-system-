@@ -151,18 +151,23 @@ def test_wizard_gift_creates_and_applies_to_target_line(client, auth_headers):
 
 
 def test_phone_side_fixes_locked():
-    # ذخیره: خطای دیداری دائمی + fallback محلی در قطع اتصال
-    assert "void wSaveFallback(Api.ApiError e" in SALES
-    assert "Local.handle(" in SALES and "wOfflineSaved = true" in SALES
-    assert "ذخیرهٔ محلی انجام شد" in SALES
-    assert "⚠ \" + wSaveError" in SALES, "خطا باید داخل جادوگر دیده شود، نه Toast زودگذر"
-    assert 'catch (Throwable error) { wSaveError(' in SALES
+    # build-518 — ذخیره «محلی-اول»: Local.handle قبل از هر تماس شبکه‌ای
+    assert "void wSaveLocalFirst() throws Exception" in SALES
+    assert SALES.index("Local.handle(method, path, req.toString())") < SALES.index("Api.post(\"/marketing/campaigns\"", SALES.index("void wSaveLocalFirst"))
+    # در دسترس نبودن رایانه خطا نیست؛ فقط یادآوری همگام‌سازی
+    assert "همگام‌سازی با رایانه بعد از اتصال انجام می‌شود" in SALES
+    assert "اتصال به رایانه را بررسی کنید" not in SALES, "پیام اتصال در مسیر ذخیره ممنوع"
+    # خطای سختِ محلی (مجوز/اعتبارسنجی) هنوز داخل جادوگر دیده می‌شود
+    assert "⚠ \" + wSaveError" in SALES
+    assert "catch (Throwable error) {" in SALES and "wSaveError(\"ذخیره انجام نشد: \" + msg);" in SALES
+    # اتصال پس از انتقال: pc_id لینک می‌شود (سینک بعدی تمیز جایگزین می‌کند)
+    assert 'Local.exec("UPDATE campaigns SET pc_id=?, is_local=0 WHERE id=?", sid, lrow)' in SALES
     # باگ optInt روی boolean
     assert 'v.put("reward_next_only", offerFlag(b, "reward_next_only") ? 1 : 0);' in LOCAL
 
 
 def test_version_pins_517():
-    assert _app.__version__ == "1.0.517" and _app.BUILD == 51700
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51700"
-    assert "const UI_BUILD = 517;" in (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "?v=1.0.517" in (ROOT / "frontend/index.html").read_text("utf-8")
+    assert _app.__version__ == "1.0.518" and _app.BUILD == 51800
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51800"
+    assert "const UI_BUILD = 518;" in (ROOT / "frontend/app.js").read_text("utf-8")
+    assert "?v=1.0.518" in (ROOT / "frontend/index.html").read_text("utf-8")

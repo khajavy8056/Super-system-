@@ -44,7 +44,9 @@ def test_paired_mode_no_longer_skips_phone_campaigns():
 def test_android_campaign_edit_and_usage_visible():
     # build-515 — ویرایش با جادوگر ۸ گامی (فرم قدیمی حذف شد)
     assert "void campaignWizard(JSONObject cp)" in SALES, "جادوگر گام‌به‌گام ساخت/ویرایش جشنواره"
-    assert "patch(\"/marketing/campaigns/\" + wEdit.optLong(\"id\"), req" in SALES, "ذخیرهٔ ویرایش با PATCH"
+    # build-518 — ویرایش: اول محلی (PATCH روی سطر گوشی)، بعد PATCH به رایانه با pc_id
+    assert 'Api.patch("/marketing/campaigns/" + pcId, req' in SALES, "ذخیرهٔ ویرایش با PATCH"
+    assert 'String method = wEdit != null ? "PATCH" : "POST";' in SALES
     assert "استفاده " in SALES and "بار" in SALES, "تعداد استفاده در فهرست جشنواره‌ها"
     assert "static String trimNum(double v)" in SALES
     # PATCH محلی: همهٔ فیلدها از طریق هلپر واحد
