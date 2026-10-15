@@ -801,7 +801,8 @@ public final class Local {
              * فیلتر قدیمی `localCampaign && !standalone → skip` عامل پیام
              * «جشنوارهٔ متناسب با این سبد وجود ندارد» برای جشنواره‌های ساخته‌شده روی گوشی بود. */
             String name = campaign.optString("name", "جشنواره");
-            boolean pickerExclude = !request.optBoolean("include_auto_apply", true) && campaign.optInt("auto_apply") == 1;
+            /* build-520 — جشنوارهٔ خودکار هم در فهرست صندوق‌دار می‌آید (با برچسب «· خودکار»)
+             * و قابل انتخاب است؛ پیش‌تر حذفش می‌کردیم و صندوق‌دار هیچ نمی‌دید. */
             /* build-513 — ترتیب تشخیص: اول موانع واقعی (بازه/حداقل/سقف/…) تا دلیل
              * درست دیده شود؛ «اعمال خودکار» فقط اگر مانع دیگری نبود، آخر توضیح می‌آید.
              * (قبلاً «خودکار» جلوی دیدن دلیل واقعی — مثلاً گذشته بودن پایان — را می‌گرفت.) */
@@ -931,10 +932,6 @@ public final class Local {
                 if (rejections != null) rejections.put(obj("name", name, "reason", "مقدار تخفیف این جشنواره صفر است"));
                 continue;
             }
-            if (pickerExclude) {
-                if (rejections != null) rejections.put(obj("name", name, "reason", "خودکار اعمال می‌شود و در فهرست انتخاب نمی‌آید؛ هنگام ثبت فروش خودش اعمال می‌شود"));
-                continue;
-            }
             eligible.put(obj("campaign_id", campaign.optLong("pc_id") > 0 ? campaign.optLong("pc_id") : campaign.optLong("id"),
                     "name", campaign.optString("name"), "discount", discount,
                     "discount_type", campaign.optString("discount_type"), "discount_value", optFin(campaign, "discount_value", 0),
@@ -956,7 +953,10 @@ public final class Local {
             JSONArray rejections = new JSONArray();
             JSONArray campaigns = evaluateCampaigns(b, rejections);
             JSONObject response = obj("campaigns", campaigns, "count", campaigns.length());
-            /* build-512 — بنر «با همین فاکتور کوپن خرید بعدی صادر می‌شود» در موتور محلی */
+            /* build-520 — بنر «با همین فاکتور کد تخفیف خرید بعدی صادر می‌شود» از خود جدول
+             * جشنواره‌ها ساخته می‌شود، نه فقط از لیست واجدشرط‌ها؛ تا جشنواره‌های «هدیهٔ خرید
+             * بعدی» و «هر N خرید» (که تخفیف همین سبد نمی‌دهند و در لیست نیستند) هم قبل از
+             * ثبت فروش دیده شوند: «با این خرید کوپن صادر می‌شود» یا «X خرید دیگر». */
             JSONArray hints = new JSONArray(); double reqAmount = optFin(b, "amount", 0);
             for (int i = 0; i < campaigns.length(); i++) {
                 JSONObject c = campaigns.optJSONObject(i); if (c == null) continue;
@@ -965,6 +965,28 @@ public final class Local {
                     hints.put(obj("campaign_id", c.optLong("campaign_id"), "name", c.optString("name"),
                             "discount_type", c.optString("discount_type"), "discount_value", c.optDouble("discount_value", 0),
                             "threshold", thr, "validity_days", c.optInt("auto_issue_validity_days", 0)));
+            }
+            java.util.HashSet<Long> hinted = new java.util.HashSet<>();
+            for (int i = 0; i < hints.length(); i++) hinted.add(hints.optJSONObject(i).optLong("campaign_id"));
+            for (JSONObject c : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND reward_next_only=0")) {
+                if (c == null || "GIFT".equalsIgnoreCase(c.optString("discount_type"))) continue;
+                long cid = c.optLong("pc_id") > 0 ? c.optLong("pc_id") : c.optLong("id");
+                if (hinted.contains(cid)) continue;
+                double thr = c.isNull("auto_issue_threshold") ? 0 : optFin(c, "auto_issue_threshold", 0);
+                int n = c.optInt("min_purchase_count", 0);
+                boolean windowOk = offerHasStarted(c.optString("valid_from", ""), offerNowUtc()) && !offerHasEnded(c.optString("valid_until", ""), offerNowUtc());
+                if (!windowOk) continue;
+                if (thr > 0 && reqAmount + 0.5 >= thr)
+                    hints.put(obj("campaign_id", cid, "name", c.optString("name"),
+                            "discount_type", c.optString("discount_type"), "discount_value", optFin(c, "discount_value", 0),
+                            "threshold", thr, "validity_days", c.optInt("auto_issue_validity_days", 0)));
+                else if (n > 0 && optFin(b, "customer_id", 0) != 0) {
+                    int cnt = countPurchases((long) optFin(b, "customer_id", 0), c.optString("valid_from", ""), c.optString("valid_until", ""));
+                    if ((cnt + 1) % n == 0)
+                        hints.put(obj("campaign_id", cid, "name", c.optString("name") + " · با این خرید کوپن صادر می‌شود 🎁",
+                                "discount_type", c.optString("discount_type"), "discount_value", optFin(c, "discount_value", 0),
+                                "threshold", 0, "validity_days", c.optInt("auto_issue_validity_days", 0)));
+                }
             }
             if (hints.length() > 0) response.put("issue_on_checkout", hints);
             /* شیشه‌ای: اگر هیچ جشنواره‌ای جمع نشد، دلیل هر کدام برمی‌گردد */

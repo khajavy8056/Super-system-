@@ -59,7 +59,7 @@ def test_fresh_create_table_has_wizard_columns():
 
 
 def test_version_pins():
-    assert _app.__version__ == "1.0.519" and _app.BUILD == 51900
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51900"
-    assert "const UI_BUILD = 519;" in (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "?v=1.0.519" in (ROOT / "frontend/index.html").read_text("utf-8")
+    assert _app.__version__ == "1.0.520" and _app.BUILD == 52000
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52000"
+    assert "const UI_BUILD = 520;" in (ROOT / "frontend/app.js").read_text("utf-8")
+    assert "?v=1.0.520" in (ROOT / "frontend/index.html").read_text("utf-8")

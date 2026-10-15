@@ -19,7 +19,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, update, or_
 from sqlalchemy.orm import Session
 
 from ..models import (Campaign, CampaignRedemption, Category, Coupon,
@@ -577,6 +577,36 @@ def issue_on_checkout(db: Session, *, amount: Decimal, customer_id: int | None =
         })
         if len(out) >= limit:
             break
+
+    # build-520 — جشنواره‌های «هر N خرید» هم بنر می‌گیرند: «با این خرید کوپن صادر می‌شود»
+    if customer_id:
+        for c in db.execute(
+            select(Campaign).where(
+                Campaign.status == "ACTIVE",
+                Campaign.min_purchase_count > 0,
+                Campaign.auto_issue_threshold.is_(None),
+                or_(Campaign.reward_next_only.is_(None), Campaign.reward_next_only == 0),
+            ).order_by(Campaign.priority.asc(), Campaign.id.desc())
+        ).scalars():
+            if c.discount_type == "GIFT":
+                continue
+            if c.valid_from and c.valid_from > now:
+                continue
+            if c.valid_until and c.valid_until < now:
+                continue
+            cnt = _customer_purchase_count(db, customer_id, c) + 1  # این خرید هم حساب می‌شود
+            if cnt % c.min_purchase_count != 0:
+                continue
+            out.append({
+                "campaign_id": c.id, "name": c.name + " · با این خرید کوپن صادر می‌شود 🎁",
+                "discount_type": c.discount_type, "discount_value": float(c.discount_value),
+                "threshold": 0,
+                "validity_days": max(1, c.auto_issue_validity_days),
+                "sms": bool(c.auto_issue_sms),
+            })
+            if len(out) >= limit:
+                break
+
     return out
 
 

@@ -42,16 +42,13 @@ def test_issue_skip_is_never_silent_and_windows_are_safe():
 
 
 def test_picker_order_real_blockers_first_both_engines():
-    # اندروید: چک خودکار باید بعد از قضاوت تخفیف (آخر) بیاید
-    aa = LOCAL.index('pickerExclude = !request.optBoolean("include_auto_apply"')
-    dd = LOCAL.index('if (discount <= 0 || !Double.isFinite(discount))')
-    pe = LOCAL.index('if (pickerExclude) {')
-    assert aa < dd < pe, "«خودکار» باید بعد از موانع واقعی تفسیر شود"
-    # بک‌اند: همین ترتیب
+    # build-520 — جشنوارهٔ خودکار دیگر از فهرست صندوق‌دار حذف نمی‌شود (قابل دیدن/انتخاب است)
+    assert "pickerExclude" not in LOCAL, "حذف خودکار از فهرست ممنوع — ریشهٔ «صندوق‌دار نمی‌تواند انتخاب کند»"
+    assert "جشنوارهٔ خودکار هم در فهرست صندوق‌دار می‌آید" in LOCAL
+    # بک‌اند: موانع واقعی قبل از چک خودکار تفسیر می‌شوند (ترتیب حفظ شده)
     svc_aa = SVC.index('if not include_auto_apply and c.auto_apply:')
     svc_ev = SVC.index('ev = evaluate_campaign(')
     assert svc_ev < svc_aa, "بک‌اند هم باید اول واقعی‌ها را بگوید"
-    assert "خودکار اعمال می‌شود و در فهرست انتخاب نمی‌آید" in SVC
 
 
 def test_both_checkout_paths_issue_rewards():

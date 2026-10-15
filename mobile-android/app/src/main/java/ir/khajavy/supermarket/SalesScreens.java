@@ -255,6 +255,9 @@ public final class SalesScreens {
             String campaignLabel = campaign == null ? "جشنواره" : "جشنواره · " + campaign.optString("name");
             benefitsStrip.addView(Ui.pill(c, "gift", campaignLabel, campaign != null, this::askCampaign));
             benefitsStrip.addView(Ui.pill(c, "percent", "تخفیف", invoiceDiscount > 0, this::askDiscount));
+            /* build-520 — «کد تخفیف خرید بعدی در راه است» باید در خود سبد دیده شود */
+            if (giftHint != null && !giftHint.isEmpty())
+                benefitsStrip.addView(Ui.pill(c, "gift", "🎁 کد هدیه", true, this::askCampaign));
         }
         double amountBeforeBenefits() {
             double amount = 0;
@@ -313,8 +316,9 @@ public final class SalesScreens {
         }
         /** build-501 — تخفیف مزایا هرگز NaN نمی‌شود (کلید غایب/NULL → صفر)؛ جلوی «Forbidden numeric value» گرفته می‌شود. */
         static double finBenefit(double v) { return Double.isFinite(v) && v > 0 ? v : 0; }
+        String giftHint = "";
         void refreshBenefits() {
-            if (cart.isEmpty()) return;
+            if (cart.isEmpty()) { giftHint = ""; renderBenefitsStrip(); return; }
             String requestedKey = benefitsKey();
             if (requestedKey.equals(resolvedBenefitsKey) || requestedKey.equals(pendingBenefitsKey)) return;
             pendingBenefitsKey = requestedKey;
@@ -347,7 +351,20 @@ public final class SalesScreens {
                         Ui.toast("جشنوارهٔ خودکار با کوپن قابل ترکیب نیست؛ کوپن حذف شد");
                     }
                     campaign = auto; campaignDiscount = finBenefit(auto.optDouble("discount", 0));
+                    /* build-520 — اعمال خودکار باید «دیده» شود، نه بی‌صدا در عدد بنشیند */
+                    Ui.toast("جشنوارهٔ «" + auto.optString("name") + "» خودکار اعمال شد (−" + Ui.money(campaignDiscount) + ")");
                 }
+                /* build-520 — بنر «کد تخفیف خرید بعدی در راه است» از issue_on_checkout */
+                JSONArray giftHints = response.optJSONArray("issue_on_checkout");
+                if (giftHints != null && giftHints.length() > 0) {
+                    StringBuilder gb = new StringBuilder();
+                    for (int i = 0; i < giftHints.length(); i++) {
+                        JSONObject gh = giftHints.optJSONObject(i); if (gh == null) continue;
+                        if (gb.length() > 0) gb.append(" + ");
+                        gb.append(gh.optString("name", "جشنواره"));
+                    }
+                    giftHint = "🎁 کد تخفیف خرید بعدی با همین فاکتور صادر می‌شود: " + gb;
+                } else giftHint = null;
                 String[] expected = {benefitsKey()}; pendingBenefitsKey = expected[0];
                 if (coupon == null) {
                     if (expected[0].equals(benefitsKey())) resolvedBenefitsKey = expected[0];
@@ -485,7 +502,7 @@ public final class SalesScreens {
         void askCampaign() {
             if (cart.isEmpty()) { Ui.toast("سبد خالی است؛ ابتدا کالا اضافه کنید"); return; }
             final JSONObject request;
-            try { request = campaignRequest(); request.put("include_auto_apply", false); }
+            try { request = campaignRequest(); /* build-520 — خودکارها هم در فهرست می‌آیند (برچسب «· خودکار») */ }
             catch (Exception e) { Ui.toast("اطلاعات سبد برای بررسی جشنواره آماده نشد"); return; }
             requestBenefitData("/pos/campaigns/eligible", request, result -> {
                 JSONObject response = result instanceof JSONObject ? (JSONObject) result : new JSONObject();
