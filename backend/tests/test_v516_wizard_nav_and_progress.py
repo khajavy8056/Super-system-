@@ -120,9 +120,9 @@ def test_customer_progress_card_and_receipt_line_anchors():
     assert '"جشنواره " + cnp.optString("name"), "خرید "' in LOCAL
 
 
-def test_version_pins_516():
-    assert VERSION == "1.0.516" and _app.BUILD == 51600
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51600"
+def test_version_pins():
+    assert VERSION == "1.0.517" and _app.BUILD == 51700
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "51700"
     web = (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "const UI_BUILD = 516;" in web
+    assert "const UI_BUILD = 517;" in web
     assert f"?v={VERSION}" in (ROOT / "frontend/index.html").read_text("utf-8")

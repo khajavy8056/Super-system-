@@ -966,6 +966,7 @@ public final class SalesScreens {
          * پیش‌نمایش → تایید. هر گام یک پرسشِ روشن با کارت‌های قابل‌لمس + نوار پیشرفت.
          * ویرایش هم با همین جادوگر باز می‌شود (همهٔ گام‌ها پیش‌پر شده). */
         Dialog wDialog; LinearLayout wBody; int wStep = 1; JSONObject wDraft = new JSONObject(); JSONObject wEdit;
+        boolean wOfflineSaved = false;
         EditText wName; EditText wUntil; EditText wSearch;
         LinearLayout wPickList; java.util.LinkedHashSet<String> wPicked = new java.util.LinkedHashSet<>();
         java.util.LinkedHashSet<String> wCats = new java.util.LinkedHashSet<>();
@@ -1039,6 +1040,24 @@ public final class SalesScreens {
 
         void wRender() {
             wBody.removeAllViews();
+            if (wOfflineSaved) {
+                LinearLayout note = Ui.col(c);
+                note.setBackground(Ui.rounded(0x1A22CBA6, 0, 12));
+                note.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
+                TextView nt = new TextView(c); nt.setText("ذخیرهٔ محلی انجام شد — جشنواره روی همین گوشی فعال است؛ برای ثبت روی رایانه، در حالت اتصال یک‌بار ذخیره/ویرایش کنید."); nt.setTextSize(12.5f); nt.setTextColor(Ui.GREEN);
+                note.addView(nt);
+                wBody.addView(note);
+                wBody.addView(space(Ui.dp(6)));
+            }
+            if (wSaveError != null && !wSaveError.isEmpty()) {
+                LinearLayout errBox = Ui.col(c);
+                errBox.setBackground(Ui.rounded(0x22EF647D, Ui.RED, 12));
+                errBox.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
+                TextView et = new TextView(c); et.setText("⚠ " + wSaveError); et.setTextSize(12.5f); et.setTextColor(Ui.RED);
+                errBox.addView(et);
+                wBody.addView(errBox);
+                wBody.addView(space(Ui.dp(6)));
+            }
             LinearLayout head = Ui.row(c);
             TextView title = new TextView(c);
             title.setText(wEdit == null ? "تعریف جشنواره جدید" : "ویرایش جشنواره");
@@ -1427,8 +1446,15 @@ public final class SalesScreens {
             wBody.addView(info);
         }
 
+        /* build-517 — «مرحلهٔ آخر ذخیره نمی‌شود» (گزارش مالک): در حالت جفت‌شده وقتی
+         * رایانه در دسترس نبود، POST فقط یک Toast زودگذر می‌داد و جشنواره هیچ‌جا
+         * ذخیره نمی‌شد. حالا: خطا به‌جای Toast، خط سرخِ دائمی داخل جادوگر است و در
+         * قطع اتصال، جشنواره «محلی» ذخیره می‌شود (روی همین گوشی فوراً فعال است). */
+        String wSaveError = "";
+        void wSaveError(String msg) { wSaveError = msg == null ? "" : msg; wRender(); }
         void wSave() {
-            try { wSaveInner(); } catch (org.json.JSONException error) { Ui.toast("اطلاعات جشنواره ذخیره نشد: " + error.getMessage()); }
+            try { wSaveError = ""; wSaveInner(); }
+            catch (Throwable error) { wSaveError("ذخیره انجام نشد: " + error.getMessage()); }
         }
         void wSaveInner() throws org.json.JSONException {
             String name = Ui.str(wName);
@@ -1466,8 +1492,33 @@ public final class SalesScreens {
                 cal.add(java.util.Calendar.DAY_OF_YEAR, Math.max(1, wDraft.optInt("days", 7)));
                 req.put("valid_until", new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.getTime()) + "T23:59:59");
             }
-            if (wEdit != null) patch("/marketing/campaigns/" + wEdit.optLong("id"), req, r -> { wStep = 8; wRender(); });
-            else post("/marketing/campaigns", req, r -> { wStep = 8; wRender(); });
+            if (wEdit != null)
+                Api.patch("/marketing/campaigns/" + wEdit.optLong("id"), req,
+                        r -> { wStep = 8; wRender(); },
+                        e -> wSaveFallback(e, "به‌روزرسانی", req));
+            else
+                Api.post("/marketing/campaigns", req,
+                        r -> { wStep = 8; wRender(); },
+                        e -> wSaveFallback(e, "ایجاد", req));
+        }
+        /** قطع اتصال با رایانه → ذخیرهٔ محلی (جشنواره روی همین گوشی فوراً کار می‌کند)؛
+         *  بقیهٔ خطاها → خط سرخ دائمی داخل جادوگر، نه Toast زودگذر. */
+        void wSaveFallback(Api.ApiError e, String verb, JSONObject req) {
+            if (e != null && e.offline() && !Api.standalone()) {
+                try {
+                    JSONObject local = new JSONObject(req.toString());
+                    local.put("is_local", 1);
+                    Local.handle(req.has("status") && wEdit != null ? "PATCH" : "POST",
+                            wEdit != null ? "/marketing/campaigns/" + wEdit.optLong("id") : "/marketing/campaigns",
+                            local.toString());
+                    wSaveError = "";
+                    wStep = 8;
+                    wOfflineSaved = true;
+                    wRender();
+                    return;
+                } catch (Throwable localFail) { wSaveError("ذخیرهٔ محلی هم انجام نشد: " + localFail.getMessage()); return; }
+            }
+            wSaveError((e == null ? "خطای نامشخص" : e.getMessage()) + " — اتصال به رایانه را بررسی کنید یا کمی بعد دوباره تلاش کنید.");
         }
 
         void wStepDone() {
@@ -1479,7 +1530,7 @@ public final class SalesScreens {
             LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(Ui.dp(86), Ui.dp(86)); tlp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
             tick.setLayoutParams(tlp); tick.setGravity(android.view.Gravity.CENTER);
             ok.addView(tick);
-            TextView t1 = new TextView(c); t1.setText(wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
+            TextView t1 = new TextView(c); t1.setText(wOfflineSaved ? "ذخیرهٔ محلی انجام شد ✓" : wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
             ok.addView(t1);
             TextView t2 = Ui.muted(c, "می‌توانید از لیست جشنواره‌ها آن را مشاهده و در صورت نیاز ویرایش کنید.");
             t2.setGravity(android.view.Gravity.CENTER); t2.setPadding(0, Ui.dp(6), 0, 0);

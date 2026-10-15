@@ -1210,7 +1210,9 @@ public final class Local {
         if (b.has("min_purchase")) v.put("min_purchase", b.optDouble("min_purchase", 0));
         /* build-515 — شرط تعداد خرید از سرور/جادوگر */
         v.put("min_purchase_count", b.optInt("min_purchase_count", 0));
-        v.put("reward_next_only", b.optInt("reward_next_only", 0));
+        /* build-517 — باگ: optInt روی JSON-boolean همیشه ۰ می‌داد؛ نوع «هدیهٔ خرید
+         * بعدی» در حالت مستقل به‌عنوان تخفیفِ همین خرید اعمال می‌شد! */
+        v.put("reward_next_only", offerFlag(b, "reward_next_only") ? 1 : 0);
         if (b.has("target_type")) v.put("target_type", b.optString("target_type", "ALL"));
         if (b.has("first_purchase_only")) v.put("first_purchase_only", offerFlag(b, "first_purchase_only") ? 1 : 0);
         if (b.has("stackable")) v.put("stackable", offerFlag(b, "stackable") ? 1 : 0);

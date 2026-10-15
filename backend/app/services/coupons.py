@@ -591,20 +591,8 @@ def issue_next_purchase_coupon(
     """Auto-issue a coupon for the NEXT purchase when a campaign threshold is
     reached (§36). Returns the coupon, or None when no campaign applies."""
     now = datetime.utcnow()
-    campaigns = db.execute(
-        select(Campaign).where(
-            Campaign.status == "ACTIVE",
-            Campaign.auto_issue_threshold.is_not(None),
-        ).order_by(Campaign.auto_issue_threshold.desc(), Campaign.priority.asc(), Campaign.id.desc())
-    ).scalars().all()
 
-    for c in campaigns:
-        if c.valid_from and c.valid_from > now:
-            continue
-        if c.valid_until and c.valid_until < now:
-            continue
-        if Decimal(invoice.total_amount) < Decimal(c.auto_issue_threshold):
-            continue
+    def _create_for(c: Campaign) -> Coupon | None:
         # build-481 idempotency: the same invoice must never issue the same
         # future benefit twice (double-click on checkout, a retried request, …).
         already = db.execute(
@@ -645,6 +633,59 @@ def issue_next_purchase_coupon(
                    "invoice": invoice.invoice_number},
         )
         return coupon
+
+    campaigns = db.execute(
+        select(Campaign).where(
+            Campaign.status == "ACTIVE",
+            Campaign.auto_issue_threshold.is_not(None),
+        ).order_by(Campaign.auto_issue_threshold.desc(), Campaign.priority.asc(), Campaign.id.desc())
+    ).scalars().all()
+
+    for c in campaigns:
+        if c.valid_from and c.valid_from > now:
+            continue
+        if c.valid_until and c.valid_until < now:
+            continue
+        if Decimal(invoice.total_amount) < Decimal(c.auto_issue_threshold):
+            continue
+        issued = _create_for(c)
+        if issued is not None:
+            return issued
+
+    # build-517 — جشنواره‌های «هر N خرید» (جادوگر): به مضرب N رسیدن تعداد خریدِ
+    # مشتریِ درونِ بازهٔ خود جشنواره ⇒ کوپن خرید بعدی. همان idempotency و همان
+    # قالب کد؛ هدیهٔ رایگان (GIFT) کوپن نمی‌دهد — پاداشش روی خود خرید است.
+    if customer is not None:
+        from ..models import Invoice
+        count_rows = db.execute(
+            select(Campaign).where(
+                Campaign.status == "ACTIVE",
+                Campaign.min_purchase_count > 0,
+            ).order_by(Campaign.priority.asc(), Campaign.id.desc())
+        ).scalars().all()
+        for c in count_rows:
+            if str(c.discount_type).upper() == "GIFT":
+                continue
+            if c.valid_from and c.valid_from > now:
+                continue
+            if c.valid_until and c.valid_until < now:
+                continue
+            q = select(func.count(Invoice.id)).where(
+                Invoice.customer_id == customer.id,
+                Invoice.status == "PAID",
+                Invoice.id <= invoice.id,
+            )
+            if c.valid_from is not None:
+                q = q.where(Invoice.created_at >= c.valid_from)
+            if c.valid_until is not None:
+                q = q.where(Invoice.created_at <= c.valid_until)
+            done = int(db.execute(q).scalar_one() or 0)
+            n = int(c.min_purchase_count or 0)
+            if n <= 0 or done == 0 or done % n != 0:
+                continue
+            issued = _create_for(c)
+            if issued is not None:
+                return issued
     return None
 
 
