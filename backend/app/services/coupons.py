@@ -259,15 +259,21 @@ def _campaign_purchases_count(db: Session, campaign: Campaign, customer_id: int 
     ).scalar_one()
 
 
-def _customer_purchase_count(db: Session, customer_id: int | None) -> int:
+def _customer_purchase_count(db: Session, customer_id: int | None,
+                             campaign: Campaign | None = None) -> int:
+    """تعداد خرید مشتری؛ با ``campaign`` فقط خریدهای «داخل بازهٔ جشنواره» (build-516)."""
     if not customer_id:
         return 0
     from ..models import Invoice
-    return db.execute(
-        select(func.count(Invoice.id)).where(
-            Invoice.customer_id == customer_id, Invoice.status == "PAID"
-        )
-    ).scalar_one()
+    q = select(func.count(Invoice.id)).where(
+        Invoice.customer_id == customer_id, Invoice.status == "PAID"
+    )
+    if campaign is not None:
+        if campaign.valid_from is not None:
+            q = q.where(Invoice.created_at >= campaign.valid_from)
+        if campaign.valid_until is not None:
+            q = q.where(Invoice.created_at <= campaign.valid_until)
+    return db.execute(q).scalar_one()
 
 
 def evaluate_campaign(
@@ -322,7 +328,7 @@ def evaluate_campaign(
     # build-515 — شرط تعداد خرید: «بعد از N خرید» (خرید جاری هم شمرده می‌شود)
     min_count = int(getattr(campaign, "min_purchase_count", 0) or 0)
     if min_count > 0:
-        done = _customer_purchase_count(db, customer_id) if customer_id else 0
+        done = _customer_purchase_count(db, customer_id, campaign) if customer_id else 0
         if done + 1 < min_count:
             raise CampaignError(
                 "CAMPAIGN_PURCHASE_COUNT",

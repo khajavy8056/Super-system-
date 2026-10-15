@@ -891,6 +891,21 @@ public final class SalesScreens {
             clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit", 0) > 0 ? Ui.money(cu.optDouble("credit_limit", 0)) : "بدون سقف", 0)); body.addView(hd);
             if (id < 0 && !Api.standalone()) { body.addView(Ui.note(c, null, "این مشتری هنوز به رایانه ارسال نشده؛ دفتر حساب پس از همگام‌سازی در دسترس است.")); return; }
             LinearLayout act = Ui.row(c); act.addView(Ui.small(c, "فروش به این مشتری", () -> { Prefs.set("pos_restore", ""); a.route("pos"); ((Pos) a.current()).customer = cu; ((Pos) a.current()).renderCart(); })); act.addView(Ui.small(c, "ویرایش", this::edit)); body.addView(act);
+            /* build-516 — «خریدها برای مشتری قشنگ مشخص باشد»: پیشرفت هر جشنوارهٔ
+             * تعدادی («هر N خرید») همین‌جا دیده می‌شود و تا کوپن بعدی شمارش می‌کند. */
+            LinearLayout prog = Ui.card(c, "پیشرفت جشنواره‌ها"); body.addView(prog);
+            boolean anyProg = false;
+            for (JSONObject cnp : Local.rows("SELECT id,name,min_purchase_count,valid_from,valid_until FROM campaigns WHERE status='ACTIVE' AND min_purchase_count>0 ORDER BY id DESC LIMIT 6")) {
+                int n2 = cnp.optInt("min_purchase_count", 0);
+                if (n2 <= 0) continue;
+                int done2 = Local.countPurchases(id, cnp.optString("valid_from", ""), cnp.optString("valid_until", ""));
+                int inCycle = done2 % n2;
+                if (inCycle == 0 && done2 > 0) inCycle = n2;
+                anyProg = true;
+                prog.addView(Ui.kv(c, cnp.optString("name") + " · هر " + Ui.fa(String.valueOf(n2)) + " خرید", Ui.fa(String.valueOf(inCycle)) + " از " + Ui.fa(String.valueOf(n2)), inCycle > 0 ? Ui.PRIMARY : 0));
+                prog.addView(Ui.muted(c, inCycle == n2 ? "🎁 کوپن همین دوره صادر شد؛ دورهٔ جدید شروع شده" : Ui.fa(String.valueOf(n2 - inCycle)) + " خرید دیگر تا کوپن هدیه"));
+            }
+            if (!anyProg) prog.addView(Ui.muted(c, "جشنوارهٔ تعدادی فعالی نیست"));
             LinearLayout led = Ui.card(c, "دفتر حساب"); body.addView(led); LinearLayout invs = Ui.card(c, "فاکتورها"); body.addView(invs);
             getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance", 0); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged", 0)) + " / " + Ui.money(lg.optDouble("total_paid", 0)), 0));
                 LinearLayout br = Ui.row(c); if (Screens.can("customers.settle")) { br.addView(Ui.small(c, "تسویه", () -> settle(bal))); br.addView(Ui.small(c, "اصلاح دستی", this::adjust)); } br.addView(Ui.small(c, "پیامک یادآوری", () -> post("/customers/" + id + "/debt-reminder", j(), x -> Ui.toast("پیامک در صف ارسال قرار گرفت")))); led.addView(br);
@@ -1042,17 +1057,32 @@ public final class SalesScreens {
             else if (wStep == 7) wStepReview();
             else wStepDone();
             if (wStep < 8) {
+                /* build-516 — ریشهٔ «دکمهٔ ادامه نیست (مرحلهٔ ۲ به بعد)»: دکمه‌های
+                 * Ui.btn عرض match_parent می‌گیرند؛ در ردیف افقی، «بازگشت» تمام عرض
+                 * را می‌خورد و «مرحلهٔ بعد» صفر می‌شد. حالا هر دو عرض‌۰+وزن‌دارند و
+                 * همیشه کنار هم دیده می‌شوند (بازگشت کوچک‌تر). */
                 LinearLayout nav = Ui.row(c);
-                if (wStep > 1 && wStep < 8) nav.addView(Ui.ghost(c, "بازگشت", () -> { wStep--; wRender(); }));
-                TextView pad = new TextView(c); pad.setLayoutParams(new LinearLayout.LayoutParams(1, 1, 1f)); nav.addView(pad);
-                nav.addView(Ui.primary(c, wStep == 7 ? (wEdit == null ? "ایجاد جشنواره ✓" : "ذخیرهٔ تغییرات ✓") : "مرحلهٔ بعد", () -> {
+                if (wStep > 1 && wStep < 8) {
+                    android.widget.Button back = Ui.ghost(c, "بازگشت", () -> { wStep--; wRender(); });
+                    back.setLayoutParams(wNavLp(1f));
+                    nav.addView(back);
+                }
+                android.widget.Button next = Ui.primary(c, wStep == 7 ? (wEdit == null ? "ایجاد جشنواره ✓" : "ذخیرهٔ تغییرات ✓") : "مرحلهٔ بعد", () -> {
                     if (!wValidate(wStep)) return;
                     if (wStep == 7) { wSave(); return; }
                     wStep++; wRender();
-                }));
+                });
+                next.setLayoutParams(wNavLp(wStep > 1 ? 1.4f : 1f));
+                nav.addView(next);
                 nav.setPadding(0, Ui.dp(8), 0, Ui.dp(4));
                 wBody.addView(nav);
             }
+        }
+
+        android.widget.LinearLayout.LayoutParams wNavLp(float weight) {
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+            lp.setMargins(Ui.dp(3), 0, Ui.dp(3), 0);
+            return lp;
         }
 
         android.widget.Space space(float h) { android.widget.Space s = new android.widget.Space(c); s.setLayoutParams(new LinearLayout.LayoutParams(1, Ui.dp(h))); return s; }
@@ -1415,6 +1445,7 @@ public final class SalesScreens {
             req.put("auto_issue_validity_days", Math.max(1, Math.min(3650, wDraft.optInt("couponDays", 30))));
             req.put("auto_issue_sms", true);
             String scope = wDraft.optString("scope", "ALL");
+            if ("GIFT".equals(k)) scope = "PRODUCTS"; /* هدیه همیشه به کالای هدف گره است */
             req.put("target_type", scope);
             JSONArray ids = new JSONArray();
             try {

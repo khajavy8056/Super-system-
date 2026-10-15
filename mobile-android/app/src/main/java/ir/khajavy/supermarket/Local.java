@@ -661,21 +661,19 @@ public final class Local {
         /* build-515 — جشنواره‌های «بعد از N خرید»: وقتی تعداد خرید مشتری به مضرب N
          * رسید، کوپن خرید بعدی صادر می‌شود (سه‌چهار بار خرید، پاداش بگیر). */
         if (customerId != 0) {
-            JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
-            int localOnly = customer == null ? 0 : customer.optInt("is_local");
-            JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
-                    + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
-            int cnt = (customer == null ? 0 : customer.optInt("lifetime_purchase_count")) + (purchases == null ? 0 : purchases.optInt("n"));
             for (JSONObject campaign : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND min_purchase_count>0")) {
                 int n = campaign.optInt("min_purchase_count", 0);
+                int cnt = countPurchases(customerId, campaign.optString("valid_from", ""), campaign.optString("valid_until", ""));
                 if (n <= 0 || cnt == 0 || cnt % n != 0) {
                     if (n > 0 && cnt % n != 0)
                         audit("COUPON_ISSUE_SKIP", "Campaign", String.valueOf(campaign.optLong("id")), String.valueOf(customerId),
                                 obj("reason", "خرید شمارهٔ " + cnt + " است؛ این جشنواره در خرید شمارهٔ " + n + " صادر می‌شود", "invoice", invoiceNo));
                     continue;
                 }
-                if (campaign.isNull("auto_issue_threshold") || optFin(campaign, "auto_issue_threshold", 0) <= 0 || total >= optFin(campaign, "auto_issue_threshold", 0))
+                if (campaign.isNull("auto_issue_threshold") || optFin(campaign, "auto_issue_threshold", 0) <= 0 || total >= optFin(campaign, "auto_issue_threshold", 0)) {
+                    try { campaign.put("issue_note", "بابت " + Ui.fa(String.valueOf(n)) + " خرید شما 🎁"); } catch (Exception ignore) {}
                     picked.put(campaign.optLong("id"), campaign);
+                }
             }
         }
         for (JSONObject campaign : picked.values()) {
@@ -728,6 +726,7 @@ public final class Local {
                     String msg = Prefs.get("store_name", "فروشگاه") + " — هدیهٔ خرید شما از جشنوارهٔ «" + campaign.optString("name") + "»"
                             + "\nکد تخفیف خرید بعدی: " + code + " به ارزش " + valueTxt
                             + " (اعتبار تا " + Ui.jdate(offerUtcAfterDays(validityDays)) + ")"
+                            + (campaign.isNull("issue_note") ? "" : "\n" + campaign.optString("issue_note"))
                             + "\nدر خرید بعدی همین کد را به صندوق‌دار بگویید.";
                     SmsLocal.enqueueAndSend(customerPhone, msg, "auto_coupon");
                 } catch (Throwable smsFail) { android.util.Log.w("Local", "auto coupon sms skipped", smsFail); }
@@ -817,14 +816,7 @@ public final class Local {
             /* build-515 — شرط تعداد خرید: «بعد از N خرید» (خرید جاری شمرده می‌شود) */
             int minCount = campaign.optInt("min_purchase_count", 0);
             if (minCount > 0) {
-                int done = 0;
-                if (customerId != 0) {
-                    JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
-                    int localOnly = customer == null ? 0 : customer.optInt("is_local");
-                    JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
-                            + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
-                    done = (customer == null ? 0 : customer.optInt("lifetime_purchase_count")) + (purchases == null ? 0 : purchases.optInt("n"));
-                }
+                int done = countPurchases(customerId, campaign.optString("valid_from", ""), campaign.optString("valid_until", ""));
                 if (done + 1 < minCount) {
                     if (rejections != null) rejections.put(obj("name", name, "reason", "این جشنواره از خرید شمارهٔ " + Ui.fa(String.valueOf(minCount)) + " فعال می‌شود؛ این خرید شمارهٔ " + Ui.fa(String.valueOf(done + 1)) + " شماست"));
                     continue;
@@ -1167,6 +1159,17 @@ public final class Local {
         if (inv.optDouble("campaign_discount", 0) > 0) sb.append(kv("جشنواره " + inv.optString("campaign_name"), "-" + Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("campaign_discount", 0)))), W)).append('\n');
         String issuedCodes = issuedCouponCodesForInvoice(inv.optString("local_no"));
         if (!issuedCodes.isEmpty()) sb.append(kv("کد تخفیف خرید بعدی", issuedCodes, W)).append('\n');
+        /* build-516 — پیشرفت «هر N خرید» روی رسید: مشتری همیشه بداند کجای دوره است */
+        if (inv.optLong("customer_id") != 0) {
+            for (JSONObject cnp : rows("SELECT name,min_purchase_count,valid_from,valid_until FROM campaigns WHERE status='ACTIVE' AND min_purchase_count>0 ORDER BY id DESC LIMIT 4")) {
+                int n = cnp.optInt("min_purchase_count", 0);
+                if (n <= 0) continue;
+                int done = countPurchases(inv.optLong("customer_id"), cnp.optString("valid_from", ""), cnp.optString("valid_until", ""));
+                int inCycle = done % n;
+                if (inCycle == 0 && done > 0) inCycle = n;
+                sb.append(kv("جشنواره " + cnp.optString("name"), "خرید " + Ui.fa(String.valueOf(inCycle)) + " از " + Ui.fa(String.valueOf(n)), W)).append('\n');
+            }
+        }
         if (inv.optDouble("tax", 0) > 0) sb.append(kv("مالیات", Ui.fa(java.text.NumberFormat.getInstance(java.util.Locale.US).format(Math.round(inv.optDouble("tax", 0)))), W)).append('\n');
         sb.append(thick).append('\n').append(kvFill("قابل پرداخت", Ui.money(inv.optDouble("total_amount", 0)), W, '.')).append('\n').append(thick).append('\n').append(kv("روش پرداخت", Screens.Screen.label(inv.optString("payment_method"), Screens.Screen.PAY), W)).append('\n');
         if ("VOID".equals(inv.optString("status"))) sb.append(center("*** باطل شده ***")).append('\n');
@@ -1753,6 +1756,29 @@ public final class Local {
         double v = r == null ? 0 : r.optDouble("v", 0);
         return Double.isFinite(v) ? v : 0;
     }
+    /* build-516 — تعداد خرید مشتری «در بازهٔ جشنواره»: وقتی جشنواره از/تا دارد،
+     * فقط خریدهای داخل همان پنجره شمرده می‌شود؛ بدون پنجره = کل سابقه (lifetime
+     * سمت سرور + فاکتورهای محلیِ هنوز سینک‌نشده). */
+    static int countPurchases(long customerId, String fromIso, String untilIso) {
+        if (customerId == 0) return 0;
+        boolean windowed = (fromIso != null && !fromIso.isEmpty()) || (untilIso != null && !untilIso.isEmpty());
+        if (windowed) {
+            StringBuilder sql = new StringBuilder("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID'");
+            java.util.List<Object> args = new java.util.ArrayList<>();
+            args.add(customerId);
+            if (fromIso != null && !fromIso.isEmpty()) { sql.append(" AND created_at>=?"); args.add(fromIso); }
+            if (untilIso != null && !untilIso.isEmpty()) { sql.append(" AND created_at<=?"); args.add(untilIso); }
+            JSONObject r = one(sql.toString(), args.toArray());
+            return r == null ? 0 : r.optInt("n");
+        }
+        JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
+        int localOnly = customer == null ? 0 : customer.optInt("is_local");
+        JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+                + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
+        int historical = customer == null ? 0 : customer.optInt("lifetime_purchase_count");
+        return historical + (purchases == null ? 0 : purchases.optInt("n"));
+    }
+
     /** تاریخ آخرین فاکتوری که از این جشنواره استفاده کرده (خالی = هیچ). */
     static String lastInvoiceUse(long campaignId) {
         JSONObject r = one("SELECT MAX(at) AS t FROM invoices WHERE campaign_id=? AND status='PAID'", campaignId);
