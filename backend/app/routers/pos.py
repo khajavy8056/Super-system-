@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,12 +24,25 @@ def _maybe_redact(user: User, payload):
     return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
+def _require_finite(name: str, v: Decimal) -> Decimal:
+    """build-501 — NaN/∞ (از JSON خراب یا کلاینت معیوب) در مبدأ ۴۲۲ می‌شود، نه خطای ۵۰۰.
+    هم‌ارزِ سمت گوشی: «Forbidden numeric value: NaN» دیگر هیچ‌مسیری به دیتابیس ندارد."""
+    if not v.is_finite():
+        raise ValueError(f"{name} must be a finite number")
+    return v
+
+
 class CartLineIn(BaseModel):
     product_id: int
     #: decimal quantities are first-class (12.500 Kg) — §25
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
     batch_id: int | None = None
     discount: Decimal = Field(default=Decimal("0"), ge=0)
+
+    @field_validator("quantity", "discount")
+    @classmethod
+    def _finite_line(cls, v: Decimal, info) -> Decimal:
+        return _require_finite(str(info.field_name), v)
 
 
 class CartIn(BaseModel):
@@ -45,6 +58,11 @@ class CartIn(BaseModel):
 class PaymentIn(BaseModel):
     method: str = "CASH"
     amount: Decimal = Field(ge=0)
+
+    @field_validator("amount")
+    @classmethod
+    def _finite_amount(cls, v: Decimal) -> Decimal:
+        return _require_finite("amount", v)
 
 
 from .customers import norm_phone as _norm_phone
@@ -69,6 +87,11 @@ class CheckoutIn(BaseModel):
     client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
+
+    @field_validator("tax_rate", "invoice_discount")
+    @classmethod
+    def _finite_optional(cls, v: Decimal | None, info) -> Decimal | None:
+        return None if v is None else _require_finite(str(info.field_name), v)
 
 
 # --- Kiosk / lock mode (§7) ---------------------------------------------------
@@ -131,6 +154,8 @@ class CampaignListIn(BaseModel):
     amount: Decimal = Field(ge=0)
     product_ids: list[int] | None = None
     line_amounts: dict[int, Decimal] | None = None
+    #: build-515 — تعداد هر خط (برای پاداش «هدیهٔ رایگان»)
+    line_qtys: dict[int, Decimal] | None = None
     customer_id: int | None = None
     include_auto_apply: bool = True
 
@@ -145,12 +170,23 @@ def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
     Selecting one is a convenience; checkout re-validates everything (§25).
     """
     from ..services import coupons as coupon_svc
+    amount = Decimal(str(body.amount))
+    rejections: list[dict] = []   # build-512 — دلیل رد شدن هر جشنوارهٔ فعال
     rows = coupon_svc.eligible_campaigns(
-        db, amount=Decimal(str(body.amount)), product_ids=body.product_ids,
+        db, amount=amount, product_ids=body.product_ids,
         line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
+        line_qtys={int(k): Decimal(str(v)) for k, v in (body.line_qtys or {}).items()},
         customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
+        rejected=rejections,
     )
-    return {"campaigns": rows, "count": len(rows)}
+    # build-509 — «با ثبت این فاکتور کوپن خرید بعدی صادر می‌شود»: صندوق‌دار قبل از
+    # ثبت بداند کدام جشنواره‌های آستانه‌دار فعال‌اند (درخواست مالک برای شفافیت صندوق).
+    issue_now = coupon_svc.issue_on_checkout(
+        db, amount=amount, customer_id=body.customer_id)
+    # build-512 — rejections همیشه هست: صندوق (و هر کلاینتی) بلافاصله می‌فهمد چرا
+    # یک جشنوارهٔ خاص با این سبد جمع نشد؛ حتی وقتی جشنوارهٔ واجد شرایط دیگری هست.
+    return {"campaigns": rows, "count": len(rows), "issue_on_checkout": issue_now,
+            "rejections": rejections}
 
 
 @router.post("/cart/validate")
@@ -192,15 +228,17 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depe
         if body.campaign_id:
             from ..services import coupons as camp_svc
             line_amounts: dict[int, Decimal] = {}
+            line_qtys: dict[int, Decimal] = {}
             for i in items:
                 line_amounts[i.product_id] = line_amounts.get(i.product_id, Decimal("0")) + (
                     (i.unit_sell_price or Decimal("0")) * i.quantity - i.discount)
+                line_qtys[i.product_id] = line_qtys.get(i.product_id, Decimal("0")) + i.quantity
             try:
                 ev = camp_svc.evaluate_campaign(
                     db, campaign_id=body.campaign_id,
                     amount=Decimal(str(totals["subtotal"])),
                     product_ids=[i.product_id for i in items], line_amounts=line_amounts,
-                    customer_id=body.customer_id)
+                    line_qtys=line_qtys, customer_id=body.customer_id)
                 campaign = {"campaign_id": ev["campaign_id"], "name": ev["name"],
                             "discount": float(ev["discount"]), "ok": True,
                             "stackable": ev["stackable"]}
@@ -312,9 +350,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
         # build-481: do NOT echo body.campaign_id over the applied one — for an
         # auto-applied threshold festival the request carries None while the
         # invoice really was discounted by a campaign.
+        # build-509 — جزئیات کامل کوپن صادرشده برای نمایش در صندوق و رسید
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
-                                 if issued.valid_until else None} if issued else None)
+                                 if issued.valid_until else None,
+                                 "discount_type": issued.discount_type,
+                                 "discount_value": float(issued.discount_value),
+                                 "min_purchase": float(issued.min_purchase or 0),
+                                 "campaign_name": (issued.campaign.name if issued.campaign else None)}
+                                if issued else None)
         db.commit()
         return _maybe_redact(user, out)
     except PosError as e:
@@ -460,3 +504,59 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "batches": [o.as_dict() for o in options],
         })
     return _maybe_redact(user, {"query": term, "count": len(items), "items": items})
+
+
+@router.get("/fast-movers")
+def pos_fast_movers(days: int = 30, limit: int = 16, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("pos.sell"))):
+    """build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای
+    روزهای اخیر با تصویر، به‌شکل نواری افقی بالای صندوق تا صندوق‌دار با یک لمس
+    پرفروش‌ها را به سبد بیفزاید — بدون تایپ و جست‌وجو.
+
+    خروجی عیناً همان شکل آیتم‌های /pos/search است (batches/unit/available_qty)،
+    یعنی کلیک روی هر کاشی مستقیماً همان مسیر افزودن جست‌وجو را می‌رود (انتخاب بچ/
+    تعداد خودکار). فقط کالایی که همین حالا قابل فروش است (بچ فعال با موجودی) نشان
+    داده می‌شود؛ فاکتورهای ابطال‌شده در شمارش پرفروشی نمی‌آیند.
+    """
+    from sqlalchemy import desc, func
+
+    from ..models import Invoice, InvoiceItem, Unit
+    days = max(1, min(int(days), 365))
+    limit = max(1, min(int(limit), 40))
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = db.execute(
+        select(InvoiceItem.product_id,
+               func.sum(InvoiceItem.qty).label("sq"),
+               func.sum(InvoiceItem.subtotal).label("st"))
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .where(InvoiceItem.created_at >= since, Invoice.status != "VOID")
+        .group_by(InvoiceItem.product_id)
+        .order_by(desc("sq"), InvoiceItem.product_id)
+        .limit(limit * 3)   # چند ردیف اضافه: کالای حذف‌شده/بی‌موجودی بعداً حذف می‌شود
+    ).all()
+    items = []
+    for pid, sq, st in rows:
+        if len(items) >= limit:
+            break
+        p = db.get(Product, pid)
+        if p is None or p.deleted_at is not None or not p.is_active:
+            continue
+        options = pos_svc.get_batch_options(db, p)
+        total = float(sum((o.batch.current_qty for o in options), 0))
+        if total <= 0:
+            continue   # نوار پرفروش‌ها فقط «الان قابل فروش» را پیشنهاد می‌دهد
+        unit = db.get(Unit, p.unit_id) if p.unit_id else None
+        items.append({
+            "product_id": p.id, "name": p.name, "barcode": p.barcode, "sku": p.sku,
+            "image_url": p.image_url,
+            "unit": {"name": unit.name, "symbol": unit.symbol,
+                     "allow_decimal": unit.allow_decimal,
+                     "decimals": unit.decimals} if unit else None,
+            "available_qty": total,
+            "price_count": len({float(o.batch.sell_price) for o in options}),
+            "exact": False,
+            "batches": [o.as_dict() for o in options],
+            "sold_qty": float(sq or 0),
+            "sold_total": float(st or 0),
+        })
+    return _maybe_redact(user, {"days": days, "count": len(items), "items": items})

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__
+from .. import BUILD, __version__
 from ..config import settings
 from ..database import get_db
 from ..models import Notification, SystemSetting, User
@@ -27,6 +27,8 @@ router = APIRouter(tags=["system"])
 def health(db: Session = Depends(get_db)):
     db.execute(select(Notification.id).limit(1))
     return {"status": "ok", "app": settings.APP_NAME, "version": __version__,
+            #: build-510 — شناسهٔ بیلد برای جفت‌سازی رابط/بک‌اند در خود برنامه
+            "build": BUILD,
             "environment": settings.ENVIRONMENT, "time": datetime.utcnow().isoformat()}
 
 
@@ -434,5 +436,57 @@ def prepare_update_endpoint(body: UpdateAuthIn, db: Session = Depends(get_db),
     result = prepare_update(db, download=body.download)
     write_audit(db, action="UPDATE_PREPARE", user_id=user.id,
                 entity_type="System", after={"status": result["status"]})
+    db.commit()
+    return result
+
+
+# --- Factory Reset (build-497, دستورالعمل §۱۲) --------------------------------
+# روی راوتر مخصوص با پیشوند /system (مثل update_router) تا در سطح /api و در
+# OpenAPI schema ثبت شود — قرارداد اپ Native همین را الزامی می‌کند.
+factory_router = APIRouter(prefix="/system", tags=["system"])
+
+
+class FactoryResetIn(BaseModel):
+    scope: str = "transactions"          # transactions | full
+    confirm: str = ""                    # دقیقاً «RESET»
+    password: str = ""                   # احراز مجدد مدیر
+
+
+@factory_router.get("/factory-reset/preview")
+def factory_reset_preview(scope: str = "transactions", db: Session = Depends(get_db),
+                          _: User = Depends(require_permission("settings.manage"))):
+    """گزارش دقیق «چه حذف می‌شود / چه حفظ می‌شود / چه بازنشانی می‌شود» — بدون تغییر داده."""
+    from ..services import factory_reset as fr_svc
+    from ..services.factory_reset import FactoryResetError
+
+    try:
+        return fr_svc.preview(db, scope=scope)
+    except FactoryResetError as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
+
+
+@factory_router.post("/factory-reset")
+def factory_reset(body: FactoryResetIn, db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("settings.manage"))):
+    """بازنشانی به تنظیمات کارخانه — با احراز مجدد رمز مدیر، پشتیبان اجباری و تأیید صریح.
+
+    §28 (همان قاعدهٔ Update): نشست بازِ مدیر اثباتی برای «مدیر پشت کیبورد است»
+    نیست؛ رمز دوباره پرسیده می‌شود. §29: بدون پشتیبان موفق، حذفی انجام نمی‌شود.
+    """
+    from ..security import verify_password
+    from ..services import factory_reset as fr_svc
+    from ..services.factory_reset import FactoryResetError
+
+    if not verify_password(body.password, user.password_hash):
+        write_audit(db, action="FACTORY_RESET_AUTH_FAILED", user_id=user.id, entity_type="System")
+        db.commit()
+        raise HTTPException(status_code=403, detail={
+            "code": "BAD_PASSWORD", "message": "رمز عبور نادرست است؛ بازنشانی انجام نشد"})
+
+    try:
+        result = fr_svc.execute(db, scope=body.scope, actor=user, confirm=body.confirm)
+    except FactoryResetError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
     db.commit()
     return result

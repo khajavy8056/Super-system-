@@ -65,9 +65,18 @@ def _out(p: Product) -> dict:
             gallery = [u for u in parsed if isinstance(u, str) and u][:3]
         except (ValueError, TypeError):
             gallery = []
+    # build-513 — نام دسته کنار کالا؛ از relationship خود مدل (کشِ identity-map
+    # سشن — بدون کش سراسری که با پایگاه مشترک/بازیابی تداخل می‌کند)
+    category_name = None
+    try:
+        if p.category_id is not None and p.category is not None:
+            category_name = p.category.name
+    except Exception:
+        category_name = None
     return {
         "id": p.id, "barcode": p.barcode, "name": p.name, "sku": p.sku,
         "brand_id": p.brand_id, "category_id": p.category_id, "unit_id": p.unit_id,
+        "category_name": category_name,
         "model": p.model, "description": p.description, "image_url": p.image_url,
         "gallery": gallery,
         "min_stock_alert": p.min_stock_alert, "is_active": p.is_active,

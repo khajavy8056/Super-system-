@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import threading
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -167,6 +169,8 @@ app.include_router(system.router)
 app.include_router(system.router, prefix=API + "/system", include_in_schema=False)
 # ...but the update endpoints belong on the normal authenticated API surface
 app.include_router(system.update_router, prefix="/api")
+# build-497 — Factory Reset: مسیر /api/system/factory-reset (در schema هم ثبت می‌شود)
+app.include_router(system.factory_router, prefix="/api")
 
 
 # --- Error handling (BUG-020): users never see raw stack/SQL traces ----------
@@ -219,6 +223,25 @@ def _error_response(exc: Exception, request: Request, code: str, status: int) ->
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     return _error_response(exc, request, "DATABASE_ERROR", 500)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """build-501 — خطای اعتبارسنجی ۴۲۲ باید قابل سریالایز باشد؛ NaN/∞ در ورودی
+    (کلاینت معیوب) خودِ هندلر را نمی‌شکند و پاسخ استاندارد فارسی برمی‌گردد."""
+    def _safe(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
+        if isinstance(value, dict):
+            return {k: _safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_safe(v) for v in value]
+        return value
+    errors = exc.errors()
+    for err in errors:
+        if "input" in err:
+            err["input"] = _safe(err["input"])
+    return JSONResponse(status_code=422, content={"detail": _safe(errors)})
 
 
 @app.exception_handler(Exception)
@@ -349,10 +372,26 @@ def _find_frontend_dir() -> Path | None:
 _MEDIA_DIR = Path(settings.MEDIA_DIR)
 _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
+from fastapi.staticfiles import StaticFiles  # build-510 — پیش از زیرکلاسِ ضدکش
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """build-510 — پایان تلهٔ «آپدیت نصب شد ولی رابط عوض نشد».
+
+    WebView2/مرورگر می‌توانست پاسخ قدیمی `app.js` را از کش خودش اجرا کند (پین
+    نسخهٔ `?v=` ماه‌ها ثابت مانده بود). با `Cache-Control: no-cache` کش باید پیش
+    از هر استفاده با سرور چک کند (ETag/Last-Modified سر جایش است، یعنی بدون
+    ترافیک اضافه) — فایل تازه همیشه همان بار اول می‌رسد؛ مستقل از پین نسخه.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 _FRONTEND_DIR = _find_frontend_dir()
 if _FRONTEND_DIR is not None:
-    from fastapi.staticfiles import StaticFiles
-
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
     # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
     _MOBILE_DIR = _FRONTEND_DIR / "mobile"
@@ -366,5 +405,5 @@ if _FRONTEND_DIR is not None:
         def _mobile_root():
             return RedirectResponse(url="/m/", status_code=307)
 
-        app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+        app.mount("/m", _RevalidatingStaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
+    app.mount("/", _RevalidatingStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

@@ -55,7 +55,8 @@ def _fa_num(n) -> str:
 
 def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
                  columns: int = 32, store: dict | None = None,
-                 currency_label: str = "تومان", note: str = "") -> str:
+                 currency_label: str = "تومان", note: str = "",
+                 issued_coupon: dict | None = None) -> str:
     """Persian thermal receipt (§17, §243) — v2.8 professional layout.
 
     ``columns`` follows the paper width (§180): 32 for 58 mm, 42 for 76 mm, 48 for 80 mm.
@@ -133,6 +134,19 @@ def receipt_text(invoice: Invoice, *, header: str = "", footer: str = "",
               "MIXED": "ترکیبی"}.get(invoice.payment_method, invoice.payment_method)
     lines.append(kv("روش پرداخت", method))
     lines.append(thin)
+    # ── build-509 — کد تخفیف خرید بعدی (صدور خودکار جشنواره) روی خودِ فاکتور ──
+    if issued_coupon and issued_coupon.get("code"):
+        lines.append(center("پاداش خرید شما"))
+        lines.append(kv("کد تخفیف خرید بعدی", str(issued_coupon["code"])))
+        dv = issued_coupon.get("discount_value")
+        if dv is not None:
+            lines.append(kv("مقدار تخفیف",
+                            f"{_fa_num(dv)}٪" if issued_coupon.get("discount_type") == "PERCENT"
+                            else f"{_fa_num(dv)} {currency_label}"))
+        vu = issued_coupon.get("valid_until")
+        if vu:
+            lines.append(kv("اعتبار تا", _fa_date(vu).translate(_FA_DIGITS)))
+        lines.append(thin)
     # ── footer ─────────────────────────────────────────────────────────────
     if footer:
         lines.append(center(footer))
@@ -180,10 +194,25 @@ def _logo_file(logo_path: str) -> str | None:
 def render_receipt(db: Session, invoice: Invoice) -> str:
     prof = printer_profile(db)
     _RECEIPT_TZ["name"] = get_setting(db, "time.timezone", "Asia/Tehran") or "Asia/Tehran"
+    # build-509 — کوپنِ «خرید بعدی» که همین فاکتور صادر کرده، روی خودِ رسید چاپ می‌شود
+    issued: dict | None = None
+    try:
+        from ..models import Coupon
+        c = db.execute(select(Coupon).where(
+            Coupon.note == f"صادر شده پس از فاکتور {invoice.invoice_number}",
+            Coupon.campaign_id.is_not(None),
+        ).order_by(Coupon.id.desc()).limit(1)).scalar_one_or_none()
+        if c is not None:
+            issued = {"code": c.code, "discount_type": c.discount_type,
+                      "discount_value": float(c.discount_value),
+                      "valid_until": c.valid_until}
+    except Exception:
+        issued = None
     return receipt_text(invoice, header=prof["header"], footer=prof["footer"],
                         columns=prof["columns"], store=prof["store"],
                         currency_label=prof["currency_label"],
-                        note=get_setting(db, "store.receipt_note", ""))
+                        note=get_setting(db, "store.receipt_note", ""),
+                        issued_coupon=issued)
 
 
 def _printer(db: Session) -> HardwareDevice | None:

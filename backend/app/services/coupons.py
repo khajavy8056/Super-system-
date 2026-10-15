@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import secrets
 import string
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, update, or_
 from sqlalchemy.orm import Session
 
-from ..models import Campaign, CampaignRedemption, Coupon, CouponRedemption, Customer, User
+from ..models import (Campaign, CampaignRedemption, Category, Coupon,
+                      CouponRedemption, Customer, Product, User)
 from .audit import write_audit
 
 ZERO = Decimal("0")
@@ -160,9 +162,10 @@ def _campaign_targets(campaign: Campaign) -> list[int]:
     import json as _json
     try:
         ids = _json.loads(campaign.target_ids or "[]")
-    except ValueError:
+    except (ValueError, TypeError):
         ids = []
-    return [int(x) for x in ids if x is not None]
+    # build-515 — دسته‌ها رشته می‌آیند؛ برای هدف عددی فقط اعداد معتبر
+    return [int(x) for x in ids if x is not None and str(x).strip().isdigit()]
 
 
 def compute_campaign_discount(campaign: Campaign, amount: Decimal) -> Decimal:
@@ -178,19 +181,71 @@ def compute_campaign_discount(campaign: Campaign, amount: Decimal) -> Decimal:
     return max(ZERO, raw.quantize(CENT, ROUND_HALF_UP))
 
 
-def campaign_scope_amount(campaign: Campaign, *, amount: Decimal, product_ids: list[int] | None,
+def campaign_scope_amount(db: Session, campaign: Campaign, *, amount: Decimal, product_ids: list[int] | None,
                           line_amounts: dict[int, Decimal] | None) -> Decimal:
     """For product-targeted campaigns only the covered lines count as the base.
 
     ``line_amounts`` maps product_id → net line total.  Without line detail the
     whole amount is assumed covered (the API validates this before checkout).
     """
-    if str(campaign.target_type).upper() != "PRODUCTS":
+    ttype = str(campaign.target_type).upper()
+    if ttype == "CATEGORY":
+        # build-515 — هدف‌گیری دسته‌ای: target_ids = نام دسته‌ها
+        targets = _campaign_category_names(campaign)
+        if not targets or not line_amounts:
+            return ZERO
+        cats = _products_categories(db, [int(pid) for pid in line_amounts])
+        return sum((Decimal(v) for pid, v in line_amounts.items()
+                    if cats.get(int(pid), "") in targets), ZERO)
+    if ttype != "PRODUCTS":
         return Decimal(amount)
     targets = set(_campaign_targets(campaign))
     if not targets or not line_amounts:
         return ZERO
     return sum((Decimal(v) for pid, v in line_amounts.items() if int(pid) in targets), ZERO)
+
+
+def _gift_discount(campaign: Campaign, line_amounts: dict[int, Decimal] | None,
+                   line_qtys: dict[int, Decimal] | None) -> tuple[Decimal, str]:
+    """ارزش هدیهٔ رایگان (build-515): تا N عدد از کالای هدف رایگان می‌شود.
+
+    قیمت واحد = مبلغ خط ÷ تعداد خط؛ سقف = مبلغ کل همان خط. اگر کالای هدیه در
+    سبد نباشد → (0, "") تا پیام دقیق «کالای هدیه در سبد نیست» برخیزد.
+    """
+    targets = _campaign_targets(campaign)
+    if not targets or not line_amounts:
+        return ZERO, ""
+    pid = int(targets[0])
+    line_amount = Decimal(line_amounts.get(pid, ZERO))
+    if line_amount <= 0:
+        return ZERO, ""
+    line_qty = max(1, int(Decimal((line_qtys or {}).get(pid, 1))))
+    gift_qty = max(1, int(Decimal(campaign.discount_value or 1)))
+    free_units = min(gift_qty, line_qty)
+    unit = line_amount / Decimal(line_qty)
+    return min(line_amount, (unit * Decimal(free_units)).quantize(CENT, ROUND_HALF_UP)), \
+        f"{free_units} عدد رایگان"
+
+
+def _campaign_category_names(campaign: Campaign) -> set[str]:
+    """build-515 — نام دسته‌های هدف (target_ids می‌تواند نام دسته باشد)."""
+    try:
+        raw = json.loads(campaign.target_ids or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _products_categories(db: Session, product_ids: list[int]) -> dict[int, str]:
+    """شناسهٔ کالا → نام دسته (برای هدف‌گیری دسته‌ای)."""
+    ids = sorted({int(p) for p in product_ids if p})
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(Product.id, Category.name)
+        .join(Category, Product.category_id == Category.id)
+        .where(Product.id.in_(ids))).all()
+    return {int(pid): str(name) for pid, name in rows}
 
 
 def _campaign_purchases_count(db: Session, campaign: Campaign, customer_id: int | None) -> int:
@@ -204,15 +259,21 @@ def _campaign_purchases_count(db: Session, campaign: Campaign, customer_id: int 
     ).scalar_one()
 
 
-def _customer_purchase_count(db: Session, customer_id: int | None) -> int:
+def _customer_purchase_count(db: Session, customer_id: int | None,
+                             campaign: Campaign | None = None) -> int:
+    """تعداد خرید مشتری؛ با ``campaign`` فقط خریدهای «داخل بازهٔ جشنواره» (build-516)."""
     if not customer_id:
         return 0
     from ..models import Invoice
-    return db.execute(
-        select(func.count(Invoice.id)).where(
-            Invoice.customer_id == customer_id, Invoice.status == "PAID"
-        )
-    ).scalar_one()
+    q = select(func.count(Invoice.id)).where(
+        Invoice.customer_id == customer_id, Invoice.status == "PAID"
+    )
+    if campaign is not None:
+        if campaign.valid_from is not None:
+            q = q.where(Invoice.created_at >= campaign.valid_from)
+        if campaign.valid_until is not None:
+            q = q.where(Invoice.created_at <= campaign.valid_until)
+    return db.execute(q).scalar_one()
 
 
 def evaluate_campaign(
@@ -222,6 +283,7 @@ def evaluate_campaign(
     amount: Decimal,
     product_ids: list[int] | None = None,
     line_amounts: dict[int, Decimal] | None = None,
+    line_qtys: dict[int, Decimal] | None = None,
     customer_id: int | None = None,
     now: datetime | None = None,
 ) -> dict:
@@ -256,14 +318,39 @@ def evaluate_campaign(
             f"این جشنواره تا سقف خرید {campaign.max_purchase:,.0f} اعمال می‌شود",
         )
 
-    base = campaign_scope_amount(campaign, amount=amount, product_ids=product_ids,
+    # build-515 — «پاداش فقط خرید بعدی»: روی همین فاکتور اعمال نمی‌شود؛ هنگام
+    # ثبت فروش، کوپن خرید بعدی صادر می‌شود (نوع «هدیهٔ خرید بعدی» جادوگر).
+    if bool(getattr(campaign, "reward_next_only", False)):
+        raise CampaignError(
+            "CAMPAIGN_NEXT_REWARD",
+            "پاداش این جشنواره کوپن خرید بعدی است و روی همین فاکتور اعمال نمی‌شود",
+        )
+    # build-515 — شرط تعداد خرید: «بعد از N خرید» (خرید جاری هم شمرده می‌شود)
+    min_count = int(getattr(campaign, "min_purchase_count", 0) or 0)
+    if min_count > 0:
+        done = _customer_purchase_count(db, customer_id, campaign) if customer_id else 0
+        if done + 1 < min_count:
+            raise CampaignError(
+                "CAMPAIGN_PURCHASE_COUNT",
+                f"این جشنواره از خرید شمارهٔ {min_count} فعال می‌شود؛ این خرید شمارهٔ {done + 1} شماست",
+            )
+
+    base = campaign_scope_amount(db, campaign, amount=amount, product_ids=product_ids,
                                  line_amounts=line_amounts)
-    if str(campaign.target_type).upper() == "PRODUCTS":
+    ttype = str(campaign.target_type).upper()
+    gift_kind = ttype == "GIFT" or str(campaign.discount_type).upper() == "GIFT"
+    if ttype == "PRODUCTS":
         targets = _campaign_targets(campaign)
         if not targets:
             raise CampaignError("CAMPAIGN_NO_TARGETS", "کالای مشخص‌شده‌ای برای این جشنواره ثبت نشده است")
-        if base <= 0:
+        # برای «هدیه رایگان» پیام دقیقِ «کالای هدیه در سبد نیست» می‌آید؛ اینجا نه
+        if base <= 0 and not gift_kind:
             raise CampaignError("PRODUCT_NOT_IN_CAMPAIGN", "هیچ‌کدام از کالاهای این سبد مشمول جشنواره نیستند")
+    elif ttype == "CATEGORY":
+        if not _campaign_category_names(campaign):
+            raise CampaignError("CAMPAIGN_NO_TARGETS", "دسته‌ای برای این جشنواره ثبت نشده است")
+        if base <= 0 and not gift_kind:
+            raise CampaignError("PRODUCT_NOT_IN_CAMPAIGN", "هیچ کالایی از دسته‌های هدف در سبد نیست")
 
     if campaign.usage_limit is not None and campaign.used_count >= campaign.usage_limit:
         raise CampaignError("CAMPAIGN_LIMIT_REACHED", "سقف استفادهٔ این جشنواره پر شده است")
@@ -274,9 +361,17 @@ def evaluate_campaign(
         if used >= campaign.per_customer_limit:
             raise CampaignError("CAMPAIGN_CUSTOMER_LIMIT", "سقف استفادهٔ شما از این جشنواره پر شده است")
 
-    discount = compute_campaign_discount(campaign, base)
-    if discount <= 0:
-        raise CampaignError("NO_DISCOUNT", "این جشنواره برای این سبد تخفیفی ایجاد نمی‌کند")
+    gift_note = ""
+    if gift_kind:
+        # build-515 — هدیهٔ رایگان: «تعداد N عدد از کالای هدیه رایگان می‌شود».
+        # target_ids = [شناسهٔ کالای هدیه] و discount_value = تعداد.
+        discount, gift_note = _gift_discount(campaign, line_amounts, line_qtys)
+        if discount <= 0:
+            raise CampaignError("GIFT_NOT_IN_CART", "کالای هدیه در سبد نیست")
+    else:
+        discount = compute_campaign_discount(campaign, base)
+        if discount <= 0:
+            raise CampaignError("NO_DISCOUNT", "این جشنواره برای این سبد تخفیفی ایجاد نمی‌کند")
 
     return {
         "campaign_id": campaign.id,
@@ -288,6 +383,8 @@ def evaluate_campaign(
         "max_discount": campaign.max_discount,
         "scope_amount": base,
         "target_type": campaign.target_type,
+        "gift_note": gift_note,
+        "min_purchase_count": int(getattr(campaign, "min_purchase_count", 0) or 0),
         "stackable": bool(campaign.stackable),
         "auto_apply": bool(campaign.auto_apply),
         "priority": campaign.priority,
@@ -300,36 +397,53 @@ def eligible_campaigns(
     amount: Decimal,
     product_ids: list[int] | None = None,
     line_amounts: dict[int, Decimal] | None = None,
+    line_qtys: dict[int, Decimal] | None = None,
     customer_id: int | None = None,
     now: datetime | None = None,
     include_auto_apply: bool = True,
     limit: int = 20,
+    rejected: list[dict] | None = None,
 ) -> list[dict]:
     """The structured list a cashier chooses from (§24).
 
     Only campaigns whose conditions ALREADY hold for this basket are returned —
     the till never receives a campaign the server would reject at checkout.
+    build-512: pass ``rejected`` to also receive WHY each active campaign did
+    not qualify (پایانِ پیام مبهم «جشنواره‌ای وجود ندارد» — شیشه‌ای، نه جعبهٔ سیاه).
     """
+
+    def _reject(c: Campaign, reason: str) -> None:
+        if rejected is not None:
+            rejected.append({"campaign_id": c.id, "name": c.name, "reason": reason})
+
     now = now or datetime.utcnow()
     rows = db.execute(
         select(Campaign).where(Campaign.status == "ACTIVE").order_by(Campaign.priority.asc(), Campaign.id.desc())
     ).scalars().all()
     out: list[dict] = []
     for c in rows:
-        if not include_auto_apply and c.auto_apply:
-            continue
+        # build-513 — ترتیب تشخیص: اول موانع واقعی؛ «خودکار» فقط در پایان توضیح می‌آید
+        # تا دلیل واقعی (مثلاً حداقل خرید یا بازهٔ گذشته) پشت آن پنهان نشود.
         if c.valid_from and c.valid_from > now:
+            _reject(c, "هنوز شروع نشده است")
             continue
         if c.valid_until and c.valid_until < now:
+            _reject(c, "خارج از بازهٔ زمانی جشنواره است")
             continue
         if c.auto_issue_threshold is not None and c.discount_value == 0:
+            _reject(c, "این جشنواره فقط صادرکنندهٔ کوپن خرید بعدی است و تخفیف مستقیم ندارد")
             continue   # issue-only festival: its benefit is the future coupon, not a till discount
         try:
             ev = evaluate_campaign(
                 db, campaign_id=c.id, amount=amount, product_ids=product_ids,
-                line_amounts=line_amounts, customer_id=customer_id, now=now,
+                line_amounts=line_amounts, line_qtys=line_qtys,
+                customer_id=customer_id, now=now,
             )
-        except CampaignError:
+        except CampaignError as ce:
+            _reject(c, getattr(ce, "message", "") or "شرایط جشنواره با این سبد جمع نشد")
+            continue
+        if not include_auto_apply and c.auto_apply:
+            _reject(c, "خودکار اعمال می‌شود و در فهرست انتخاب نمی‌آید؛ هنگام ثبت فروش خودش اعمال می‌شود")
             continue
         out.append(ev)
         if len(out) >= limit:
@@ -431,6 +545,71 @@ def consume(
     return red
 
 
+def issue_on_checkout(db: Session, *, amount: Decimal, customer_id: int | None = None,
+                      now: datetime | None = None, limit: int = 5) -> list[dict]:
+    """build-509 — کدام جشنواره‌های آستانه‌دار با همین فاکتور کوپن «خرید بعدی» می‌دهند؟
+
+    فقط خواندنی و برای شفافیت صندوق: هر جشنوارهٔ ACTIVE با آستانهٔ عبورشده، با نام،
+    درصد/مبلغ و اعتبار کوپن آینده — تا صندوق‌دار به مشتری بگوید «کد تخفیف فردا
+    همین حالا برایتان صادر می‌شود».
+    """
+    now = now or datetime.utcnow()
+    out: list[dict] = []
+    rows = db.execute(
+        select(Campaign).where(
+            Campaign.status == "ACTIVE",
+            Campaign.auto_issue_threshold.is_not(None),
+        ).order_by(Campaign.auto_issue_threshold.desc())
+    ).scalars().all()
+    for c in rows:
+        if c.valid_from and c.valid_from > now:
+            continue
+        if c.valid_until and c.valid_until < now:
+            continue
+        if Decimal(amount) < Decimal(c.auto_issue_threshold):
+            continue
+        out.append({
+            "campaign_id": c.id, "name": c.name,
+            "discount_type": c.discount_type, "discount_value": float(c.discount_value),
+            "threshold": float(c.auto_issue_threshold),
+            "validity_days": max(1, c.auto_issue_validity_days),
+            "sms": bool(c.auto_issue_sms),
+        })
+        if len(out) >= limit:
+            break
+
+    # build-520 — جشنواره‌های «هر N خرید» هم بنر می‌گیرند: «با این خرید کوپن صادر می‌شود»
+    if customer_id:
+        for c in db.execute(
+            select(Campaign).where(
+                Campaign.status == "ACTIVE",
+                Campaign.min_purchase_count > 0,
+                Campaign.auto_issue_threshold.is_(None),
+                or_(Campaign.reward_next_only.is_(None), Campaign.reward_next_only == 0),
+            ).order_by(Campaign.priority.asc(), Campaign.id.desc())
+        ).scalars():
+            if c.discount_type == "GIFT":
+                continue
+            if c.valid_from and c.valid_from > now:
+                continue
+            if c.valid_until and c.valid_until < now:
+                continue
+            cnt = _customer_purchase_count(db, customer_id, c) + 1  # این خرید هم حساب می‌شود
+            if cnt % c.min_purchase_count != 0:
+                continue
+            out.append({
+                "campaign_id": c.id, "name": c.name + " · با این خرید کوپن صادر می‌شود 🎁",
+                "discount_type": c.discount_type, "discount_value": float(c.discount_value),
+                "threshold": 0,
+                "validity_days": max(1, c.auto_issue_validity_days),
+                "sms": bool(c.auto_issue_sms),
+            })
+            if len(out) >= limit:
+                break
+
+    return out
+
+
 def issue_next_purchase_coupon(
     db: Session,
     *,
@@ -442,20 +621,8 @@ def issue_next_purchase_coupon(
     """Auto-issue a coupon for the NEXT purchase when a campaign threshold is
     reached (§36). Returns the coupon, or None when no campaign applies."""
     now = datetime.utcnow()
-    campaigns = db.execute(
-        select(Campaign).where(
-            Campaign.status == "ACTIVE",
-            Campaign.auto_issue_threshold.is_not(None),
-        ).order_by(Campaign.auto_issue_threshold.desc())
-    ).scalars().all()
 
-    for c in campaigns:
-        if c.valid_from and c.valid_from > now:
-            continue
-        if c.valid_until and c.valid_until < now:
-            continue
-        if Decimal(invoice.total_amount) < Decimal(c.auto_issue_threshold):
-            continue
+    def _create_for(c: Campaign) -> Coupon | None:
         # build-481 idempotency: the same invoice must never issue the same
         # future benefit twice (double-click on checkout, a retried request, …).
         already = db.execute(
@@ -496,6 +663,59 @@ def issue_next_purchase_coupon(
                    "invoice": invoice.invoice_number},
         )
         return coupon
+
+    campaigns = db.execute(
+        select(Campaign).where(
+            Campaign.status == "ACTIVE",
+            Campaign.auto_issue_threshold.is_not(None),
+        ).order_by(Campaign.auto_issue_threshold.desc(), Campaign.priority.asc(), Campaign.id.desc())
+    ).scalars().all()
+
+    for c in campaigns:
+        if c.valid_from and c.valid_from > now:
+            continue
+        if c.valid_until and c.valid_until < now:
+            continue
+        if Decimal(invoice.total_amount) < Decimal(c.auto_issue_threshold):
+            continue
+        issued = _create_for(c)
+        if issued is not None:
+            return issued
+
+    # build-517 — جشنواره‌های «هر N خرید» (جادوگر): به مضرب N رسیدن تعداد خریدِ
+    # مشتریِ درونِ بازهٔ خود جشنواره ⇒ کوپن خرید بعدی. همان idempotency و همان
+    # قالب کد؛ هدیهٔ رایگان (GIFT) کوپن نمی‌دهد — پاداشش روی خود خرید است.
+    if customer is not None:
+        from ..models import Invoice
+        count_rows = db.execute(
+            select(Campaign).where(
+                Campaign.status == "ACTIVE",
+                Campaign.min_purchase_count > 0,
+            ).order_by(Campaign.priority.asc(), Campaign.id.desc())
+        ).scalars().all()
+        for c in count_rows:
+            if str(c.discount_type).upper() == "GIFT":
+                continue
+            if c.valid_from and c.valid_from > now:
+                continue
+            if c.valid_until and c.valid_until < now:
+                continue
+            q = select(func.count(Invoice.id)).where(
+                Invoice.customer_id == customer.id,
+                Invoice.status == "PAID",
+                Invoice.id <= invoice.id,
+            )
+            if c.valid_from is not None:
+                q = q.where(Invoice.created_at >= c.valid_from)
+            if c.valid_until is not None:
+                q = q.where(Invoice.created_at <= c.valid_until)
+            done = int(db.execute(q).scalar_one() or 0)
+            n = int(c.min_purchase_count or 0)
+            if n <= 0 or done == 0 or done % n != 0:
+                continue
+            issued = _create_for(c)
+            if issued is not None:
+                return issued
     return None
 
 

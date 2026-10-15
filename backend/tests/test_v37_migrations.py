@@ -81,7 +81,8 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
     # build-488 introduced the HR layer; build-493 adds the independent,
     # administrator-controlled permission for cached/offline mobile sign-in.
-    assert heads == ["d4930f0f4930"]
+    # build-515 — جادوگر جشنواره: min_purchase_count + reward_next_only.
+    assert heads == ["e515a1b2c3d4"]
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -141,11 +142,15 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # build-493 is now the HEAD step: rolling back one revision removes only
-    # the independent offline-login flag; build-488 HR/profile data stays put.
+    # build-515 is now the HEAD step: rolling back one revision removes only
+    # the two wizard columns (min_purchase_count / reward_next_only);
+    # build-493's offline-login flag and everything older stay put.
     user_cols = {c["name"] for c in insp.get_columns("users")}
     assert "local_only" in user_cols               # build-482 — survives
-    assert "offline_allowed" not in user_cols      # build-493 — rolled back
+    assert "offline_allowed" in user_cols          # build-493 — survives
+    camp_cols = {c["name"] for c in insp.get_columns("campaigns")}
+    assert "min_purchase_count" not in camp_cols   # build-515 — rolled back
+    assert "reward_next_only" not in camp_cols     # build-515 — rolled back
     for col in ("phone", "job_title", "avatar_path", "hire_date", "store"):
         assert col in user_cols, col
     for tbl in ("hr_shifts", "hr_payroll", "announcements", "announcement_reads",

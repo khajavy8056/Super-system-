@@ -16,8 +16,10 @@ import java.io.File;
  * table with plain SQL — no per-row Java objects, so 40 k invoices / 140 k lines import in seconds.
  * Everything the phone knows how to show is carried over: catalogue, batches, customers, invoices +
  * lines, stock movements, customer ledger, expenses, cheques, suppliers, campaigns, coupons, users,
- * settings, the AI insights history (so the measured profit effects are visible right away), and a
- * journal rebuilt from the invoices/expenses so the accounting screens are populated.
+ * settings, the AI insights history (so the measured profit effects are visible right away), a
+ * journal rebuilt from the invoices/expenses so the accounting screens are populated, and — since
+ * build-507 — the HR sections (hr_shifts / hr_shift_assignments / hr_shift_attendance / hr_payroll /
+ * announcements / announcement_reads) so a Windows backup restores the staff data on the phone too.
  */
 final class PcImport {
     private PcImport() {}
@@ -103,6 +105,23 @@ final class PcImport {
                   "INSERT INTO expenses(id,category_id,amount,description,paid_from,expense_date) SELECT id,category_id,amount,description,paid_from,expense_date FROM pc.acc_expenses",
                   "INSERT INTO suppliers(id,name,phone,address,balance) SELECT id,name,phone,address,0 FROM pc.acc_suppliers WHERE is_active=1",
                   "INSERT INTO cheques(id,direction,number,amount,due_date,bank_name,party_name,status,created_at) SELECT id,direction,number,amount,due_date,bank_name,party_name,status,created_at FROM pc.acc_cheques");
+            pr.at(70, "منابع انسانی و اطلاعیه‌ها…");
+            // build-507 — بخش‌های منابع انسانی (build-488) هم همراه فایل ویندوز می‌آیند: شیفت‌ها،
+            // تخصیص‌ها، حضور و غیاب، حقوق و دستمزد، اطلاعیه‌ها و وضعیت خواندن. شناسه‌ها عیناً حفظ
+            // می‌شوند (pc_id=id، is_local=0) تا همگام‌سازی بعدی آن‌ها را ریموت می‌داند و دوباره نمی‌سازد.
+            // فایل ویندوزی قدیمی‌تر از build-488 این جدول‌ها را ندارد — هر جدول جداگانه و اختیاری است.
+            try { d.execSQL("INSERT OR REPLACE INTO local_shifts(id,pc_id,name,start_time,end_time,workdays,store,department,role_hint,status,created_by,updated_at,is_local) " +
+                    "SELECT id,id,name,start_time,end_time,IFNULL(workdays,'[]'),IFNULL(store,''),IFNULL(department,''),role_hint,IFNULL(status,'ACTIVE'),IFNULL(created_by,0),replace(substr(IFNULL(updated_at,created_at),1,19),' ','T'),0 FROM pc.hr_shifts"); } catch (Exception ignore) {}
+            try { d.execSQL("INSERT OR REPLACE INTO local_shift_assignments(id,pc_id,shift_id,user_id,day,status,created_at,updated_at,is_local) " +
+                    "SELECT id,id,shift_id,user_id,IFNULL(day,''),IFNULL(status,'ACTIVE'),replace(substr(created_at,1,19),' ','T'),replace(substr(created_at,1,19),' ','T'),0 FROM pc.hr_shift_assignments"); } catch (Exception ignore) {}
+            try { d.execSQL("INSERT OR REPLACE INTO local_attendance(id,pc_id,shift_id,user_id,day,started_at,ended_at,late_minutes,early_leave_minutes,note,updated_at,is_local) " +
+                    "SELECT id,id,shift_id,user_id,day,replace(substr(started_at,1,19),' ','T'),replace(substr(ended_at,1,19),' ','T'),late_minutes,early_leave_minutes,note,replace(substr(IFNULL(ended_at,started_at),1,19),' ','T'),0 FROM pc.hr_shift_attendance"); } catch (Exception ignore) {}
+            try { d.execSQL("INSERT OR REPLACE INTO local_payroll(id,pc_id,user_id,period,base_salary,hourly_pay,worked_hours,overtime_hours,bonus,benefits,deductions,penalty,total,status,payment_ref,note,created_by,updated_at,is_local) " +
+                    "SELECT id,id,user_id,period,IFNULL(base_salary,0),IFNULL(hourly_pay,0),IFNULL(worked_hours,0),IFNULL(overtime_hours,0),IFNULL(bonus,0),IFNULL(benefits,0),IFNULL(deductions,0),IFNULL(penalty,0),IFNULL(total,0),IFNULL(status,'DRAFT'),payment_ref,note,IFNULL(created_by,0),replace(substr(IFNULL(updated_at,created_at),1,19),' ','T'),0 FROM pc.hr_payroll"); } catch (Exception ignore) {}
+            try { d.execSQL("INSERT OR REPLACE INTO local_announcements(id,title,body,created_by,status,priority,publish_at,expires_at,target_kind,target_store,target_roles,target_users,attachment_path,created_at,updated_at,is_local) " +
+                    "SELECT id,title,IFNULL(body,''),IFNULL(created_by,0),IFNULL(status,'PUBLISHED'),IFNULL(priority,3),replace(substr(publish_at,1,19),' ','T'),replace(substr(expires_at,1,19),' ','T'),IFNULL(target_kind,'ALL'),target_store,IFNULL(target_roles,'[]'),IFNULL(target_users,'[]'),attachment_path,replace(substr(created_at,1,19),' ','T'),replace(substr(IFNULL(updated_at,created_at),1,19),' ','T'),0 FROM pc.announcements"); } catch (Exception ignore) {}
+            try { d.execSQL("INSERT OR REPLACE INTO local_announcement_reads(announcement_id,user_id,delivered_at,seen_at,read_at) " +
+                    "SELECT announcement_id,user_id,replace(substr(delivered_at,1,19),' ','T'),replace(substr(seen_at,1,19),' ','T'),replace(substr(read_at,1,19),' ','T') FROM pc.announcement_reads"); } catch (Exception ignore) {}
             pr.at(74, "دفتر روزنامه…");
             rebuildJournal(d);
             pr.at(86, "کاربران، تنظیمات و هوش فروشگاه…");
@@ -119,6 +138,9 @@ final class PcImport {
             d.execSQL("INSERT OR REPLACE INTO kv(k,v) VALUES('cursor',NULL)");
             d.execSQL("DETACH DATABASE pc");
             for (String t : new String[]{"products", "batches", "customers", "invoices", "invoice_items", "movements", "expenses", "cheques", "ai_insights", "journal"}) try (Cursor cu = d.rawQuery("SELECT COUNT(*) FROM " + t, null)) { cu.moveToFirst(); out.put(t, cu.getLong(0)); }
+            // build-507 — counts of the HR sections so the success dialog can confirm they came along
+            for (String[] h : new String[][]{{"hr_shifts", "local_shifts"}, {"hr_shift_assignments", "local_shift_assignments"}, {"hr_attendance", "local_attendance"}, {"hr_payroll", "local_payroll"}, {"announcements", "local_announcements"}})
+                try (Cursor cu = d.rawQuery("SELECT COUNT(*) FROM " + h[1], null)) { cu.moveToFirst(); out.put(h[0], cu.getLong(0)); } catch (Exception ignore) {}
             pr.at(94, "بهینه‌سازی نمایه‌ها…");
             d.execSQL("ANALYZE"); pragma(d, "PRAGMA journal_mode=DELETE");
             d.close(); d = null;

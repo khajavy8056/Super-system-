@@ -143,7 +143,12 @@ public final class Ui {
     /** card containing a single muted note. */
     public static LinearLayout note(Context c, String title, String text) { LinearLayout l = card(c, title); l.addView(muted(c, text)); return l; }
     public static LinearLayout card(Context c, String title) { LinearLayout l = card(c); if (title != null) l.addView(h2(c, title)); return l; }
-    public static ScrollView scroll(Context c, View inner) { ScrollView s = new ScrollView(c); s.setFillViewport(true); s.setVerticalScrollBarEnabled(false); s.addView(inner); return s; }
+    public static ScrollView scroll(Context c, View inner) {
+        // build-500 — اگر inner هنوز والد داشته باشد addView با IllegalStateException
+        // («child already has a parent») کرش می‌کند؛ همیشه اول جدا می‌شود.
+        if (inner.getParent() instanceof ViewGroup) ((ViewGroup) inner.getParent()).removeView(inner);
+        ScrollView s = new ScrollView(c); s.setFillViewport(true); s.setVerticalScrollBarEnabled(false); s.addView(inner); return s;
+    }
     public static View divider(Context c) { View v = new View(c); v.setBackgroundColor(BORDER); v.setLayoutParams(margin(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)), 0, 8, 0, 8)); return v; }
     public static View space(Context c, int h) { View v = new View(c); v.setLayoutParams(lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(h))); return v; }
 
@@ -202,11 +207,20 @@ public final class Ui {
         String n = p == null ? "" : p.optString("name", ""); iv.setImageBitmap(letterTile(n.isEmpty() ? "•" : n.substring(0, 1), dp(sizeDp)));
         Images.bind(iv, p); return iv;
     }
+    /** build-501 — کشِ کاشی حرف: فهرست‌های بلند دیگر صدها بیت‌مپ یکسان نمی‌سازند (مقابله با OOM). */
+    private static final java.util.Map<String, android.graphics.Bitmap> TILES = new java.util.concurrent.ConcurrentHashMap<>();
     static android.graphics.Bitmap letterTile(String ch, int px) {
+        String key = ch + "@" + px;
+        android.graphics.Bitmap hit = TILES.get(key);
+        if (hit != null && !hit.isRecycled()) return hit;
         android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888); android.graphics.Canvas cv = new android.graphics.Canvas(b);
         android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG); pt.setColor(PRIMARY); pt.setTextSize(px * 0.42f); pt.setTextAlign(android.graphics.Paint.Align.CENTER); if (FONT != null) pt.setTypeface(FONT);
-        cv.drawText(ch, px / 2f, px / 2f - (pt.descent() + pt.ascent()) / 2f, pt); return b;
+        cv.drawText(ch, px / 2f, px / 2f - (pt.descent() + pt.ascent()) / 2f, pt);
+        if (TILES.size() > 64) TILES.clear();
+        TILES.put(key, b); return b;
     }
+    /** build-501 — آزادسازی کش کاشی حرف هنگام فشار حافظه. */
+    public static void tileCacheClear() { TILES.clear(); }
     /** product list row: thumbnail + title/sub + trailing. */
     public static LinearLayout pitem(Context c, JSONObject p, String title, String sub, String trailing, int trailingColor, Runnable onClick) {
         LinearLayout r = item(c, title, sub, trailing, trailingColor, onClick); r.addView(thumb(c, p, 44), 0); return r;

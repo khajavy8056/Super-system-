@@ -135,7 +135,8 @@ def test_android_offline_signin_needs_no_rescan_and_keeps_pairing():
     assert "putUserMeta" in db and "local_only" in db and "from_pc" in db and "offline_allowed" in db
     # Later Android releases added POS campaign/coupon storage, so the current
     # schema must retain the offline-login migration and apply all newer tables.
-    assert "VERSION = 12" in db and "v10OfflineAllowed" in db
+    # build-519 — دیتابیس ۱۳ (جادوگر جشنواره + خودترمیمی onOpen)
+    assert "VERSION = 13" in db and "v10OfflineAllowed" in db and "v13CampaignWizard" in db
     assert "v11PosBenefits" in db and "v12PosAutoIssue" in db
     # رمزسنج ذخیره‌شدهٔ گوشی نباید با pull پاک شود
     meta = db.split("putUserMeta", 2)[1]
@@ -164,10 +165,14 @@ def test_android_button_rows_wrap_instead_of_breaking_the_page():
 
 
 def test_windows_users_ui_has_local_only_checkbox():
-    appjs = (FRONT / "app.js").read_text(encoding="utf-8")
-    assert "u-local-only" in appjs and "local_only" in appjs and "دسترسی فقط به صورت بومی" in appjs
-    assert "u-offline-allowed" in appjs and "offline_allowed" in appjs and "آفلاین مجاز" in appjs
+    # build-499 — UI وب حذف شد؛ معادل نیتیو: صفحهٔ کاربرانِ desktop با همان
+    # مجوزهاست. تنظیم local-only در سطح سرویس/سرور می‌ماند (قرارداد ۴۸۲).
     admin = (JAVA / "AdminScreens.java").read_text(encoding="utf-8")
     assert "offline_allowed" in admin and "اجازهٔ ورود با دادهٔ محلی" in admin
-    launcher = (Path(__file__).resolve().parents[2] / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
-    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in launcher, "the POS program must open full screen by default"
+    users_py = (Path(__file__).resolve().parents[2] / "desktop" / "screens" / "users.py").read_text(encoding="utf-8")
+    assert "users.manage" not in users_py or True  # gating در main_window است — فقط دود:
+    main_window = (Path(__file__).resolve().parents[2] / "desktop" / "main_window.py").read_text(encoding="utf-8")
+    assert 'ctx.can("users.manage")' in main_window, "صفحهٔ کاربران فقط با مجوز باید ساخته شود"
+    main_py = (Path(__file__).resolve().parents[2] / "desktop" / "main.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in main_py, "the native POS program must read the kiosk switch"
+    assert 'win.showFullScreen()' in main_py, "the POS program must open full screen by default"

@@ -486,8 +486,8 @@ final class HrLocal {
 
     private static long savePayroll(long id, JSONObject b, String status) throws Exception {
         long useId = localUser(b.optLong("user_id")); String period = b.optString("period", "");
-        double base = b.optDouble("base_salary"), hourly = b.optDouble("hourly_pay"), worked = b.optDouble("worked_hours"), overtime = b.optDouble("overtime_hours");
-        double bonus = b.optDouble("bonus"), benefits = b.optDouble("benefits"), deductions = b.optDouble("deductions"), penalty = b.optDouble("penalty");
+        double base = b.optDouble("base_salary", 0), hourly = b.optDouble("hourly_pay", 0), worked = b.optDouble("worked_hours", 0), overtime = b.optDouble("overtime_hours", 0);
+        double bonus = b.optDouble("bonus", 0), benefits = b.optDouble("benefits", 0), deductions = b.optDouble("deductions", 0), penalty = b.optDouble("penalty", 0);
         for (double v : new double[]{base, hourly, worked, overtime, bonus, benefits, deductions, penalty}) if (v < 0) throw new Api.ApiError(400, "BAD_AMOUNT", "مبلغ و ساعت نمی‌توانند منفی باشند");
         double total = Math.max(0, Math.round(base + hourly * worked + overtime * hourly * 1.4 + bonus + benefits - deductions - penalty));
         if (id <= 0) {
@@ -519,7 +519,7 @@ final class HrLocal {
         String end = q.optString("end", today()), start = q.optString("start", addDays(end, -29)); validateDay(start); validateDay(end);
         long startMs = parseDay(start).getTime(), endMs = parseDay(addDays(end, 1)).getTime(); double total = 0, inShift = 0, outShift = 0; int count = 0; HashMap<String, Double> perDay = new HashMap<>();
         for (JSONObject invoice : rows("SELECT total,at FROM invoices WHERE user_id=? AND status='PAID' AND at>=? AND at<? ORDER BY at", userId, start, addDays(end, 1))) {
-            double amount = invoice.optDouble("total"); String at = invoice.optString("at"), day = at.length() >= 10 ? at.substring(0, 10) : start;
+            double amount = invoice.optDouble("total", 0); String at = invoice.optString("at"), day = at.length() >= 10 ? at.substring(0, 10) : start;
             total += amount; count++; perDay.put(day, (perDay.containsKey(day) ? perDay.get(day) : 0) + amount);
             boolean inside = false; JSONArray windows = matchingShifts(userId, day);
             Date time = parseDateTime(at);
@@ -539,7 +539,7 @@ final class HrLocal {
 
     private static JSONArray chartSeries(long userId, JSONObject q) throws Exception {
         JSONObject report = performanceReport(userId, q); JSONArray points = new JSONArray(), invoices = new JSONArray(); JSONArray daily = report.optJSONArray("daily_series");
-        for (int i = 0; daily != null && i < daily.length(); i++) { JSONObject day = daily.optJSONObject(i); points.put(new JSONObject().put("x", day.optString("day")).put("y", day.optDouble("sales"))); invoices.put(new JSONObject().put("x", day.optString("day")).put("y", 0)); }
+        for (int i = 0; daily != null && i < daily.length(); i++) { JSONObject day = daily.optJSONObject(i); points.put(new JSONObject().put("x", day.optString("day")).put("y", day.optDouble("sales", 0))); invoices.put(new JSONObject().put("x", day.optString("day")).put("y", 0)); }
         JSONArray out = new JSONArray(); out.put(new JSONObject().put("id", "sales_daily").put("title", "فروش روزانه").put("type", "line").put("points", points));
         out.put(new JSONObject().put("id", "invoices_daily").put("title", "تعداد تراکنش").put("type", "bar").put("points", invoices)); return out;
     }
