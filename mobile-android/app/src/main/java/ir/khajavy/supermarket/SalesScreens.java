@@ -258,6 +258,10 @@ public final class SalesScreens {
             /* build-520 — «کد تخفیف خرید بعدی در راه است» باید در خود سبد دیده شود */
             if (giftHint != null && !giftHint.isEmpty())
                 benefitsStrip.addView(Ui.pill(c, "gift", "🎁 کد هدیه", true, this::askCampaign));
+            /* build-521 — «چرا اعمال نشد؟»: هر جشنوارهٔ فعالی که با همین سبد جمع نشد،
+             * با دلیل دقیقش دیده می‌شود (نه یک پیام مبهم). */
+            if (lastRejections != null && lastRejections.length() > 0)
+                benefitsStrip.addView(Ui.pill(c, "percent", "چرا " + Ui.num(lastRejections.length()) + " جشنوارهٔ دیگر اعمال نشد؟", false, this::explainRejections));
         }
         double amountBeforeBenefits() {
             double amount = 0;
@@ -317,8 +321,12 @@ public final class SalesScreens {
         /** build-501 — تخفیف مزایا هرگز NaN نمی‌شود (کلید غایب/NULL → صفر)؛ جلوی «Forbidden numeric value» گرفته می‌شود. */
         static double finBenefit(double v) { return Double.isFinite(v) && v > 0 ? v : 0; }
         String giftHint = "";
+        /** build-521 — دلایل رد شدن جشنواره‌های فعال برای همین سبد (پاسخ آخرین بررسی). */
+        JSONArray lastRejections;
+        /** build-521 — دلیل رد شدن جشنوارهٔ اعمال‌شده/کوپن هم در همین شیت دیده می‌شود. */
+        String lastRejectNote = "";
         void refreshBenefits() {
-            if (cart.isEmpty()) { giftHint = ""; renderBenefitsStrip(); return; }
+            if (cart.isEmpty()) { giftHint = ""; lastRejections = null; renderBenefitsStrip(); return; }
             String requestedKey = benefitsKey();
             if (requestedKey.equals(resolvedBenefitsKey) || requestedKey.equals(pendingBenefitsKey)) return;
             pendingBenefitsKey = requestedKey;
@@ -354,6 +362,8 @@ public final class SalesScreens {
                     /* build-520 — اعمال خودکار باید «دیده» شود، نه بی‌صدا در عدد بنشیند */
                     Ui.toast("جشنوارهٔ «" + auto.optString("name") + "» خودکار اعمال شد (−" + Ui.money(campaignDiscount) + ")");
                 }
+                /* build-521 — دلیل‌های رد شدن برای شیت «چرا …؟» نگه داشته می‌شوند */
+                lastRejections = response.optJSONArray("rejections");
                 /* build-520 — بنر «کد تخفیف خرید بعدی در راه است» از issue_on_checkout */
                 JSONArray giftHints = response.optJSONArray("issue_on_checkout");
                 if (giftHints != null && giftHints.length() > 0) {
@@ -498,6 +508,29 @@ public final class SalesScreens {
                     renderCart();
                 }, error -> Ui.toast(error.getMessage()));
             });
+        }
+        /** build-521 — شیت شیشه‌ای «چرا اعمال نشد؟»: دلیل هر جشنوارهٔ فعال + وضعیت همین فاکتور. */
+        void explainRejections() {
+            LinearLayout why = Ui.col(c);
+            JSONArray rows = lastRejections;
+            if (rows == null || rows.length() == 0) {
+                Ui.toast("جشنوارهٔ فعالی برای بررسی نیست");
+                return;
+            }
+            why.addView(Ui.muted(c, "دلیل اعمال‌نشدن هر جشنواره:"));
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject r = rows.optJSONObject(i); if (r == null) continue;
+                why.addView(Ui.item(c, r.optString("name", "جشنواره"), r.optString("reason", ""), "", Ui.RED, () -> { }));
+            }
+            /* وضعیت همین فاکتور — صندوق‌دار باید یک‌جا ببیند کد تخفیف این فروش چیست
+             * و اگر پیامک نمی‌رود، دلیلش («بدون شماره») را بداند. */
+            String invoiceCode = coupon != null && !coupon.isEmpty() ? coupon : "";
+            why.addView(Ui.muted(c, "کد تخفیف این فاکتور: " + (invoiceCode.isEmpty() ? "—" : invoiceCode)));
+            String phone = smsPhone != null && !smsPhone.isEmpty() ? smsPhone : (customer == null ? "" : customer.optString("phone", ""));
+            why.addView(Ui.muted(c, "پیامک فاکتور و کوپن: " + (phone.isEmpty() ? "بدون شماره" : Ui.fa(phone))));
+            if (lastRejectNote != null && !lastRejectNote.isEmpty()) why.addView(Ui.muted(c, lastRejectNote));
+            why.addView(Ui.muted(c, "برای اینکه یک جشنواره در همین سبد اعمال شود، شرط یا بازهٔ زمانی آن را از «جشنواره و کوپن» ویرایش کنید."));
+            Ui.sheet(c, "چرا جشنواره اعمال نشد؟", why);
         }
         void askCampaign() {
             if (cart.isEmpty()) { Ui.toast("سبد خالی است؛ ابتدا کالا اضافه کنید"); return; }
@@ -668,6 +701,10 @@ public final class SalesScreens {
                 if (no.isEmpty()) throw new IllegalStateException("شمارهٔ فاکتور محلی ساخته نشد");
                 if (heldId != null) removeHeld(heldId);
                 String issuedCouponCodes = Local.issuedCouponCodesForInvoice(no);
+                /* build-521 — شفافیت: اگر بنر کوپن را وعده داده بود ولی کد صادر نشد،
+                 * دلیلش (شرط جشنواره در لحظهٔ ثبت برقرار نبود) در شیت «چرا …؟» می‌آید. */
+                lastRejectNote = issuedCouponCodes.isEmpty() && giftHint != null && !giftHint.isEmpty()
+                        ? "کوپن خرید بعدی این فاکتور صادر نشد: شرط جشنواره در لحظهٔ ثبت برقرار نبود" : "";
                 // v2.3: invoice SMS the moment the sale is confirmed — from the phone itself when there is no PC
                 try {
                 if (!ph.isEmpty() && SmsLocal.sendInvoiceOn() && SmsLocal.phoneShouldSend()) { if (SmsLocal.configured()) { String text = SmsLocal.patternMode() ? SmsLocal.renderInvoiceShort(no, total) : SmsLocal.renderInvoice(no, total); if (!issuedCouponCodes.isEmpty()) text += "\nکد تخفیف خرید بعدی: " + issuedCouponCodes; SmsLocal.enqueueAndSend(ph, text, no); } else Ui.toast("پیامک ارسال نشد: سرویس پیامک را در تنظیمات → پیامک تنظیم کنید"); }
@@ -776,7 +813,7 @@ public final class SalesScreens {
                 actions.addView(Ui.ghost(c, "نمایش رسید", () -> showReceipt(false)));
                 actions.addView(Ui.ghost(c, "چاپ / اشتراک رسید", () -> showReceipt(true)));
             }
-            if (!"VOID".equals(status) && (Screens.can("pos.void_paid") || Screens.can("pos.void_unpaid")))
+            if (!"VOID".equals(status) && Screens.can("pos.void_unpaid"))
                 actions.addView(Ui.danger(c, "ابطال فاکتور", this::voidInvoice));
             if (actions.getChildCount() == 0) actions.addView(Ui.muted(c, "برای رسید یا ابطال، دسترسی متناظر لازم است."));
             body.addView(actions);
@@ -854,7 +891,7 @@ public final class SalesScreens {
             LinearLayout act = Ui.card(c, "عملیات");
             act.addView(Ui.ghost(c, "نمایش رسید", () -> get("/invoices/" + id + "/receipt", r -> { TextView t = Ui.text(c, ((JSONObject) r).optString("receipt_text"), 12, Ui.TEXT, false); t.setTypeface(android.graphics.Typeface.MONOSPACE); t.setTextDirection(View.TEXT_DIRECTION_LTR); t.setGravity(Gravity.START); Ui.sheet(c, "رسید", t); })));
             act.addView(Ui.ghost(c, Api.standalone() ? "چاپ / اشتراک رسید" : "چاپ روی چاپگر رایانه", () -> post("/invoices/" + id + "/print", null, r -> Ui.toast("به صف چاپ رایانه رفت"))));
-            if (!"VOID".equals(inv.optString("status")) && (Screens.can("pos.void_paid") || Screens.can("pos.void_unpaid"))) act.addView(Ui.danger(c, "ابطال فاکتور", this::voidInvoice));
+            if (!"VOID".equals(inv.optString("status")) && Screens.can("pos.void_unpaid")) act.addView(Ui.danger(c, "ابطال فاکتور", this::voidInvoice));
             body.addView(act);
         }
         void voidInvoice() { LinearLayout l = Ui.col(c); EditText reason = Ui.input(c, "دلیل ابطال"); l.addView(reason); EditText pw = Ui.input(c, "رمز مدیر (برای فاکتور پرداخت‌شده)"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); l.addView(pw); Dialog[] d = new Dialog[1]; l.addView(Ui.danger(c, "تأیید ابطال", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putIf(b, "admin_password", Ui.str(pw)); post("/invoices/" + id + "/void", b, r -> { Sfx.play("void"); Ui.toast("فاکتور باطل شد"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "ابطال " + Ui.fa(inv.optString("invoice_number")), l); }

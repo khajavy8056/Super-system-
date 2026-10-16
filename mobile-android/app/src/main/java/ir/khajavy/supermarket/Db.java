@@ -57,6 +57,7 @@ public final class Db extends SQLiteOpenHelper {
          * جشنواره‌ها ایدمپوتنت بررسی/ساخته می‌شوند؛ اگر مسیر upgrade از قلم
          * بیفتد یا فایل قدیمی restore شود، «no such column» دیگر ممکن نیست. */
         try { v13CampaignWizard(d); } catch (Exception ignore) {}
+        try { v14CouponNote(d); } catch (Exception ignore) {}
     }
     /** v3.3 — indexes for stores with years of history (tens of thousands of invoices): every dashboard /
      *  report query is now a range scan on an index instead of a full-table scan. Idempotent. */
@@ -114,7 +115,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS bank(barcode TEXT PRIMARY KEY, name TEXT, brand TEXT, unit TEXT, category TEXT, image_url TEXT, source TEXT, updated_at TEXT)",   // v2.7 بانک کالا
         "CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, symbol TEXT, allow_decimal INTEGER DEFAULT 0, decimals INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, min_purchase_count INTEGER DEFAULT 0, reward_next_only INTEGER DEFAULT 0, created_at TEXT)",
-        "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT, note TEXT)",
         "CREATE TABLE IF NOT EXISTS price_history(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, price_type TEXT, price REAL, effective_from TEXT, is_active INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS stocktakes(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, area TEXT, status TEXT DEFAULT 'DRAFT', scheduled_for TEXT, created_at TEXT, started_at TEXT, completed_at TEXT, approved_at TEXT)",
         "CREATE TABLE IF NOT EXISTS stocktake_items(id INTEGER PRIMARY KEY AUTOINCREMENT, st INTEGER, product_id INTEGER, batch_id INTEGER, system_qty REAL, physical_qty REAL, reason TEXT, counted_at TEXT)",
@@ -186,7 +187,7 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 13;
+    static final int VERSION = 14;
     static void v9UserIdentity(SQLiteDatabase d) {
         try { d.execSQL("ALTER TABLE users ADD COLUMN pc_username TEXT"); } catch (Exception ignore) {}
         try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_users_pc_id ON users(pc_id)"); } catch (Exception ignore) {}
@@ -285,6 +286,15 @@ public final class Db extends SQLiteOpenHelper {
         addColumn(d, "campaigns", "min_purchase_count INTEGER NOT NULL DEFAULT 0");
         addColumn(d, "campaigns", "reward_next_only INTEGER NOT NULL DEFAULT 0");
     }
+    /** build-521 — ریشهٔ «هیچ کوپنی صادر نمی‌شود»: موتور صدور کوپن خرید بعدی
+     *  کلید یکتایی هر فاکتور را در ستون coupons.note می‌نویسد و با همان
+     *  («SELECT id FROM coupons WHERE campaign_id=? AND note=?») از صدور تکراری
+     *  جلوگیری می‌کند؛ ولی این ستون هرگز به جدول اضافه نشده بود و درج با
+     *  «no such column: note» می‌شکست — و چون صدور پس از فروش است، خطا بی‌صدا
+     *  می‌ماند و فروش بدون کد تخفیف ثبت می‌شد. حالا ستون + کاربر اکتیو ۱۴. */
+    static void v14CouponNote(SQLiteDatabase d) {
+        addColumn(d, "coupons", "note TEXT");
+    }
 
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
         if (a < 3) v2(d);
@@ -298,6 +308,7 @@ public final class Db extends SQLiteOpenHelper {
         if (a < 11) v11PosBenefits(d); // offline coupons/campaigns and invoice benefit snapshots
         if (a < 12) v12PosAutoIssue(d); // next-purchase offer settings for offline POS
         if (a < 13) v13CampaignWizard(d); // build-519 — campaign wizard columns
+        if (a < 14) v14CouponNote(d); // build-521 — per-invoice coupon issuance key (coupons.note)
     }
 
     /* ---------------- kv ---------------- */

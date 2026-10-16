@@ -248,11 +248,39 @@ public final class Api {
         if (standalone()) return false;
         if (healthAt(base)) { Relay.active = false; return true; }
         // v2.3: the PC publishes its current LAN addresses on the relay — try them (fast path) before falling back to the relay itself
-        String lan = Prefs.get("pc_lan_json", "");
-        if (!lan.isEmpty()) { try { org.json.JSONArray a = new org.json.JSONArray(lan.substring(0, lan.lastIndexOf('|'))); for (int i = 0; i < a.length(); i++) { String u = Prefs.normalise(a.optString(i)); if (!u.equals(base) && healthAt(u)) { base = u; Prefs.set("server_url", u); Relay.active = false; return true; } } } catch (Exception ignore) {} }
+        for (String u : lanCandidates()) { if (!u.equals(base) && healthAt(u)) { base = u; Prefs.set("server_url", u); Relay.active = false; return true; } }
         if (Relay.available() && Relay.pcOnline()) { Relay.active = true; return true; }
         return false;
     }
+    /** build-521 — آدرس‌های LAN اعلام‌شدهٔ رایانهٔ جفت‌شده.
+     *
+     *  ریشهٔ «مسیر سریع LAN بی‌صدا کار نمی‌کند»: ذخیره‌سازی به شکل «آرایهٔ JSON|port»
+     *  است (پورت بیرون آرایه) ولی خوانندهٔ قبلی فقط تا آخرین «|» را می‌برید و پورت را
+     *  دور می‌ریخت؛ اگر هم «|» نبود، substring(0,-1) استثنا می‌داد و کل مسیر در
+     *  سکوت رد می‌شد. حالا پورت بیرونی به آدرس‌های بدون پورت ضمیمه می‌شود و هر
+     *  نامزد باید «طرح + میزبان + پورت» داشته باشد، وگرنه (به‌جای انتظار بی‌پایان)
+     *  از رله استفاده می‌شود. */
+    static java.util.List<String> lanCandidates() {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        String raw = Prefs.get("pc_lan_json", "");
+        if (raw == null || raw.isEmpty()) return out;
+        String arr = raw; int port = 0;
+        int bar = raw.lastIndexOf('|');
+        if (bar >= 0) { arr = raw.substring(0, bar); try { port = Integer.parseInt(raw.substring(bar + 1).trim()); } catch (Exception ignore) {} }
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(arr);
+            for (int i = 0; i < a.length(); i++) {
+                String u = Prefs.normalise(a.optString(i, ""));
+                if (u.isEmpty()) continue;
+                if (!u.matches(LAN_URL)) { if (port <= 0) continue; u = u + ":" + port; }
+                if (u.matches(LAN_URL) && !out.contains(u)) out.add(u);
+            }
+        } catch (Exception ignore) {}
+        return out;
+    }
+    /** نامزد معتبر = طرح، میزبان و پورتِ صریح (بدون پورت، هیچ تماسی گرفته نمی‌شود). */
+    private static final String LAN_URL = "(?i)^https?://[^/]+:[0-9]+.*$";
+
     /** plain LAN health check of one base URL. */
     public static boolean healthAt(String b) {
         if (b == null || b.isEmpty()) return false;
@@ -265,7 +293,36 @@ public final class Api {
     public static void ui(Runnable r) { MAIN.post(r); }
     public static void ui(Runnable r, long delayMs) { MAIN.postDelayed(r, delayMs); }
 
-    static Object parse(String text) throws JSONException { return new JSONTokener(text).nextValue(); }
+    static Object parse(String text) throws JSONException { return stripNulls(new JSONTokener(text).nextValue()); }
+    /** build-521 — پاک‌سازی مقادیر پوچ پیش از رسیدن به رابط کاربری.
+     *
+     *  org.json در اندروید برای JSON null رشتهٔ سرخودِ «null» برمی‌گرداند
+     *  (JSON.toString(NULL) ⇒ String.valueOf(NULL)) و هر optString روی آن، متن
+     *  «null» را وارد پیامک/رسید/عنوان می‌کند — همان چیزی که مالک در
+     *  «کد تخفیف خرید بعدی: null» دید. کلیدِ پوچ کاملاً حذف می‌شود تا مسیر
+     *  امن (isNull/optString با مقدار پیش‌فرض) درست کار کند. */
+    static Object stripNulls(Object value) {
+        if (value == null || value == JSONObject.NULL) return null;
+        if (value instanceof String) {
+            String v = (String) value;
+            return ("null".equals(v) || "undefined".equals(v)) ? null : v;
+        }
+        if (value instanceof JSONObject) {
+            JSONObject o = (JSONObject) value; java.util.ArrayList<String> drop = new java.util.ArrayList<>();
+            for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+                String k = it.next();
+                if (stripNulls(o.opt(k)) == null) drop.add(k);
+            }
+            for (String k : drop) o.remove(k);
+            return o;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray src = (JSONArray) value, keep = new JSONArray();
+            for (int i = 0; i < src.length(); i++) { Object v = stripNulls(src.opt(i)); if (v != null) keep.put(v); }
+            return keep;
+        }
+        return value;
+    }
     private static String enc(String s) { try { return java.net.URLEncoder.encode(s, "UTF-8"); } catch (Exception e) { return s; } }
     public static String q(String s) { return enc(s == null ? "" : s); }
 

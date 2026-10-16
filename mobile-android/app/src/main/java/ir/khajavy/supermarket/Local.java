@@ -106,7 +106,9 @@ public final class Local {
         if ("pos".equals(root)) { require("pos.sell"); return; }
         if ("returns".equals(root)) { require("pos.return"); return; }
         if ("invoices".equals(root)) {
-            if (seg.length > 2 && "void".equals(seg[2])) requireAny("pos.void_paid", "pos.void_unpaid");
+            /* build-521 — برابری با سرور: درِ ورودی ابطال «pos.void_unpaid» است و
+             * فاکتور پرداخت‌شده علاوه بر آن «pos.void_paid» می‌خواهد (پایین). */
+            if (seg.length > 2 && "void".equals(seg[2])) require("pos.void_unpaid");
             else if (seg.length > 2 && ("receipt".equals(seg[2]) || "print".equals(seg[2]))) require("pos.sell");
             else require("reports.view");
             return;
@@ -966,6 +968,20 @@ public final class Local {
                             "discount_type", c.optString("discount_type"), "discount_value", c.optDouble("discount_value", 0),
                             "threshold", thr, "validity_days", c.optInt("auto_issue_validity_days", 0)));
             }
+            /* build-521 — جشنواره‌های «پاداش فقط خرید بعدی» با آستانهٔ صدور خودکار هرگز
+             * در فهرست واجدشرط‌ها نیستند (تخفیف همین سبد را نمی‌دهند)، پس بنر
+             * «با این خرید کوپن صادر می‌شود» از خود جدول جشنواره‌ها ساخته می‌شود. */
+            for (JSONObject c : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND reward_next_only=1 AND auto_issue_threshold IS NOT NULL")) {
+                if (c == null || "GIFT".equalsIgnoreCase(c.optString("discount_type"))) continue;
+                long cid = c.optLong("pc_id") > 0 ? c.optLong("pc_id") : c.optLong("id");
+                double thr = c.isNull("auto_issue_threshold") ? 0 : optFin(c, "auto_issue_threshold", 0);
+                boolean later = false; for (int i = 0; i < hints.length(); i++) later = later || hints.optJSONObject(i).optLong("campaign_id") == cid;
+                if (later || thr <= 0 || reqAmount + 0.5 < thr) continue;
+                if (!offerHasStarted(c.optString("valid_from", ""), offerNowUtc()) || offerHasEnded(c.optString("valid_until", ""), offerNowUtc())) continue;
+                hints.put(obj("campaign_id", cid, "name", c.optString("name"),
+                        "discount_type", c.optString("discount_type"), "discount_value", optFin(c, "discount_value", 0),
+                        "threshold", thr, "validity_days", c.optInt("auto_issue_validity_days", 0)));
+            }
             java.util.HashSet<Long> hinted = new java.util.HashSet<>();
             for (int i = 0; i < hints.length(); i++) hinted.add(hints.optJSONObject(i).optLong("campaign_id"));
             for (JSONObject c : rows("SELECT * FROM campaigns WHERE status='ACTIVE' AND reward_next_only=0")) {
@@ -990,7 +1006,7 @@ public final class Local {
             }
             if (hints.length() > 0) response.put("issue_on_checkout", hints);
             /* شیشه‌ای: اگر هیچ جشنواره‌ای جمع نشد، دلیل هر کدام برمی‌گردد */
-            if (campaigns.length() == 0) response.put("rejections", rejections);
+            if (rejections.length() > 0) response.put("rejections", rejections);   // build-521 — دلیل‌ها همیشه (برابری با بک‌اند)
             return response;
         }
         if ("batch-options".equals(seg[1])) { JSONObject p=Db.sellableProductById(Long.parseLong(seg[2])); if(p==null) throw new Api.ApiError(404,"PRODUCT_NOT_FOUND","کالا موجود یا فعال نیست"); return obj("product_id",p.optLong("id"),"product_name",p.optString("name"),"options",p.optJSONArray("batches")); }
@@ -1132,6 +1148,11 @@ public final class Local {
             case "print": { String txt = receipt(inv); Api.ui(() -> { try { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(android.content.Intent.EXTRA_TEXT, txt); android.content.Intent ch = android.content.Intent.createChooser(i, "چاپ / اشتراک رسید"); ch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK); Ui.ctx.startActivity(ch); } catch (Exception ignore) {} }); return obj("status", "SHARED", "message", "رسید برای چاپ بلوتوثی/اشتراک ارسال شد"); }
             case "void": {
                 if ("VOID".equals(inv.optString("status"))) throw new Api.ApiError(409, "VOID", "این فاکتور قبلاً باطل شده");
+                /* build-521 — همان قاعدهٔ سرور (routers/invoices.void_invoice): ابطال فاکتور
+                 * پرداخت‌شده مجوز جداگانه می‌خواهد؛ قبلاً روی گوشی با هر یک از دو مجوز
+                 * ممکن بود و صندوق‌دار می‌توانست فاکتور پرداخت‌شده را باطل کند. */
+                if ("PAID".equals(inv.optString("payment_status")) && !Screens.can("pos.void_paid"))
+                    throw new Api.ApiError(403, "PERMISSION", "برای ابطال فاکتور پرداخت‌شده مجوز «ابطال فاکتور پرداخت‌شده» لازم است");
                 if ("PAID".equals(inv.optString("payment_status")) && "true".equals(setting("security.require_admin_for_void_paid", "true"))) { seedUsers(); JSONObject adm = null; for (JSONObject u : rows("SELECT * FROM users WHERE roles LIKE '%Administrator%' AND is_active=1")) if (passOk(u, u.optString("username"), b.optString("admin_password"))) adm = u; if (adm == null) throw new Api.ApiError(403, "ADMIN", "رمز مدیر برای ابطال فاکتور پرداخت‌شده لازم است"); }
                 SQLiteDatabase d = Db.db(); d.beginTransaction();
                 try { JSONArray its = inv.optJSONArray("items"); for (int i = 0; i < its.length(); i++) { JSONObject it = its.optJSONObject(i); double q0 = it.optDouble("qty", 0) - it.optDouble("returned_qty", 0); if (it.optLong("batch_id") != 0) d.execSQL("UPDATE batches SET current_qty=current_qty+? WHERE id=?", new Object[]{q0, it.optLong("batch_id")}); d.execSQL("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,reason,user,created_at) VALUES(?,?,'RETURN_IN',?,'InvoiceVoid',?,?,?,?)", new Object[]{it.optLong("product_id"), it.optLong("batch_id"), q0, inv.optString("invoice_number"), b.optString("reason"), Screens.userName(), Db.now()}); }
@@ -1761,7 +1782,10 @@ public final class Local {
     static String[] args(Object... a) { String[] s = new String[a.length]; for (int i = 0; i < a.length; i++) s[i] = a[i] == null ? null : String.valueOf(a[i]); return s; }
     public static List<JSONObject> rows(String sql, Object... a) {
         List<JSONObject> out = new ArrayList<>();
-        try (Cursor c = Db.db().rawQuery(sql, args(a))) { String[] cols = c.getColumnNames(); while (c.moveToNext()) { JSONObject o = new JSONObject(); for (int i = 0; i < cols.length; i++) { try { switch (c.getType(i)) { case Cursor.FIELD_TYPE_NULL: o.put(cols[i], JSONObject.NULL); break; case Cursor.FIELD_TYPE_INTEGER: o.put(cols[i], c.getLong(i)); break; case Cursor.FIELD_TYPE_FLOAT: double dv = c.getDouble(i); o.put(cols[i], Double.isFinite(dv) ? dv : 0); break;   // build-504 — سلول REAL نامعتبر (NaN/∞ قدیمی) هرگز به JSON موتور نمی‌رود
+        try (Cursor c = Db.db().rawQuery(sql, args(a))) { String[] cols = c.getColumnNames(); while (c.moveToNext()) { JSONObject o = new JSONObject(); for (int i = 0; i < cols.length; i++) { try { switch (c.getType(i)) { case Cursor.FIELD_TYPE_NULL: /* build-521 — سلول NULL اصلاً کلید نمی‌شود؛ نه JSON null.
+                        چون optString روی JSON null رشتهٔ سرخودِ «null» می‌دهد و همین
+                        متن در پیامک/رسید می‌نشست («کد تخفیف خرید بعدی: null»). isNull
+                        برای کلید غایب هم true است، پس هیچ بررسی‌ای نمی‌شکند. */ break; case Cursor.FIELD_TYPE_INTEGER: o.put(cols[i], c.getLong(i)); break; case Cursor.FIELD_TYPE_FLOAT: double dv = c.getDouble(i); o.put(cols[i], Double.isFinite(dv) ? dv : 0); break;   // build-504 — سلول REAL نامعتبر (NaN/∞ قدیمی) هرگز به JSON موتور نمی‌رود
                 default: o.put(cols[i], c.getString(i)); } } catch (Exception ignore) {} } out.add(o); } }
         catch (Exception e) { android.util.Log.w("Local", "sql: " + sql + " → " + e); }
         return out;

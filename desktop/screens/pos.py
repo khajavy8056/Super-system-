@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QFormLayout,
 
 from app.database import SessionLocal
 from app.models import Customer, Product
+from app.services import coupons as coupon_svc
 from app.services import pos as pos_svc
 
 from .. import ui_kit
@@ -102,6 +103,66 @@ class HeldDialog(QDialog):
         self.accept()
 
 
+class CampaignPickDialog(QDialog):
+    """فهرست جشنواره‌های واجد شرایط برای همین سبد (build-521).
+
+    دقیقاً همان چیزی که صندوق اندروید و رابط وب می‌بینند: فقط جشنواره‌هایی که
+    شرط‌هایشان با همین سبد جمع شده + دلیل اعمال‌نشدن بقیهٔ جشنواره‌های فعال.
+    """
+
+    def __init__(self, cart_total: Decimal, customer_id: int | None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("جشنواره‌های قابل اعمال")
+        self.campaign_id: int | None = None
+        lay = QVBoxLayout(self)
+        head = QLabel("فقط جشنواره‌های سازگار با همین سبد؛ شرایط هنگام ثبت فروش دوباره بررسی می‌شود.")
+        head.setProperty("role", "muted")
+        lay.addWidget(head)
+        self.table = ui_kit.make_table(["جشنواره", "مزیت", "نحوهٔ اعمال"])
+        self.table.doubleClicked.connect(self._pick)
+        lay.addWidget(self.table, 1)
+
+        self.reasons = QLabel("")
+        self.reasons.setProperty("role", "muted")
+        self.reasons.setWordWrap(True)
+        lay.addWidget(self.reasons)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        b_none = QPushButton("بدون جشنواره")
+        b_none.setProperty("role", "ghost")
+        b_none.clicked.connect(self.reject)
+        row.addWidget(b_none)
+        lay.addLayout(row)
+
+        db = SessionLocal()
+        try:
+            options = coupon_svc.eligible_campaigns(
+                db, amount=cart_total, customer_id=customer_id, include_auto_apply=True)
+        except Exception:  # noqa: BLE001 — فهرست نبود = فقط بدون انتخاب، نه کرش
+            options = []
+        finally:
+            db.close()
+        for i, offer in enumerate(options):
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            benefit = (f"{offer['discount_value']:g}٪"
+                       if str(offer.get("discount_type", "")).upper() == "PERCENT"
+                       else f"{money(offer['discount'])} تومان")
+            ui_kit.fill_row(self.table, r, [offer["name"], benefit,
+                                            "خودکار" if offer.get("auto_apply") else "انتخاب صندوق‌دار"])
+            self.table.item(r, 0).setData(Qt.UserRole, int(offer["campaign_id"]))
+            self.table.item(r, 0).setData(Qt.UserRole + 1, offer["name"])
+        if not options:
+            self.reasons.setText("هیچ جشنواره‌ای با این سبد جمع نشد؛ شرط/بازهٔ جشنواره‌ها را در «جشنواره‌ها» بررسی کنید.")
+
+    def _pick(self, index) -> None:
+        if index.row() < 0:
+            return
+        self.campaign_id = self.table.item(index.row(), 0).data(Qt.UserRole)
+        self.accept()
+
+
 class PosPage(QWidget):
     HEADERS = ["کالا", "تعداد", "قیمت واحد", "تخفیف", "جمع"]
 
@@ -168,12 +229,17 @@ class PosPage(QWidget):
         b_coupon = QPushButton("کوپن…")
         b_coupon.setProperty("role", "ghost")
         b_coupon.clicked.connect(self._coupon)
+        # build-521 — برابری با اندروید/وب: انتخاب جشنواره در صندوق ویندوز
+        b_campaign = QPushButton("جشنواره…")
+        b_campaign.setProperty("role", "ghost")
+        b_campaign.clicked.connect(self._campaigns)
         b_remove = QPushButton("حذف قلم")
         b_remove.setProperty("role", "danger")
         b_remove.clicked.connect(self._remove_line)
         actions.addWidget(b_cust)
         actions.addWidget(b_disc)
         actions.addWidget(b_coupon)
+        actions.addWidget(b_campaign)
         actions.addWidget(b_remove)
         actions.addStretch(1)
         right.addLayout(actions)
@@ -202,6 +268,10 @@ class PosPage(QWidget):
 
         self.invoice_discount = Decimal(0)
         self.coupon_code = ""
+        self.campaign_id: int | None = None
+        self.campaign_name = ""
+        self.coupon_discount = Decimal(0)
+        self.campaign_discount = Decimal(0)
         self._load_catalog()
 
     # ---------- کاتالوگ ----------
@@ -315,6 +385,52 @@ class PosPage(QWidget):
         text, ok = QInputDialog.getText(self, "کوپن", "کد کوپن:")
         if ok:
             self.coupon_code = text.strip()
+            self._render_cart()
+
+    def _campaigns(self) -> None:
+        """build-521 — انتخاب جشنواره با همان فهرست معتبر فروشگاه."""
+        if not self.cart:
+            QMessageBox.information(self, "سبد خالی", "ابتدا کالا اضافه کنید")
+            return
+        dlg = CampaignPickDialog(self._cart_amount(), self.customer_id, self)
+        if dlg.exec() == QDialog.Accepted and dlg.campaign_id is not None:
+            self.campaign_id = int(dlg.campaign_id)
+            self.campaign_name = self.table_campaign_name(dlg.campaign_id)
+        elif dlg.result() == QDialog.Rejected and dlg.campaign_id is None:
+            return
+        self._render_cart()
+
+    def table_campaign_name(self, campaign_id: int) -> str:
+        from app.models import Campaign
+        db = SessionLocal()
+        try:
+            row = db.get(Campaign, int(campaign_id))
+            return row.name if row is not None else ""
+        finally:
+            db.close()
+
+    def _cart_amount(self) -> Decimal:
+        total = Decimal(0)
+        for line in self.cart:
+            total += Decimal(str(line["price"])) * Decimal(str(line["qty"])) - Decimal(str(line.get("discount", 0)))
+        return max(Decimal(0), total - self.invoice_discount)
+
+    def _price(self) -> dict:
+        """قیمت‌گذاری معتبر سبد با تخفیف کوپن/جشنواره (منبع واحد = سرویس فروش)."""
+        items = [pos_svc.CartItem(product_id=line["product_id"],
+                                  quantity=Decimal(str(line["qty"])),
+                                  discount=Decimal(str(line.get("discount", 0))))
+                 for line in self.cart]
+        db = SessionLocal()
+        try:
+            return pos_svc.price_cart(
+                db, items=items, customer_id=self.customer_id,
+                coupon_code=self.coupon_code or None,
+                invoice_discount=self.invoice_discount or None,
+                campaign_id=self.campaign_id,
+                include_offers=False)
+        finally:
+            db.close()
 
     # ---------- نگه داشتن فاکتور (§۱۱) ----------
     def _hold(self) -> None:
@@ -361,18 +477,42 @@ class PosPage(QWidget):
                  for line in self.cart]
         db = SessionLocal()
         try:
-            # پیش‌محاسبه برای مبلغ پرداخت (قیمت واقعی از Batch) — خطا = پیام، نه کرش
+            # build-521 — مبلغ قطعی از همان سرویس فروش می‌آید (تخفیف کوپن + جشنوارهٔ
+            # خودکار + مالیات). پیش‌تر جمع سبد فقط تخفیف فاکتور را می‌دید و اگر
+            # جشنوارهٔ خودکار فعال بود، مقایسهٔ «پرداخت = جمع فاکتور» در سرویس
+            # می‌شکست (PAYMENT_MISMATCH) و فروش ثبت نمی‌شد.
             try:
-                resolved = pos_svc.validate_cart(db, items)
+                priced = pos_svc.price_cart(
+                    db, items=items, customer_id=self.customer_id,
+                    coupon_code=self.coupon_code or None,
+                    invoice_discount=self.invoice_discount or None,
+                    campaign_id=self.campaign_id, include_offers=True)
             except pos_svc.PosError as exc:
                 QMessageBox.warning(self, "سبد نامعتبر", exc.message)
                 return
-            gross = sum((r.unit_sell_price * r.quantity for r in resolved), Decimal(0))
-            disc = sum((r.discount for r in resolved), Decimal(0))
-            total = gross - disc - self.invoice_discount
-            if total < 0:
-                QMessageBox.warning(self, "مبلغ نامعتبر",
-                                    "تخفیف فاکتور بیشتر از جمع سبد است")
+            total = Decimal(str(priced["total"]))
+            self.coupon_discount = Decimal(str(priced.get("coupon_discount", 0)))
+            self.campaign_discount = Decimal(str(priced.get("campaign_discount", 0)))
+            campaign = priced.get("campaign")
+            if campaign:
+                self.campaign_id = int(campaign["campaign_id"])
+                self.campaign_name = campaign["name"]
+            summary = [f"جمع کالاها: {money(priced['gross'])}"]
+            if priced["discount"]:
+                summary.append(f"تخفیف: {money(priced['discount'])}")
+            if priced["coupon_discount"]:
+                summary.append(f"کوپن {self.coupon_code}: {money(priced['coupon_discount'])}")
+            if priced["campaign_discount"]:
+                summary.append(f"جشنواره {self.campaign_name}: {money(priced['campaign_discount'])}")
+            if priced["tax"]:
+                summary.append(f"مالیات: {money(priced['tax'])}")
+            summary.append(f"قابل پرداخت: {money(total)} تومان")
+            hints = priced.get("issue_on_checkout") or []
+            if hints:
+                summary.append("🎁 کد تخفیف خرید بعدی با همین فاکتور صادر می‌شود: "
+                               + " + ".join(str(h.get("name", "")) for h in hints))
+            if QMessageBox.question(self, "تأیید فروش", "\n".join(summary),
+                                    QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
             try:
                 invoice = pos_svc.checkout(
@@ -380,8 +520,13 @@ class PosPage(QWidget):
                     customer_id=self.customer_id,
                     coupon_code=self.coupon_code or None,
                     invoice_discount=self.invoice_discount or None,
+                    campaign_id=self.campaign_id,
                     payments=[{"method": "CASH", "amount": str(total)}],
                 )
+                # build-521 — کوپن خرید بعدی + پیامک فاکتور دقیقاً مثل اندروید/وب
+                customer = db.get(Customer, self.customer_id) if self.customer_id else None
+                extras = pos_svc.after_sale(db, invoice=invoice, customer=customer,
+                                            user=self.ctx.user)
                 db.commit()
             except pos_svc.PosError as exc:
                 db.rollback()
@@ -391,10 +536,15 @@ class PosPage(QWidget):
                 db.rollback()
                 QMessageBox.critical(self, "خطا", f"فروش ثبت نشد: {exc}")
                 return
+            issued = extras.get("issued_coupon")
+            note = f"فاکتور {fa(invoice.invoice_number)} — جمع: {money(invoice.total_amount)} تومان"
+            if issued is not None:
+                note += f"\n🎁 کد تخفیف خرید بعدی: {issued.code}"
+            if extras.get("sms_id"):
+                note += "\nپیامک فاکتور برای مشتری در صف ارسال قرار گرفت."
         finally:
             db.close()
-        QMessageBox.information(self, "فروش ثبت شد",
-                                f"فاکتور {fa(invoice.invoice_number)} — جمع: {money(invoice.total_amount)} تومان")
+        QMessageBox.information(self, "فروش ثبت شد", note)
         self._reset_cart()
 
     # ---------- نمایش ----------
@@ -410,14 +560,65 @@ class PosPage(QWidget):
                 line["name"], fa(line["qty"]), money(line["price"]),
                 money(line.get("discount", 0)), money(line_total)])
             self.cart_table.item(r, 0).setData(Qt.UserRole, i)
-        net = total - self.invoice_discount
-        self.total_label.setText(f"جمع کل: {money(total)} − تخفیف: {money(self.invoice_discount)} = {money(net)} تومان")
+        net = total - self.invoice_discount - self.coupon_discount - self.campaign_discount
+        parts = [f"جمع کل: {money(total)}"]
+        if self.invoice_discount:
+            parts.append(f"− تخفیف فاکتور: {money(self.invoice_discount)}")
+        if self.coupon_code:
+            parts.append(f"− کوپن {self.coupon_code}: {money(self.coupon_discount)}")
+        if self.campaign_id:
+            parts.append(f"− جشنواره {self.campaign_name or ''}: {money(self.campaign_discount)}")
+        parts.append(f"= {money(net)} تومان")
+        self.total_label.setText(" ".join(parts))
+        self._refresh_benefits()
+
+    def _refresh_benefits(self) -> None:
+        """build-521 — تخفیف کوپن/جشنواره و «کوپن خرید بعدی در راه است» را زنده نشان بده.
+
+        پیش‌تر صندوق ویندوز مبلغ را بدون تخفیف جشنوارهٔ خودکار نشان می‌داد و هنگام
+        ثبت فروش، مقایسهٔ پرداخت با جمعِ (تخفیف‌خوردهٔ) سرور می‌شکست. اکنون مبلغِ
+        نمایش‌داده‌شده همان مبلغِ قطعی سرویس فروش است.
+        """
+        if not self.cart:
+            self.coupon_discount = Decimal(0)
+            self.campaign_discount = Decimal(0)
+            return
+        try:
+            priced = self._price()
+        except pos_svc.PosError as exc:
+            self.coupon_discount = Decimal(0)
+            self.campaign_discount = Decimal(0)
+            self.total_label.setToolTip(f"بررسی مزایا: {exc.message}")
+            return
+        except Exception:  # noqa: BLE001 — نبود قیمت‌گذاری هرگز صندوق را نمی‌بندد
+            return
+        self.coupon_discount = Decimal(str(priced.get("coupon_discount", 0)))
+        self.campaign_discount = Decimal(str(priced.get("campaign_discount", 0)))
+        campaign = priced.get("campaign")
+        if campaign and not self.campaign_id:
+            # جشنوارهٔ «خودکار»: صندوق ویندوز هم مثل اندروید باید ببیند چه چیزی اعمال شد
+            self.campaign_id = int(campaign["campaign_id"])
+            self.campaign_name = campaign["name"]
+        self.total_label.setText(
+            f"جمع کل: {money(priced['gross'])}"
+            + (f" − تخفیف: {money(priced['discount'])}" if priced["discount"] else "")
+            + f" = {money(priced['total'])} تومان"
+            + (f" + مالیات {money(priced['tax'])}" if priced["tax"] else ""))
+        hints = priced.get("issue_on_checkout") or []
+        if hints:
+            names = " + ".join(h.get("name", "") for h in hints)
+            self.total_label.setToolTip(f"🎁 با ثبت همین فاکتور، کد تخفیف خرید بعدی صادر می‌شود: {names}")
+            self.total_label.setText(self.total_label.text() + "  🎁")
 
     def _reset_cart(self) -> None:
         self.cart = []
         self.customer_id = None
         self.coupon_code = ""
         self.invoice_discount = Decimal(0)
+        self.campaign_id = None
+        self.campaign_name = ""
+        self.coupon_discount = Decimal(0)
+        self.campaign_discount = Decimal(0)
         self._render_cart()
 
     def refresh(self) -> None:

@@ -300,44 +300,18 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
 
         # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
         # built but INSIDE the same transaction, so nothing is half-committed.
+        # build-521 — همین گام‌ها در ``services.pos.after_sale`` زندگی می‌کنند تا
+        # برنامهٔ نیتیو ویندوز و هر کلاینت دیگری هم دقیقاً همین رفتار را داشته
+        # باشند (قبلاً فقط روتر API کوپن صادر و پیامک می‌فرستاد ⇒ نقص برابری).
         from ..models import Customer as _C
-        from ..services import coupons as coupon_svc
+        from ..services import pos as pos_service
 
         customer = db.get(_C, customer_id) if customer_id else None
-        issued = coupon_svc.issue_next_purchase_coupon(
+        sale_extras = pos_service.after_sale(
             db, invoice=invoice, customer=customer, user=user,
-            preferred_codes=body.client_issued_coupon_codes)
-
-        from ..services import sms as sms_svc
-        # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
-        # printer off (pos.print_after_checkout=false) and still text every invoice.
-        sms_on = sms_svc.get_setting(db, "sms.send_invoice", "true").strip().lower() != "false"
-        if sms_on and customer and customer.phone:
-            from ..services import sync as sync_svc
-
-            # §172/§162 — invoice SMS from the shop-editable pattern (§166);
-            # the next-purchase coupon rides along in the same message.
-            coupon_line = ""
-            if issued:
-                coupon_line = f"کد تخفیف خرید بعدی: {issued.code}"
-                if issued.valid_until:
-                    # v4.8.0 — تاریخ شمسی با ارقام فارسی (متن پیامک یکدست می‌ماند)
-                    from ..services.timeservice import to_jalali
-                    d = issued.valid_until.date()
-                    jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
-                    coupon_line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
-                                    .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
-            text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line)
-            msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
-                                    reference_type="Invoice", reference_id=invoice.id)
-            # queued for retry-safe delivery; never blocks the sale (§48)
-            sync_svc.enqueue(db, job_type="SMS", payload={"sms_id": msg.id},
-                             reference_type="Invoice", reference_id=invoice.id,
-                             idempotency_key=f"sms:invoice:{invoice.id}", user_id=user.id)
-            # «به محض تأیید فاکتور»: try to hand it to the provider right away; the
-            # queue/worker above still guarantees retry if the network is down.
-            if sms_svc.get_setting(db, "sms.send_immediately", "true").strip().lower() != "false":
-                sms_svc.kick_worker()
+            campaign_codes=body.client_issued_coupon_codes,
+        )
+        issued = sale_extras["issued_coupon"]
 
         out = _invoice_out(invoice)
         # §19 — cash drawer opens on cash tenders (never blocks the sale)

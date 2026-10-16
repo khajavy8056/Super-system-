@@ -135,8 +135,13 @@ public final class SmsLocal {
         if (inv.optDouble("tax") > 0) totals.append(" | مالیات: ").append(Ui.num(inv.optDouble("tax")));
         text.append("\n").append(totals);
         text.append("\nپرداختی: ").append(Ui.num(inv.optDouble("total") > 0 ? inv.optDouble("total") : amount)).append(" ").append(Ui.currencyLabel);
-        String coupon = inv.optString("coupon");
-        if (coupon != null && !coupon.isEmpty()) text.append("\nکد تخفیف خرید بعدی: ").append(coupon);
+        /* build-521 — ریشهٔ «کد تخفیف خرید بعدی: null» روی پیامک: ستون coupon در
+         * فاکتور خالی بود و org.json برای مقدار پوچ، رشتهٔ سرخودِ «null» می‌دهد
+         * (JSON.toString(NULL) ⇒ String.valueOf(NULL))؛ پس شرط !isEmpty هم آن را
+         * رد نمی‌کرد. حالا مقدار پوچ/«null»/«undefined» یعنی «کد تخفیفی نیست». */
+        String coupon = inv.isNull("coupon") ? "" : inv.optString("coupon", "").trim();
+        if ("null".equalsIgnoreCase(coupon) || "undefined".equalsIgnoreCase(coupon)) coupon = "";
+        if (!coupon.isEmpty()) text.append("\nکد تخفیف خرید بعدی: ").append(coupon);
         text.append("\nاز خرید شما سپاسگزاریم — ").append(store);
         return text.toString();
     }

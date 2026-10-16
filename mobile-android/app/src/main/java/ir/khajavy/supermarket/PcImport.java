@@ -44,6 +44,42 @@ final class PcImport {
         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (" + in + ")", null)) { c.moveToFirst(); return c.getInt(0); }
     }
 
+    /** build-521 — آیا فایل پشتیبان ویندوزی این ستون را دارد؟ */
+    private static boolean pcHasColumn(SQLiteDatabase d, String table, String column) {
+        try (Cursor c = d.rawQuery("PRAGMA pc.table_info(" + table + ")", null)) {
+            while (c.moveToNext()) if (column.equalsIgnoreCase(c.getString(1))) return true;
+        } catch (Exception ignore) {}
+        return false;
+    }
+
+    /**
+     * build-521 — جشنواره/کوپن با فهرست ستونِ پویا.
+     *
+     * ریشهٔ شکست: فهرست ستون‌ها ثابت نوشته شده بود، ولی فایل پشتیبانِ ویندوزیِ
+     * قدیمی‌تر ستون‌های جادوگر جشنواره را ندارد (تعداد خرید، پاداش خرید بعدی، …)
+     * و SQLite کل درج را با «no such column» رد می‌کرد؛ یعنی بازاریابی — و با آن
+     * کوپن‌های مشتری — در سکوت وارد نمی‌شد. حالا ستون‌های اختیاری فقط وقتی
+     * خوانده می‌شوند که واقعاً در فایل باشند.
+     */
+    private static void importBenefitsTx(SQLiteDatabase d) {
+        d.beginTransaction();
+        try { importBenefits(d); d.setTransactionSuccessful(); } finally { d.endTransaction(); }
+    }
+
+    private static void importBenefits(SQLiteDatabase d) {
+        StringBuilder cTarget = new StringBuilder("id,pc_id,is_local,name,discount_type,discount_value,min_purchase,max_discount,valid_until,status,auto_issue_threshold,created_at");
+        StringBuilder cSource = new StringBuilder("id,id,0,name,discount_type,discount_value,IFNULL(min_purchase,0),max_discount,valid_until,status,auto_issue_threshold,created_at");
+        for (String col : new String[]{"min_purchase_count", "reward_next_only"})
+            if (pcHasColumn(d, "campaigns", col)) { cTarget.append(',').append(col); cSource.append(",IFNULL(").append(col).append(",0)"); }
+        d.execSQL("INSERT INTO campaigns(" + cTarget + ") SELECT " + cSource + " FROM pc.campaigns");
+
+        StringBuilder pTarget = new StringBuilder("id,pc_id,is_local,code,discount_type,discount_value,min_purchase,customer_phone,valid_until,usage_limit,used_count,status,created_at");
+        StringBuilder pSource = new StringBuilder("c.id,c.id,0,c.code,c.discount_type,c.discount_value,IFNULL(c.min_purchase,0),IFNULL(c.customer_phone,(SELECT phone FROM pc.customers k WHERE k.id=c.customer_id)),c.valid_until,IFNULL(c.usage_limit,1),IFNULL(c.used_count,0),c.status,c.created_at");
+        for (String col : new String[]{"campaign_id", "customer_id", "max_discount", "valid_from", "updated_at"})
+            if (pcHasColumn(d, "coupons", col)) { pTarget.append(',').append(col); pSource.append(",IFNULL(c.").append(col).append(",0)"); }
+        d.execSQL("INSERT INTO coupons(" + pTarget + ") SELECT " + pSource + " FROM pc.coupons c");
+    }
+
     /** Progress sink (message + 0..100). */
     interface Progress { void at(int pct, String msg); }
 
@@ -97,11 +133,8 @@ final class PcImport {
                     "SELECT product_id,batch_id,movement_type,quantity,reference_type,CAST(reference_id AS TEXT),note,(SELECT nm FROM un WHERE un.id=m.created_by),replace(substr(m.created_at,1,19),' ','T') FROM pc.stock_movements m",
                   "INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) SELECT customer_id,entry_type,amount,note,CAST(invoice_id AS TEXT),replace(substr(created_at,1,19),' ','T') FROM pc.customer_ledger_entries");
             pr.at(66, "بازاریابی و حسابداری…");
-            tx(d, "INSERT INTO campaigns(id,name,discount_type,discount_value,min_purchase,max_discount,valid_until,status,auto_issue_threshold,created_at) " +
-                    "SELECT id,name,discount_type,discount_value,IFNULL(min_purchase,0),max_discount,valid_until,status,auto_issue_threshold,created_at FROM pc.campaigns",
-                  "INSERT INTO coupons(id,code,discount_type,discount_value,min_purchase,customer_phone,valid_until,usage_limit,used_count,status,created_at) " +
-                    "SELECT c.id,c.code,c.discount_type,c.discount_value,IFNULL(c.min_purchase,0),IFNULL(c.customer_phone,(SELECT phone FROM pc.customers k WHERE k.id=c.customer_id)),c.valid_until,IFNULL(c.usage_limit,1),IFNULL(c.used_count,0),c.status,c.created_at FROM pc.coupons c",
-                  "DELETE FROM expense_categories", "INSERT INTO expense_categories(id,name) SELECT id,name FROM pc.acc_expense_categories",
+            importBenefitsTx(d);   // build-521 — فهرست ستون پویا (فایل ویندوزی قدیمی ستون جادوگر ندارد)
+            tx(d, "DELETE FROM expense_categories", "INSERT INTO expense_categories(id,name) SELECT id,name FROM pc.acc_expense_categories",
                   "INSERT INTO expenses(id,category_id,amount,description,paid_from,expense_date) SELECT id,category_id,amount,description,paid_from,expense_date FROM pc.acc_expenses",
                   "INSERT INTO suppliers(id,name,phone,address,balance) SELECT id,name,phone,address,0 FROM pc.acc_suppliers WHERE is_active=1",
                   "INSERT INTO cheques(id,direction,number,amount,due_date,bank_name,party_name,status,created_at) SELECT id,direction,number,amount,due_date,bank_name,party_name,status,created_at FROM pc.acc_cheques");

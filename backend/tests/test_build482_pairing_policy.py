@@ -136,7 +136,7 @@ def test_android_offline_signin_needs_no_rescan_and_keeps_pairing():
     # Later Android releases added POS campaign/coupon storage, so the current
     # schema must retain the offline-login migration and apply all newer tables.
     # build-519 — دیتابیس ۱۳ (جادوگر جشنواره + خودترمیمی onOpen)
-    assert "VERSION = 13" in db and "v10OfflineAllowed" in db and "v13CampaignWizard" in db
+    assert "VERSION = 14" in db and "v10OfflineAllowed" in db and "v13CampaignWizard" in db and "v14CouponNote" in db
     assert "v11PosBenefits" in db and "v12PosAutoIssue" in db
     # رمزسنج ذخیره‌شدهٔ گوشی نباید با pull پاک شود
     meta = db.split("putUserMeta", 2)[1]

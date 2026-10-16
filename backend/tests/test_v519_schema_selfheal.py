@@ -36,7 +36,7 @@ def test_upgrade_block_v13_independent():
     block = _v13_block()
     assert 'addColumn(d, "campaigns", "min_purchase_count INTEGER NOT NULL DEFAULT 0");' in block
     assert 'addColumn(d, "campaigns", "reward_next_only INTEGER NOT NULL DEFAULT 0");' in block
-    assert "static final int VERSION = 13;" in DBJ
+    assert "static final int VERSION = 14;" in DBJ
     assert "if (a < 13) v13CampaignWizard(d);" in DBJ
     # ستون‌های جادوگر دیگر در بلوک قدیمی v12 نیستند (تا شروع کامنت v13)
     v12_start = DBJ.index("static void v12PosAutoIssue(SQLiteDatabase d) {")
@@ -59,7 +59,7 @@ def test_fresh_create_table_has_wizard_columns():
 
 
 def test_version_pins():
-    assert _app.__version__ == "1.0.520" and _app.BUILD == 52000
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52000"
-    assert "const UI_BUILD = 520;" in (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "?v=1.0.520" in (ROOT / "frontend/index.html").read_text("utf-8")
+    assert _app.__version__ == "1.0.521" and _app.BUILD == 52100
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52100"
+    assert "const UI_BUILD = 521;" in (ROOT / "frontend/app.js").read_text("utf-8")
+    assert "?v=1.0.521" in (ROOT / "frontend/index.html").read_text("utf-8")

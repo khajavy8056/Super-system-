@@ -377,6 +377,207 @@ def _enforce_manual_discount_cap(db: Session, *, manual_discount: Decimal, gross
             "نیاز به مجوز مدیر دارد.")
 
 
+# --- build-521: پیش‌نمایش معتبر سبد + کارهای پس از فروش ----------------------
+#
+# چرا این دو تابع اینجا هستند؟ نسخهٔ ویندوز (PyQt) و رابط وب و اندروید همه یک
+# فروشگاه را اداره می‌کنند؛ تا امروز منطق «فروش» فقط داخل روتر API بود و برنامهٔ
+# نیتیو ویندوز مستقیم ``checkout`` را صدا می‌زد. نتیجه دو نقص واقعی:
+#
+#  ۱) صندوق ویندوز مبلغ پیش از پرداخت را بدون تخفیف جشنوارهٔ خودکار حساب می‌کرد و
+#     چون سرور همان تخفیف را (درست) اعمال می‌کرد، مقایسهٔ پرداخت با جمع فاکتور
+#     می‌شکست → «PAYMENT_MISMATCH» و فروش انجام نمی‌شد.
+#  ۲) هیچ‌جا کوپن «خرید بعدی» صادر و پیامک فاکتور فرستاده نمی‌شد (فقط در روتر API).
+#
+# با این دو تابع، یک منبع حقیقت واحد برای «قیمت‌گذاری مزایا» و «کارهای پس از
+# فروش» وجود دارد و هر سه کلاینت دقیقاً یک رفتار دارند (§۱۴ «برابری نسخه‌ها»).
+
+
+def price_cart(
+    db: Session,
+    *,
+    items: list["CartItem"],
+    customer_id: int | None = None,
+    coupon_code: str | None = None,
+    invoice_discount: Decimal | None = None,
+    campaign_id: int | None = None,
+    tax_rate: Decimal | None = None,
+    include_offers: bool = True,
+) -> dict:
+    """خواندنی و بی‌اثر: مبلغِ نهایی همان چیزی که ``checkout`` می‌سازد.
+
+    Returns a dict with ``gross``/``line_discount``/``invoice_discount``/
+    ``coupon``/``campaign``/``tax``/``total`` plus — when ``include_offers`` —
+    the campaign list a cashier may pick from, the reason each other active
+    campaign did not qualify (شفافیت)، and the «با این خرید کوپن صادر می‌شود»
+    hints. Any rule violation raises :class:`PosError` with a machine code, so a
+    native client can show the same precise message the API returns.
+    """
+    from . import coupons as offer_svc
+
+    resolved = validate_cart(db, items) if items else []
+    gross = sum(((i.unit_sell_price or ZERO) * i.quantity for i in resolved), ZERO)
+    line_discount = sum((i.discount for i in resolved), ZERO)
+    if line_discount > gross:
+        raise PosError("INVALID_DISCOUNT", "جمع تخفیف اقلام از مبلغ سبد بیشتر است")
+
+    inv_disc = Decimal(str(invoice_discount)) if invoice_discount else ZERO
+    if inv_disc < 0:
+        raise PosError("INVALID_DISCOUNT", "تخفیف فاکتور نمی‌تواند منفی باشد")
+    if inv_disc > gross - line_discount:
+        raise PosError("INVALID_DISCOUNT", "تخفیف فاکتور از مبلغ سبد بیشتر است")
+    _enforce_manual_discount_cap(db, manual_discount=line_discount + inv_disc, gross=gross)
+
+    line_amounts: dict[int, Decimal] = {}
+    product_ids: list[int] = []
+    for i in resolved:
+        product_ids.append(i.product_id)
+        line_amounts[i.product_id] = line_amounts.get(i.product_id, ZERO) + (
+            (i.unit_sell_price or ZERO) * i.quantity - i.discount)
+    base_amount = gross - line_discount - inv_disc
+
+    coupon_info = None
+    if coupon_code:
+        phone = None
+        if customer_id:
+            cust = db.get(Customer, customer_id)
+            phone = cust.phone if cust else None
+        try:
+            coupon_info = offer_svc.evaluate(
+                db, code=coupon_code, amount=base_amount,
+                customer_id=customer_id, customer_phone=phone)
+        except offer_svc.CouponError as exc:
+            raise PosError(exc.code, exc.message)
+
+    campaign_info = None
+    chosen = campaign_id
+    options: list[dict] = []
+    rejections: list[dict] = []
+    if include_offers or chosen is None:
+        options = offer_svc.eligible_campaigns(
+            db, amount=base_amount, product_ids=product_ids, line_amounts=line_amounts,
+            customer_id=customer_id, include_auto_apply=True, rejected=rejections,
+        )
+    if chosen is None:
+        auto = [o for o in options if o.get("auto_apply")]
+        if auto:
+            auto.sort(key=lambda o: (o.get("priority", 3), -float(o["discount"])))
+            chosen = int(auto[0]["campaign_id"])
+    if chosen is not None:
+        try:
+            campaign_info = offer_svc.evaluate_campaign(
+                db, campaign_id=chosen, amount=base_amount, product_ids=product_ids,
+                line_amounts=line_amounts, customer_id=customer_id)
+        except offer_svc.CampaignError as exc:
+            raise PosError(exc.code, exc.message)
+        if coupon_info is not None and not campaign_info["stackable"]:
+            raise PosError(
+                "CAMPAIGN_NOT_STACKABLE",
+                f"جشنواره «{campaign_info['name']}» با کوپن قابل ترکیب نیست؛ "
+                "یکی از دو مورد را انتخاب کنید")
+
+    coupon_discount = coupon_info["discount"] if coupon_info else ZERO
+    campaign_discount = campaign_info["discount"] if campaign_info else ZERO
+    taxable = max(ZERO, gross - line_discount - inv_disc - coupon_discount - campaign_discount)
+    if tax_rate is None:
+        raw_rate = (get_setting(db, "pos.tax_rate", "0") or "0").strip()
+        try:
+            rate = Decimal(raw_rate or "0")
+        except Exception:  # noqa: BLE001 — تنظیم خراب هرگز فروش را نمی‌بندد
+            rate = ZERO
+    else:
+        rate = Decimal(str(tax_rate))
+    if rate < 0:
+        rate = ZERO
+    tax = (taxable * rate / 100).quantize(CENT, ROUND_HALF_UP)
+    total = (taxable + tax).quantize(CENT, ROUND_HALF_UP)
+
+    return {
+        "items": resolved,
+        "gross": gross,
+        "line_discount": line_discount,
+        "invoice_discount": inv_disc,
+        "discount": line_discount + inv_disc + coupon_discount + campaign_discount,
+        "coupon": coupon_info,
+        "campaign": campaign_info,
+        "coupon_discount": coupon_discount,
+        "campaign_discount": campaign_discount,
+        "tax_rate": rate,
+        "tax": tax,
+        "total": total,
+        "campaigns": options,
+        "rejections": rejections,
+        "issue_on_checkout": offer_svc.issue_on_checkout(
+            db, amount=base_amount, customer_id=customer_id) if include_offers else [],
+    }
+
+
+def coupon_line_for(db: Session, coupon) -> str:
+    """خط پیامک «کد تخفیف خرید بعدی» — با تاریخ شمسی و ارقام فارسی (یک قالب، همه‌جا)."""
+    if coupon is None:
+        return ""
+    line = f"کد تخفیف خرید بعدی: {coupon.code}"
+    if coupon.valid_until:
+        from .timeservice import to_jalali
+        d = coupon.valid_until.date()
+        jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+        line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
+                 .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+    return line
+
+
+def after_sale(
+    db: Session,
+    *,
+    invoice,
+    customer=None,
+    user=None,
+    phone: str | None = None,
+    campaign_codes: dict[str, str] | None = None,
+    send_sms: bool = True,
+) -> dict:
+    """کارهای پس از ثبت فروش، داخل همان تراکنش: کوپن خرید بعدی + پیامک فاکتور.
+
+    Router و برنامهٔ ویندوزی و هر کلاینت دیگری این تابع را صدا می‌زنند تا رفتار
+    «فاکتور ⇒ کد تخفیف خرید بعدی ⇒ پیامک» در همهٔ نسخه‌ها یکی باشد (§۱۴/§۳۶).
+    خطای پیامک هرگز فروش را برنمی‌گرداند (فقط لاگ می‌شود).
+    """
+    import logging
+
+    from . import coupons as coupon_svc
+
+    log = logging.getLogger("supermarket.pos")
+    issued = None
+    try:
+        issued = coupon_svc.issue_next_purchase_coupon(
+            db, invoice=invoice, customer=customer, user=user,
+            preferred_codes=campaign_codes)
+    except Exception:  # noqa: BLE001 — پاداش هرگز فروش را نمی‌شکند
+        log.exception("next-purchase coupon issuance failed for %s", getattr(invoice, "invoice_number", None))
+
+    sms_id = None
+    target_phone = (phone or (customer.phone if customer is not None else None) or "").strip()
+    if send_sms and target_phone:
+        try:
+            from . import sms as sms_svc
+            sms_on = (sms_svc.get_setting(db, "sms.send_invoice", "true") or "true").strip().lower() != "false"
+            if sms_on:
+                from . import sync as sync_svc
+                text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line_for(db, issued))
+                msg = sms_svc.queue_sms(db, phone=target_phone, text=text,
+                                        reference_type="Invoice", reference_id=invoice.id)
+                sync_svc.enqueue(db, job_type="SMS", payload={"sms_id": msg.id},
+                                 reference_type="Invoice", reference_id=invoice.id,
+                                 idempotency_key=f"sms:invoice:{invoice.id}",
+                                 user_id=user.id if user else None)
+                if (sms_svc.get_setting(db, "sms.send_immediately", "true") or "true").strip().lower() != "false":
+                    sms_svc.kick_worker()
+                sms_id = msg.id
+        except Exception:  # noqa: BLE001 — پیامک هرگز فروش را نمی‌شکند
+            log.exception("invoice SMS queueing failed for %s", getattr(invoice, "invoice_number", None))
+
+    return {"issued_coupon": issued, "sms_id": sms_id}
+
+
 # --- Atomic invoice numbering (BUG-004) --------------------------------------
 
 def _next_invoice_number(db: Session) -> str:

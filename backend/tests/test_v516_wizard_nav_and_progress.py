@@ -121,8 +121,8 @@ def test_customer_progress_card_and_receipt_line_anchors():
 
 
 def test_version_pins():
-    assert VERSION == "1.0.520" and _app.BUILD == 52000
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52000"
+    assert VERSION == "1.0.521" and _app.BUILD == 52100
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52100"
     web = (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "const UI_BUILD = 520;" in web
+    assert "const UI_BUILD = 521;" in web
     assert f"?v={VERSION}" in (ROOT / "frontend/index.html").read_text("utf-8")

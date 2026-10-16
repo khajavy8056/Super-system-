@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         from .screens.users import UsersPage
         from .screens.reports import ReportsPage
         from .screens.settings import SettingsPage
+        from .screens.sync import SyncPage
 
         ctx = self.ctx
         pages: list[tuple[str, QWidget]] = []
@@ -103,6 +104,10 @@ class MainWindow(QMainWindow):
             pages.append(("جشنواره‌ها", CampaignsPage(ctx)))
         if ctx.can("users.manage"):
             pages.append(("کاربران", UsersPage(ctx)))
+        # build-521 — «همگام‌سازی» یک گزینهٔ مستقل است (درخواست مالک): با انتخاب آن،
+        # کار همگام‌سازی انجام می‌شود — دقیقاً مثل صفحهٔ «همگام‌سازی» اندروید.
+        if ctx.can("settings.manage") or ctx.can("users.manage"):
+            pages.append(("همگام‌سازی", SyncPage(ctx)))
         if ctx.can("settings.manage"):
             pages.append(("تنظیمات", SettingsPage(ctx)))
 
