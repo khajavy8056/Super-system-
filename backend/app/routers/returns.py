@@ -18,7 +18,7 @@ router = APIRouter(prefix="/returns", tags=["returns"])
 class ReturnIn(BaseModel):
     invoice_id: int
     invoice_item_id: int
-    qty: int = Field(ge=1)
+    qty: Decimal = Field(ge=Decimal("0.001"))
     reason: str | None = None
     refund_amount: Decimal | None = None
 

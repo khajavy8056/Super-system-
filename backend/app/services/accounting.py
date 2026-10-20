@@ -316,8 +316,34 @@ def post_sale_void(db: Session, invoice: Invoice, user: User | None = None, reas
 def post_sale_return(db: Session, ret: Return, item: InvoiceItem, invoice: Invoice, user: User | None = None):
     refund = _m(ret.refund_amount)
     cost = _m(item.unit_buy_price) * Decimal(str(ret.qty))
-    lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
-             Line(A_CASH, credit=refund, description="استرداد وجه")]
+    # I-02/I-03 — tender-aware: ON_ACCOUNT invoices reduce receivable, not cash.
+    # Otherwise the cash drawer is charged for a non-cash return and accounting is off.
+    method = (getattr(invoice, "payment_method", "") or "").upper()
+    on_account = bool(invoice.customer_id and method in ("ACCOUNT", "CREDIT", "ON_ACCOUNT", "RECEIVABLE"))
+    if not on_account:
+        # also inspect Payments (mixed tender with credit portion)
+        try:
+            for p in getattr(invoice, "payments", []) or []:
+                if str(getattr(p, "method", "")).upper() in ("ACCOUNT", "CREDIT", "ON_ACCOUNT"):
+                    on_account = True
+                    break
+        except Exception:
+            pass
+    if on_account:
+        lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
+                 Line(A_RECEIVABLE, credit=refund, description="برگشت اعتباری — کاهش بدهی مشتری",
+                      party_type="CUSTOMER", party_id=invoice.customer_id)]
+        # subledger mirror: reduce customer's outstanding debt
+        try:
+            from . import ledger as ledger_svc
+            ledger_svc.post_entry(db, customer_id=invoice.customer_id, entry_type="RETURN_REFUND",
+                                  amount=-refund, invoice_id=invoice.id, method="ACCOUNT",
+                                  note=f"برگشت فاکتور {invoice.invoice_number}", user_id=user.id if user else None)
+        except Exception:
+            pass
+    else:
+        lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
+                 Line(A_CASH, credit=refund, description="استرداد وجه")]
     if cost > ZERO:
         lines += [Line(A_INVENTORY, debit=cost, description="بازگشت کالا به انبار"),
                   Line(A_COGS, credit=cost, description="برگشت بهای تمام‌شده")]
@@ -493,11 +519,22 @@ def session_summary(db: Session, s: CashSession) -> dict:
     invoices = int(db.execute(select(func.count(Invoice.id)).where(
         Invoice.created_by == s.user_id, Invoice.created_at >= s.opened_at, Invoice.created_at <= end,
         Invoice.status != "VOID")).scalar_one())
-    refunds = _m(db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0)).where(
+    # I-03 — only cash refunds affect cash drawer; credit returns reduce receivable, not cash on hand
+    refunds_all = _m(db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0)).where(
         Return.created_by == s.user_id, Return.created_at >= s.opened_at, Return.created_at <= end)).scalar_one())
+    # cash-only refunds: joins Invoice to distinguish tender
+    refunds_cash = _m(db.execute(
+        select(func.coalesce(func.sum(Return.refund_amount), 0))
+        .join(Invoice, Return.invoice_id == Invoice.id)
+        .where(Return.created_by == s.user_id, Return.created_at >= s.opened_at, Return.created_at <= end,
+               Invoice.payment_method.notin_(["ACCOUNT", "CREDIT", "ON_ACCOUNT", "RECEIVABLE"]))
+    ).scalar_one() or 0)
+    # fallback if Invoice join missing — use smaller of the two
+    refunds = refunds_cash if refunds_cash <= refunds_all else refunds_all
     cash_sales = _m(by_method.get("CASH", 0))
     expected = _m(s.opening_float) + cash_sales - refunds
     return {"by_method": by_method, "invoice_count": invoices, "refunds": float(refunds),
+            "refunds_total": float(refunds_all),
             "cash_sales": float(cash_sales), "expected_cash": float(expected),
             "total_sales": float(sum((_m(v) for v in by_method.values()), ZERO))}
 

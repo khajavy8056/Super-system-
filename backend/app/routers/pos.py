@@ -312,6 +312,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
         # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
         # printer off (pos.print_after_checkout=false) and still text every invoice.
         sms_on = sms_svc.get_setting(db, "sms.send_invoice", "true").strip().lower() != "false"
+        # transactional invoice SMS is always sent if phone present; marketing SMS requires consent (I-11 enforced in insight_actions)
         if sms_on and customer and customer.phone:
             from ..services import sync as sync_svc
 

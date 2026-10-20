@@ -822,13 +822,22 @@ def process_return(
                 created_by=user.id if user else None,
             ))
 
+    # I-08/I-09: proportional refund preserves discount/tax share; explicit refund_amount overrides
+    if refund_amount is None:
+        # share of invoice-level discount proportional to this line's subtotal
+        line_share = (invoice_item.subtotal / invoice.subtotal) if invoice.subtotal else Decimal("0")
+        discount_share = (invoice.invoice_discount or Decimal("0")) * line_share / invoice_item.qty if invoice_item.qty else Decimal("0")
+        # unit refund nets the per-unit discount share
+        unit_net = invoice_item.unit_sell_price - (discount_share if discount_share else 0)
+        refund_calc = unit_net * qty
+        refund_amount = refund_calc
     ret = Return(
         invoice_id=invoice.id,
         invoice_item_id=invoice_item.id,
         batch_id=invoice_item.batch_id,
         qty=qty,
         reason=reason,
-        refund_amount=refund_amount or (invoice_item.unit_sell_price * qty),
+        refund_amount=refund_amount,
         status="COMPLETED",
         created_by=user.id if user else None,
     )

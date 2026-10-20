@@ -56,7 +56,8 @@ def list_insights(status: str = Query("NEW"), kind: str | None = None, limit: in
 
 
 @router.get("/summary")
-def summary(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def summary(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
+    # I-04: summary aggregates P&L — cashier must not see total profit
     out = svc.impact_summary(db)
     out["kinds"] = [{"kind": k, "label": v} for k, v in svc.KIND_LABELS.items()]
     out["ai"] = ai_narrator.configured(db)
@@ -65,12 +66,12 @@ def summary(db: Session = Depends(get_db), _: User = Depends(require_permission(
 
 @router.post("/run")
 def run_now(kinds: str | None = None, days: int = 90, db: Session = Depends(get_db),
-            _: User = Depends(require_permission("reports.view"))):
+            _: User = Depends(require_permission("reports.view_all"))):
     return svc.run(db, kinds=kinds.split(",") if kinds else None, days=days)
 
 
 @router.get("/report")
-def report(db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view"))):
+def report(db: Session = Depends(get_db), user: User = Depends(require_permission("reports.view_all"))):
     s = svc.impact_summary(db)
     from ..security import _user_permission_codes
     codes = _user_permission_codes(user)
@@ -79,27 +80,27 @@ def report(db: Session = Depends(get_db), user: User = Depends(require_permissio
 
 
 @router.get("/plan")
-def plan(horizon: int = Query(90, ge=14, le=365), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def plan(horizon: int = Query(90, ge=14, le=365), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     """v3.1 — profit forecast (baseline vs. plan), calibrated gain per open suggestion, accuracy history."""
     from ..services import forecast
     return forecast.plan(db, horizon=horizon)
 
 
 @router.post("/plan/learn")
-def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def plan_learn(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     from ..services import forecast
     return {"ok": True, "calibration": forecast.learn(db)}
 
 
 @router.get("/data-quality")
-def data_quality(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def data_quality(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     """v3.8 — the Data Quality report the intelligence engine gates on."""
     from ..services import data_quality as dq
     return dq.run_all(db)
 
 
 @router.get("/customers/patterns")
-def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def customer_patterns(days: int = Query(7, ge=0, le=30), db: Session = Depends(get_db), _: User = Depends(require_permission("customers.view"))):
     """v3.2 — per-customer purchase rhythm: who is due in the next `days` days, their usual weekday,
     hour and items (for the customer-prediction screen on Windows and Android)."""
     ctx = svc._load_ctx(db, 180)
@@ -134,7 +135,7 @@ def ai_test(db: Session = Depends(get_db), _: User = Depends(require_permission(
 
 
 @router.get("/ai/report")
-def ai_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def ai_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     """What would be sent — shown to the owner before anything leaves the machine."""
     return ai_narrator.build_report(db)
 
@@ -150,7 +151,7 @@ def ai_advise(db: Session = Depends(get_db), user: User = Depends(require_permis
 
 
 @router.get("/groups")
-def groups(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def groups(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     """Kind groups with open counts — the tab strip of the intelligence page."""
     rows = db.execute(select(Insight.kind, func.count(Insight.id)).where(Insight.status == "NEW").group_by(Insight.kind)).all()
     cnt = {k: n for k, n in rows}
@@ -161,7 +162,7 @@ def groups(db: Session = Depends(get_db), _: User = Depends(require_permission("
 
 
 @router.get("/actions/report")
-def actions_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view"))):
+def actions_report(db: Session = Depends(get_db), _: User = Depends(require_permission("reports.view_all"))):
     """v4.8.0 — «آیا اقدام‌ها واقعاً انجام شد؟» گزارش بازبینی زندهٔ هر اقدام اجراشده.
 
     برای هر پیشنهاد پذیرفته‌شده: چه اقدام‌هایی، چه زمانی، با چه نتیجه‌ای اجرا

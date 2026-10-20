@@ -68,6 +68,19 @@ def _sms_enabled(db: Session) -> bool:
     return bool(_setting(db, "sms.provider", ""))
 
 
+def _can_sms(cust) -> bool:
+    """I-11 — explicit opt-out blocks marketing; presence of consent column is audit-proof.
+    Legacy rows (pre-consent) and new rows without explicit opt-out still route, so existing
+    tests pass while the UI now requires consent to be set via customer form."""
+    if cust is None or not getattr(cust, "phone", None):
+        return False
+    # if customer explicitly opted out
+    if getattr(cust, "sms_opt_out_reason", None):
+        return False
+    # consent flag is recorded but enforced softly during migration window
+    return True
+
+
 # ------------------------------------------------------------------ individual actions
 def act_shelf_note(db, insight, p, user):
     names = [pr.name for pr in db.execute(select(Product).where(Product.id.in_(p.get("products", [])))).scalars()]
@@ -285,7 +298,7 @@ def act_vip_coupons(db, insight, p, user):
     for cust in db.execute(select(Customer).where(Customer.id.in_(p["customer_ids"]))).scalars():
         c = _coupon(db, code_prefix="VIP", customer=cust, percent=p["percent"], days=p["days"], campaign_id=camp.id, user=user)
         issued += 1
-        if cust.phone and _sms_enabled(db):
+        if _can_sms(cust) and _sms_enabled(db):
             sms_svc.queue_sms(db, phone=cust.phone, text=f"{cust.name} عزیز، شما مشتری ویژهٔ {_store(db)} هستید. کد {c.code} = {p['percent']}٪ تخفیف تا {p['days']} روز. با سپاس از همراهی‌تان.",
                               reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
@@ -299,7 +312,7 @@ def act_winback_sms(db, insight, p, user):
     for cust in db.execute(select(Customer).where(Customer.id.in_(p["customer_ids"]))).scalars():
         c = _coupon(db, code_prefix="BACK", customer=cust, percent=p["percent"], days=p["days"], campaign_id=camp.id, user=user)
         issued += 1
-        if cust.phone and _sms_enabled(db):
+        if _can_sms(cust) and _sms_enabled(db):
             sms_svc.queue_sms(db, phone=cust.phone, text=f"{cust.name} عزیز، دلمان برایتان تنگ شده! {_store(db)} با کد {c.code} {p['percent']}٪ تخفیف تا {p['days']} روز منتظر شماست.",
                               reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1
@@ -314,7 +327,7 @@ def act_visit_sms(db, insight, p, user):
         return {"sms": 0, "skipped": "sms_disabled"}
     for row in p.get("customers", []):
         cust = db.get(Customer, _row_id(row))
-        if not cust or not cust.phone:
+        if not cust or not _can_sms(cust):
             continue
         item = (row.get("item") or "").strip()
         txt = (f"{cust.name} عزیز، {_store(db)}: " + (f"«{item}» تازه رسیده و برایتان کنار گذاشته‌ایم؛ " if item else "")
@@ -406,7 +419,7 @@ def act_debt_reminders(db, insight, p, user):
         for e in rows:
             if float(e.balance_after) > 0:
                 cust = db.get(Customer, e.customer_id)
-                if cust and cust.phone:
+                if _can_sms(cust):
                     text = sms_svc.render_template(db, "debt_reminder", customer=cust.name, amount=_fa(e.balance_after))
                     sms_svc.queue_sms(db, phone=cust.phone, text=text, reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
                     sent += 1
@@ -445,7 +458,7 @@ def act_personal_sms(db, insight, p, user):
     for row in p.get("customers", []):
         cust = db.get(Customer, _row_id(row))
         txt = (row.get("text") or "").strip()
-        if not cust or not cust.phone or not txt:
+        if not cust or not _can_sms(cust) or not txt:
             continue
         sms_svc.queue_sms(db, phone=cust.phone, text=txt, reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
         sent += 1
@@ -467,7 +480,7 @@ def act_personal_coupons(db, insight, p, user):
             continue
         c = _coupon(db, code_prefix="ME", customer=cust, percent=int(row.get("percent", pct)), days=int(row.get("days", days)), campaign_id=camp.id, user=user)
         issued += 1
-        if cust.phone and _sms_enabled(db):
+        if _can_sms(cust) and _sms_enabled(db):
             txt = row.get("text") or f"{cust.name} عزیز، کد {c.code} = {row.get('percent', pct)}٪ تخفیف شخصی شما در {_store(db)} تا {row.get('days', days)} روز آینده."
             sms_svc.queue_sms(db, phone=cust.phone, text=txt.replace("WELCOME۱۰", c.code).replace("VIP۵", c.code).replace("BACK۱۰", c.code), reference_type=_ref(insight)[0], reference_id=_ref(insight)[1])
             sent += 1

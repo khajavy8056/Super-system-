@@ -40,6 +40,7 @@ from .routers import (
     reports,
     resolvers,
     returns,
+    purchase,
     settings as settings_router,
     setup,
     sms,
@@ -158,7 +159,7 @@ for r in (
     hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
-    hr.router, dev.router,
+    hr.router, dev.router, purchase.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -248,6 +249,42 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return _error_response(exc, request, "INTERNAL_ERROR", 500)
 
+
+# I-18 — restrict OpenAPI/docs in production (no public schema leak)
+_DOCS_FREE = os.environ.get("SUPERMARKET_EXPOSE_DOCS", "0") not in ("0", "false", "off", "")
+
+@app.middleware("http")
+async def docs_gate(request: Request, call_next):
+    if not _DOCS_FREE and request.url.path in ("/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"):
+        # require valid auth header, otherwise 404 (hide existence)
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer "):
+            return JSONResponse(status_code=404, content={"detail": {"code": "NOT_FOUND", "message": "Not Found"}})
+    return await call_next(request)
+
+
+# I-21 — brute-force rate limiting (in-memory token bucket per IP+path)
+import time as _time
+_RATE_BUCKET: dict[str, list[float]] = {}
+_RATE_LIMITS = {
+    "/api/auth/login": (10, 60),   # 10 per 60s
+    "/api/auth/refresh": (20, 60),
+}
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
+    rule = _RATE_LIMITS.get(request.url.path)
+    if rule:
+        limit, window = rule
+        now = _time.monotonic()
+        bucket = _RATE_BUCKET.setdefault(key, [])
+        # drop outside window
+        while bucket and bucket[0] <= now - window:
+            bucket.pop(0)
+        if len(bucket) >= limit:
+            return JSONResponse(status_code=429, content={"detail": {"code": "RATE_LIMITED", "message": "درخواست‌ها بیش از حد مجاز است؛ لحظاتی بعد دوباره تلاش کنید."}})
+        bucket.append(now)
+    return await call_next(request)
 
 # --- v1.5 licence gate ---------------------------------------------------------
 # The application never works without an activated licence. Everything except

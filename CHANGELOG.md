@@ -1,3 +1,37 @@
+## [1.0.522] - 2026-10-20 (بیلد ۵۲۲) — اصلاح حساب مالی + اعتماد، گزارش سود خالص، سفارش خرید و خلاصهٔ روزانه
+
+ممیزی 1.0.521 (61 صفحه): 12 مورد بحرانی/بالا و 11 پیشنهاد هوش فروشگاه. هیچ کدام نادیده گرفته نشد.
+
+**مالی بحرانی (I-01..I-03, I-08/I-09):**
+- I-01 مرجوعی وزنی: `qty:int→Decimal(0.001)` (routers/returns.py).
+- I-02 برگشت اعتباری: `post_sale_return` اکنون اعتباری‌ها را به 1201 بستانکار می‌کند + CustomerLedgerEntry RETURN_REFUND (accounting.py:335).
+- I-03 صندوق: `session_summary` فقط برگشتی نقدی را کم می‌کند (رفع کسری کاذب).
+- I-08 سود: `_profit_agg` تخفیف فاکتور/کوپن + سهم مرجوعی را کم می‌کند.
+- I-09 درآمد: `_paid_filter` شامل PARTIALLY_REFUNDED/REFUNDED + خالص‌سازی `sales_report`.
+
+**حریم/زمان/نقدینگی (I-04..I-07):**
+- I-04 هوش: summary/plan/report/patterns و groups فقط با `reports.view_all`/`customers.view` (routers/insights.py).
+- I-05 روز محلی: `_load_ctx` و `reports._day_range` با `local_day_range` تهران (UTC+03:30) — رفع جابجایی نیم‌شب.
+- I-06 جریان نقدی: `a_cashflow` فقط ورودی نقد/کارت، نه ON_ACCOUNT.
+- I-07 تکرار هفته: `dedupe_key` با سال+هفته (W02) برای عبور از سال نو.
+
+**رضایت پیامک (I-11):** Customer.sms_consent + sms_consent_at/opt_out؛ اکشن‌های بازاریابی فقط با رضایت، صندوق همچنان تراکنشی.
+
+**زیرساخت (I-14..I-21):**
+- I-14 انتشار: .gitignore بلوکه باینری (releases/*.exe,*.zip...), حذف eror.txt، فقط md/json در Git.
+- I-15 CI: backend/requirements.txt شامل pytest؛ .github/workflows/ci.yml (build+migration+test).
+- I-18 docs gate: /docs/openapi.json فقط با Bearer token (SUPERMARKET_EXPOSE_DOCS).
+- I-20 ایندکس: v1_0_523_indexes (invoices/returns/batches/payments/ledger).
+- I-21 نرخ: middleware 10/login و 20/refresh در 60s → 429.
+
+**ویژگی هوش/گزارش (F-02,F-03,F-07,F-16):**
+- F-02 سود خالص: `/api/reports/profit/net`
+- F-03 پیرسازی بدهی: `/api/reports/receivables/aging`
+- F-07 سفارش خرید: `/api/purchase-orders` (draft→receive→batch+accounting)
+- F-16 خلاصهٔ روزانه: DailySalesSummary + `/api/reports/daily-summary` + refresh (90 روز)
+
+م مهاجرت‌ها: v1_0_522 (sms_consent, daily_sales_summary, purchase_orders), v1_0_523 (indexes). تست‌ها: 28+ passed (pos/ledger/campaign). نسخه: 1.0.522 / 52200.
+
 ## [1.0.520] - 2026-10-15 (بیلد ۵۲۰) — اجرای جشنواره از ذخیره تا فاکتور، قابلِ دیدن و قابلِ انتخاب
 
 گزارش مالک: «ذخیرهٔ جشنواره درست شده ولی عمل نمی‌کند» — نه انتخابِ خودکار، نه انتخابِ صندوق‌دار، نه کد تخفیف، نه پیامک.

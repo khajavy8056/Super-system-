@@ -72,5 +72,19 @@ installer/windows/model/
 installer/windows/runtime/
 installer/windows/model_payload.iss
 
+# I-14 — release binaries do not belong in Git (Release assets only)
+releases/*.exe
+releases/*.msi
+releases/*.zip
+releases/*.tar.gz
+releases/*.dmg
+releases/*.AppImage
+releases/*.iso
+# existing release manifests/docs stay tracked
+!releases/*.md
+!releases/*.json
+
 # Android: per-build support channel provisioning (never committed)
 mobile-android/app/src/main/assets/relay.json
+# eror.txt typo log must never be committed again
+eror.txt
