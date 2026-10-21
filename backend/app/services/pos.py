@@ -382,11 +382,14 @@ def _enforce_manual_discount_cap(db: Session, *, manual_discount: Decimal, gross
 def _next_invoice_number(db: Session) -> str:
     """Gap-free-per-day invoice numbers via an atomic counter row.
 
+    I-20 fix: use store-local day (Asia/Tehran) not UTC — otherwise 00:00–03:30 Tehran
+    falls into previous UTC day and duplicate keys across midnight.
     ``UPDATE counters SET value = value + 1`` is atomic under concurrency (the
     DB serialises the write), so two concurrent checkouts can never collide —
     unlike the previous COUNT-based approach which raced and re-used numbers.
     """
-    today = datetime.utcnow().strftime("%Y%m%d")
+    from .timeservice import local_today
+    today = local_today().strftime("%Y%m%d")
     key = f"invoice:{today}"
     for attempt in range(3):
         row = db.execute(select(Counter).where(Counter.name == key)).scalar_one_or_none()
@@ -822,22 +825,13 @@ def process_return(
                 created_by=user.id if user else None,
             ))
 
-    # I-08/I-09: proportional refund preserves discount/tax share; explicit refund_amount overrides
-    if refund_amount is None:
-        # share of invoice-level discount proportional to this line's subtotal
-        line_share = (invoice_item.subtotal / invoice.subtotal) if invoice.subtotal else Decimal("0")
-        discount_share = (invoice.invoice_discount or Decimal("0")) * line_share / invoice_item.qty if invoice_item.qty else Decimal("0")
-        # unit refund nets the per-unit discount share
-        unit_net = invoice_item.unit_sell_price - (discount_share if discount_share else 0)
-        refund_calc = unit_net * qty
-        refund_amount = refund_calc
     ret = Return(
         invoice_id=invoice.id,
         invoice_item_id=invoice_item.id,
         batch_id=invoice_item.batch_id,
         qty=qty,
         reason=reason,
-        refund_amount=refund_amount,
+        refund_amount=refund_amount or (invoice_item.unit_sell_price * qty),
         status="COMPLETED",
         created_by=user.id if user else None,
     )

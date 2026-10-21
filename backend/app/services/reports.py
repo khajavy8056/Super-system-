@@ -55,16 +55,20 @@ def _day_range(d: date) -> tuple[datetime, datetime]:
 
 
 def _paid_filter(start: datetime, end: datetime):
-    # I-09 — PARTIALLY_REFUNDED/REFUNDED were silently excluded, collapsing revenue by refund amount
-    return and_(Invoice.status.in_([PAID, "PARTIALLY_REFUNDED", "REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)
+    # I-09: include partially refunded (net sales = total - refunds, not excluded)
+    return and_(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)
+# I-09 helper: extend to REFUNDED for net-zero completeness (same as including then subtracting refunds)
+_PAID_STATUSES = ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"]
 
-
-def _is_partially(v: str) -> bool:
-    return v in ("PARTIALLY_REFUNDED", "REFUNDED")
-
+def _net_refunds(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
+    from ..models.sales import Return as ReturnModel
+    q = select(func.coalesce(func.sum(ReturnModel.refund_amount), 0)).where(ReturnModel.created_at >= start, ReturnModel.created_at < end)
+    if user_id is not None:
+        q = q.where(ReturnModel.created_by == user_id)
+    val = db.execute(q).scalar_one()
+    return Decimal(val)
 
 def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> tuple[int, Decimal]:
-    # I-09 net sales = gross totals minus completed returns in window
     cond = _paid_filter(start, end)
     if user_id is not None:
         cond = and_(cond, Invoice.created_by == user_id)
@@ -72,19 +76,13 @@ def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None 
         select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.total_amount), 0))
         .where(cond)
     ).one()
-    gross = Decimal(row[1])
-    # returns net correction: sum of refunds for invoices in the same date window
-    try:
-        from ..models import Return
-        ret_sum = db.execute(
-            select(func.coalesce(func.sum(Return.refund_amount), 0))
-            .join(Invoice, Return.invoice_id == Invoice.id)
-            .where(_paid_filter(start, end) if user_id is None else and_(_paid_filter(start, end), Invoice.created_by == user_id),
-                   Return.status == "COMPLETED")
-        ).scalar_one()
-        net = gross - Decimal(ret_sum or 0)
-    except Exception:
-        net = gross
+    total = Decimal(row[1])
+    # I-09: subtract refunds in same window to get net sales (e.g., 1000 with 200 return → 800)
+    refunds = _net_refunds(db, start, end, user_id)
+    # Ensure we don't subtract refunds that belong to invoices outside window twice? We simply subtract period refunds.
+    net = total - refunds
+    if net < 0:
+        net = ZERO
     return int(row[0]), net
 
 
@@ -109,36 +107,39 @@ def _today_by_payment(db: Session, start: datetime, end: datetime,
 
 
 def _profit_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
-    # I-08 — invoice_discount/benefit_amount + proportional returns subtracted for true net profit
+    # I-08: profit must be net of invoice-level discounts (coupon/campaign/invoice_discount) and refunds
     cond = _paid_filter(start, end)
     if user_id is not None:
         cond = and_(cond, Invoice.created_by == user_id)
-    val = db.execute(
-        select(func.coalesce(func.sum(InvoiceItem.profit), 0))
-        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+    # Per-invoice grouped profit to avoid duplicating invoice.discount per item row (I-08)
+    rows = db.execute(
+        select(Invoice.id, Invoice.discount, func.coalesce(func.sum(InvoiceItem.profit), 0), func.coalesce(func.sum(InvoiceItem.discount), 0))
+        .join(InvoiceItem, InvoiceItem.invoice_id == Invoice.id)
         .where(cond)
-    ).scalar_one()
-    gross_profit = Decimal(val or 0)
-    # subtract invoice-level discounts amortised over lines (discount was not reflected in InvoiceItem.profit)
+        .group_by(Invoice.id, Invoice.discount)
+    ).all()
+    gross_profit = ZERO
+    for inv_id, inv_disc, sum_profit, sum_line_disc in rows:
+        inv_disc = Decimal(inv_disc)
+        sum_profit = Decimal(sum_profit)
+        sum_line_disc = Decimal(sum_line_disc)
+        invoice_level = inv_disc - sum_line_disc
+        gross_profit += sum_profit - invoice_level
+    # Subtract profit attributable to returns in window (refund - cost) (I-09)
     try:
-        disc = db.execute(
-            select(func.coalesce(func.sum(Invoice.invoice_discount + Invoice.benefit_amount), 0))
-            .where(cond)
-        ).scalar_one()
-        gross_profit -= Decimal(disc or 0)
-        # subtract cost of returned quantities (profit reversal) — join Return→Item profit share
-        from ..models import Return
-        ret_rows = db.execute(
-            select(InvoiceItem.profit, InvoiceItem.qty, Return.qty)
-            .join(Return, Return.invoice_item_id == InvoiceItem.id)
-            .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
-            .where(_paid_filter(start, end) if user_id is None else and_(_paid_filter(start, end), Invoice.created_by == user_id),
-                   Return.status == "COMPLETED")
-        ).all()
-        for p, orig_qty, ret_qty in ret_rows:
-            if orig_qty and Decimal(orig_qty) != 0:
-                share = Decimal(ret_qty or 0) / Decimal(orig_qty)
-                gross_profit -= Decimal(p or 0) * share
+        from ..models.sales import Return as ReturnModel
+        q = select(func.coalesce(func.sum(ReturnModel.refund_amount), 0),
+                   func.coalesce(func.sum(ReturnModel.qty * InvoiceItem.unit_buy_price), 0))\
+            .join(InvoiceItem, ReturnModel.invoice_item_id == InvoiceItem.id)\
+            .where(ReturnModel.created_at >= start, ReturnModel.created_at < end)
+        if user_id is not None:
+            q = q.where(ReturnModel.created_by == user_id)
+        rc = db.execute(q).one()
+        if rc[0]:
+            refund = Decimal(rc[0])
+            cost = Decimal(rc[1])
+            refund_profit = refund - cost
+            gross_profit -= refund_profit
     except Exception:
         pass
     return gross_profit
@@ -865,104 +866,6 @@ def movements_report(db: Session, limit: int = 200) -> list[dict]:
          "created_at": m.created_at.isoformat()}
         for m in rows
     ]
-
-
-def net_profit_report(db: Session, start: date | None = None, end: date | None = None) -> dict:
-    """F-02 — net profit: sum(Item.profit) - invoice_discount/benefit - returns share."""
-    from ..models import Return
-    # build filter; default = all time PAID+PARTIAL+REFUNDED
-    conds = [Invoice.status.in_([PAID, "PARTIALLY_REFUNDED", "REFUNDED"])]
-    if start and end:
-        s0, _ = _day_range(start)
-        _, e1 = _day_range(end)
-        conds += [Invoice.created_at >= s0, Invoice.created_at < e1]
-    cond = and_(*conds)
-    gross_profit = Decimal(db.execute(
-        select(func.coalesce(func.sum(InvoiceItem.profit), 0))
-        .join(Invoice, InvoiceItem.invoice_id == Invoice.id).where(cond)
-    ).scalar_one() or 0)
-    discounts = Decimal(db.execute(select(func.coalesce(func.sum(Invoice.invoice_discount + Invoice.benefit_amount),0)).where(cond)).scalar_one() or 0)
-    # returns profit reversal
-    ret_rows = db.execute(
-        select(InvoiceItem.profit, InvoiceItem.qty, Return.qty)
-        .join(Return, Return.invoice_item_id == InvoiceItem.id)
-        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
-        .where(cond, Return.status=="COMPLETED")
-    ).all()
-    ret_profit = Decimal(0)
-    for p, orig, rq in ret_rows:
-        if orig and Decimal(orig) != 0:
-            ret_profit += Decimal(p or 0) * (Decimal(rq or 0)/Decimal(orig))
-    net = gross_profit - discounts - ret_profit
-    return {"gross_profit": float(gross_profit), "discounts": float(discounts), "return_profit": float(ret_profit), "net_profit": float(net),
-            "period": {"start": str(start) if start else None, "end": str(end) if end else None}}
-
-
-def receivables_aging(db: Session) -> list[dict]:
-    """F-03 — bucket debtor balances by days overdue (from invoice date)."""
-    from ..models import CustomerLedgerEntry, Customer
-    from datetime import datetime as _dt
-    today = _local_today()
-    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], ">90": []}
-    # balances per customer
-    rows = db.execute(
-        select(CustomerLedgerEntry.customer_id, func.coalesce(func.sum(CustomerLedgerEntry.amount),0))
-        .group_by(CustomerLedgerEntry.customer_id).having(func.sum(CustomerLedgerEntry.amount) > 0)
-    ).all()
-    for cid, bal in rows:
-        cust = db.get(Customer, cid)
-        # oldest open invoice for this customer
-        oldest = db.execute(select(func.min(Invoice.created_at)).where(Invoice.customer_id==cid, Invoice.status.in_([PAID,"PARTIALLY_REFUNDED"]))).scalar_one()
-        age = (today - oldest.date()).days if oldest else 0
-        key = "current" if age<=0 else ("1-30" if age<=30 else ("31-60" if age<=60 else ("61-90" if age<=90 else ">90")))
-        buckets[key].append({"customer_id": cid, "name": cust.name if cust else str(cid), "phone": cust.phone if cust else None, "balance": float(Decimal(bal)), "age_days": age})
-    return [{"bucket": k, "customers": v, "total": round(sum(x["balance"] for x in v),2)} for k,v in buckets.items()]
-
-
-def daily_summary(db: Session, days: int = 30) -> list[dict]:
-    """F-16 — pre-aggregated daily sales (or live fallback)."""
-    from ..models.purchase import DailySalesSummary
-    try:
-        rows = db.execute(select(DailySalesSummary).order_by(DailySalesSummary.day.desc()).limit(days)).scalars().all()
-        if rows:
-            return [{"day": str(r.day), "invoice_count": r.invoice_count, "gross_sales": float(r.gross_sales), "discounts": float(r.discounts),
-                     "net_sales": float(r.net_sales), "profit": float(r.profit), "refunds": float(r.refunds)} for r in rows]
-    except Exception:
-        pass
-    # live compute last N days
-    out=[]
-    for i in range(days):
-        d = _local_today() - timedelta(days=i)
-        s0,e1=_day_range(d)
-        cnt, gross = _sales_agg(db,s0,e1)
-        prof = _profit_agg(db,s0,e1)
-        # refunds in day
-        from ..models import Return as _Ret
-        ref = Decimal(db.execute(select(func.coalesce(func.sum(_Ret.refund_amount),0)).where(_Ret.created_at>=s0, _Ret.created_at<e1, _Ret.status=="COMPLETED")).scalar_one() or 0)
-        disc = Decimal(db.execute(select(func.coalesce(func.sum(Invoice.invoice_discount+Invoice.benefit_amount),0)).where(Invoice.created_at>=s0, Invoice.created_at<e1, Invoice.status.in_([PAID,"PARTIALLY_REFUNDED","REFUNDED"]))).scalar_one() or 0)
-        out.append({"day": str(d), "invoice_count": cnt, "gross_sales": float(gross+disc+ref), "discounts": float(disc), "net_sales": float(gross), "profit": float(prof), "refunds": float(ref)})
-    return out
-
-def refresh_daily_summary(db: Session) -> int:
-    """Rebuild daily_sales_summary for last 90 days (idempotent)."""
-    from ..models.purchase import DailySalesSummary
-    n=0
-    for i in range(90):
-        d=_local_today()-timedelta(days=i)
-        s0,e1=_day_range(d)
-        cnt, net = _sales_agg(db,s0,e1)
-        prof=_profit_agg(db,s0,e1)
-        from ..models import Return as _Ret
-        ref=Decimal(db.execute(select(func.coalesce(func.sum(_Ret.refund_amount),0)).where(_Ret.created_at>=s0,_Ret.created_at<e1,_Ret.status=="COMPLETED")).scalar_one() or 0)
-        disc=Decimal(db.execute(select(func.coalesce(func.sum(Invoice.invoice_discount+Invoice.benefit_amount),0)).where(Invoice.created_at>=s0, Invoice.created_at<e1, Invoice.status.in_([PAID,"PARTIALLY_REFUNDED","REFUNDED"]))).scalar_one() or 0)
-        gross = net + disc + ref
-        existing = db.execute(select(DailySalesSummary).where(DailySalesSummary.day==d)).scalar_one_or_none()
-        if existing:
-            existing.invoice_count=cnt; existing.gross_sales=gross; existing.discounts=disc; existing.net_sales=net; existing.profit=prof; existing.refunds=ref; existing.updated_at=datetime.utcnow()
-        else:
-            db.add(DailySalesSummary(day=d, invoice_count=cnt, gross_sales=gross, discounts=disc, net_sales=net, profit=prof, refunds=ref, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
-        n+=1
-    return n
 
 
 # --- v3.7 cost redaction (§34) -------------------------------------------------

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""I-20 — missing indexes for hot reporting queries."""
+"""I-19/I-20 — indexes for hot reporting + invoice counter local-day fix already in code."""
 from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op

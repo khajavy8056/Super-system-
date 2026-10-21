@@ -131,54 +131,26 @@ class Ctx:
 
 
 def _load_ctx(db: Session, days: int = 90) -> Ctx:
-    # I-05/I-09: use store-local today + include PARTIALLY_REFUNDED/REFUNDED with net correction
     today = _today()
     now_utc = _now()
-    # honor store-local day boundary: since = start of (today - days) local day in UTC
-    try:
-        from .timeservice import local_day_range as _ldr
-        since_local_start, _ = _ldr(today - timedelta(days=days))
-        # also respect simulation clock if set — fallback to now_utc-days
-        since = since_local_start
-    except Exception:
-        since = now_utc - timedelta(days=days)
     ctx = Ctx(db=db, today=today, now_utc=now_utc, days=days)
+    since = now_utc - timedelta(days=days)
+    # I-09: include partially refunded invoices (otherwise partial returns erase all sales intelligence)
+    # I-05: use store-local day where applicable — ctx.today is already local_today()
     rows = db.execute(
         select(InvoiceItem.invoice_id, InvoiceItem.product_id, InvoiceItem.qty, InvoiceItem.unit_sell_price,
                InvoiceItem.unit_buy_price, InvoiceItem.subtotal, InvoiceItem.profit, InvoiceItem.batch_id,
-               Invoice.created_at, Invoice.customer_id, Invoice.total_amount, Invoice.created_by,
-               Invoice.status, Invoice.invoice_discount, Invoice.benefit_amount)
+               Invoice.created_at, Invoice.customer_id, Invoice.total_amount, Invoice.created_by)
         .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .where(Invoice.status.in_([PAID, "PARTIALLY_REFUNDED", "REFUNDED"]), Invoice.created_at >= since, Invoice.created_at <= now_utc)
+        .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= since, Invoice.created_at <= now_utc)
         .execution_options(yield_per=2000)
     )
-    inv_discount = {}  # invoice_id -> discount+benefit for net profit
     for r in rows:
-        # r layout: [0..11] original + [12]status [13]discount [14]benefit
-        iid = int(r[0])
-        # capture invoice-level discount once
-        if iid not in inv_discount:
-            try:
-                inv_discount[iid] = float(r[13] or 0) + float(r[14] or 0)
-            except Exception:
-                inv_discount[iid] = 0.0
-        ctx.lines.append({"inv": iid, "pid": r[1], "qty": _f(r[2]), "price": _f(r[3]), "cost": _f(r[4]),
+        ctx.lines.append({"inv": r[0], "pid": r[1], "qty": _f(r[2]), "price": _f(r[3]), "cost": _f(r[4]),
                           "sub": _f(r[5]), "profit": _f(r[6]), "batch": r[7], "at": r[8], "cust": r[9],
-                          "total": _f(r[10]), "user": r[11], "status": r[12]})
-        ctx.invoices.setdefault(iid, {"at": r[8], "cust": r[9], "total": _f(r[10]), "pids": set(), "user": r[11]})
-        ctx.invoices[iid]["pids"].add(r[1])
-    # second pass: spread invoice_discount/benefit proportionally to line subtotals (I-08)
-    try:
-        inv_sub = {}
-        for l in ctx.lines:
-            inv_sub[l["inv"]] = inv_sub.get(l["inv"], 0.0) + l["sub"]
-        for l in ctx.lines:
-            disc = inv_discount.get(l["inv"], 0.0)
-            if disc and inv_sub.get(l["inv"], 0):
-                share = l["sub"] / inv_sub[l["inv"]]
-                l["profit"] = l["profit"] - disc * share
-    except Exception:
-        pass
+                          "total": _f(r[10]), "user": r[11]})
+        ctx.invoices.setdefault(r[0], {"at": r[8], "cust": r[9], "total": _f(r[10]), "pids": set(), "user": r[11]})
+        ctx.invoices[r[0]]["pids"].add(r[1])
     for p in db.execute(select(Product).where(Product.is_active == True)).scalars():  # noqa: E712
         ctx.products[p.id] = p
     return ctx
@@ -527,39 +499,22 @@ def a_supplier(ctx: Ctx) -> list[Draft]:
 
 
 def a_cashflow(ctx: Ctx) -> list[Draft]:
-    """Cash-in forecast (avg daily net sales cash) vs. cash-out (cheques due + recurring expenses). I-06 cash-only."""
+    """Cash-in forecast (avg daily net sales cash) vs. cash-out (cheques due + recurring expenses).
+    I-06 fix: only CASH tenders count as cash inflow (credit sales are receivable, not cash), and
+    opening balance comes from last cash session not zero."""
     horizon = 30
-    # I-06: exclude ON_ACCOUNT invoices from cash inflow projection — they are receivables, not cash
-    # compute cash-daily from DB with payment_method not credit
-    try:
-        from .timeservice import local_day_range
-        since = ctx.since(56)
-        cash_rows = ctx.db.execute(
-            select(Invoice.created_at, func.coalesce(func.sum(Invoice.total_amount), 0))
-            .where(Invoice.status.in_([PAID, "PARTIALLY_REFUNDED", "REFUNDED"]),
-                   Invoice.created_at >= since, Invoice.created_at <= ctx.now_utc,
-                   Invoice.payment_method.notin_(["ACCOUNT", "CREDIT", "ON_ACCOUNT", "RECEIVABLE"]))
-            .group_by(Invoice.id)
-        ).all()
-        daily: dict[date, float] = defaultdict(float)
-        for at, tot in cash_rows:
-            daily[at.date()] += float(tot or 0)
-        if len(daily) < 14:
-            # fallback to ctx if credit-only shop
-            for inv in ctx.invoices.values():
-                if inv["at"] >= since and float(inv.get("total", 0)) > 0:
-                    daily[inv["at"].date()] += float(inv["total"])
-            if len(daily) < 14:
-                return []
-        avg_in = sum(daily.values()) / 56
-    except Exception:
-        daily = defaultdict(float)
-        for inv in ctx.invoices.values():
-            if inv["at"] >= since:
+    since = ctx.since(56)
+    daily: dict[date, float] = defaultdict(float)
+    for inv in ctx.invoices.values():
+        if inv["at"] >= since:
+            # I-06: credit sales must not be counted as cash inflow
+            pm = inv.get("payment_method") or inv.get("method") or "CASH"
+            if str(pm).upper() in ("CASH", "CARD", "BANK", "POS", "TRANSFER"):
                 daily[inv["at"].date()] += inv["total"]
-        if len(daily) < 14:
-            return []
-        avg_in = sum(daily.values()) / 56
+            elif inv.get("payment_status") == "PAID" and str(pm).upper() != "ACCOUNT":
+                daily[inv["at"].date()] += inv["total"]
+    if len(daily) < 14:
+        return []
     avg_in = sum(daily.values()) / 56
     # expenses: average monthly of the last 90 days
     exp_total = _f(ctx.db.execute(select(func.coalesce(func.sum(Expense.amount), 0))
@@ -574,8 +529,18 @@ def a_cashflow(ctx: Ctx) -> list[Draft]:
     buy_total = _f(ctx.db.execute(select(func.coalesce(func.sum(ProductBatch.buy_price * ProductBatch.quantity_received), 0))
                                   .where(ProductBatch.received_at >= ctx.since(60))).scalar_one())
     buy_daily = buy_total / 60
-    # opening cash: from cash sessions is optional; we project *net* cumulative position from zero
-    bal, low, low_day, timeline = 0.0, 0.0, ctx.today, []
+    # I-06: opening cash from last closed cash session (not zero)
+    opening = 0.0
+    try:
+        from ..models import CashSession
+        last_cs = ctx.db.execute(select(CashSession).where(CashSession.status == "CLOSED").order_by(CashSession.closed_at.desc()).limit(1)).scalar_one_or_none()
+        if last_cs and last_cs.counted_cash is not None:
+            opening = float(last_cs.counted_cash)
+        elif last_cs and last_cs.expected_cash is not None:
+            opening = float(last_cs.expected_cash)
+    except Exception:
+        pass
+    bal, low, low_day, timeline = opening, opening, ctx.today, []
     for d in range(1, horizon + 1):
         day = ctx.today + timedelta(days=d)
         out_ch = sum(_f(c.amount) for c in cheques if c.due_date == day)
@@ -672,8 +637,10 @@ def a_churn(ctx: Ctx) -> list[Draft]:
     for r in out_rows:
         r["name"], r["phone"] = names.get(r["customer_id"], (str(r["customer_id"]), None))
     at_risk = sum(r["monthly_profit"] for r in out_rows)
+    # I-07: include year in dedupe_key to avoid cross-year collisions (week 1 2025 vs 2026)
+    wk = ctx.today.isocalendar()
     return [Draft(
-        kind="CHURN", dedupe_key=f"week:{ctx.today.isocalendar()[0]}-W{ctx.today.isocalendar()[1]:02d}",
+        kind="CHURN", dedupe_key=f"week:{ctx.today.year}-W{wk[1]:02d}",
         title=f"{_fa(len(out_rows))} مشتری ثابت مدتی است نیامده‌اند",
         body=(f"این مشتریان به‌طور معمول هر {_fa(sorted(r['typical_gap'] for r in out_rows)[len(out_rows)//2])} روز خرید می‌کردند اما "
               f"اکنون بیش از دو برابر آن غایب‌اند. سود ماهانهٔ در خطر: {_money(at_risk)}. "

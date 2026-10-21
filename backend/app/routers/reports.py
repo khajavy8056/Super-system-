@@ -173,29 +173,3 @@ def movements(limit: int = 200, db: Session = Depends(get_db),
 def stocktakes(db: Session = Depends(get_db),
                _: User = Depends(_require_stock_report_access)):
     return rep.stocktake_report(db)
-
-
-# v1.0.522 — F-02 net profit (gross minus discounts/returns), F-03 aging, F-16 daily summary
-@router.get("/profit/net")
-def profit_net(start: date | None = None, end: date | None = None,
-               db: Session = Depends(get_db),
-               _: User = Depends(require_permission("pricing.view_cost"))):
-    return rep.net_profit_report(db, start, end)
-
-@router.get("/receivables/aging")
-def receivables_aging(db: Session = Depends(get_db),
-                      _: User = Depends(require_permission("customers.ledger"))):
-    return rep.receivables_aging(db)
-
-@router.get("/daily-summary")
-def daily_summary(days: int = Query(30, ge=1, le=365),
-                  db: Session = Depends(get_db),
-                  _: User = Depends(require_permission("reports.view_all"))):
-    return rep.daily_summary(db, days=days)
-
-@router.post("/daily-summary/refresh")
-def daily_summary_refresh(db: Session = Depends(get_db),
-                          _: User = Depends(require_permission("reports.view_all"))):
-    n = rep.refresh_daily_summary(db)
-    db.commit()
-    return {"refreshed": n}

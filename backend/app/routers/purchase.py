@@ -1,4 +1,4 @@
-"""F-07 — purchase orders (minimal)."""
+"""F-07 — purchase orders (I-22)."""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from decimal import Decimal
@@ -46,12 +46,9 @@ def receive_order(order_id: int, db: Session = Depends(get_db), _: User = Depend
     po = db.get(PurchaseOrder, order_id)
     if not po: raise HTTPException(404, "پیدا نشد")
     if po.status != "DRAFT": raise HTTPException(409, "قبلاً دریافت شده")
-    # create batches for each line
     from ..models.inventory import ProductBatch
     from datetime import datetime
-    from ..services.inventory import _next_batch_number  # type: ignore
     for ln in po.lines:
-        # generate minimal batch
         b = ProductBatch(product_id=ln.product_id, batch_number=f"PO-{po.id}-{ln.product_id}", quantity_received=ln.qty, current_qty=ln.qty, buy_price=ln.unit_cost, sell_price=ln.unit_cost*Decimal("1.2"), status="ACTIVE", received_at=datetime.utcnow())
         db.add(b); db.flush()
         acc_svc.post_purchase(db, b, supplier_id=po.supplier_id)

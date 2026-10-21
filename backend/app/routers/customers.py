@@ -61,7 +61,6 @@ class CustomerIn(BaseModel):
     notes: str | None = None
     credit_enabled: bool = True
     credit_limit: Decimal = Decimal("0")
-    sms_consent: bool = False
 
 
 class CustomerPatch(BaseModel):
@@ -74,8 +73,6 @@ class CustomerPatch(BaseModel):
     credit_enabled: bool | None = None
     credit_limit: Decimal | None = None
     is_active: bool | None = None
-    sms_consent: bool | None = None
-    sms_opt_out_reason: str | None = None
 
 
 class SettleIn(BaseModel):
@@ -104,8 +101,6 @@ def _out(c: Customer) -> dict:
         "credit_enabled": c.credit_enabled,
         "credit_limit": c.credit_limit,
         "is_active": c.is_active,
-        "sms_consent": getattr(c, "sms_consent", False),
-        "sms_consent_at": getattr(c, "sms_consent_at", None),
     }
 
 
@@ -145,7 +140,6 @@ def create_customer(body: CustomerIn, db: Session = Depends(get_db),
         ).scalar_one_or_none()
         if existing:
             return _out(existing)
-    from datetime import datetime as _dt
     c = Customer(
         name=(body.name or "").strip() or (phone or "بدون نام"),
         last_name=(body.last_name or "").strip() or None,
@@ -155,8 +149,6 @@ def create_customer(body: CustomerIn, db: Session = Depends(get_db),
         notes=(body.notes or "").strip() or None,
         credit_enabled=body.credit_enabled,
         credit_limit=body.credit_limit or Decimal("0"),
-        sms_consent=bool(body.sms_consent),
-        sms_consent_at=_dt.utcnow() if body.sms_consent else None,
     )
     db.add(c)
     db.commit()
@@ -202,10 +194,6 @@ def update_customer(customer_id: int, body: CustomerPatch,
     changes = body.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(c, field, value)
-    # auto-stamp consent moment
-    if "sms_consent" in changes and changes["sms_consent"]:
-        from datetime import datetime as _dt2
-        c.sms_consent_at = _dt2.utcnow()
     write_audit(db, action="CUSTOMER_UPDATE", user_id=user.id,
                 entity_type="Customer", entity_id=c.id, after=changes)
     db.commit()

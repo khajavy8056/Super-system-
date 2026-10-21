@@ -256,23 +256,20 @@ _DOCS_FREE = os.environ.get("SUPERMARKET_EXPOSE_DOCS", "0") not in ("0", "false"
 @app.middleware("http")
 async def docs_gate(request: Request, call_next):
     if not _DOCS_FREE and request.url.path in ("/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"):
-        # require valid auth header, otherwise 404 (hide existence)
         auth = request.headers.get("authorization", "")
         if not auth.lower().startswith("bearer "):
             return JSONResponse(status_code=404, content={"detail": {"code": "NOT_FOUND", "message": "Not Found"}})
     return await call_next(request)
 
 
-# I-21 — brute-force rate limiting (in-memory token bucket per IP+path)
-# I-22: raised to 30/60s for login — 10 was too tight for a shop with several
-# terminals behind one NAT (the previous value caused a correct password to be
-# reported as RATE_LIMITED when another terminal retried nearby).
+# Rate limiting for brute force (I-22: 30/60 for login, was 10 too tight for NAT shops)
 import time as _time
 _RATE_BUCKET: dict[str, list[float]] = {}
 _RATE_LIMITS = {
-    "/api/auth/login": (30, 60),   # 30 per 60s per IP (was 10 — I-22 fix)
+    "/api/auth/login": (30, 60),
     "/api/auth/refresh": (20, 60),
 }
+
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
@@ -281,13 +278,14 @@ async def rate_limit(request: Request, call_next):
         limit, window = rule
         now = _time.monotonic()
         bucket = _RATE_BUCKET.setdefault(key, [])
-        # drop outside window
         while bucket and bucket[0] <= now - window:
             bucket.pop(0)
         if len(bucket) >= limit:
-            return JSONResponse(status_code=429, content={"detail": {"code": "RATE_LIMITED", "message": "درخواست‌ها بیش از حد مجاز است؛ لحظاتی بعد دوباره تلاش کنید."}})
+            # Return plain string detail so both frontend (body.detail) and Api.java (string) render correctly
+            return JSONResponse(status_code=429, content={"detail": "درخواست‌ها بیش از حد مجاز است؛ لحظاتی بعد دوباره تلاش کنید."})
         bucket.append(now)
     return await call_next(request)
+
 
 # --- v1.5 licence gate ---------------------------------------------------------
 # The application never works without an activated licence. Everything except

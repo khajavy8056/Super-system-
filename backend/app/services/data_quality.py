@@ -191,9 +191,7 @@ def _c_invalid_customer_phone(db: Session) -> dict:
 def _c_orphan_stock_movement(db: Session) -> dict:
     prod_ids = select(Product.id)
     batch_ids = select(ProductBatch.id)
-    where = [or_(StockMovement.product_id.notin_(prod_ids),
-                 StockMovement.batch_id.isnot(None),
-                 StockMovement.batch_id.is_(None))]
+    # I-21: removed dead `where` list (never used, always true condition)
     # batch orphan: batch_id set but no such batch
     ids_a = set(db.execute(select(StockMovement.id)
                            .where(StockMovement.product_id.notin_(prod_ids))

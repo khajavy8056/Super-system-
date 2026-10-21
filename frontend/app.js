@@ -180,7 +180,11 @@ $("#login-form").addEventListener("submit", async (e) => {
     const form = new URLSearchParams({ username, password });
     const res = await fetch(API + "/auth/login", { method: "POST", body: form });
     const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || "ورود ناموفق");
+    if (!res.ok) {
+      const d = body && body.detail;
+      const msg = typeof d === "object" ? (d.message || d.code || JSON.stringify(d)) : (d || "ورود ناموفق");
+      throw new Error(msg);
+    }
     state.token = body.access_token;
     localStorage.setItem("token", state.token);
     await initAuthenticatedSession(true);
@@ -344,7 +348,7 @@ const ICONS = {
 /* ui-build-520 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 520;
+const UI_BUILD = 524;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
