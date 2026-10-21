@@ -1,3 +1,7 @@
+## [1.0.525] - 2026-10-21 (بیلد ۵۲۵) — هوش فروشگاه: یکپارچگی فروش خالص + سود خالص با مرجوعی
+
+رفع انسجام داده‌ها در موتور هوش: تمام ۹ مسیر مستقیم `Invoice.status == PAID` به `in_([PAID, PARTIALLY_REFUNDED])` یکسان شد (backend insights/insights_pro + Android Local/Insights status!='VOID') — پیش‌تر _load_ctx درست بود ولی ۶+۳+۲۷ مسیر فروش را کم‌شمار می‌کرد (I-09). سپس Ctx.lines و همهٔ متریک‌های اندازه‌گیری (product_units/product_profit/customer_sales/avg_basket/attach_rate و _net_profit) به خالص‌سازی با مرجوعی مجهز شدند: net_qty = qty - return_qty، net_profit = profit - (refund - buy_cost*return_qty)؛ ردیف کاملاً مرجوعی از velocity/cross_sell حذف. همگام با گزارش‌های مالی (total - refunds، profit GROUP BY invoice). تست‌های هوش ۱۲/۱۲ سبز.
+
 ## [1.0.524] - 2026-10-21 (بیلد ۵۲۴) — بازگشت به پایهٔ ۱٫۰٫۵۲۱ و اجرای کامل ممیزی بدون رگرسیون + رفع قطعی ورود
 
 گزارش مالک: «نسخهٔ ۱٫۰٫۵۲۳ هم با رمز درست «اشتباه است» می‌دهد — هر چه لازم است درست کنید، اگر شد به ۵۲۱ برگردید و دوباره.»
