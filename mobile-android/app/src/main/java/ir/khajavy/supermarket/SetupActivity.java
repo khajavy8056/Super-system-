@@ -235,14 +235,19 @@ public class SetupActivity extends Activity {
         Prefs.set("store_name", str("store_name")); Prefs.set("store_json", data.toString()); Prefs.set("store_mobile", str("mobile"));
         Prefs.set("currency_label", "IRT".equals(str("currency")) ? "تومان" : "ریال"); Ui.currencyLabel = Prefs.get("currency_label", "ریال");
         Prefs.set("theme_pref", str("theme")); Prefs.set("theme_resolved", "light".equals(str("theme")) ? "light" : "dark".equals(str("theme")) ? "dark" : (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) >= 7 && java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) < 19 ? "light" : "dark"));
-        // v3.5.11: keep the standalone administrator verifier independent of the device id.
+        // I-22: use PBKDF2 verifier so the standalone admin shares the same
+        // verification path as PC-cached users; fallback to sha for legacy DBs
+        // is still handled by Local.passOk, but new installs get the stronger hash.
         try {
             JSONObject u = new JSONObject(); u.put("username", str("admin_username")); u.put("full_name", str("admin_name")); u.put("role", "ADMIN"); u.put("permissions", JSONObject.NULL);
             Prefs.set("user_json", u.toString());
-            Prefs.set("local_admin_hash", Local.sha(str("admin_username") + "|" + str("admin_password")));
+            Prefs.set("local_admin_hash", Local.passwordVerifier(str("admin_password")));
         } catch (org.json.JSONException e) {
             Ui.toast("ذخیرهٔ حساب مدیر انجام نشد: " + e.getMessage());
             return;
+        } catch (Exception e) {
+            // PBKDF2 failure must not brick setup — fall back to legacy SHA verifier
+            try { Prefs.set("local_admin_hash", Local.sha(str("admin_username") + "|" + str("admin_password"))); } catch (Exception ignore) {}
         }
         // v3.5.11: retain one stable identity across reinstalls/re-login.
         Prefs.save(this, "http://standalone.invalid", "", str("store_name"), Prefs.deviceIdStatic() == null ? Prefs.hwidSeed() : Prefs.deviceIdStatic());

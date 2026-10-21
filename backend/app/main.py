@@ -264,10 +264,13 @@ async def docs_gate(request: Request, call_next):
 
 
 # I-21 — brute-force rate limiting (in-memory token bucket per IP+path)
+# I-22: raised to 30/60s for login — 10 was too tight for a shop with several
+# terminals behind one NAT (the previous value caused a correct password to be
+# reported as RATE_LIMITED when another terminal retried nearby).
 import time as _time
 _RATE_BUCKET: dict[str, list[float]] = {}
 _RATE_LIMITS = {
-    "/api/auth/login": (10, 60),   # 10 per 60s
+    "/api/auth/login": (30, 60),   # 30 per 60s per IP (was 10 — I-22 fix)
     "/api/auth/refresh": (20, 60),
 }
 @app.middleware("http")
