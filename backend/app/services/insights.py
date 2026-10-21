@@ -902,7 +902,7 @@ def customer_patterns(ctx: Ctx, *, min_visits: int = 8, horizon_days: int = 3) -
     history = defaultdict(list)
     day = func.date(Invoice.created_at)
     for cid, value in ctx.db.execute(select(Invoice.customer_id, day)
-            .where(Invoice.status == PAID, Invoice.customer_id.is_not(None),
+            .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.customer_id.is_not(None),
                    Invoice.created_at >= ctx.now_utc - timedelta(days=730), Invoice.created_at <= ctx.now_utc)
             .group_by(Invoice.customer_id, day).order_by(Invoice.customer_id, day)):
         history[cid].append(date.fromisoformat(value))
@@ -1343,7 +1343,7 @@ def _realized_action_cost(db: Session, spec: dict, start: datetime, end: datetim
     خروجی: {items, coupons, campaigns, total} — برای Evidence ضرر.
     """
     from ..models import CampaignRedemption, CouponRedemption
-    paid = and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
+    paid = and_(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)
     pids = spec.get("product_ids") or ([spec["product_id"]] if spec.get("product_id") else None)
     cids = spec.get("customer_ids")
     item_q = select(func.coalesce(func.sum(InvoiceItem.discount), 0)).join(
@@ -1374,7 +1374,7 @@ def _realized_action_cost(db: Session, spec: dict, start: datetime, end: datetim
 def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> dict:
     """Compute the metric over [start, end) on real data. Returns {"value", "unit", "detail"}."""
     m = spec.get("metric")
-    paid = and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
+    paid = and_(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)
     if m == "product_units":
         v = db.execute(select(func.coalesce(func.sum(InvoiceItem.qty), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
                        .where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
@@ -1473,7 +1473,7 @@ def _daily_series(db: Session, spec: dict, start: datetime, end: datetime, base:
         b_from = start - timedelta(days=14)
     b_from = max(b_from, start - timedelta(days=14))
     q = select(func.date(Invoice.created_at), func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id) \
-        .where(Invoice.status == PAID, Invoice.created_at >= b_from, Invoice.created_at < end)
+        .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= b_from, Invoice.created_at < end)
     if m in ("product_units", "product_profit", "availability", "stockout_days"):
         q = q.where(InvoiceItem.product_id == spec.get("product_id"))
     elif m == "attach_rate":
@@ -1499,7 +1499,7 @@ def _daily_series(db: Session, spec: dict, start: datetime, end: datetime, base:
 def _store_profit_rate(db: Session, start: datetime, end: datetime) -> float:
     days = max(1e-9, (end - start).total_seconds() / 86400)
     v = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-                   .where(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)).scalar_one()
+                   .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)).scalar_one()
     return _f(v) / days
 
 
@@ -1687,7 +1687,7 @@ def impact_summary(db: Session) -> dict:
         overlap = max(0.0, (min(end, now) - max(r.accepted_at, m0)).total_seconds())
         month_gain += _f(r.measured_gain) * min(1.0, overlap / span)
     profit_month = _f(db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-                                 .where(Invoice.status == PAID, Invoice.created_at >= m0)).scalar_one())
+                                 .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= m0)).scalar_one())
     return {
         "accepted": len(rows), "measured": len([r for r in rows if r.status == "MEASURED"]), "open": open_cnt,
         "total_gain": round(total), "month_gain": round(month_gain), "expected_open": round(expected_open),

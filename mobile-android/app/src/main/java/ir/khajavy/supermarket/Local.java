@@ -884,7 +884,7 @@ public final class Local {
             if (offerFlag(campaign, "first_purchase_only") && customerId != 0) {
                 JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
                 int localOnly = customer == null ? 0 : customer.optInt("is_local");
-                JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+                JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status!='VOID' "
                         + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
                 int historical = customer == null ? 0 : customer.optInt("lifetime_purchase_count");
                 if (historical + (purchases == null ? 0 : purchases.optInt("n")) > 0) {
@@ -1489,8 +1489,8 @@ public final class Local {
                 // per-row loops) so a store with years of history renders in well under a second on a phone.
                 String t0 = today, t1 = today + "T99", m30 = Jalali.daysAgoIso(30);
                 JSONObject d = new JSONObject(); d.put("scope", "store"); d.put("dashboard_profile", Screens.dashboardProfileFromPermissions(Screens.user.optJSONArray("permissions"))); JSONObject sales = new JSONObject();
-                JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status='PAID'", t0, t1); sales.put("today", t.optDouble("s", 0)); sales.put("invoice_count_today", t.optInt("n"));
-                JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND status='PAID'", m30); sales.put("month", m.optDouble("s", 0)); JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status='PAID'", Jalali.daysAgoIso(1), today); sales.put("yesterday", yd.optDouble("s", 0)); JSONObject ycnt = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status='PAID'", Jalali.daysAgoIso(1), today); sales.put("invoice_count_yesterday", ycnt.optInt("n")); d.put("sales", sales); JSONArray byPay = new JSONArray(); for (JSONObject r : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? AND at<? AND status='PAID' GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today, t1)) { byPay.put(r); } d.put("today_by_payment", byPay);
+                JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status!='VOID'", t0, t1); sales.put("today", t.optDouble("s", 0)); sales.put("invoice_count_today", t.optInt("n"));
+                JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND status!='VOID'", m30); sales.put("month", m.optDouble("s", 0)); JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status!='VOID'", Jalali.daysAgoIso(1), today); sales.put("yesterday", yd.optDouble("s", 0)); JSONObject ycnt = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status!='VOID'", Jalali.daysAgoIso(1), today); sales.put("invoice_count_yesterday", ycnt.optInt("n")); d.put("sales", sales); JSONArray byPay = new JSONArray(); for (JSONObject r : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? AND at<? AND status!='VOID' GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today, t1)) { byPay.put(r); } d.put("today_by_payment", byPay);
                 JSONObject inv = new JSONObject(); inv.put("product_count", Db.count("products"));
                 JSONObject iv = one("SELECT IFNULL(SUM(current_qty*buy_price),0) AS v FROM batches WHERE status='ACTIVE'"); inv.put("value", iv.optDouble("v", 0));
                 JSONObject ls = one("SELECT SUM(q<=0) AS none, SUM(q>0 AND q<=ms) AS low FROM (SELECT p.min_stock_alert AS ms, IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0) AS q FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1 GROUP BY p.id)");
@@ -1498,17 +1498,17 @@ public final class Local {
                 JSONObject rec = new JSONObject(); JSONObject dbt = one("SELECT COUNT(*) AS n, IFNULL(SUM(b),0) AS s FROM (SELECT SUM(CASE WHEN entry_type IN ('CHARGE','ADJUSTMENT_DEBIT') THEN amount ELSE -amount END) AS b FROM ledger GROUP BY customer_id) WHERE b>0.5");
                 rec.put("customer_debt", dbt == null ? 0 : dbt.optDouble("s", 0)); rec.put("debtor_count", dbt == null ? 0 : dbt.optInt("n")); JSONObject pn = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE payment_status='PENDING' AND status<>'VOID'"); rec.put("pending_count", pn.optInt("n")); rec.put("pending_amount", pn.optDouble("s", 0)); d.put("receivables", rec);
                 d.put("expiry", expiryBuckets(40)); JSONObject pr = new JSONObject();
-                JSONObject tp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.at<? AND i.status='PAID'", t0, t1);
-                JSONObject mp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.status='PAID'", m30); pr.put("today", tp.optDouble("p", 0)); pr.put("month", mp.optDouble("p", 0)); d.put("profit", pr);
-                JSONArray top = new JSONArray(); for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS revenue, (SELECT name FROM products p WHERE p.id=ii.product_id) AS name FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.status='PAID' AND i.at>=? GROUP BY ii.product_id ORDER BY revenue DESC LIMIT 5", m30)) { if (r.isNull("name")) r.put("name", "کالا"); top.put(r); } d.put("top_products", top);
+                JSONObject tp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.at<? AND i.status!='VOID'", t0, t1);
+                JSONObject mp = one("SELECT IFNULL(SUM((ii.unit_sell_price-ii.unit_buy_price)*ii.qty-ii.discount),0) AS p FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.at>=? AND i.status!='VOID'", m30); pr.put("today", tp.optDouble("p", 0)); pr.put("month", mp.optDouble("p", 0)); d.put("profit", pr);
+                JSONArray top = new JSONArray(); for (JSONObject r : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS revenue, (SELECT name FROM products p WHERE p.id=ii.product_id) AS name FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid WHERE i.status!='VOID' AND i.at>=? GROUP BY ii.product_id ORDER BY revenue DESC LIMIT 5", m30)) { if (r.isNull("name")) r.put("name", "کالا"); top.put(r); } d.put("top_products", top);
                 // build-484 — donut «توزیع فروش بر اساس دسته‌بندی» (۳۰ روز، هم‌ارز رایانه)
                 JSONArray byCat = new JSONArray(); double catTotal = 0;
-                for (JSONObject r : rows("SELECT IFNULL(c.name,'سایر') AS name, IFNULL(SUM(ii.subtotal),0) AS s FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid LEFT JOIN products p ON p.id=ii.product_id LEFT JOIN categories c ON c.id=p.category_id WHERE i.status='PAID' AND i.at>=? GROUP BY IFNULL(c.name,'سایر') ORDER BY s DESC LIMIT 6", m30)) { catTotal += r.optDouble("s", 0); byCat.put(r); }
+                for (JSONObject r : rows("SELECT IFNULL(c.name,'سایر') AS name, IFNULL(SUM(ii.subtotal),0) AS s FROM invoices i JOIN invoice_items ii ON ii.inv=i.rowid LEFT JOIN products p ON p.id=ii.product_id LEFT JOIN categories c ON c.id=p.category_id WHERE i.status!='VOID' AND i.at>=? GROUP BY IFNULL(c.name,'سایر') ORDER BY s DESC LIMIT 6", m30)) { catTotal += r.optDouble("s", 0); byCat.put(r); }
                 for (int ci = 0; ci < byCat.length(); ci++) { JSONObject o = byCat.getJSONObject(ci); o.put("sales", o.optDouble("s", 0)); o.put("share_pct", catTotal > 0 ? Math.round(o.optDouble("s", 0) * 1000.0 / catTotal) / 10.0 : 0.0); o.remove("s"); }
                 d.put("sales_by_category", byCat);
-                java.util.Map<String, JSONObject> byDay = new java.util.HashMap<>(); for (JSONObject r : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND status='PAID' GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6))) byDay.put(r.optString("d"), r);
+                java.util.Map<String, JSONObject> byDay = new java.util.HashMap<>(); for (JSONObject r : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND status!='VOID' GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6))) byDay.put(r.optString("d"), r);
                 JSONArray trend = new JSONArray(); for (int i = 6; i >= 0; i--) { String day = Jalali.daysAgoIso(i); JSONObject s = byDay.get(day); JSONObject o = new JSONObject(); o.put("date", day); o.put("label", Ui.jdate(day)); o.put("sales", s == null ? 0 : s.optDouble("s", 0)); o.put("count", s == null ? 0 : s.optInt("n")); trend.put(o); } d.put("trend", trend);
-                JSONArray ri = new JSONArray(); for (JSONObject r : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices WHERE status='PAID' ORDER BY at DESC LIMIT 5")) { JSONObject o = new JSONObject(); o.put("invoice_number", r.optString("invoice_number").isEmpty() || r.isNull("invoice_number") ? r.optString("local_no") : r.optString("invoice_number")); o.put("created_at", r.optString("at")); o.put("total", r.optDouble("total", 0)); o.put("status", r.optString("status", "PAID")); ri.put(o); } d.put("recent_invoices", ri);
+                JSONArray ri = new JSONArray(); for (JSONObject r : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices WHERE status!='VOID' ORDER BY at DESC LIMIT 5")) { JSONObject o = new JSONObject(); o.put("invoice_number", r.optString("invoice_number").isEmpty() || r.isNull("invoice_number") ? r.optString("local_no") : r.optString("invoice_number")); o.put("created_at", r.optString("at")); o.put("total", r.optDouble("total", 0)); o.put("status", r.optString("status", "PAID")); ri.put(o); } d.put("recent_invoices", ri);
                 JSONObject sys = new JSONObject(); sys.put("version", Version.NAME); sys.put("status", "OK"); android.os.StatFs st = new android.os.StatFs(android.os.Environment.getDataDirectory().getPath()); sys.put("disk_free_gb", Math.round(st.getAvailableBytes() / 1e8) / 10.0); sys.put("sync_queued", Db.opCount()); sys.put("sync_failed", 0); d.put("system", sys);
                 JSONObject sms = new JSONObject(); sms.put("configured", SmsLocal.configured()); sms.put("pending", SmsLocal.pendingCount()); d.put("sms", sms);
                 d.put("accounting", accountingDashboard(m30)); d.put("pricing", obj("price_conflict_count", 0)); redactDashboardPermissions(d); return d; }
@@ -1518,16 +1518,16 @@ public final class Local {
                 String selfFilter = userId == null ? "" : " AND user_id=?";
                 Object[] dateArgs = userId == null ? new Object[]{from, to} : new Object[]{from, to, userId};
                 JSONObject o = new JSONObject();
-                JSONObject total = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<?||'T99' AND status='PAID'" + selfFilter, dateArgs);
+                JSONObject total = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<?||'T99' AND status!='VOID'" + selfFilter, dateArgs);
                 o.put("total_sales", total.optDouble("s", 0)); o.put("invoice_count", total.optInt("n")); JSONArray groups = new JSONArray();
                 if ("product".equals(grp)) {
                     String productSelfFilter = userId == null ? "" : " AND i.user_id=?";
                     Object[] productArgs = userId == null ? new Object[]{from, to} : new Object[]{from, to, userId};
-                    for (JSONObject row : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS total FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.at>=? AND i.at<?||'T99' AND i.status='PAID'" + productSelfFilter + " GROUP BY ii.product_id ORDER BY total DESC", productArgs)) {
+                    for (JSONObject row : rows("SELECT ii.product_id, SUM(ii.qty) AS qty, SUM(ii.subtotal) AS total FROM invoice_items ii JOIN invoices i ON i.rowid=ii.inv WHERE i.at>=? AND i.at<?||'T99' AND i.status!='VOID'" + productSelfFilter + " GROUP BY ii.product_id ORDER BY total DESC", productArgs)) {
                         JSONObject product = Db.productById(row.optLong("product_id")); row.put("name", product == null ? "کالا" : product.optString("name")); groups.put(row);
                     }
                 } else {
-                    for (JSONObject row : rows("SELECT substr(at,1,10) AS date, COUNT(*) AS invoice_count, SUM(total) AS total FROM invoices WHERE at>=? AND at<?||'T99' AND status='PAID'" + selfFilter + " GROUP BY date ORDER BY date", dateArgs)) groups.put(row);
+                    for (JSONObject row : rows("SELECT substr(at,1,10) AS date, COUNT(*) AS invoice_count, SUM(total) AS total FROM invoices WHERE at>=? AND at<?||'T99' AND status!='VOID'" + selfFilter + " GROUP BY date ORDER BY date", dateArgs)) groups.put(row);
                 }
                 o.put("groups", groups); return o;
             }
@@ -1579,18 +1579,18 @@ public final class Local {
         JSONObject sales = new JSONObject(); JSONArray byPay = new JSONArray(), trend = new JSONArray(), recent = new JSONArray();
         if (userId > 0) {
             String today = Jalali.todayIso(), tomorrow = Jalali.daysAgoIso(-1), yesterday = Jalali.daysAgoIso(1), monthStart = Jalali.daysAgoIso(30);
-            JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=?", today, tomorrow, userId);
-            JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=?", monthStart, tomorrow, userId);
-            JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=?", yesterday, today, userId);
-            JSONObject yc = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=?", yesterday, today, userId);
+            JSONObject t = one("SELECT COUNT(*) AS n, IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=?", today, tomorrow, userId);
+            JSONObject m = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=?", monthStart, tomorrow, userId);
+            JSONObject yd = one("SELECT IFNULL(SUM(total),0) AS s FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=?", yesterday, today, userId);
+            JSONObject yc = one("SELECT COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=?", yesterday, today, userId);
             sales.put("today", t == null ? 0 : t.optDouble("s", 0)); sales.put("invoice_count_today", t == null ? 0 : t.optInt("n"));
             sales.put("month", m == null ? 0 : m.optDouble("s", 0)); sales.put("yesterday", yd == null ? 0 : yd.optDouble("s", 0));
             sales.put("invoice_count_yesterday", yc == null ? 0 : yc.optInt("n"));
-            for (JSONObject row : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=? GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today, tomorrow, userId)) byPay.put(row);
+            for (JSONObject row : rows("SELECT IFNULL(payment,'نقدی') AS name, COUNT(*) AS invoice_count, IFNULL(SUM(total),0) AS sales FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=? GROUP BY IFNULL(payment,'نقدی') ORDER BY sales DESC", today, tomorrow, userId)) byPay.put(row);
             java.util.Map<String, JSONObject> byDay = new java.util.HashMap<>();
-            for (JSONObject row : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status='PAID' AND user_id=? GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6), tomorrow, userId)) byDay.put(row.optString("d"), row);
+            for (JSONObject row : rows("SELECT substr(at,1,10) AS d, IFNULL(SUM(total),0) AS s, COUNT(*) AS n FROM invoices WHERE at>=? AND at<? AND status!='VOID' AND user_id=? GROUP BY substr(at,1,10)", Jalali.daysAgoIso(6), tomorrow, userId)) byDay.put(row.optString("d"), row);
             for (int i = 6; i >= 0; i--) { String day = Jalali.daysAgoIso(i); JSONObject value = byDay.get(day), item = new JSONObject(); item.put("date", day); item.put("label", Ui.jdate(day)); item.put("sales", value == null ? 0 : value.optDouble("s", 0)); item.put("count", value == null ? 0 : value.optInt("n")); trend.put(item); }
-            for (JSONObject row : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices WHERE user_id=? AND status='PAID' ORDER BY at DESC LIMIT 5", userId)) { JSONObject item = new JSONObject(); item.put("invoice_number", row.optString("invoice_number").isEmpty() || row.isNull("invoice_number") ? row.optString("local_no") : row.optString("invoice_number")); item.put("created_at", row.optString("at")); item.put("total", row.optDouble("total", 0)); item.put("status", row.optString("status", "PAID")); recent.put(item); }
+            for (JSONObject row : rows("SELECT rowid AS id, local_no, invoice_number, at, total, status FROM invoices WHERE user_id=? AND status!='VOID' ORDER BY at DESC LIMIT 5", userId)) { JSONObject item = new JSONObject(); item.put("invoice_number", row.optString("invoice_number").isEmpty() || row.isNull("invoice_number") ? row.optString("local_no") : row.optString("invoice_number")); item.put("created_at", row.optString("at")); item.put("total", row.optDouble("total", 0)); item.put("status", row.optString("status", "PAID")); recent.put(item); }
         } else {
             sales.put("today", 0); sales.put("month", 0); sales.put("yesterday", 0); sales.put("invoice_count_today", 0); sales.put("invoice_count_yesterday", 0);
         }
@@ -1776,7 +1776,7 @@ public final class Local {
     }
     /** مجموع تخفیف اعمال‌شدهٔ یک جشنواره روی فاکتورهای پرداخت‌شده (ارزش مصرف). */
     static double sumInvoices(String column, long campaignId) {
-        JSONObject r = one("SELECT IFNULL(SUM(" + column + "),0) AS v FROM invoices WHERE campaign_id=? AND status='PAID'", campaignId);
+        JSONObject r = one("SELECT IFNULL(SUM(" + column + "),0) AS v FROM invoices WHERE campaign_id=? AND status!='VOID'", campaignId);
         double v = r == null ? 0 : r.optDouble("v", 0);
         return Double.isFinite(v) ? v : 0;
     }
@@ -1787,7 +1787,7 @@ public final class Local {
         if (customerId == 0) return 0;
         boolean windowed = (fromIso != null && !fromIso.isEmpty()) || (untilIso != null && !untilIso.isEmpty());
         if (windowed) {
-            StringBuilder sql = new StringBuilder("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID'");
+            StringBuilder sql = new StringBuilder("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status!='VOID'");
             java.util.List<Object> args = new java.util.ArrayList<>();
             args.add(customerId);
             if (fromIso != null && !fromIso.isEmpty()) { sql.append(" AND created_at>=?"); args.add(fromIso); }
@@ -1797,7 +1797,7 @@ public final class Local {
         }
         JSONObject customer = one("SELECT is_local,lifetime_purchase_count FROM customers WHERE id=?", customerId);
         int localOnly = customer == null ? 0 : customer.optInt("is_local");
-        JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status='PAID' "
+        JSONObject purchases = one("SELECT COUNT(*) AS n FROM invoices WHERE customer_id=? AND status!='VOID' "
                 + (localOnly == 1 || customerId < 0 ? "" : "AND synced=0"), customerId);
         int historical = customer == null ? 0 : customer.optInt("lifetime_purchase_count");
         return historical + (purchases == null ? 0 : purchases.optInt("n"));
@@ -1805,7 +1805,7 @@ public final class Local {
 
     /** تاریخ آخرین فاکتوری که از این جشنواره استفاده کرده (خالی = هیچ). */
     static String lastInvoiceUse(long campaignId) {
-        JSONObject r = one("SELECT MAX(at) AS t FROM invoices WHERE campaign_id=? AND status='PAID'", campaignId);
+        JSONObject r = one("SELECT MAX(at) AS t FROM invoices WHERE campaign_id=? AND status!='VOID'", campaignId);
         return r == null || r.isNull("t") ? "" : r.optString("t", "");
     }
 }
