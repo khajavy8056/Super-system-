@@ -138,19 +138,42 @@ def _load_ctx(db: Session, days: int = 90) -> Ctx:
     # I-09: include partially refunded invoices (otherwise partial returns erase all sales intelligence)
     # I-05: use store-local day where applicable — ctx.today is already local_today()
     rows = db.execute(
-        select(InvoiceItem.invoice_id, InvoiceItem.product_id, InvoiceItem.qty, InvoiceItem.unit_sell_price,
+        select(InvoiceItem.id, InvoiceItem.invoice_id, InvoiceItem.product_id, InvoiceItem.qty, InvoiceItem.unit_sell_price,
                InvoiceItem.unit_buy_price, InvoiceItem.subtotal, InvoiceItem.profit, InvoiceItem.batch_id,
                Invoice.created_at, Invoice.customer_id, Invoice.total_amount, Invoice.created_by)
         .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
         .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= since, Invoice.created_at <= now_utc)
         .execution_options(yield_per=2000)
     )
-    for r in rows:
-        ctx.lines.append({"inv": r[0], "pid": r[1], "qty": _f(r[2]), "price": _f(r[3]), "cost": _f(r[4]),
-                          "sub": _f(r[5]), "profit": _f(r[6]), "batch": r[7], "at": r[8], "cust": r[9],
-                          "total": _f(r[10]), "user": r[11]})
-        ctx.invoices.setdefault(r[0], {"at": r[8], "cust": r[9], "total": _f(r[10]), "pids": set(), "user": r[11]})
-        ctx.invoices[r[0]]["pids"].add(r[1])
+    # preload returns aggregated per invoice_item_id for net quantities (I-09: partial refunds must not overstate velocity/profit)
+    _raw = list(rows)
+    if _raw:
+        _item_ids = [r[0] for r in _raw]
+        _ret_map: dict[int, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))  # item_id -> (qty, refund_amount)
+        if _item_ids:
+            _rets = db.execute(select(Return.invoice_item_id, func.coalesce(func.sum(Return.qty), 0), func.coalesce(func.sum(Return.refund_amount), 0))
+                               .where(Return.invoice_item_id.in_(_item_ids)).group_by(Return.invoice_item_id)).all()
+            for iid, rq, ra in _rets:
+                _ret_map[iid] = (_f(rq), _f(ra))
+        for r in _raw:
+            iid, inv_id, pid, qty, price, cost, sub, profit, batch, at, cust, total, user = r[0], r[1], r[2], _f(r[3]), _f(r[4]), _f(r[5]), _f(r[6]), _f(r[7]), r[8], r[9], r[10], _f(r[11]), r[12]
+            rq, ra = _ret_map.get(iid, (0.0, 0.0))
+            net_qty = max(0.0, qty - rq)
+            if net_qty <= 0 and rq >= qty:
+                # fully returned line: skip — do not count toward velocity/basket
+                continue
+            # net profit: original profit minus return profit (refund - cost*returned_qty)
+            # refund_amount is already net of discount share; cost*returned_qty is the buy cost recovered
+            ret_profit = ra - cost * rq
+            net_profit = profit - ret_profit
+            net_sub = sub - ra
+            ctx.lines.append({"inv": inv_id, "pid": pid, "qty": net_qty, "price": price, "cost": cost,
+                              "sub": net_sub, "profit": net_profit, "batch": batch, "at": at, "cust": cust,
+                              "total": total, "user": user, "orig_qty": qty, "orig_profit": profit})
+            ctx.invoices.setdefault(inv_id, {"at": at, "cust": cust, "total": total, "pids": set(), "user": user})
+            ctx.invoices[inv_id]["pids"].add(pid)
+    else:
+        pass
     for p in db.execute(select(Product).where(Product.is_active == True)).scalars():  # noqa: E712
         ctx.products[p.id] = p
     return ctx
@@ -1247,12 +1270,20 @@ def run(db: Session, *, kinds: list[str] | None = None, days: int = 90) -> dict:
 
 # ----------------------------------------------------------------------------- metrics / A-B
 def _net_profit(db: Session, where) -> float:
-    """Σ line profit − invoice-level discounts (coupons / whole-invoice discounts are a real
-    cost of the action and must be charged against it)."""
+    """Σ line profit − invoice-level discounts − return profit (I-09 net)"""
     line = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0), func.coalesce(func.sum(InvoiceItem.discount), 0))
                       .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(where)).one()
     inv_disc = db.execute(select(func.coalesce(func.sum(Invoice.discount), 0)).where(where)).scalar_one()
-    return _f(line[0]) - max(0.0, _f(inv_disc) - _f(line[1]))
+    gross = _f(line[0]) - max(0.0, _f(inv_disc) - _f(line[1]))
+    # subtract return profit: for invoices in window, sum(refund - buy_cost*return_qty)
+    try:
+        ret = db.execute(select(func.coalesce(func.sum(Return.refund_amount - InvoiceItem.unit_buy_price * Return.qty), 0))
+                         .join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id)
+                         .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(where)).scalar_one()
+        gross -= _f(ret)
+    except Exception:
+        pass
+    return gross
 
 
 #: v3.8 — Measurement Contract. For every metric the engine can measure, this
@@ -1380,16 +1411,41 @@ def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> di
                        .where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
         pr = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
                         .where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
-        return {"value": _f(v), "unit": "عدد", "profit": _f(pr)}
+        # net of returns for this product in window
+        try:
+            rq = db.execute(select(func.coalesce(func.sum(Return.qty), 0)).join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id)
+                            .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
+            v = _f(v) - _f(rq)
+            rq_profit = db.execute(select(func.coalesce(func.sum(Return.refund_amount - InvoiceItem.unit_buy_price * Return.qty), 0))
+                                   .join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id)
+                                   .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
+            pr = _f(pr) - _f(rq_profit)
+        except Exception:
+            v, pr = _f(v), _f(pr)
+            rq = 0
+        return {"value": v, "unit": "عدد", "profit": pr}
     if m == "product_profit":
         pr = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
                         .where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
-        return {"value": _f(pr), "unit": "تومان", "profit": _f(pr)}
+        try:
+            rp = db.execute(select(func.coalesce(func.sum(Return.refund_amount - InvoiceItem.unit_buy_price * Return.qty), 0))
+                            .join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id)
+                            .join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, InvoiceItem.product_id == spec["product_id"])).scalar_one()
+            pr = _f(pr) - _f(rp)
+        except Exception:
+            pr = _f(pr)
+        return {"value": pr, "unit": "تومان", "profit": pr}
     if m == "customer_sales":
         ids = spec.get("customer_ids") or []
         s = db.execute(select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(paid, Invoice.customer_id.in_(ids))).scalar_one()
+        # net sales = gross - refunds for those customer invoices
+        try:
+            rf = db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0)).join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, Invoice.customer_id.in_(ids))).scalar_one()
+            s = _f(s) - _f(rf)
+        except Exception:
+            s = _f(s)
         pr = _net_profit(db, and_(paid, Invoice.customer_id.in_(ids)))
-        return {"value": _f(s), "unit": "تومان", "profit": pr}
+        return {"value": s, "unit": "تومان", "profit": pr}
     if m == "attach_rate":
         a, b = spec["a"], spec["b"]
         inv_a = {r[0] for r in db.execute(select(InvoiceItem.invoice_id).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, InvoiceItem.product_id == a)).all()}
@@ -1397,12 +1453,22 @@ def _metric_value(db: Session, spec: dict, start: datetime, end: datetime) -> di
         both = len(inv_a & inv_b)
         pr = db.execute(select(func.coalesce(func.sum(InvoiceItem.profit), 0)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
                         .where(paid, InvoiceItem.product_id.in_([a, b]))).scalar_one()
-        return {"value": round(both / max(1, len(inv_a | inv_b)), 3), "unit": "نرخ هم‌خرید", "profit": _f(pr), "both": both}
+        try:
+            rp = db.execute(select(func.coalesce(func.sum(Return.refund_amount - InvoiceItem.unit_buy_price * Return.qty), 0)).join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid, InvoiceItem.product_id.in_([a, b]))).scalar_one()
+            pr = _f(pr) - _f(rp)
+        except Exception:
+            pr = _f(pr)
+        return {"value": round(both / max(1, len(inv_a | inv_b)), 3), "unit": "نرخ هم‌خرید", "profit": pr, "both": both}
     if m == "avg_basket_size":
         n = db.execute(select(func.count(Invoice.id)).where(paid)).scalar_one() or 0
         s = db.execute(select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(paid)).scalar_one()
+        try:
+            rf = db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0)).join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(paid)).scalar_one()
+            s = _f(s) - _f(rf)
+        except Exception:
+            s = _f(s)
         pr = _net_profit(db, paid)
-        return {"value": round(_f(s) / n) if n else 0, "unit": "تومان/فاکتور", "profit": pr, "invoices": n}
+        return {"value": round(s / n) if n else 0, "unit": "تومان/فاکتور", "profit": pr, "invoices": n}
     if m == "receivables_collected":
         from ..models import CustomerLedgerEntry
         v = db.execute(select(func.coalesce(func.sum(CustomerLedgerEntry.amount), 0))
