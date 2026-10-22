@@ -81,8 +81,14 @@ def test_head_revision_is_v37_catchup(migrated_url):
     # صورت بومی»؛ یک ستون افزودنی). intent unchanged: ONE head.
     # build-488 introduced the HR layer; build-493 adds the independent,
     # administrator-controlled permission for cached/offline mobile sign-in.
-    # build-515 — جادوگر جشنواره: min_purchase_count + reward_next_only.
-    assert heads == ["e515a1b2c3d4"]
+    # v1.0.526 (audit 2026-10) — the head hash used to be re-pasted here on every
+    # release, which made this "exactly one head" check fail for a reason that had
+    # nothing to do with migrations. The invariant is *one* head, not a hash.
+    assert len(heads) == 1, heads
+    from sqlalchemy import text as _text
+    with create_engine(migrated_url).connect() as _c:
+        stamped = _c.execute(_text("SELECT version_num FROM alembic_version")).scalar()
+    assert stamped == heads[0], f"db stamped {stamped}, scripts head {heads[0]}"
     eng = create_engine(migrated_url)
     with eng.connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == heads[0]
@@ -142,15 +148,22 @@ def test_downgrade_one_step_and_reupgrade_preserves_shop_data():
     command.downgrade(cfg, "-1")
     insp = inspect(create_engine(url))
     tables = set(insp.get_table_names())
-    # build-515 is now the HEAD step: rolling back one revision removes only
-    # the two wizard columns (min_purchase_count / reward_next_only);
-    # build-493's offline-login flag and everything older stay put.
+    # v1.0.526 — the "one step down" assertions no longer name the columns of a
+    # particular revision (that broke every time the head moved). What must hold
+    # for ANY head: the DB lands exactly on the head's parent, everything the
+    # older revisions created survives, and the shop's own rows are untouched.
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text as _text
+    head = ScriptDirectory.from_config(cfg).get_heads()[0]
+    parent = ScriptDirectory.from_config(cfg).get_revision(head).down_revision
+    with create_engine(url).connect() as _c:
+        stamped_after_down = _c.execute(_text("SELECT version_num FROM alembic_version")).scalar()
+    assert stamped_after_down == parent, f"after -1 expected {parent}, got {stamped_after_down}"
     user_cols = {c["name"] for c in insp.get_columns("users")}
     assert "local_only" in user_cols               # build-482 — survives
     assert "offline_allowed" in user_cols          # build-493 — survives
     camp_cols = {c["name"] for c in insp.get_columns("campaigns")}
-    assert "min_purchase_count" not in camp_cols   # build-515 — rolled back
-    assert "reward_next_only" not in camp_cols     # build-515 — rolled back
+    assert "min_purchase_count" in camp_cols, "an older revision's column must not vanish"
     for col in ("phone", "job_title", "avatar_path", "hire_date", "store"):
         assert col in user_cols, col
     for tbl in ("hr_shifts", "hr_payroll", "announcements", "announcement_reads",

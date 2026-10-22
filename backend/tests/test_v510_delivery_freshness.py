@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as _app  # noqa: E402 — نسخه از منبع واحد (build-511: ضدشکستن با bump)
+from tests.release_gate import require_artifact  # noqa: E402
 
 VERSION = _app.__version__
 BUILD = _app.BUILD
@@ -64,8 +65,7 @@ def test_health_exposes_version_and_build(client):
 
 
 def test_desktop_zip_ships_current_ui():
-    zp = ROOT / "releases/windows" / f"RasaSystemDesktopUI-{VERSION}.zip"
-    assert zp.exists(), f"بستهٔ {zp.name} ساخته نشده"
+    zp = require_artifact(ROOT / "releases/windows" / f"RasaSystemDesktopUI-{VERSION}.zip")
     with zipfile.ZipFile(zp) as z:
         app = z.read("frontend/app.js").decode("utf-8")
         idx = z.read("frontend/index.html").decode("utf-8")
@@ -76,8 +76,9 @@ def test_desktop_zip_ships_current_ui():
 
 
 def test_android_apk_ships_current_features():
-    apk = ROOT / "releases/android" / f"RasaSystemMobile-{VERSION}.apk"
-    assert apk.exists(), f"{apk.name} ساخته نشده"
+    # a fresh clone has no binaries: SKIP locally, hard FAIL in the release pipeline
+    # (RASA_REQUIRE_RELEASE_ARTIFACTS=1) — same contract as release_gate.py.
+    apk = require_artifact(ROOT / "releases/android" / f"RasaSystemMobile-{VERSION}.apk")
     with zipfile.ZipFile(apk) as z:
         dex = b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
     assert b"fastMovers" in dex, "نوار پرفروش‌ها در APK نیست"

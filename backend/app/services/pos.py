@@ -825,13 +825,27 @@ def process_return(
                 created_by=user.id if user else None,
             ))
 
+    if refund_amount is None:
+        # v1.0.526 (audit 2026-10, BUG-E) — the default refund used the GROSS
+        # shelf price, so returning a discounted line paid the customer back more
+        # than they handed over (2 units @160,000 with a 20,000 line discount cost
+        # them 300,000; the default refund was 320,000). ``InvoiceItem.subtotal``
+        # is the line's net-of-line-discount amount, so prorating it by the
+        # returned share is what the customer actually paid. The cashier can
+        # still pass an explicit amount (e.g. a goodwill refund), which is
+        # honoured untouched — but then the ledger/accounting show exactly that.
+        net_line = to_qty(invoice_item.subtotal) if invoice_item.subtotal is not None \
+            else to_qty(invoice_item.unit_sell_price) * to_qty(invoice_item.qty)
+        per_unit = (net_line / to_qty(invoice_item.qty)) if to_qty(invoice_item.qty) else ZERO
+        refund_amount = (per_unit * qty).quantize(CENT, ROUND_HALF_UP)
+
     ret = Return(
         invoice_id=invoice.id,
         invoice_item_id=invoice_item.id,
         batch_id=invoice_item.batch_id,
         qty=qty,
         reason=reason,
-        refund_amount=refund_amount or (invoice_item.unit_sell_price * qty),
+        refund_amount=refund_amount,
         status="COMPLETED",
         created_by=user.id if user else None,
     )
