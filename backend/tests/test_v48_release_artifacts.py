@@ -56,8 +56,10 @@ def test_version_is_the_single_source_of_truth_everywhere():
 
 
 def test_released_apk_is_the_current_version_and_signed_structure_is_sound():
-    apk = RELEASES / "android" / f"RasaSystemMobile-{VERSION}.apk"
-    assert apk.exists(), f"APK نسخهٔ جاری در releases/android نیست: {apk.name}"
+    # audit 2026-10: the APK for the *current* version can only exist on the release
+    # machine, so this uses the same gate as the Windows artifacts (skip locally,
+    # fail with RASA_REQUIRE_RELEASE_ARTIFACTS=1) instead of failing every bump.
+    apk = require_artifact(RELEASES / "android" / f"RasaSystemMobile-{VERSION}.apk")
     assert _sha_matches(apk), "فایل sha256 با محتوای APK یکی نیست"
     with zipfile.ZipFile(apk) as z:
         names = z.namelist()

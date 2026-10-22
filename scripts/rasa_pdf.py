@@ -47,7 +47,8 @@ class Spec:
     def __init__(self, *, banner_title: str, banner_sub: str, running_head: str,
                  footer_left: str, doc_title: str, doc_subject: str,
                  toc_title: str = "فهرست مطالب", toc_hint: str = "",
-                 chapter_breaks: bool = False, cover: bool = True):
+                 chapter_breaks: bool = False, cover: bool = True,
+                 toc_h2: bool = True, book_title: str = ""):
         self.banner_title = banner_title
         self.banner_sub = banner_sub
         self.running_head = running_head
@@ -58,6 +59,8 @@ class Spec:
         self.toc_hint = toc_hint
         self.chapter_breaks = chapter_breaks   # every H1 starts a new page
         self.cover = cover                     # block before the first H2 is page 1
+        self.toc_h2 = toc_h2                   # list H2 sections in the TOC as well
+        self.book_title = book_title           # shown on the cover, if set
 
 
 SPEC = Spec(
@@ -68,6 +71,7 @@ SPEC = Spec(
     doc_title="RASA SYSTEM — گزارش ممیزی ۲۰۲۶-۱۰",
     doc_subject="Audit report (Persian)",
     toc_hint="شمارهٔ صفحه در ستون سمت چپ، عنوان بخش در ستون راست.",
+    toc_h2=True,
 )
 
 FONT_REGULAR = ROOT / "backend" / "app" / "assets" / "fonts" / "Vazirmatn-Regular.ttf"
@@ -128,6 +132,9 @@ for _f in (FONT_REGULAR, FONT_BOLD):
 _EMOJI = {"\u2705": "\u2713", "\u274c": "\u2717", "\U0001f7e1": "\u25d0",
           "\U0001f7e2": "\u25cf", "\U0001f534": "\u25cf", "\U0001f535": "\u25cf",
           "\u26a0\ufe0f": "\u26a0", "\u23ed\ufe0f": "\u00bb", "\u23ed": "\u00bb",
+          "\u26d4": "\u2717", "\U0001f6ab": "\u2717", "\U0001f512": "\u25a0",
+          "\u2b50": "\u2605", "\U0001f4b0": "\u25cf", "\U0001f4c8": "\u25b2",
+          "\U0001f4c9": "\u25bc", "\U0001f9ea": "\u25cb", "\u2714\ufe0f": "\u2713",
           "\ufe0f": ""}
 #: last resort when no symbol face exists
 _ASCII_LAST = {"\u2713": "✓".encode("ascii", "replace").decode(), "\u2717": "x",
@@ -199,14 +206,26 @@ def span_markup(raw: str) -> str:
     return "".join(out)
 
 
+#: UAX #9 rule L4 — in a right-to-left run the paired brackets must be mirrored.
+#: python-bidi reorders the characters but does not apply L4, so «(ویندوز)» came
+#: out visually as «)ویندوز(» in every heading and card title.
+_MIRROR = str.maketrans({"(": ")", ")": "(", "[": "]", "]": "[", "{": "}", "}": "{",
+                         "\u00ab": "\u00bb", "\u00bb": "\u00ab", "<": ">", ">": "<"})
+
+
+def mirror_brackets(display: str) -> str:
+    """Apply UAX #9 L4 to an already-reordered (visual) run."""
+    return display.translate(_MIRROR)
+
+
 def shape(text: str) -> str:
-    """Arabic/Persian shaping + bidi reordering for one run."""
+    """Arabic/Persian shaping + bidi reordering + bracket mirroring for one run."""
     import arabic_reshaper
     from bidi.algorithm import get_display
 
     if not text:
         return text
-    return get_display(arabic_reshaper.reshape(text))
+    return mirror_brackets(get_display(arabic_reshaper.reshape(text)))
 
 
 def _canvas_text(text: str) -> str:
@@ -259,7 +278,11 @@ def inline_runs(text: str) -> list[tuple[str, str]]:
 
 _RLM = "\u200f"
 _FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-_ASCII_RUN = re.compile(r"[A-Za-z0-9_./\\:*\-\[\]{}=+$]{2,}")
+#: A Latin run is a *phrase*, not a word: ``Store Intelligence``, ``RASA SYSTEM``
+#: and ``test_a.py test_b.py`` must stay in one piece. Wrapping each word with
+#: RLM marks separately turned them into separate right-to-left units, which
+#: printed «Intelligence Store».
+_ASCII_RUN = re.compile(r"[A-Za-z0-9_./\\:*\-\[\]{}=+$]{2,}(?: [A-Za-z0-9_./\\:*\-\[\]{}=+$]{2,})*")
 
 
 def protect_ascii(text: str) -> str:
@@ -279,6 +302,62 @@ def rtl_markup(text: str) -> str:
     return span_markup(strip_invisible(shape(protect_ascii(plain(text)))))
 
 
+def _shape_plain(text: str) -> str:
+    """Presentation-form text (no reordering) — used only for measuring."""
+    import arabic_reshaper
+    return arabic_reshaper.reshape(text)
+
+
+def _width(text: str, font: str, size: float) -> float:
+    return pdfmetrics.stringWidth(_shape_plain(text), font, size)
+
+
+def wrap_rtl(text: str, max_width: float, font: str = REG, size: float = 9.6) -> list[str]:
+    """Greedy word wrap on the LOGICAL text, before any reordering.
+
+    Reordering first and then letting reportlab break lines in visual order puts
+    the last line of every paragraph on top (the reader sees the sentence
+    backwards, line by line). Breaking in logical order and shaping each line on
+    its own keeps both the words and the lines in the right order.
+    """
+    max_width *= 0.985        # safety margin: reportlab measures shaped glyphs slightly wider
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    cur = words[0]
+    for w in words[1:]:
+        cand = f"{cur} {w}"
+        if _width(cand, font, size) <= max_width:
+            cur = cand
+        else:
+            lines.append(cur)
+            cur = w
+    lines.append(cur)
+    # a single word wider than the column still has to break somewhere
+    out: list[str] = []
+    for line in lines:
+        if _width(line, font, size) <= max_width or len(line) < 4:
+            out.append(line)
+            continue
+        part = ""
+        for ch in line:
+            if _width(part + ch, font, size) > max_width and part:
+                out.append(part)
+                part = ch
+            else:
+                part += ch
+        if part:
+            out.append(part)
+    return out
+
+
+def rtl_flow(text: str, max_width: float, font: str = REG, size: float = 9.6) -> str:
+    """Complete RTL paragraph markup: logical wrapping, then shaping per line."""
+    lines = wrap_rtl(plain(text), max_width, font, size)
+    return "<br/>".join(rtl_markup(line) for line in lines)
+
+
 _FA = re.compile(r"[\u0600-\u06FF\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 
 
@@ -289,16 +368,18 @@ def is_rtl_text(text: str) -> bool:
     return letters >= ascii_letters and letters > 0
 
 
-def cell_para(text: str, st) -> "Paragraph":
+def cell_para(text: str, st, width: float | None = None) -> "Paragraph":
     """Table cell.
 
-    Persian → one shaped RTL paragraph (Latin identifiers pinned in place by
-    ``protect_ascii``). Pure-ASCII cells (paths, ids) stay LTR and breakable, so
-    a long evidence path wraps instead of overflowing the column.
+    Persian → an RTL paragraph wrapped inside its own column width (Latin
+    identifiers pinned in place by ``protect_ascii``). Pure-ASCII cells (paths,
+    ids) stay LTR and breakable, so a long evidence path wraps instead of
+    overflowing the column.
     """
     has_fa = bool(re.search(r"[\u0600-\u06FF]", text))
     if has_fa:
-        return Paragraph(rtl_markup(text), st["cell"])
+        max_w = (width - 8) if width else TEXT_WIDTH
+        return Paragraph(rtl_flow(text, max_w, REG, 8.0), st["cell"])
     return Paragraph(ltr_markup(text), st["cell_ltr"])
 
 
@@ -328,8 +409,11 @@ def ltr_markup(text: str) -> str:
 
 
 # ---------------------------------------------------------------- styles
+TEXT_WIDTH = A4[0] - 2 * 15 * mm          # the single text column of this engine
+
+
 def styles() -> dict[str, ParagraphStyle]:
-    base = dict(fontName=REG, alignment=TA_RIGHT, wordWrap="RTL")
+    base = dict(fontName=REG, alignment=TA_RIGHT)
     return {
         "body": ParagraphStyle("body", fontName=REG, fontSize=9.6, leading=15.5,
                                alignment=TA_RIGHT, spaceAfter=5, textColor=colors.HexColor("#1d2433")),
@@ -412,6 +496,12 @@ def parse(md: str):
             continue
 
         # :::card Title … :::   |  :::note … :::
+        if stripped in (":::break", ":::page"):
+            yield from flush()
+            yield ("break", "")
+            i += 1
+            continue
+
         m = re.match(r"^:::\s*(card|note)?\s*(.*)$", stripped)
         if m:
             yield from flush()
@@ -486,12 +576,6 @@ def parse(md: str):
 # ---------------------------------------------------------------- flowables
 def build_table(header, rows, st) -> Table:
     ncols = len(header)
-    # RTL: first logical column must appear on the RIGHT → reverse column order
-    data = [[Paragraph(rtl_markup(c), st["cellh"]) for c in reversed(header)]]
-    for r in rows:
-        cells = (r + [""] * ncols)[:ncols]
-        data.append([cell_para(c, st) for c in reversed(cells)])
-
     avail = A4[0] - 2 * 15 * mm
     # weight columns: narrow for short cells (status/id), wide for prose
     weights = []
@@ -503,6 +587,13 @@ def build_table(header, rows, st) -> Table:
         weights.append(max(head * 1.35, min(longest * 0.62, 46), 9))
     total = sum(weights) or 1
     widths = [avail * w / total for w in reversed(weights)]
+
+    # RTL: first logical column must appear on the RIGHT → reverse column order
+    data = [[Paragraph(rtl_flow(c, widths[i] - 8, BOLD, 8.4), st["cellh"])
+             for i, c in enumerate(reversed(header))]]
+    for r in rows:
+        cells = (r + [""] * ncols)[:ncols]
+        data.append([cell_para(c, st, widths[i]) for i, c in enumerate(reversed(cells))])
 
     t = Table(data, colWidths=widths, repeatRows=1, hAlign="CENTER")
     t.setStyle(TableStyle([
@@ -565,7 +656,7 @@ def _image_row(imgs: list[tuple[str, str]], st) -> list:
     out: list = [Spacer(1, 3), row]
     label = " · ".join(c for c in caps if c)
     if label:
-        out.append(Paragraph(rtl_markup(label), CAPTION))
+        out.append(Paragraph(rtl_flow(label, TEXT_WIDTH, REG, 7.6), CAPTION))
     else:
         out.append(Spacer(1, 6))
     # keep the picture and its caption on the same page
@@ -576,25 +667,29 @@ def _card(title: str, body: str, *, st, note: bool = False) -> list:
     """A titled, shaded box: one feature, one page element (the «کارت» the owner asked for)."""
     avail = A4[0] - 2 * 15 * mm
     inner: list = []
-    for line in body.splitlines():
-        line = line.strip()
-        if not line:
+    # blank lines inside a card separate paragraphs; consecutive "- " lines form
+    # one list (the markdown the booklet is written in)
+    blocks = [b for b in re.split(r"\n\s*\n", body) if b.strip()]
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if all(re.match(r"^[-*]\s+", ln) for ln in lines):
+            for ln in lines:
+                inner.append(Paragraph(rtl_flow("• " + re.sub(r"^[-*]\s+", "", ln),
+                                                 TEXT_WIDTH - 30, REG, 9.2), st["li"]))
             continue
-        m = re.match(r"^[-*]\s+(.*)$", line)
-        if m:
-            inner.append(Paragraph(f'{span_markup(shape("•"))}&nbsp;{rtl_markup(m.group(1))}', st["li"]))
-        elif re.match(r"^\d+[.)]\s+", line):
-            n, txt = re.match(r"^(\d+)[.)]\s+(.*)$", line).groups()
-            inner.append(Paragraph(
-                f'{span_markup(shape(n.translate(_FA_DIGITS) + "."))}&nbsp;{rtl_markup(txt)}', st["li"]))
-        else:
-            inner.append(Paragraph(rtl_markup(line), CARD_BODY))
+        if all(re.match(r"^\d+[.)]\s+", ln) for ln in lines):
+            for ln in lines:
+                n, txt = re.match(r"^(\d+)[.)]\s+(.*)$", ln).groups()
+                inner.append(Paragraph(rtl_flow(f"{n.translate(_FA_DIGITS)}. {txt}",
+                                                 TEXT_WIDTH - 30, REG, 9.2), st["li"]))
+            continue
+        inner.append(Paragraph(rtl_flow(" ".join(lines), TEXT_WIDTH - 30, REG, 9.2), CARD_BODY))
     if not title:
         title = "نکته" if note else ""
     head = colors.HexColor("#b45309") if note else colors.HexColor("#1f4e79")
     rows = []
     if title:
-        bar = Table([[Paragraph(rtl_markup(title), CARD_TITLE)]], colWidths=[avail])
+        bar = Table([[Paragraph(rtl_flow(title, avail - 16, BOLD, 10.2), CARD_TITLE)]], colWidths=[avail])
         bar.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), head),
             ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -632,32 +727,37 @@ def flowables(md: str):
     st = styles()
     in_cover = True
     seen_content = False
+    first_h1 = True
     for kind, payload in parse(md):
         if kind in ("h2", "h3", "p", "table", "ul", "ol", "card", "note", "images"):
             in_cover = False
         if kind == "h1":
-            if SPEC.chapter_breaks and seen_content:
+            # the very first H1 is the document title (cover page), not a chapter
+            is_title = first_h1
+            first_h1 = False
+            if SPEC.chapter_breaks and seen_content and not is_title:
                 yield PageBreak()
             seen_content = True
-            para = Paragraph(rtl_markup(payload), st["h1"])
-            if SPEC.chapter_breaks:
+            para = Paragraph(rtl_flow(payload, TEXT_WIDTH, BOLD, 18), st["h1"])
+            if SPEC.chapter_breaks and not is_title:
                 para._toc_key = plain(payload)          # type: ignore[attr-defined]
                 para._toc_level = 1                     # type: ignore[attr-defined]
             yield para
             yield _rule(colors.HexColor("#1f4e79"))
         elif kind == "h2":
-            para = Paragraph(rtl_markup(payload), st["h2"])
-            para._toc_key = plain(payload)          # type: ignore[attr-defined]
-            para._toc_level = 2                     # type: ignore[attr-defined]
+            para = Paragraph(rtl_flow(payload, TEXT_WIDTH, BOLD, 13.5), st["h2"])
+            if SPEC.toc_h2:
+                para._toc_key = plain(payload)      # type: ignore[attr-defined]
+                para._toc_level = 2                 # type: ignore[attr-defined]
             yield para
         elif kind == "h3":
-            yield Paragraph(rtl_markup(payload), st["h3"])
+            yield Paragraph(rtl_flow(payload, TEXT_WIDTH, BOLD, 11), st["h3"])
         elif kind == "h4":
-            yield Paragraph(rtl_markup(payload), st["h4"])
+            yield Paragraph(rtl_flow(payload, TEXT_WIDTH, BOLD, 10), st["h4"])
         elif kind == "p":
-            yield Paragraph(rtl_markup(payload), st["body"])
+            yield Paragraph(rtl_flow(payload, TEXT_WIDTH, REG, 9.6), st["body"])
         elif kind == "quote":
-            yield Paragraph(rtl_markup(payload), st["quote"])
+            yield Paragraph(rtl_flow(payload, TEXT_WIDTH - 18, REG, 9.2), st["quote"])
         elif kind == "code":
             pre = Paragraph(code_markup(payload).replace("\n", "<br/>"), st["code"])
             box = Table([[pre]], colWidths=[A4[0] - 2 * 15 * mm])
@@ -673,18 +773,22 @@ def flowables(md: str):
             yield Spacer(1, 5)
         elif kind == "ul":
             for it in payload:
-                yield Paragraph(f'{span_markup(shape("•"))}&nbsp;{rtl_markup(it)}', st["li"])
+                # the marker must live inside the shaped line: a separate "•" run
+                # is placed by bidi at the far LEFT of an RTL paragraph.
+                yield Paragraph(rtl_flow("• " + it, TEXT_WIDTH - 10, REG, 9.6), st["li"])
         elif kind == "ol":
             for n, it in enumerate(payload, 1):
                 # Persian digits: Latin "1." is an LTR island that bidi pushes to
                 # the far LEFT of the RTL line, away from its item.
                 num = str(n).translate(_FA_DIGITS)
-                yield Paragraph(f'{span_markup(shape(f"{num}."))}&nbsp;{rtl_markup(it)}', st["li"])
+                yield Paragraph(rtl_flow(f"{num}. {it}", TEXT_WIDTH - 10, REG, 9.6), st["li"])
         elif kind == "table":
             header, rows = payload
             yield Spacer(1, 3)
             yield build_table(header, rows, st)
             yield Spacer(1, 7)
+        elif kind == "break":
+            yield PageBreak()
         elif kind == "images":
             yield from _image_row(payload, st)
         elif kind in ("card", "note"):
@@ -729,7 +833,7 @@ def toc_flowables(st) -> list:
             textColor=colors.HexColor("#0f2a52"))
         data.append([
             Paragraph(span_markup(shape(fa_page)), num_style),
-            Paragraph(rtl_markup(title), title_style),
+            Paragraph(rtl_flow(title, A4[0] - 2 * 15 * mm - 16 * mm - 8, REG, 8.0), title_style),
         ])
     t = Table(data, colWidths=[16 * mm, A4[0] - 2 * 15 * mm - 16 * mm], hAlign="CENTER")
     t.setStyle(TableStyle([
@@ -742,7 +846,7 @@ def toc_flowables(st) -> list:
     ]))
     out = [Paragraph(span_markup(shape(SPEC.toc_title)), st["h2"])]
     if SPEC.toc_hint:
-        out.append(Paragraph(rtl_markup(SPEC.toc_hint), st["body"]))
+        out.append(Paragraph(rtl_flow(SPEC.toc_hint, TEXT_WIDTH, REG, 9.6), st["body"]))
     out += [Spacer(1, 4), t, NextPageTemplate("later")]
     return out
 
@@ -831,13 +935,23 @@ def _make_doc(out: Path) -> "AuditDoc":
     return doc
 
 
+def _split_cover(items: list) -> tuple[list, list]:
+    """Cover page = everything up to ``:::break``; without one, up to the first H2."""
+    for i, f in enumerate(items):
+        if isinstance(f, PageBreak):
+            return items[:i], items[i + 1:]
+    return _tag_cover(items)
+
+
 def _story(md: str, toc: list | None = None) -> list:
-    """The full story: cover block (page 1), optional TOC page, then the report."""
+    """The full story: cover block (page 1), optional TOC page, then the body."""
     items = list(flowables(md))
-    cover, report = _tag_cover(items)
-    if not SPEC.cover:
-        cover, report = [], items
-    story = [NextPageTemplate("later")] + cover + [PageBreak()]
+    cover, report = _split_cover(items) if SPEC.cover else ([], items)
+    while report and isinstance(report[0], PageBreak):
+        report = report[1:]          # the TOC page already ends with a break
+    story = [NextPageTemplate("later")]
+    if cover:
+        story += cover + [PageBreak()]
     if toc:
         story += toc + [PageBreak()]
     return story + report

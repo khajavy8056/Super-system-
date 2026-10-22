@@ -76,8 +76,9 @@ def test_desktop_zip_ships_current_ui():
 
 
 def test_android_apk_ships_current_features():
-    apk = ROOT / "releases/android" / f"RasaSystemMobile-{VERSION}.apk"
-    assert apk.exists(), f"{apk.name} ساخته نشده"
+    # a fresh clone has no binaries: SKIP locally, hard FAIL in the release pipeline
+    # (RASA_REQUIRE_RELEASE_ARTIFACTS=1) — same contract as release_gate.py.
+    apk = require_artifact(ROOT / "releases/android" / f"RasaSystemMobile-{VERSION}.apk")
     with zipfile.ZipFile(apk) as z:
         dex = b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
     assert b"fastMovers" in dex, "نوار پرفروش‌ها در APK نیست"
