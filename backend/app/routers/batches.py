@@ -3,18 +3,24 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, ProductBatch, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import catalog
 from ..services.catalog import CatalogError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/batches", tags=["batches"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — buy costs leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class ReceiveIn(BaseModel):
@@ -54,20 +60,38 @@ def _out(b: ProductBatch) -> dict:
 
 
 @router.get("")
-def list_batches(product_id: int | None = None, db: Session = Depends(get_db),
-                 _: User = Depends(require_permission("inventory.view"))):
+def list_batches(product_id: int | None = None, limit: int | None = Query(default=None, ge=1, le=2000),
+                 offset: int = Query(default=0, ge=0), response: Response = None,
+                 db: Session = Depends(get_db),
+                 user: User = Depends(require_permission("inventory.view"))):
+    """Batches, newest first.
+
+    v1.0.0 (RASA) — ``limit``/``offset`` اختیاری اضافه شد. رابط کاربری هر بار
+    «۵۰ بچ آخر» را نشان می‌داد ولی *همهٔ* بچ‌ها را دانلود می‌کرد؛ روی یک
+    فروشگاه یک‌ساله ۳۲۶۴ بچ = ۱٫۲ مگابایت و ۲۱۰ میلی‌ثانیه برای جدولی که
+    فقط ۵۰ ردیفش دیده می‌شود. بدون پارامتر، رفتار قبلی حفظ می‌شود (همهٔ ردیف‌ها)
+    تا هیچ مصرف‌کنندهٔ دیگری نشکند. تعداد کل در هدر ``X-Total-Count`` می‌آید.
+    """
     stmt = select(ProductBatch).order_by(ProductBatch.received_at.desc())
     if product_id:
         stmt = stmt.where(ProductBatch.product_id == product_id)
-    return [_out(b) for b in db.execute(stmt).scalars()]
+    if limit is not None:
+        if response is not None:
+            count_stmt = select(func.count(ProductBatch.id))
+            if product_id:
+                count_stmt = count_stmt.where(ProductBatch.product_id == product_id)
+            response.headers["X-Total-Count"] = str(int(db.execute(count_stmt).scalar_one()))
+        stmt = stmt.limit(limit).offset(offset)
+    return _maybe_redact(user, [_out(b) for b in db.execute(stmt).scalars()])
 
 
 @router.get("/{batch_id}")
-def get_batch(batch_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("inventory.view"))):
+def get_batch(batch_id: int, db: Session = Depends(get_db),
+              user: User = Depends(require_permission("inventory.view"))):
     b = db.get(ProductBatch, batch_id)
     if not b:
         raise HTTPException(status_code=404, detail="BATCH_NOT_FOUND")
-    return _out(b)
+    return _maybe_redact(user, _out(b))
 
 
 @router.post("/receive", status_code=201)

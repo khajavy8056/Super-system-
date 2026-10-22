@@ -12,12 +12,18 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Category, Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import catalog, product_images
 from ..services.audit import write_audit
 from ..services.catalog import CatalogError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — buy costs leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
 
 
 class ProductIn(BaseModel):
@@ -59,9 +65,18 @@ def _out(p: Product) -> dict:
             gallery = [u for u in parsed if isinstance(u, str) and u][:3]
         except (ValueError, TypeError):
             gallery = []
+    # build-513 — نام دسته کنار کالا؛ از relationship خود مدل (کشِ identity-map
+    # سشن — بدون کش سراسری که با پایگاه مشترک/بازیابی تداخل می‌کند)
+    category_name = None
+    try:
+        if p.category_id is not None and p.category is not None:
+            category_name = p.category.name
+    except Exception:
+        category_name = None
     return {
         "id": p.id, "barcode": p.barcode, "name": p.name, "sku": p.sku,
         "brand_id": p.brand_id, "category_id": p.category_id, "unit_id": p.unit_id,
+        "category_name": category_name,
         "model": p.model, "description": p.description, "image_url": p.image_url,
         "gallery": gallery,
         "min_stock_alert": p.min_stock_alert, "is_active": p.is_active,
@@ -73,6 +88,7 @@ def _out(p: Product) -> dict:
 @router.get("")
 def list_products(
     q: str | None = Query(default=None),
+    ids: str | None = Query(default=None, description="فهرست شناسه‌ها با کاما — برای نام‌بردن از بچ/فاکتور"),
     limit: int = Query(default=100, le=1000),
     offset: int = 0,
     in_stock_first: bool = Query(default=True),
@@ -99,9 +115,38 @@ def list_products(
     from ..services import product_search as search
     q = search.normalize(q)
     stmt = select(Product).where(Product.deleted_at.is_(None))
+    # v1.0.0 (RASA) — «نام این چند کالا را بده». صفحهٔ بچ‌ها/فاکتورها قبلاً برای
+    # نام‌ها ۱۰۰۰ کالای اول را دانلود می‌کرد (و روی پایگاه بزرگ، نام بعضی
+    # ردیف‌ها پیدا نمی‌شد و «#۱۲۳» چاپ می‌شد). با ids همان چند ردیف لازم می‌آید.
+    if ids:
+        wanted = []
+        for chunk in ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit():
+                wanted.append(int(chunk))
+        wanted = sorted(set(wanted))[:200]
+        if not wanted:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        stmt = stmt.where(Product.id.in_(wanted))
+        q = None  # با ids، جست‌وجوی نام معنی ندارد
     if q:
         pattern = "%" + search.literal_like(q) + "%"
         stmt = stmt.where(search.name_column(Product.name).like(pattern, escape="\\") | Product.barcode.ilike(pattern, escape="\\"))
+
+        # build-481 (§12) — multi-word search where the words are NOT adjacent
+        # («کفیر دماوند» for «کفیر پرچرب یک‌لیتری دماوند»): plain LIKE needs the
+        # words in sequence, so a no-hit query falls back to all-words matching
+        # over the same normalized column. Same engine as the till's keyword
+        # fallback — one source of truth for search quality.
+        rows_total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar() or 0
+        if rows_total == 0:
+            tokens = [t for t in q.split(" ") if len(t) >= 2]
+            if len(tokens) >= 2:
+                stmt = select(Product).where(Product.deleted_at.is_(None))
+                for t in tokens:
+                    tpat = "%" + search.literal_like(t) + "%"
+                    stmt = stmt.where(search.name_column(Product.name).like(tpat, escape="\\")
+                                      | Product.barcode.ilike(tpat, escape="\\"))
     total = int(db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one())
 
     # Sellable stock per product, computed in the database. "Sellable" mirrors
@@ -345,7 +390,7 @@ def check_duplicate(body: DuplicateCheckIn, db: Session = Depends(get_db),
 
 @router.get("/{product_id}/detail")
 def product_detail(product_id: int, db: Session = Depends(get_db),
-                   _: User = Depends(require_permission("products.view"))):
+                   user: User = Depends(require_permission("products.view"))):
     """§5 — the product header plus every batch that ever belonged to it.
 
     Depleted batches are returned too (``current_qty == 0``): they are the
@@ -382,13 +427,13 @@ def product_detail(product_id: int, db: Session = Depends(get_db),
 
     batches = [_b(b) for b in rows]
     active = [b for b in batches if not b["is_depleted"]]
-    return {
+    return _maybe_redact(user, {
         "product": _out(p),
         "total_stock": sum(b["current_qty"] for b in active),
         "active_batches": active,
         "depleted_batches": [b for b in batches if b["is_depleted"]],
         "batch_count": len(batches),
-    }
+    })
 
 
 @router.post("", status_code=201)

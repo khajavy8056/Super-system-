@@ -54,7 +54,11 @@ def test_manifest_and_sw_served(client):
     assert body["start_url"] == "/mobile/"
     assert any(i["src"] == "/icons/icon-192.png" for i in body["icons"])
     sw = client.get("/sw.js")
-    assert sw.status_code == 200 and "supermarket-shell" in sw.text
+    # v1.0.0 (RASA) — نام کش برند جدید است؛ مهم این است که نسخه‌دار باشد و
+    # پاسخ‌های API هرگز کش نشوند (قرارداد «آفلاین صادقانه»).
+    assert sw.status_code == 200 and "rasa-shell" in sw.text
+    assert "v100" in sw.text, "نام کش باید نسخهٔ انتشار را داشته باشد"
+    assert 'url.pathname.startsWith("/api")' in sw.text
     icon = client.get("/icons/icon-192.png")
     assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/png")
 

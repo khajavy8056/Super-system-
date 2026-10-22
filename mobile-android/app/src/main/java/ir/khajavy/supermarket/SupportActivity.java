@@ -43,6 +43,27 @@ public class SupportActivity extends Activity {
             });
         }));
         root.addView(cd);
+        // v1.0.0 — تأمین کانال پشتیبانی روی این گوشی (توکن در کد نیست). اگر کانال
+        // تنظیم شده باشد این کارت نمایش داده نمی‌شود تا کاربر عادی درگیرش نشود.
+        if (!SupportRelay.configured() && Api.standalone()) {
+            LinearLayout ch = Ui.card(this, "کانال پشتیبانی این نصب (فنی)");
+            ch.addView(Ui.muted(this, "برای ارسال مستقیم از این گوشی، توکن کانال پشتیبانی را وارد کنید. تا آن زمان درخواست‌ها ذخیره می‌شوند و «در انتظار ارسال مجدد» می‌مانند."));
+            EditText tok = Ui.input(this, "توکن کانال پشتیبانی", true);
+            tok.setText(Prefs.get("support_relay_token", ""));
+            ch.addView(tok);
+            EditText url = Ui.input(this, "نشانی رله (اختیاری)", true);
+            url.setText(Prefs.get("support_relay_url", ""));
+            ch.addView(url);
+            ch.addView(Ui.primary(this, "ذخیرهٔ کانال", () -> {
+                Prefs.set("support_relay_token", Ui.str(tok));
+                Prefs.set("support_relay_url", Ui.str(url));
+                boolean ok = SupportRelay.configured();
+                Ui.toast(ok ? "کانال پشتیبانی ذخیره شد" : "توکن خالی است");
+                if (ok) recreate();
+            }));
+            ch.addView(Ui.muted(this, "هیچ درخواستی بدون ارسال موفق «ارسال‌شده» علامت نمی‌خورد."));
+            root.addView(ch);
+        }
         LinearLayout info = Ui.card(this, "اطلاعات این نصب");
         info.addView(Ui.kv(this, "کد نصب", SupportRelay.installCode(), 0));
         info.addView(Ui.kv(this, "نسخهٔ برنامه", Ui.fa(Version.NAME), 0));

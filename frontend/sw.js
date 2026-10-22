@@ -1,58 +1,45 @@
-/* Supermarket System — service worker (PWA shell cache).
+/* RASA SYSTEM — Service Worker Cleaner (build-495).
  *
- * Policy (honest offline):
- * - App shell (panel + mobile pages, styles, icons): cache-first, versioned.
- * - /api/**: NEVER cached or synthesized — data must come from the backend or
- *   fail visibly. The mobile app queues writes locally in IndexedDB and syncs
- *   when the network returns (§25–26); the SW does not fake responses.
+ * ویندوز (WebView2) و اندروید (Native) نیازی به کش مرورگری ندارند و کش کردن
+ * فایل‌های JS/HTML در Service Worker باعث بالا آمدن نسخهٔ قدیمی پس از آپدیت می‌شد.
+ * این فایل در صورت وجود ثبت قدیمی از نسخه‌های پیشین (مانند rasa-shell-v100)،
+ * تمام کش‌های Cache Storage را پاک کرده و خودش را لغو ثبت (unregister) می‌کند.
  */
-const CACHE = "supermarket-shell-v366";
-const SHELL = [
-  "/", "/app.js", "/styles.css", "/theme-pro.css", "/jalali.js", "/vendor-qrcode.js",
-  "/accounting.js", "/insights.js", "/desktop.css", "/mobile-shell.css", "/mobile-shell.js",
+const CACHE = "rasa-shell-v100-no-sw-v496";
+const PURGE_ASSETS = [
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/desktop.css",
+  "/ui-refresh.css",
+  "/rasa-ui.css",
+  "/app.js",
+  "/accounting.js",
+  "/insights.js",
   "/onboarding.js",
-  "/tour.js",
-  "/sfx.js",
-  "/mobile/", "/mobile/app.js", "/mobile/app-more.js", "/mobile/tour.js", "/mobile/vendor/zxing.min.js", "/mobile/styles.css",
-  "/manifest.webmanifest",
-  "/icons/icon-192.png", "/icons/icon-512.png", "/icons/logo.svg",
-  "/fonts/Vazirmatn-Regular.woff2", "/fonts/Vazirmatn-Bold.woff2",
 ];
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE).then(async (cache) => {
-      // add each resource independently so one 404 can't break installation
-      await Promise.all(SHELL.map((url) =>
-        cache.add(new Request(url, { cache: "reload" })).catch(() => null)));
-      await self.skipWaiting();
-    })
-  );
+self.addEventListener("install", () => {
+  self.skipWaiting();
 });
 
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
+      .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
+      .then(() => self.registration.unregister())
+      .then(() => self.clients.matchAll({ type: "window" }))
+      .then((clients) => {
+        clients.forEach((c) => {
+          try { c.postMessage({ type: "SW_PURGED", version: CACHE, assets: PURGE_ASSETS.length }); } catch (_) {}
+        });
+      })
+      .catch(() => {})
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  if (event.request.method !== "GET" || url.pathname.startsWith("/api")) return; // network-only
-  if (url.origin !== self.location.origin) return;
-
-  event.respondWith(
-    caches.match(event.request, { ignoreSearch: true }).then((cached) => {
-      const network = fetch(event.request).then((resp) => {
-        if (resp && resp.status === 200 && resp.type === "basic") {
-          const clone = resp.clone();
-          caches.open(CACHE).then((c) => c.put(event.request, clone)).catch(() => null);
-        }
-        return resp;
-      }).catch(() => cached || Response.error());
-      return cached || network;
-    })
-  );
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (url.pathname.startsWith("/api")) return;
+  // عبوردهی مستقیم شبکه/لوکال بدون هیچ کش قدیمی
 });

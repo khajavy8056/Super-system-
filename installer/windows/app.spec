@@ -31,7 +31,9 @@ def _optional_desktop_hiddenimports():
 
 a = Analysis(
     [str(ROOT / "installer" / "windows" / "run_supermarket.py")],
-    pathex=[str(ROOT / "backend")],
+    # build-498: repo root is on the path so the NATIVE desktop package
+    # (desktop/, Qt Widgets UI) resolves; backend/ stays for the sync API.
+    pathex=[str(ROOT / "backend"), str(ROOT)],
     binaries=[],
     datas=[
         (str(ROOT / "frontend"), "frontend"),
@@ -40,7 +42,9 @@ a = Analysis(
         (str(ROOT / "backend" / "alembic.ini"), "."),
         # §80–82 bundled zero-stock starter catalog (read at runtime via __file__).
         (str(ROOT / "backend" / "app" / "data"), "app/data"),
-        # v1.3 native window icon (WebView2 window title bar / taskbar)
+        # build-488 (§6) — Vazirmatn OFL fonts for Persian PDF reports (pdf.py).
+        (str(ROOT / "backend" / "app" / "assets"), "app/assets"),
+        # native window icon (taskbar/title bar of the Qt application)
         (str(ROOT / "installer" / "windows" / "icon.ico"), "."),
         # v3.5.8 — the bundled one-year demo store (~20 MB gzipped, 76 MB inflated).
         # v3.5.7 pointed this at ROOT/"demo", but _demo_backup_path() reaches
@@ -70,8 +74,16 @@ a = Analysis(
         # v1.7 pairing QR PNG fallback (qrcode + Pillow PNG plugin)
         "qrcode", "qrcode.image.pil", "PIL", "PIL.Image", "PIL.PngImagePlugin",
         "openpyxl", "openpyxl.cell", "openpyxl.styles", "openpyxl.reader.excel", "et_xmlfile",   # v3.4 catalog folder import
-        # v1.3 native desktop window (pywebview on WebView2). pythonnet/clr
-        # is loaded dynamically by pywebview's edgechromium backend.
+        # build-498 — the NATIVE Windows UI (PySide6/Qt Widgets). PyInstaller's
+        # built-in PySide6 hook collects the Qt binaries; the modules are listed
+        # so a missing package fails the build loudly instead of shipping a
+        # launcher that cannot open its own window.
+        "desktop", "desktop.main", "desktop.app_context", "desktop.ui_kit",
+        "desktop.login", "desktop.main_window",
+        "desktop.screens", "desktop.screens.dashboard", "desktop.screens.pos",
+        "desktop.screens.products", "desktop.screens.customers",
+        "desktop.screens.invoices", "desktop.screens.users",
+        "desktop.screens.reports", "desktop.screens.settings",
     ] + _optional_desktop_hiddenimports(),
     hookspath=[],
     runtime_hooks=[],
@@ -112,7 +124,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="SupermarketSystem",
+    name="RasaSystem",
     icon=str(ROOT / "installer" / "windows" / "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,

@@ -1,19 +1,35 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Product, User
-from ..security import get_current_user, require_permission
+from ..security import get_current_user, has_permission, require_permission
 from ..services import pos as pos_svc
 from ..services.pos import CartItem, PosError
+from ..services.reports import redact_costs
 
 router = APIRouter(prefix="/pos", tags=["pos"])
+
+
+def _maybe_redact(user: User, payload):
+    """v3.7 (§34) — unit costs/profit leave the server only with ``pricing.view_cost``."""
+    return payload if has_permission(user, "pricing.view_cost") else redact_costs(payload)
+
+
+def _require_finite(name: str, v: Decimal) -> Decimal:
+    """build-501 — NaN/∞ (از JSON خراب یا کلاینت معیوب) در مبدأ ۴۲۲ می‌شود، نه خطای ۵۰۰.
+    هم‌ارزِ سمت گوشی: «Forbidden numeric value: NaN» دیگر هیچ‌مسیری به دیتابیس ندارد."""
+    if not v.is_finite():
+        raise ValueError(f"{name} must be a finite number")
+    return v
 
 
 class CartLineIn(BaseModel):
@@ -23,6 +39,11 @@ class CartLineIn(BaseModel):
     batch_id: int | None = None
     discount: Decimal = Field(default=Decimal("0"), ge=0)
 
+    @field_validator("quantity", "discount")
+    @classmethod
+    def _finite_line(cls, v: Decimal, info) -> Decimal:
+        return _require_finite(str(info.field_name), v)
+
 
 class CartIn(BaseModel):
     items: list[CartLineIn]
@@ -30,14 +51,23 @@ class CartIn(BaseModel):
     coupon_code: str | None = None
     customer_id: int | None = None
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 — cashier-selected campaign (validated server-side, §25)
+    campaign_id: int | None = None
 
 
 class PaymentIn(BaseModel):
     method: str = "CASH"
     amount: Decimal = Field(ge=0)
 
+    @field_validator("amount")
+    @classmethod
+    def _finite_amount(cls, v: Decimal) -> Decimal:
+        return _require_finite("amount", v)
+
 
 from .customers import norm_phone as _norm_phone
+
+log = logging.getLogger("supermarket.pos")
 
 
 class CheckoutIn(BaseModel):
@@ -50,8 +80,18 @@ class CheckoutIn(BaseModel):
     coupon_code: str | None = None
     #: §12 whole-invoice discount (absolute amount in base currency)
     invoice_discount: Decimal | None = Field(default=None, ge=0)
+    #: build-481 (§24) — festival picked from the POS list; the server re-validates
+    campaign_id: int | None = None
+    #: build-496 — offline terminals reserve their locally issued next-purchase code
+    #: so queued checkouts can create the exact same coupon on the server.
+    client_issued_coupon_codes: dict[str, str] = Field(default_factory=dict)
     #: §19 pulse the cash drawer after a successful cash sale
     open_drawer: bool = False
+
+    @field_validator("tax_rate", "invoice_discount")
+    @classmethod
+    def _finite_optional(cls, v: Decimal | None, info) -> Decimal | None:
+        return None if v is None else _require_finite(str(info.field_name), v)
 
 
 # --- Kiosk / lock mode (§7) ---------------------------------------------------
@@ -62,7 +102,8 @@ def kiosk_config(db: Session = Depends(get_db),
     """Config the POS terminal needs to enter kiosk mode (any logged-in user)."""
     shortcut = pos_svc.get_setting(db, "pos.kiosk_shortcut", "Ctrl+Shift+L")
     store = pos_svc.get_setting(db, "printer.header", "") or "فروشگاه"
-    return {"shortcut": shortcut, "store_name": store.split("\n")[0]}
+    return {"shortcut": shortcut, "store_name": store.split("\n")[0],
+            "tax_rate": pos_svc.get_setting(db, "pos.tax_rate", "0")}
 
 
 class KioskUnlockIn(BaseModel):
@@ -99,18 +140,57 @@ def kiosk_unlock(body: KioskUnlockIn, db: Session = Depends(get_db)):
 
 
 @router.get("/batch-options/{product_id}")
-def batch_options(product_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def batch_options(product_id: int, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     product = db.get(Product, product_id)
     if not product or product.deleted_at is not None or not product.is_active:
         raise HTTPException(status_code=404, detail="PRODUCT_NOT_FOUND")
     options = pos_svc.get_batch_options(db, product)
-    return {"product_id": product_id, "product_name": product.name,
-            "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
-            "options": [o.as_dict() for o in options]}
+    return _maybe_redact(user, {"product_id": product_id, "product_name": product.name,
+                                "mode": pos_svc.get_setting(db, "pos.batch_selection_mode", "HYBRID"),
+                                "options": [o.as_dict() for o in options]})
+
+
+class CampaignListIn(BaseModel):
+    amount: Decimal = Field(ge=0)
+    product_ids: list[int] | None = None
+    line_amounts: dict[int, Decimal] | None = None
+    #: build-515 — تعداد هر خط (برای پاداش «هدیهٔ رایگان»)
+    line_qtys: dict[int, Decimal] | None = None
+    customer_id: int | None = None
+    include_auto_apply: bool = True
+
+
+@router.post("/campaigns/eligible")
+def eligible_campaigns(body: CampaignListIn, db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("pos.sell"))):
+    """build-481 (§24) — the structured festival list a cashier chooses from.
+
+    Returns ONLY campaigns whose conditions already hold for this basket —
+    active, inside their window, over the minimum purchase, usage slots left.
+    Selecting one is a convenience; checkout re-validates everything (§25).
+    """
+    from ..services import coupons as coupon_svc
+    amount = Decimal(str(body.amount))
+    rejections: list[dict] = []   # build-512 — دلیل رد شدن هر جشنوارهٔ فعال
+    rows = coupon_svc.eligible_campaigns(
+        db, amount=amount, product_ids=body.product_ids,
+        line_amounts={int(k): Decimal(str(v)) for k, v in (body.line_amounts or {}).items()},
+        line_qtys={int(k): Decimal(str(v)) for k, v in (body.line_qtys or {}).items()},
+        customer_id=body.customer_id, include_auto_apply=body.include_auto_apply,
+        rejected=rejections,
+    )
+    # build-509 — «با ثبت این فاکتور کوپن خرید بعدی صادر می‌شود»: صندوق‌دار قبل از
+    # ثبت بداند کدام جشنواره‌های آستانه‌دار فعال‌اند (درخواست مالک برای شفافیت صندوق).
+    issue_now = coupon_svc.issue_on_checkout(
+        db, amount=amount, customer_id=body.customer_id)
+    # build-512 — rejections همیشه هست: صندوق (و هر کلاینتی) بلافاصله می‌فهمد چرا
+    # یک جشنوارهٔ خاص با این سبد جمع نشد؛ حتی وقتی جشنوارهٔ واجد شرایط دیگری هست.
+    return {"campaigns": rows, "count": len(rows), "issue_on_checkout": issue_now,
+            "rejections": rejections}
 
 
 @router.post("/cart/validate")
-def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends(require_permission("pos.sell"))):
+def validate_cart(body: CartIn, db: Session = Depends(get_db), user: User = Depends(require_permission("pos.sell"))):
     try:
         items = pos_svc.validate_cart(db, [CartItem(product_id=i.product_id, quantity=i.quantity,
                                                    batch_id=i.batch_id, discount=i.discount)
@@ -144,7 +224,31 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
             except coupon_svc.CouponError as exc:
                 coupon = {"code": body.coupon_code, "ok": False,
                           "error_code": exc.code, "message": exc.message}
-        return {"items": [_line_out(i) for i in items], "totals": totals, "coupon": coupon}
+        campaign = None
+        if body.campaign_id:
+            from ..services import coupons as camp_svc
+            line_amounts: dict[int, Decimal] = {}
+            line_qtys: dict[int, Decimal] = {}
+            for i in items:
+                line_amounts[i.product_id] = line_amounts.get(i.product_id, Decimal("0")) + (
+                    (i.unit_sell_price or Decimal("0")) * i.quantity - i.discount)
+                line_qtys[i.product_id] = line_qtys.get(i.product_id, Decimal("0")) + i.quantity
+            try:
+                ev = camp_svc.evaluate_campaign(
+                    db, campaign_id=body.campaign_id,
+                    amount=Decimal(str(totals["subtotal"])),
+                    product_ids=[i.product_id for i in items], line_amounts=line_amounts,
+                    line_qtys=line_qtys, customer_id=body.customer_id)
+                campaign = {"campaign_id": ev["campaign_id"], "name": ev["name"],
+                            "discount": float(ev["discount"]), "ok": True,
+                            "stackable": ev["stackable"]}
+                totals["campaign_discount"] = float(ev["discount"])
+                totals["subtotal"] = float(Decimal(str(totals["subtotal"])) - ev["discount"])
+            except camp_svc.CampaignError as exc:
+                campaign = {"campaign_id": body.campaign_id, "ok": False,
+                            "error_code": exc.code, "message": exc.message}
+        return _maybe_redact(user, {"items": [_line_out(i) for i in items], "totals": totals,
+                                    "coupon": coupon, "campaign": campaign})
     except PosError as e:
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
 
@@ -153,6 +257,15 @@ def validate_cart(body: CartIn, db: Session = Depends(get_db), _: User = Depends
 def checkout(body: CheckoutIn, db: Session = Depends(get_db),
              user: User = Depends(require_permission("pos.sell"))):
     try:
+        # v4.8.0 — «تخفیفِ اجراشده باید روی صندوق باشد»: پیش از هر فروش، پله‌های
+        # تخفیف انقضایی که امروز موعدشان رسیده اعمال می‌شوند. کارگر پس‌زمینه هم
+        # این کار را می‌کند، اما فروشگاهی که کارگر را خاموش کرده نباید کالای
+        # «تخفیف‌خورده در تئوری» را به قیمت قدیم بفروشد. عمل idempotent است.
+        from ..services import insight_actions as _ia
+        try:
+            _ia.apply_markdown_steps(db)
+        except Exception:
+            log.exception("markdown steps skipped before checkout")   # never block a sale
         customer_id = body.customer_id
         if customer_id is None and body.customer_phone:
             # Phone book: a phone number alone is enough to create a customer (§30)
@@ -182,6 +295,7 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             tax_rate=body.tax_rate,
             coupon_code=body.coupon_code,
             invoice_discount=body.invoice_discount,
+            campaign_id=body.campaign_id,
         )
 
         # Next-purchase coupon (§36) + invoice SMS are issued after the sale is
@@ -191,7 +305,8 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
 
         customer = db.get(_C, customer_id) if customer_id else None
         issued = coupon_svc.issue_next_purchase_coupon(
-            db, invoice=invoice, customer=customer, user=user)
+            db, invoice=invoice, customer=customer, user=user,
+            preferred_codes=body.client_issued_coupon_codes)
 
         from ..services import sms as sms_svc
         # v2.3 — invoice SMS is independent of receipt printing: the shop may turn the
@@ -204,10 +319,15 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             # the next-purchase coupon rides along in the same message.
             coupon_line = ""
             if issued:
-                coupon_line = f"\nکد تخفیف خرید بعدی: {issued.code}"
+                coupon_line = f"کد تخفیف خرید بعدی: {issued.code}"
                 if issued.valid_until:
-                    coupon_line += f" (تا {issued.valid_until.date()})"
-            text = sms_svc.render_invoice(db, invoice, coupon_line)
+                    # v4.8.0 — تاریخ شمسی با ارقام فارسی (متن پیامک یکدست می‌ماند)
+                    from ..services.timeservice import to_jalali
+                    d = issued.valid_until.date()
+                    jy, jm, jd = to_jalali(datetime(d.year, d.month, d.day))
+                    coupon_line += (f" (تا {jy:04d}/{jm:02d}/{jd:02d})"
+                                    .translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+            text = sms_svc.render_invoice_for_mode(db, invoice, coupon_line)
             msg = sms_svc.queue_sms(db, phone=customer.phone, text=text,
                                     reference_type="Invoice", reference_id=invoice.id)
             # queued for retry-safe delivery; never blocks the sale (§48)
@@ -227,11 +347,20 @@ def checkout(body: CheckoutIn, db: Session = Depends(get_db),
             ok, msg = hw_svc.open_cash_drawer(db)
             out["drawer"] = {"ok": ok, "message": msg}
         out["coupon_code"] = body.coupon_code
+        # build-481: do NOT echo body.campaign_id over the applied one — for an
+        # auto-applied threshold festival the request carries None while the
+        # invoice really was discounted by a campaign.
+        # build-509 — جزئیات کامل کوپن صادرشده برای نمایش در صندوق و رسید
         out["issued_coupon"] = ({"code": issued.code,
                                  "valid_until": issued.valid_until.isoformat()
-                                 if issued.valid_until else None} if issued else None)
+                                 if issued.valid_until else None,
+                                 "discount_type": issued.discount_type,
+                                 "discount_value": float(issued.discount_value),
+                                 "min_purchase": float(issued.min_purchase or 0),
+                                 "campaign_name": (issued.campaign.name if issued.campaign else None)}
+                                if issued else None)
         db.commit()
-        return out
+        return _maybe_redact(user, out)
     except PosError as e:
         db.rollback()
         raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
@@ -279,6 +408,12 @@ def _invoice_out(inv) -> dict:
         "status": inv.status,
         "print_status": inv.print_status,
         "customer_id": inv.customer_id,
+        # build-481 (§26) — which festival/coupon granted what, frozen at sale time
+        "campaign_id": getattr(inv, "campaign_id", None),
+        "campaign_name": getattr(inv, "campaign_name", None),
+        "benefit_source": getattr(inv, "benefit_source", "NONE"),
+        "benefit_amount": float(getattr(inv, "benefit_amount", 0) or 0),
+        "applied_coupon_code": getattr(inv, "applied_coupon_code", None),
         "items": [
             {"product_id": it.product_id, "batch_id": it.batch_id, "qty": float(it.qty),
              "qty_display": float(it.qty),
@@ -293,7 +428,7 @@ def _invoice_out(inv) -> dict:
 
 @router.get("/search")
 def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
-               _: User = Depends(require_permission("pos.sell"))):
+               user: User = Depends(require_permission("pos.sell"))):
     """Cashier search by barcode, product name, SKU or product code.
 
     An exact barcode/SKU hit is always returned first so scanning stays instant,
@@ -368,4 +503,60 @@ def pos_search(q: str, limit: int = 20, db: Session = Depends(get_db),
             "exact": p in exact,
             "batches": [o.as_dict() for o in options],
         })
-    return {"query": term, "count": len(items), "items": items}
+    return _maybe_redact(user, {"query": term, "count": len(items), "items": items})
+
+
+@router.get("/fast-movers")
+def pos_fast_movers(days: int = 30, limit: int = 16, db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("pos.sell"))):
+    """build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای
+    روزهای اخیر با تصویر، به‌شکل نواری افقی بالای صندوق تا صندوق‌دار با یک لمس
+    پرفروش‌ها را به سبد بیفزاید — بدون تایپ و جست‌وجو.
+
+    خروجی عیناً همان شکل آیتم‌های /pos/search است (batches/unit/available_qty)،
+    یعنی کلیک روی هر کاشی مستقیماً همان مسیر افزودن جست‌وجو را می‌رود (انتخاب بچ/
+    تعداد خودکار). فقط کالایی که همین حالا قابل فروش است (بچ فعال با موجودی) نشان
+    داده می‌شود؛ فاکتورهای ابطال‌شده در شمارش پرفروشی نمی‌آیند.
+    """
+    from sqlalchemy import desc, func
+
+    from ..models import Invoice, InvoiceItem, Unit
+    days = max(1, min(int(days), 365))
+    limit = max(1, min(int(limit), 40))
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = db.execute(
+        select(InvoiceItem.product_id,
+               func.sum(InvoiceItem.qty).label("sq"),
+               func.sum(InvoiceItem.subtotal).label("st"))
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .where(InvoiceItem.created_at >= since, Invoice.status != "VOID")
+        .group_by(InvoiceItem.product_id)
+        .order_by(desc("sq"), InvoiceItem.product_id)
+        .limit(limit * 3)   # چند ردیف اضافه: کالای حذف‌شده/بی‌موجودی بعداً حذف می‌شود
+    ).all()
+    items = []
+    for pid, sq, st in rows:
+        if len(items) >= limit:
+            break
+        p = db.get(Product, pid)
+        if p is None or p.deleted_at is not None or not p.is_active:
+            continue
+        options = pos_svc.get_batch_options(db, p)
+        total = float(sum((o.batch.current_qty for o in options), 0))
+        if total <= 0:
+            continue   # نوار پرفروش‌ها فقط «الان قابل فروش» را پیشنهاد می‌دهد
+        unit = db.get(Unit, p.unit_id) if p.unit_id else None
+        items.append({
+            "product_id": p.id, "name": p.name, "barcode": p.barcode, "sku": p.sku,
+            "image_url": p.image_url,
+            "unit": {"name": unit.name, "symbol": unit.symbol,
+                     "allow_decimal": unit.allow_decimal,
+                     "decimals": unit.decimals} if unit else None,
+            "available_qty": total,
+            "price_count": len({float(o.batch.sell_price) for o in options}),
+            "exact": False,
+            "batches": [o.as_dict() for o in options],
+            "sold_qty": float(sq or 0),
+            "sold_total": float(st or 0),
+        })
+    return _maybe_redact(user, {"days": days, "count": len(items), "items": items})

@@ -14,10 +14,10 @@ trial_balance / general_ledger / income_statement / balance_sheet / account_bala
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -314,15 +314,57 @@ def post_sale_void(db: Session, invoice: Invoice, user: User | None = None, reas
 
 
 def post_sale_return(db: Session, ret: Return, item: InvoiceItem, invoice: Invoice, user: User | None = None):
+    """I-02: tender-aware GL — credit sale return reduces receivable + ledger, cash return credits cash/card."""
     refund = _m(ret.refund_amount)
     cost = _m(item.unit_buy_price) * Decimal(str(ret.qty))
-    lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
-             Line(A_CASH, credit=refund, description="استرداد وجه")]
+    # Determine if this invoice was on credit (receivable)
+    is_credit = False
+    if getattr(invoice, "customer_id", None):
+        if getattr(invoice, "payment_status", None) in ("ON_ACCOUNT", "PARTIAL"):
+            is_credit = True
+        else:
+            try:
+                for p in getattr(invoice, "payments", []) or []:
+                    if str(getattr(p, "method", "")).upper() == "ACCOUNT":
+                        is_credit = True
+                        break
+            except Exception:
+                pass
+            if not is_credit and str(getattr(invoice, "payment_method", "")).upper() == "ACCOUNT":
+                is_credit = True
+    if is_credit:
+        lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
+                 Line(A_RECEIVABLE, credit=refund, description="برگشت به حساب دفتری (کاهش بدهی)",
+                      party_type="CUSTOMER", party_id=invoice.customer_id)]
+    else:
+        tender_account = A_CASH
+        try:
+            for p in getattr(invoice, "payments", []) or []:
+                if str(getattr(p, "method", "")).upper() != "ACCOUNT":
+                    tender_account = TENDER_ACCOUNT.get(str(getattr(p, "method", "")).upper(), A_CASH)
+                    break
+            if tender_account == A_CASH and getattr(invoice, "payment_method", None):
+                tender_account = TENDER_ACCOUNT.get(str(invoice.payment_method).upper(), A_CASH)
+        except Exception:
+            pass
+        lines = [Line(A_SALES_RET, debit=refund, description=f"برگشت از فروش فاکتور {invoice.invoice_number}"),
+                 Line(tender_account, credit=refund, description="استرداد وجه")]
     if cost > ZERO:
         lines += [Line(A_INVENTORY, debit=cost, description="بازگشت کالا به انبار"),
                   Line(A_COGS, credit=cost, description="برگشت بهای تمام‌شده")]
-    return post(db, kind="SALE_RETURN", lines=lines, description=f"برگشت از فروش — {invoice.invoice_number}",
-                source_type="Return", source_id=ret.id, user=user)
+    entry = post(db, kind="SALE_RETURN", lines=lines, description=f"برگشت از فروش — {invoice.invoice_number}",
+                source_type="Return", source_id=ret.id, user=user, entry_date=_local_date(getattr(ret, "created_at", None)))
+    # I-02: also adjust customer ledger when refund was on credit
+    if is_credit:
+        try:
+            from .ledger import post_entry as _ledger_post
+            _ledger_post(db, customer_id=invoice.customer_id, entry_type="RETURN_REFUND",
+                         amount=refund, invoice_id=invoice.id,
+                         note=f"مرجوعی فاکتور {invoice.invoice_number}", user_id=user.id if user else None,
+                         enforce_credit_limit=False)
+        except Exception:
+            pass  # ledger failure must not break GL; will be reconciled via DQ
+    return entry
 
 
 def post_purchase(db: Session, batch: ProductBatch, user: User | None = None, *,
@@ -493,8 +535,13 @@ def session_summary(db: Session, s: CashSession) -> dict:
     invoices = int(db.execute(select(func.count(Invoice.id)).where(
         Invoice.created_by == s.user_id, Invoice.created_at >= s.opened_at, Invoice.created_at <= end,
         Invoice.status != "VOID")).scalar_one())
-    refunds = _m(db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0)).where(
-        Return.created_by == s.user_id, Return.created_at >= s.opened_at, Return.created_at <= end)).scalar_one())
+    # I-03: only cash refunds reduce expected cash; credit refunds reduce receivable not cash
+    # Use Invoice.payment_method to distinguish (pre-payments table legacy) or Payment table for newer invoices
+    refunds_cash = _m(db.execute(select(func.coalesce(func.sum(Return.refund_amount), 0))
+        .join(Invoice, Return.invoice_id == Invoice.id)
+        .where(Return.created_by == s.user_id, Return.created_at >= s.opened_at, Return.created_at <= end,
+               Invoice.payment_method.in_(["CASH", "CARD", "POS", "TRANSFER", "BANK", "CHEQUE"]))).scalar_one())
+    refunds = refunds_cash
     cash_sales = _m(by_method.get("CASH", 0))
     expected = _m(s.opening_float) + cash_sales - refunds
     return {"by_method": by_method, "invoice_count": invoices, "refunds": float(refunds),
@@ -728,11 +775,81 @@ def overview(db: Session) -> dict:
     due_soon = list(db.execute(select(Cheque).where(Cheque.status == "PENDING",
                                                     Cheque.due_date <= today.replace(day=today.day))
                                .order_by(Cheque.due_date).limit(5)).scalars())
+    # v1.0.0 (RASA) — کارایی: این شش تراز قبلاً شش پرس‌وجوی جداگانه روی دفتر کل بود
+    # (روی پایگاه‌دادهٔ یک‌ساله ≈ ۸۰ms، هر بار بازشدن داشبورد). اکنون یک پرس‌وجو با
+    # همان معنی: جمع بدهکار/بستانکار برای همین شش حساب.
+    codes = (A_CASH, A_BANK, A_CARD, A_RECEIVABLE, A_PAYABLE, A_INVENTORY)
+    accs = [account_by_code(db, c) for c in codes]
+    pooled = _balances(db, None, None, [a.id for a in accs])
+    bal = {a.code: _signed(a, *pooled.get(a.id, (ZERO, ZERO))) for a in accs}
+
+    trend_start = today - timedelta(days=6)
+    income_amount = case(
+        (Account.account_class == "REVENUE", JournalLine.credit - JournalLine.debit),
+        else_=0,
+    )
+    expense_amount = case(
+        (Account.account_class.in_(("COGS", "EXPENSE")), JournalLine.debit - JournalLine.credit),
+        else_=0,
+    )
+    trend_rows = db.execute(
+        select(
+            JournalEntry.entry_date,
+            func.coalesce(func.sum(income_amount), 0),
+            func.coalesce(func.sum(expense_amount), 0),
+        )
+        .select_from(JournalEntry)
+        .join(JournalLine, JournalLine.entry_id == JournalEntry.id)
+        .join(Account, Account.id == JournalLine.account_id)
+        .where(
+            JournalEntry.status != "REVERSED_HIDDEN",
+            JournalEntry.entry_date >= trend_start,
+            JournalEntry.entry_date <= today,
+        )
+        .group_by(JournalEntry.entry_date)
+    ).all()
+    totals_by_day = {
+        entry_date: (float(_m(income)), float(_m(expenses)))
+        for entry_date, income, expenses in trend_rows
+    }
+    income_expense_trend = []
+    for days_ago in range(6, -1, -1):
+        trend_day = today - timedelta(days=days_ago)
+        day_income, day_expenses = totals_by_day.get(trend_day, (0.0, 0.0))
+        jy, jm, jd = to_jalali(datetime(trend_day.year, trend_day.month, trend_day.day))
+        income_expense_trend.append({
+            "date": str(trend_day), "label": f"{jm:02d}/{jd:02d}",
+            "income": day_income, "expenses": day_expenses,
+        })
+
+    recent_rows = db.execute(
+        select(
+            JournalEntry.id, JournalEntry.number, JournalEntry.entry_date,
+            JournalEntry.description, JournalEntry.kind, JournalEntry.status,
+            func.coalesce(func.sum(JournalLine.debit), 0),
+        )
+        .select_from(JournalEntry)
+        .outerjoin(JournalLine, JournalLine.entry_id == JournalEntry.id)
+        .where(JournalEntry.status != "REVERSED_HIDDEN")
+        .group_by(
+            JournalEntry.id, JournalEntry.number, JournalEntry.entry_date,
+            JournalEntry.description, JournalEntry.kind, JournalEntry.status,
+        )
+        .order_by(JournalEntry.entry_date.desc(), JournalEntry.number.desc())
+        .limit(5)
+    ).all()
+    recent_entries = [
+        {"id": entry_id, "number": number, "date": str(entry_date),
+         "description": description, "kind": kind, "status": status,
+         "total": float(_m(total))}
+        for entry_id, number, entry_date, description, kind, status, total in recent_rows
+    ]
+
     return {
-        "cash": float(account_balance(db, A_CASH)), "bank": float(account_balance(db, A_BANK)),
-        "card": float(account_balance(db, A_CARD)),
-        "receivables": float(account_balance(db, A_RECEIVABLE)), "payables": float(account_balance(db, A_PAYABLE)),
-        "inventory_value": float(account_balance(db, A_INVENTORY)),
+        "cash": float(bal[A_CASH]), "bank": float(bal[A_BANK]),
+        "card": float(bal[A_CARD]),
+        "receivables": float(bal[A_RECEIVABLE]), "payables": float(bal[A_PAYABLE]),
+        "inventory_value": float(bal[A_INVENTORY]),
         "month": {"revenue": pl["revenue"]["total"], "cogs": pl["cogs"]["total"],
                   "expenses": pl["expenses"]["total"], "net_profit": pl["net_profit"],
                   "gross_margin_pct": pl["gross_margin_pct"]},
@@ -740,5 +857,7 @@ def overview(db: Session) -> dict:
                     "issued_pending": float(_m(pending_pay[0])), "issued_count": int(pending_pay[1]),
                     "overdue": [{"id": c.id, "number": c.number, "amount": float(c.amount), "due_date": str(c.due_date),
                                  "direction": c.direction, "party_name": c.party_name} for c in due_soon]},
+        "income_expense_trend": income_expense_trend,
+        "recent_entries": recent_entries,
         "entry_count": int(db.execute(select(func.count(JournalEntry.id))).scalar_one()),
     }

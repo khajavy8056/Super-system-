@@ -53,12 +53,12 @@ jobs:
       - name: Smoke-test the frozen executable
         shell: pwsh
         run: |
-          $exe = "installer/windows/dist/SupermarketSystem.exe"
+          $exe = "installer/windows/dist/RasaSystem.exe"
           if (-not (Test-Path $exe)) { throw "PyInstaller produced no exe" }
           $env:NO_BROWSER = "1"
           $p = Start-Process -FilePath $exe -PassThru
           # The launcher picks a free port and logs it; poll the user data dir.
-          $log = Join-Path $env:USERPROFILE "SupermarketSystem\logs\supermarket.log"
+          $log = Join-Path $env:USERPROFILE "RasaSystem\logs\supermarket.log"
           $ok = $false
           foreach ($i in 1..60) {
             Start-Sleep -Seconds 2
@@ -81,6 +81,12 @@ jobs:
           }
           Write-Host "frozen executable booted and served the panel"
 
+      # v4.6.0 (round 14) — the local Business-BRAIN model pipeline was removed
+      # from the product (scripts/model/ is deleted; test_v46_brain_removal pins
+      # this). The old "fetch + embed the AI model" step called the deleted
+      # script and failed EVERY Windows release build after v4.6. The installer
+      # no longer bundles a model payload, so there is nothing to fetch here.
+
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |
@@ -101,7 +107,7 @@ jobs:
         id: artifact
         shell: pwsh
         run: |
-          $setup = Get-ChildItem -Recurse -Filter "SupermarketSystem-Setup-*.exe" |
+          $setup = Get-ChildItem -Recurse -Filter "RasaSystem-Setup-*.exe" |
                    Select-Object -First 1
           if (-not $setup) { throw "no Setup.exe produced" }
           Write-Host "built: $($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MB)"
@@ -159,7 +165,7 @@ jobs:
         run: |
           cd installer/standalone/build/exe.linux-*
           export HOME=$(mktemp -d)
-          NO_BROWSER=1 ./SupermarketSystem > /tmp/boot.log 2>&1 &
+          NO_BROWSER=1 ./RasaSystem > /tmp/boot.log 2>&1 &
           for i in $(seq 1 60); do
             sleep 2
             port=$(grep -oP 'http://127.0.0.1:\K[0-9]+' /tmp/boot.log | head -1) || true
@@ -182,9 +188,9 @@ jobs:
           v=$(grep -oP '__version__\s*=\s*"\K[^"]+' backend/app/__init__.py)
           echo "version=$v" >> "$GITHUB_ENV"
           cd installer/standalone/build
-          tar -czf "$GITHUB_WORKSPACE/SupermarketSystem-$v-linux-x86_64.tar.gz" exe.linux-*
+          tar -czf "$GITHUB_WORKSPACE/RasaSystem-$v-linux-x86_64.tar.gz" exe.linux-*
           cd "$GITHUB_WORKSPACE"
-          sha256sum SupermarketSystem-$v-linux-x86_64.tar.gz > SHA256SUMS-linux.txt
+          sha256sum RasaSystem-$v-linux-x86_64.tar.gz > SHA256SUMS-linux.txt
 
       - name: Attach to the GitHub Release
         env:
@@ -192,5 +198,5 @@ jobs:
         run: |
           tag="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
           gh release upload "$tag" \
-            "SupermarketSystem-${{ env.version }}-linux-x86_64.tar.gz" \
+            "RasaSystem-${{ env.version }}-linux-x86_64.tar.gz" \
             SHA256SUMS-linux.txt --clobber

@@ -12,17 +12,17 @@ cd installer\windows
 .\build.ps1
 ```
 
-خروجی: `installer\output\SupermarketSystem-Setup-0.2.0.exe`
+خروجی: `installer\output\RasaSystem-Setup-0.2.0.exe`
 
 مراحل:
 1. وابستگی‌های backend نصب می‌شود.
-2. `pyinstaller app.spec` یک executable واحد (`SupermarketSystem.exe`) می‌سازد
+2. `pyinstaller app.spec` یک executable واحد (`RasaSystem.exe`) می‌سازد
    که frontend را داخل خودش دارد.
 3. `setup.iss` با Inno Setup نصب‌کننده می‌سازد (فایل‌ها + میانبر + uninstaller).
 
 ## رفتار پس از نصب
 
-- دیتابیس در `%USERPROFILE%\SupermarketSystem\supermarket.db` ساخته می‌شود
+- دیتابیس در `%USERPROFILE%\RasaSystem\supermarket.db` ساخته می‌شود
   (بیرون از پوشه نصب، تا آپدیت داده را پاک نکند — بخش 116).
 - اجرای برنامه → backend محلی → باز شدن مرورگر روی پنل وب.
 

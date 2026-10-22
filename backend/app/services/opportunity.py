@@ -286,7 +286,9 @@ def a_gateway(ctx: Ctx) -> list[Draft]:
             evidence={"product_id": pid, "score": round(score, 2), "basket_with": round(statistics.fmean(ts)),
                       "basket_store": round(base), "avg_lines": round(avg_lines, 1), "n": len(ts)},
             actions=[{"type": "shelf_note", "label": "جابه‌جایی به نقطهٔ دید", "params": {"products": [pid]}}],
-            expected_gain=(statistics.fmean(ts) - base) * len(ts) * 0.1,
+            # build-490 (§۴ — باگ محاسباتی): «سود ماهانه × شمار سبدهای کل تاریخ» عدد
+            # غیرواقعی می‌ساخت (۲۸ میلیون/ماه روی دیتای یک‌ساله!). نرمال‌سازی به بازهٔ ۳۰ روز:
+            expected_gain=(statistics.fmean(ts) - base) * (len(ts) * 30.0 / max(1, ctx.days)) * 0.1,
             metric={"metric": "avg_basket_size", "window_days": 28}))
     out.sort(key=lambda d: -d.expected_gain)
     return out[:5]

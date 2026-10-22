@@ -87,6 +87,34 @@ def _split(ctx: Ctx, days: int) -> tuple[list[dict], list[dict]]:
     return [l for l in ctx.lines if l["at"] < cut], [l for l in ctx.lines if l["at"] >= cut]
 
 
+def _cohort(kind: str, rows: list[dict], *, rule: str, action: dict, metric_window: int = 30,
+            priority: int = 2, gain: float = 0.0) -> list[Draft]:
+    """build-481 (steps 10–12) — ONE suggestion per shared rule, targets inside.
+
+    «به مشتری A تخفیف بده / B / C / D» نباید چهار کارت بسازد. همهٔ کسانی که از
+    یک قاعدهٔ مشترک واجد شرایط می‌شوند در یک پیشنهاد می‌آیند؛ و چون کلید پایدار
+    است (``cohort`` نه تاریخ)، اگر فردا D هم واجد شد همان کارتِ باز به‌روز می‌شود
+    («Existing Insight + D»)، نه یک کارت تازه. وقتی شرط از بین رفت، بازبینی
+    خودکار کارت را می‌بندد.
+    """
+    if not rows:
+        return []
+    names = [r.get("name") or f"#{r.get('customer_id')}" for r in rows[:4]]
+    who = "، ".join(names) + ("… " if len(rows) > 4 else "")
+    ids = [int(r["customer_id"]) for r in rows if r.get("customer_id") is not None]
+    return [Draft(
+        kind=kind, dedupe_key="cohort", priority=priority,
+        title=f"{len(rows)} مشتری واجد شرایط «{rule}»",
+        body=(f"{len(rows)} مشتری هم‌اکنون شرایط این قاعده را دارند: {who}. "
+              f"{rule} — یک اقدام گروهی برای همهٔ آن‌ها، با فهرست دقیق در شواهد. "
+              f"اگر بعداً مشتری دیگری هم واجد شد به همین پیشنهاد اضافه می‌شود."),
+        evidence={"rows": rows, "targets": ids, "rule": rule},
+        actions=[action],
+        expected_gain=gain,
+        metric={"metric": "customer_sales", "customer_ids": ids, "window_days": metric_window},
+    )]
+
+
 # --------------------------------------------------------------------------- 1-6: who to contact, and when
 def a_cust_payday(ctx: Ctx) -> list[Draft]:
     """Customers whose purchases cluster on a day of the month — i.e. when their money arrives.
@@ -107,22 +135,25 @@ def a_cust_payday(ctx: Ctx) -> list[Draft]:
         if not cust or not cust.phone:
             continue
         spend = sum(r["total"]) / max(1, len(r["total"]))
-        out.append(Draft(
-            kind="CUST_PAYDAY", dedupe_key=str(cid),
-            title=f"{cust.name}: روز {day} هر ماه خرید می‌کند",
-            body=(f"از {len(r['at'])} خرید ثبت‌شدهٔ این مشتری، {hits} مورد در روز {day} ماه انجام شده — "
-                  f"الگویی که معمولاً به زمان واریز حقوق مربوط است. میانگین سبد او {_toman(spend)} تومان است. "
-                  f"پیشنهاد: یک روز قبل از روز {day} پیامک پیشنهاد بفرستید تا خرید در همان روز انجام شود."),
-            priority=2,
-            evidence={"customer_id": cid, "day_of_month": day, "visits": len(r["at"]),
-                      "hits": hits, "avg_basket": round(spend), "top": [p for p in list(r["pids"])[:8]]},
-            actions=[{"type": "visit_sms", "label": "ارسال پیامک در روز مناسب",
-                      "params": {"customers": [{"id": cid, "day": day}]}}],
-            expected_gain=spend * 0.12,
-            metric={"metric": "customer_sales", "customer_ids": [cid], "window_days": 30}))
-        if len(out) >= 12:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name, "day_of_month": day,
+                    "visits": len(r["at"]), "hits": hits, "avg_basket": round(spend),
+                    "top": [p for p in list(r["pids"])[:8]]})
+    out.sort(key=lambda x: -x["avg_basket"])
+    out = out[:12]
+    if not out:
+        return []
+    # build-481 (steps 10–11): one shared recommendation, all eligible customers
+    # inside it; the personal SMS text carries each customer's own pay-day.
+    texts = [{"customer_id": r["customer_id"],
+              "text": f"{r['name']} عزیز، پیشنهاد ویژهٔ شما آماده است؛ روز {r['day_of_month']} هر ماه منتظرتان هستیم."}
+             for r in out]
+    return _cohort(
+        "CUST_PAYDAY", out,
+        rule="روز حقوق هر مشتری مشخص است و پیشنهاد باید یک روز قبل از آن روز برود",
+        action={"type": "personal_sms", "label": "پیامک شخصی در روز مناسب هر مشتری",
+                "params": {"customers": texts}},
+        metric_window=30,
+        gain=sum(r["avg_basket"] * 0.12 for r in out))
 
 
 def a_cust_churn_risk(ctx: Ctx) -> list[Draft]:
@@ -148,22 +179,21 @@ def a_cust_churn_risk(ctx: Ctx) -> list[Draft]:
         if not cust:
             continue
         avg = sum(r["total"]) / max(1, len(r["total"]))
-        out.append(Draft(
-            kind="CUST_CHURN_RISK", dedupe_key=str(cid),
-            title=f"{cust.name}: {int(silent)} روز است نیامده (عادتش هر {int(med)} روز)",
-            body=(f"فاصلهٔ معمول خریدهای این مشتری {int(med)} روز است و اکنون {int(silent)} روز گذشته — "
-                  f"{silent / med:.1f} برابر عادت خودش. میانگین سبد {_toman(avg)} تومان. "
-                  f"یک پیامک بازگرداندن با تخفیف کوچک معمولاً قبل از عادت‌کردن به فروشگاه رقیب جواب می‌دهد."),
-            priority=1 if silent > med * 3 else 2,
-            evidence={"customer_id": cid, "median_gap_days": round(med, 1), "silent_days": round(silent, 1),
-                      "ratio": round(silent / med, 2), "visits": len(r["at"]), "avg_basket": round(avg)},
-            actions=[{"type": "winback_sms", "label": "پیامک بازگرداندن + تخفیف",
-                      "params": {"customer_ids": [cid], "percent": 10, "days": 7}}],
-            expected_gain=avg * 0.8,
-            metric={"metric": "customer_sales", "customer_ids": [cid], "window_days": 30}))
-        if len(out) >= 12:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name, "median_gap_days": round(med, 1),
+                    "silent_days": round(silent, 1), "ratio": round(silent / med, 2),
+                    "visits": len(r["at"]), "avg_basket": round(avg)})
+    out.sort(key=lambda x: -x["ratio"])
+    out = out[:12]
+    if not out:
+        return []
+    urgent = any(r["ratio"] > 3 for r in out)
+    return _cohort(
+        "CUST_CHURN_RISK", out,
+        rule="سکوت فعلی هر مشتری از عادت خودش بسیار بیشتر شده است",
+        action={"type": "winback_sms", "label": "پیامک بازگرداندن + تخفیف ۱۰٪ (۷ روز)",
+                "params": {"customer_ids": [int(r["customer_id"]) for r in out], "percent": 10, "days": 7}},
+        metric_window=30, priority=1 if urgent else 2,
+        gain=sum(r["avg_basket"] * 0.8 for r in out))
 
 
 def a_cust_rfm(ctx: Ctx) -> list[Draft]:
@@ -222,22 +252,19 @@ def a_cust_basket_shrink(ctx: Ctx) -> list[Draft]:
         cust = ctx.db.get(Customer, cid)
         if not cust:
             continue
-        out.append(Draft(
-            kind="CUST_BASKET_SHRINK", dedupe_key=str(cid),
-            title=f"{cust.name}: سبد خریدش {(1 - b / a) * 100:.0f}٪ کوچک‌تر شده",
-            body=(f"میانگین سبد این مشتری از {_toman(a)} تومان به {_toman(b)} تومان رسیده، در حالی که هنوز "
-                  f"سرِ پا می‌آید ({len(n)} خرید در نیمهٔ اخیر). این الگو یعنی بخشی از خرید به جای دیگری "
-                  f"رفته است — معمولاً قبل از قطع کامل رابطه."),
-            priority=2,
-            evidence={"customer_id": cid, "before": round(a), "after": round(b),
-                      "drop_pct": round((1 - b / a) * 100, 1)},
-            actions=[{"type": "winback_sms", "label": "پیشنهاد بازگرداندن سهم سبد",
-                      "params": {"customer_ids": [cid], "percent": 12, "days": 10}}],
-            expected_gain=(a - b) * len(n),
-            metric={"metric": "customer_sales", "customer_ids": [cid], "window_days": 30}))
-        if len(out) >= 10:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name, "before": round(a), "after": round(b),
+                    "drop_pct": round((1 - b / a) * 100, 1), "recent_buys": len(n), "lost_per_basket": round(a - b)})
+    out.sort(key=lambda x: -x["drop_pct"])
+    out = out[:10]
+    if not out:
+        return []
+    return _cohort(
+        "CUST_BASKET_SHRINK", out,
+        rule="سبد خرید این مشتریان هنوز که هنوز است کوچک‌تر شده (نشانهٔ خاموش جدایی)",
+        action={"type": "winback_sms", "label": "پیشنهاد بازگرداندن سهم سبد (۱۲٪ / ۱۰ روز)",
+                "params": {"customer_ids": [int(r["customer_id"]) for r in out], "percent": 12, "days": 10}},
+        metric_window=30,
+        gain=sum(r["lost_per_basket"] * r["recent_buys"] for r in out))
 
 
 def a_cust_category_loss(ctx: Ctx) -> list[Draft]:
@@ -257,24 +284,27 @@ def a_cust_category_loss(ctx: Ctx) -> list[Draft]:
                 spend[l["pid"]] += l["sub"]
         top = sorted(spend, key=spend.get, reverse=True)[0]
         cust = ctx.db.get(Customer, cid)
-        if not cust:
+        if not cust or not cust.phone:
             continue
-        out.append(Draft(
-            kind="CUST_CATEGORY_LOSS", dedupe_key=str(cid),
-            title=f"{cust.name}: {len(lost)} کالای همیشگی‌اش را دیگر نمی‌خرد",
-            body=(f"بیشترین مبلغ از دست رفته مربوط به «{_pname(ctx, top)}» است "
-                  f"({_toman(spend[top])} تومان در نیمهٔ اول، صفر در نیمهٔ اخیر). "
-                  f"یک پیامک روی همان کالا، مستقیم‌ترین راه برگرداندن این سبد است."),
-            priority=2,
-            evidence={"customer_id": cid, "lost_products": list(lost)[:10], "top_product_id": top,
-                      "top_spend": round(spend[top])},
-            actions=[{"type": "sms_buyers", "label": "پیامک به خریداران این کالا",
-                      "params": {"product_id": top, "percent": 10}}],
-            expected_gain=spend[top] * 0.35,
-            metric={"metric": "customer_sales", "customer_ids": [cid], "window_days": 30}))
-        if len(out) >= 10:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name, "lost_products": list(lost)[:10],
+                    "top_product_id": top, "top_product": _pname(ctx, top), "top_spend": round(spend[top])})
+    out.sort(key=lambda x: -x["top_spend"])
+    out = out[:10]
+    if not out:
+        return []
+    # each customer lost a *different* product — the merged action must therefore
+    # carry a personal message per person (the old per-card action cannot serve a
+    # shared card), while rows keep the exact product/evidence per customer.
+    texts = [{"customer_id": r["customer_id"],
+              "text": f"{r['name']} عزیز، «{r['top_product']}» که همیشه می‌برید این هفته برایتان کنار گذاشته‌ایم."}
+             for r in out]
+    return _cohort(
+        "CUST_CATEGORY_LOSS", out,
+        rule="این مشتریان کالاهای همیشگی‌شان را دیگر نمی‌خرند (بیشترین سهم از دست رفته در شواهد)",
+        action={"type": "personal_sms", "label": "پیامک شخصی دربارهٔ کالای از‌دست‌رفتهٔ هر مشتری",
+                "params": {"customers": texts}},
+        metric_window=30,
+        gain=sum(r["top_spend"] * 0.35 for r in out))
 
 
 def a_cust_new_second(ctx: Ctx) -> list[Draft]:
@@ -322,21 +352,19 @@ def a_cust_credit_slow(ctx: Ctx) -> list[Draft]:
         monthly = (sum(r["total"]) / max(1, len(r["inv"]))) * 2 if r else 0
         if monthly <= 0 or bal < monthly * 1.5:
             continue
-        out.append(Draft(
-            kind="CUST_CREDIT_SLOW", dedupe_key=str(cid),
-            title=f"{cust.name}: {_toman(bal)} تومان نسیهٔ باز",
-            body=(f"ماندهٔ حساب این مشتری {_toman(bal)} تومان است، در حالی که خرید ماهانهٔ تقریبی‌اش "
-                  f"{_toman(monthly)} تومان. یعنی بیش از یک و نیم ماه فروش، نزد او مانده. "
-                  f"یادآوری سررسید، نقدینگی را بدون از دست دادن مشتری برمی‌گرداند."),
-            priority=2,
-            evidence={"customer_id": cid, "balance": round(bal), "est_monthly": round(monthly),
-                      "months_outstanding": round(bal / monthly, 1)},
-            actions=[{"type": "debt_reminders", "label": "یادآوری سررسید به بدهکاران"}],
-            expected_gain=0.0,
-            metric={"metric": "receivables_collected", "window_days": 28}))
-        if len(out) >= 10:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name, "balance": round(bal),
+                    "est_monthly": round(monthly), "months_outstanding": round(bal / monthly, 1)})
+    out.sort(key=lambda x: -x["balance"])
+    out = out[:10]
+    if not out:
+        return []
+    return _cohort(
+        "CUST_CREDIT_SLOW", out,
+        rule="ماندهٔ حساب این مشتریان بیش از یک و نیم ماهِ خریدشان شده و وصول را باید جلو انداخت",
+        action={"type": "debt_reminders", "label": "یادآوری سررسید به بدهکاران",
+                "params": {}},
+        metric_window=28,
+        gain=sum(r["balance"] * 0.02 for r in out))
 
 
 def a_cust_concentration(ctx: Ctx) -> list[Draft]:
@@ -402,21 +430,18 @@ def a_cust_return_abuse(ctx: Ctx) -> list[Draft]:
         if visits < 4 or n < 3 or n / visits < 0.3:
             continue
         cust = ctx.db.get(Customer, cid)
-        out.append(Draft(
-            kind="CUST_RETURN_ABUSE", dedupe_key=str(cid),
-            title=f"{cust.name if cust else cid}: {n} مرجوعی از {visits} خرید",
-            body=(f"نرخ مرجوعی این مشتری {n / visits * 100:.0f}٪ است — چند برابر حد معمول. "
-                  f"یا کالا با انتظارش نمی‌خواند (که با راهنمای فروش حل می‌شود) یا الگوی سوءاستفاده است. "
-                  f"قبل از هر تخفیف تازه، این مورد را بررسی کنید."),
-            priority=3,
-            evidence={"customer_id": cid, "returns": int(n), "visits": visits,
-                      "rate": round(n / visits, 3)},
-            actions=[{"type": "note", "label": "یادداشت بررسی مورد"}],
-            expected_gain=0.0,
-            metric={"metric": "customer_sales", "customer_ids": [cid], "window_days": 28}))
-        if len(out) >= 8:
-            break
-    return out
+        out.append({"customer_id": cid, "name": cust.name if cust else str(cid),
+                    "returns": int(n), "visits": visits, "rate": round(n / visits, 3)})
+    out.sort(key=lambda x: -x["rate"])
+    out = out[:8]
+    if not out:
+        return []
+    return _cohort(
+        "CUST_RETURN_ABUSE", out,
+        rule="نرخ مرجوعی این مشتریان چند برابر حد معمول است و قبل از هر تخفیف تازه باید بررسی شوند",
+        action={"type": "note", "label": "یادداشت بررسی موارد مشکوک",
+                "params": {}},
+        metric_window=28, priority=3, gain=0.0)
 
 
 def a_cust_loyalty_gap(ctx: Ctx) -> list[Draft]:

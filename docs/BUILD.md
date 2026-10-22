@@ -22,7 +22,7 @@ installer/
 
 **لانچر (`run_supermarket.py`) — رفتار:**
 - پورت آزاد تصادفی روی `127.0.0.1` انتخاب می‌کند (بدون تداخل با IIS/سرویس‌های دیگر).
-- دادهٔ کاربر در `%USERPROFILE%\SupermarketSystem` (لینوکس: `~/SupermarketSystem`):
+- دادهٔ کاربر در `%USERPROFILE%\RasaSystem` (لینوکس: `~/RasaSystem`):
   `supermarket.db` + `logs/supermarket.log` + `secret.key`.
   حذف/به‌روزرسانی برنامه داده را پاک **نمی‌کند**.
 - `SECRET_KEY` اگر در محیط نباشد، یک‌بار تولید و در `secret.key` ذخیره می‌شود →
@@ -38,8 +38,8 @@ installer/
 (یا از خط فرمان: `powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1`)
 
 خروجی:
-- `installer\output\SupermarketSystem-0.4.0-portable.exe` (همیشه — بدون نیاز به Inno)
-- `installer\output\SupermarketSystem-Setup-0.4.0.exe` (اگر Inno Setup 6 نصب باشد)
+- `installer\output\RasaSystem-1.0.0-portable.exe` (همیشه — بدون نیاز به Inno)
+- `installer\output\RasaSystem-Setup-1.0.0.exe` (اگر Inno Setup 6 نصب باشد)
 
 مراحل build.ps1: (1) venv + نصب `requirements.txt` و pyinstaller (با retry، آینه‌های جایگزین و پوشهٔ wheel آفلاین `installer\windows\wheels\`)، سپس نصب اختیاری `requirements-desktop.txt` (pywebview؛ در صورت شکست فقط هشدار)،
 (2) `pyinstaller --clean app.spec` → onefile با frontend و icon،

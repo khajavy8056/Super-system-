@@ -15,8 +15,9 @@ import java.util.List;
  * the SAME Google Drive appDataFolder the PC uses (credentials arrive inside the
  * pairing QR / code / «/mobile/link» once the owner has signed in on the PC).
  *
- *  push: queued ops → ops-<device>-<ts>.json   (the PC applies + deletes them)
  *  pull: snapshot.json (products / batches / customers) → local SQLite
+ *  push: intentionally withheld until the PC protocol has authenticated per-user acknowledgements;
+ *        local operations remain queued and are sent through the authenticated LAN/relay API.
  *
  * Nothing here runs unless cloud_json is present; a failure never blocks LAN sync.
  */
@@ -37,6 +38,7 @@ public final class CloudSync {
     }
     static String enc(String s) throws Exception { return java.net.URLEncoder.encode(s, "UTF-8"); }
     static String http(String method, String url, byte[] body, String ctype, String bearer) throws Exception {
+        Api.requireSafeEndpoint(url);
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         try {
             c.setConnectTimeout(10000); c.setReadTimeout(30000); c.setRequestMethod("PATCH".equals(method) ? "POST" : method); if ("PATCH".equals(method)) c.setRequestProperty("X-HTTP-Method-Override", "PATCH");
@@ -53,20 +55,15 @@ public final class CloudSync {
     public static int run() {
         JSONObject c = cfg(); if (c == null || c.optString("refresh_token").isEmpty()) return -1;
         try {
-            String tok = token(c); String api = c.optString("api_url", "https://www.googleapis.com/drive/v3"), up = c.optString("upload_url", "https://www.googleapis.com/upload/drive/v3");
+            String tok = token(c); String api = c.optString("api_url", "https://www.googleapis.com/drive/v3");
             int pushed = 0;
-            List<JSONObject> ops = Db.ops();
-            if (!ops.isEmpty()) {
-                JSONArray push = new JSONArray(); for (JSONObject o : ops) { JSONObject op = new JSONObject(); op.put("id", o.getString("id")); op.put("type", o.getString("type")); op.put("payload", Sync.cleanLocalIds(o.getJSONObject("payload"))); op.put("created_at", o.optString("created_at")); push.put(op); }
-                JSONObject file = new JSONObject(); file.put("device_id", Prefs.deviceIdStatic()); file.put("token", Api.token); file.put("push", push); file.put("generated_at", Db.now());
-                String name = "ops-" + Prefs.deviceIdStatic() + "-" + System.currentTimeMillis() + ".json";
-                String boundary = "smkt-boundary-7f3a"; JSONObject meta = new JSONObject(); meta.put("name", name); meta.put("parents", new JSONArray().put("appDataFolder"));
-                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-                bo.write(("--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + meta + "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n").getBytes(StandardCharsets.UTF_8)); bo.write(file.toString().getBytes(StandardCharsets.UTF_8)); bo.write(("\r\n--" + boundary + "--").getBytes(StandardCharsets.UTF_8));
-                http("POST", up + "/files?uploadType=multipart", bo.toByteArray(), "multipart/related; boundary=" + boundary, tok);
-                for (JSONObject o : ops) { Db.opDelete(o.getString("id")); pushed++; }
-                Prefs.set("cloud_last_push", Db.now());
-            }
+            long activeUserId = Screens.user == null ? 0 : Screens.user.optLong("id", 0);
+            boolean pendingOps = !Db.opsForUser(activeUserId).isEmpty();
+            // Do not put an API bearer token inside a persistent Drive file or delete local
+            // operations merely because Drive accepted an upload. The PC-side cloud protocol
+            // needs an authenticated, per-operation acknowledgement before this can be enabled.
+            // Pending operations remain safely queued and are sent over the LAN/relay sync route.
+
             // pull snapshot
             JSONObject list = new JSONObject(http("GET", api + "/files?spaces=appDataFolder&q=" + enc("name = 'snapshot.json' and trashed = false") + "&fields=" + enc("files(id,name,modifiedTime)"), null, null, tok));
             JSONArray files = list.optJSONArray("files");
@@ -77,7 +74,9 @@ public final class CloudSync {
                     Db.applyPull(snap, true); Prefs.set("cloud_snapshot_mod", mod); Prefs.set("cloud_last_pull", Db.now());
                 }
             }
-            Prefs.set("cloud_last_error", "");
+            Prefs.set("cloud_last_error", pendingOps
+                    ? "عملیات فروش تا افزودن تأیید امن رایانه در صف محلی می‌ماند؛ از شبکهٔ محلی همگام‌سازی می‌شود"
+                    : "");
             return pushed;
         } catch (Exception e) { Prefs.set("cloud_last_error", String.valueOf(e.getMessage())); return -1; }
     }

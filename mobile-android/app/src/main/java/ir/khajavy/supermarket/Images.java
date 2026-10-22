@@ -42,6 +42,65 @@ public final class Images {
 
     /** Full URL for a product's picture, or null. */
     /** Load a remote/local URL into an ImageView (async, memory cache only) — used by the picker grid. */
+    /** build-490 (§۶) — تصویر واقعی محصول در کارت هوش: اگر Insight به کالای مشخصی مربوط
+     *  باشد، تصویر واقعی همان کالا (با شناسهٔ واقعی از Product) جایگزین آیکون عمومی می‌شود؛
+     *  بدون تصویر → همان آیکون (Fallback). ارتباط فقط با ID — هرگز با نام. */
+    public static android.view.View insightIcon(android.content.Context c, org.json.JSONObject x,
+                                               String icon, int color, int sizeDp) {
+        try {
+            org.json.JSONArray ps = x.optJSONArray("products");
+            org.json.JSONObject p = (ps != null && ps.length() > 0) ? ps.optJSONObject(0) : null;
+            if (p == null) {
+                // build-508 — جست‌وجوی کامل شناسهٔ کالا وقتی API رکورد Product ندارد (حالت مستقل گوشی):
+                // metric (product_id/a/b) → شواهد (product_id/سطرها) → اقدام‌ها (params) — همان قواعد
+                // product_ids_of موتور ویندوز، تا هیچ پیشنهادِ «کالای مشخص» بدون تصویر نماند.
+                long pid = 0;
+                org.json.JSONObject spec = x.optJSONObject("metric");
+                if (spec != null) pid = spec.optLong("product_id", spec.optLong("a", spec.optLong("b", 0)));
+                if (pid <= 0) {
+                    org.json.JSONObject ev = x.optJSONObject("evidence");
+                    if (ev != null) {
+                        pid = ev.optLong("product_id", 0);
+                        if (pid <= 0) {
+                            org.json.JSONArray rows = ev.optJSONArray("rows");
+                            if (rows == null) rows = ev.optJSONArray("table");
+                            if (rows != null && rows.length() > 0 && rows.optJSONObject(0) != null) pid = rows.optJSONObject(0).optLong("product_id", 0);
+                        }
+                    }
+                }
+                if (pid <= 0) {
+                    org.json.JSONArray acts = x.optJSONArray("actions");
+                    for (int i = 0; acts != null && i < acts.length() && pid <= 0; i++) {
+                        org.json.JSONObject act = acts.optJSONObject(i), pr = act == null ? null : act.optJSONObject("params");
+                        if (pr == null) continue;
+                        pid = pr.optLong("product_id", pr.optLong("a", 0));
+                        if (pid <= 0) {
+                            org.json.JSONArray pp = pr.optJSONArray("product_ids");
+                            if (pp == null) pp = pr.optJSONArray("products");
+                            if (pp != null && pp.length() > 0) pid = pp.optLong(0, 0);
+                        }
+                    }
+                }
+                if (pid > 0) p = Local.one("SELECT id, name, image_url, gallery FROM products WHERE id=?", pid);
+            }
+            if (p != null) {
+                String url = p.isNull("image_url") ? "" : p.optString("image_url", "");
+                if (url.isEmpty() && !p.isNull("gallery")) {
+                    org.json.JSONArray g = new org.json.JSONArray(p.optString("gallery"));
+                    if (g.length() > 0) url = g.optString(0);
+                }
+                if (!url.isEmpty() && !url.startsWith("pack://")) {
+                    android.widget.ImageView iv = new android.widget.ImageView(c);
+                    iv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(Ui.dp(34), Ui.dp(34)));
+                    iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+                    bindUrl(iv, url);
+                    return iv;
+                }
+            }
+        } catch (Exception ignore) {}
+        return Icons.view(c, icon, color, sizeDp);
+    }
+
     public static void bindUrl(android.widget.ImageView iv, String url) {
         bindSource(iv, url);
     }
@@ -176,7 +235,11 @@ public final class Images {
         if (o.outWidth <= 0) return null;
         int s = sample(o.outWidth, o.outHeight, edge);
         BitmapFactory.Options o2 = new BitmapFactory.Options(); o2.inSampleSize = s;
-        return BitmapFactory.decodeByteArray(buf, 0, buf.length, o2);
+        // build-501 — مقابله با OOM: کدگذاری 565 (نصف حافظه) + یک تلاش مجدد پس از تخلیهٔ کش
+        o2.inPreferredConfig = android.graphics.Bitmap.Config.RGB_565;
+        try { Bitmap b = BitmapFactory.decodeByteArray(buf, 0, buf.length, o2); if (b != null) return b; }
+        catch (OutOfMemoryError mem) { MEM.evictAll(); }
+        try { return BitmapFactory.decodeByteArray(buf, 0, buf.length, o2); } catch (OutOfMemoryError again) { return null; }
     }
 
     /* ------------------------------------------------------------ HTTP */

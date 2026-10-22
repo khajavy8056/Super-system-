@@ -23,7 +23,8 @@ import java.nio.charset.StandardCharsets;
 public final class SmsLocal {
     private SmsLocal() {}
     static final String[] KEYS = {"sms.provider", "sms.melipayamak_mode", "sms.username", "sms.password", "sms.sender", "sms.melipayamak_body_id", "sms.api_key", "sms.send_invoice", "sms.template.invoice", "sms.admin_phone", "sms.phone_fallback", "sms.sim.enabled", "sms.sim.sub_id", "sms.sim.split", "sms.sim.delivery"};
-    static final String DEFAULT_TEMPLATE = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}\nاز خرید شما سپاسگزاریم";
+    // v4.8.0 — قالب پیش‌فرض هم مثل سرور «{items}» دارد (ردیف‌های مرتب کالاها)
+    static final String DEFAULT_TEMPLATE = "{store} | فاکتور {invoice}\n{items}\nاز خرید شما سپاسگزاریم";
 
     public static String get(String k, String def) { String v = Prefs.get("sms_" + k, ""); return v.isEmpty() ? def : v; }
     public static void set(String k, String v) { Prefs.set("sms_" + k, v == null ? "" : v); }
@@ -95,28 +96,65 @@ public final class SmsLocal {
     /** which side texts the customer for this sale. */
     public static boolean phoneShouldSend() { return simEnabled() || Api.standalone() || (!Api.online && "true".equals(get("sms.phone_fallback", "false"))); }
 
+    /** v4.8.0 — پیامک فاکتور مرتب و ثابت (درخواست مالک: «متن‌ها به‌هم‌ریخته نباشد»).
+     *
+     *  ساختار: سرصفحه (فروشگاه | شمارهٔ فاکتور | تاریخ شمسی)، سپس **یک ردیف برای
+     *  هر کالا** («۱. نام  qty × قیمت = جمع»)، بعد ردیف‌های جمع در ترتیب همیشه‌یکسان،
+     *  خط کوپن، و امضا. متن قبلی سه خط برای هر کالا داشت و روی گوشی‌های ساده
+     *  به‌هم می‌ریخت. اگر اقلام از حد تنظیم‌شده بیشتر شوند، بقیه در یک ردیف
+     *  «و N قلم دیگر» خلاصه می‌شوند تا پیامک بریده نشود.
+     */
     public static String renderInvoice(String invoiceNo, double amount) {
         JSONObject inv = Local.one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", invoiceNo);
         if (inv == null) throw new IllegalStateException("فاکتور ذخیره‌شده یافت نشد");
         String store = Prefs.get("store_name", "فروشگاه").trim();
         if (store.isEmpty()) store = "فروشگاه";
-        StringBuilder text = new StringBuilder(store).append("\nفاکتور ").append(invoiceNo)
-            .append("\nواحد مبالغ: ").append(Ui.currencyLabel);
-        int n = 0;
-        for (JSONObject it : Local.rows("SELECT * FROM invoice_items WHERE inv=? ORDER BY id", inv.optLong("id"))) {
-            JSONObject product = Db.productById(it.optLong("product_id"));
-            text.append("\n").append(++n).append(". ").append(product == null ? "کالا " + it.optLong("product_id") : product.optString("name"))
-                .append("\nتعداد ").append(Ui.num(it.optDouble("qty")))
-                .append(" × قیمت واحد ").append(Ui.num(it.optDouble("unit_sell_price")))
-                .append("\nتخفیف ").append(Ui.num(it.optDouble("discount")))
-                .append(" | جمع ").append(Ui.num(it.optDouble("subtotal")));
+        int maxItems = 0;
+        try { maxItems = (int) Double.parseDouble(Local.setting("sms.invoice_max_items", "0")); } catch (Exception ignore) {}
+        java.util.List<JSONObject> items = Local.rows("SELECT ii.*, p.name AS pname FROM invoice_items ii LEFT JOIN products p ON p.id=ii.product_id WHERE ii.inv=? ORDER BY ii.id", inv.optLong("id"));
+        if (maxItems <= 0) maxItems = items.size();
+
+        StringBuilder text = new StringBuilder(store).append(" | فاکتور ").append(inv.optString("invoice_number", invoiceNo));
+        String at = inv.optString("at");
+        if (at != null && at.length() >= 10) text.append(" | ").append(Ui.jdate(at.substring(0, 10)));
+        text.append("\n────────────");
+        int shown = Math.min(maxItems, items.size());
+        for (int i = 0; i < shown; i++) {
+            JSONObject it = items.get(i);
+            double q = it.optDouble("qty"), pr = it.optDouble("unit_sell_price"), sub = it.optDouble("subtotal"), d = it.optDouble("discount");
+            String name = it.optString("pname"); if (name.isEmpty()) name = "کالا " + it.optLong("product_id");
+            if (name.length() > 26) name = name.substring(0, 26) + "…";
+            text.append("\n").append(Ui.fa(String.valueOf(i + 1))).append(". ").append(name).append("  ")
+                .append(Ui.num(q)).append(" × ").append(Ui.num(pr)).append(" = ").append(Ui.num(sub));
+            if (d > 0) text.append(" (−").append(Ui.num(d)).append(")");
         }
-        text.append("\nجمع پیش از تخفیف: ").append(Ui.num(inv.optDouble("subtotal")))
-            .append("\nتخفیف کل: ").append(Ui.num(inv.optDouble("discount")))
-            .append("\nمالیات: ").append(Ui.num(inv.optDouble("tax")))
-            .append("\nمبلغ نهایی: ").append(Ui.num(inv.optDouble("total"))).append(" ").append(Ui.currencyLabel)
-            .append("\nاز خرید شما سپاسگزاریم\n").append(store);
+        if (items.size() > shown) text.append("\nو ").append(Ui.num(items.size() - shown)).append(" قلم دیگر (جزئیات کامل روی رسید صندوق)");
+
+        StringBuilder totals = new StringBuilder("جمع کالاها: ").append(Ui.num(inv.optDouble("subtotal") > 0 ? inv.optDouble("subtotal") : amount));
+        if (inv.optDouble("discount") > 0) totals.append(" | تخفیف: ").append(Ui.num(inv.optDouble("discount")));
+        if (inv.optDouble("tax") > 0) totals.append(" | مالیات: ").append(Ui.num(inv.optDouble("tax")));
+        text.append("\n").append(totals);
+        text.append("\nپرداختی: ").append(Ui.num(inv.optDouble("total") > 0 ? inv.optDouble("total") : amount)).append(" ").append(Ui.currencyLabel);
+        String coupon = inv.optString("coupon");
+        if (coupon != null && !coupon.isEmpty()) text.append("\nکد تخفیف خرید بعدی: ").append(coupon);
+        text.append("\nاز خرید شما سپاسگزاریم — ").append(store);
         return text.toString();
+    }
+
+    /** v4.8.0 — آیا ملی‌پیامک در «حالت الگو» است؟ (تعداد متغیرهای الگو ثابت است) */
+    public static boolean patternMode() { return "melipayamak".equals(get("sms.provider", "")) && "pattern".equals(get("sms.melipayamak_mode", "line")); }
+
+    /** نسخهٔ کوتاه فاکتور برای «حالت الگو»: رسید چندخطی، الگو را رد می‌کند. */
+    public static String renderInvoiceShort(String invoiceNo, double amount) {
+        String store = Prefs.get("store_name", "فروشگاه").trim(); if (store.isEmpty()) store = "فروشگاه";
+        String tpl = Local.setting("sms.template.invoice", "");
+        if (tpl == null || tpl.isEmpty() || tpl.contains("{items}"))
+            tpl = "{store} | فاکتور {invoice} | مبلغ {amount} {currency}";
+        String body = tpl.replace("{items}", "").replace("{store}", store).replace("{invoice}", invoiceNo)
+                .replace("{amount}", Ui.num(amount)).replace("{currency}", Ui.currencyLabel).replace("{customer}", "");
+        StringBuilder out = new StringBuilder();
+        for (String line : body.split("\n")) { if (line.trim().isEmpty()) continue; if (out.length() > 0) out.append('\n'); out.append(line.trim()); }
+        return out.toString();
     }
 
     /* ---------------- queue ---------------- */

@@ -42,9 +42,10 @@ def test_native_app_has_no_webview_and_ships_every_section():
     assert "profit" not in pos_cls.lower() and "سود" not in pos_cls
 
 
-def test_every_api_path_called_by_the_native_app_exists(client):
+def test_every_api_path_called_by_the_native_app_exists(client, auth_headers):
+    # v1.0.526 — the schema endpoint is authenticated now (I-18/BUG-B).
     src = _java_sources()
-    schema_paths = client.get("/openapi.json").json()["paths"]
+    schema_paths = client.get("/openapi.json", headers=auth_headers).json()["paths"]
     called = set()
     for m in re.finditer(r'(?:get|getQuiet|post|patch|put|delete|call\("[A-Z]+",)\(\s*"(/[^"?]+)', src):
         called.add(m.group(1))
@@ -79,7 +80,17 @@ def test_sync_pull_carries_the_fields_the_phone_db_needs(client, auth_headers):
                     headers=auth_headers)
     assert r.status_code == 200, r.text
     pull = r.json()["pull"]
-    assert set(pull) == {"products", "batches", "customers", "bank"}   # v2.7: + بانک کالا
+    # build-496 — identity policy + role-scoped HR cache and POS-only offline
+    # campaign/coupon/tax configuration ride the same pull; hashes never cross.
+    assert set(pull) == {
+        "products", "batches", "customers", "bank", "users", "roster_users",
+        "shifts", "shift_assignments", "attendance", "payroll", "announcements",
+        "pos_config", "pos_campaigns", "pos_coupons", "pos_campaign_redemptions",
+    }
+    if pull["users"]:
+        assert {"username", "roles", "is_active", "local_only"} <= set(pull["users"][0])
+        for banned in ("password_hash", "pass_hash", "password", "hash"):
+            assert banned not in pull["users"][0]
     if pull["products"]:
         assert {"brand_id", "min_stock_alert", "has_own_barcode", "unit_id", "barcode"} <= set(pull["products"][0])
     if pull["batches"]:

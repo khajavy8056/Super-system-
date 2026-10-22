@@ -104,7 +104,10 @@ def test_sync_applies_phone_ops_and_publishes_snapshot(client, auth_headers, dri
     _Drive.polls = 5
     assert client.post("/api/cloud/connect/poll", headers=auth_headers).json()["status"] == "CONNECTED"
     # a phone dropped an ops file into the mailbox while away from the shop Wi-Fi
-    ops = {"device_id": "phone-1", "push": [
+    # Cloud is shared storage, not an authenticated session: the phone must attach
+    # its own bearer credential so ops are never replayed as an anonymous admin.
+    token = auth_headers["Authorization"].split(" ", 1)[1]
+    ops = {"token": token, "device_id": "phone-1", "push": [
         {"id": "op-cloud-1", "type": "CUSTOMER_CREATE", "payload": {"name": "مشتری ابری", "phone": "09120000001"}},
         {"id": "op-cloud-2", "type": "POS_CHECKOUT", "payload": {"items": [], "payments": []}},   # invalid → rejected, must not block
     ]}

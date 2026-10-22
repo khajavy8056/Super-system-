@@ -26,14 +26,52 @@ public final class AdminScreens {
         static final String[] TABS = {"فروش", "صندوق‌داران", "موجودی", "انقضا", "کمبود", "بچ‌ها", "سود", "هزینهٔ خرید", "اصلاحات", "انبارگردانی‌ها"};
         Reports(AppActivity a) { this(a, 0); } Reports(AppActivity a, int tab) { super(a); this.tab = tab; }
         public String key() { return "reports"; } public String title() { return "گزارش‌ها"; }
+        private boolean tabAllowed(int index) {
+            switch (index) {
+                case 0: return Screens.can("reports.view");
+                case 1: return Screens.can("reports.view_all");
+                case 2: case 3: case 4: case 5: case 8: case 9:
+                    return Screens.can("reports.view_all") || (Screens.can("reports.view") && Screens.can("inventory.view"));
+                case 6: case 7: return Screens.can("pricing.view_cost");
+                default: return false;
+            }
+        }
+        private int firstAllowedTab() {
+            for (int i = 0; i < TABS.length; i++) if (tabAllowed(i)) return i;
+            return 0;
+        }
         public void load() {
-            clear(); LinearLayout ch = Ui.row(c); for (int i = 0; i < TABS.length; i++) { final int k = i; ch.addView(Ui.chip(c, TABS[i], i == tab, () -> { tab = k; load(); })); } body.addView(Ui.chips(c, ch));
+            clear();
+            if (!tabAllowed(tab)) tab = firstAllowedTab();
+            if (!Screens.can("reports.view_all")) {
+                LinearLayout scope = Ui.card(c, "گزارش فروش شخصی");
+                scope.addView(Ui.muted(c, "این گزارش فقط فاکتورهای ثبت‌شده با حساب کاربری شما را نشان می‌دهد."));
+                body.addView(scope);
+            }
+            LinearLayout ch = Ui.row(c);
+            for (int i = 0; i < TABS.length; i++) {
+                if (!tabAllowed(i)) continue;
+                final int k = i;
+                String label = i == 0 && !Screens.can("reports.view_all") ? "فروش من" : TABS[i];
+                ch.addView(Ui.chip(c, label, i == tab, () -> { tab = k; load(); }));
+            }
+            body.addView(Ui.chips(c, ch));
             LinearLayout out = Ui.col(c); body.addView(out); out.addView(Ui.empty(c, "…"));
             String from = Jalali.daysAgoIso(days), to = Jalali.todayIso();
             switch (tab) {
                 case 0: { LinearLayout rg = Ui.row(c); for (int d : new int[]{1, 7, 30, 90}) rg.addView(Ui.chip(c, d == 1 ? "امروز" : Ui.num(d) + " روز", days == d, () -> { days = d; load(); })); body.addView(rg, 1); get("/reports/sales?start=" + (days == 1 ? to : from) + "&end=" + to + "&group=daily", r -> { JSONObject d = (JSONObject) r; out.removeAllViews(); out.addView(Ui.grid2(c, Ui.kpi(c, "جمع فروش", Ui.money(d.optDouble("total_sales")), null, Ui.GREEN), Ui.kpi(c, "تعداد فاکتور", Ui.num(d.optDouble("invoice_count")), null, Ui.PRIMARY))); JSONArray g = d.optJSONArray("groups"); LinearLayout cd = Ui.card(c, "به تفکیک روز"); for (int i = 0; g != null && i < g.length(); i++) { JSONObject x = g.optJSONObject(i); cd.addView(Ui.kv(c, Ui.jdate(x.optString("date")), Ui.num(x.optDouble("invoice_count")) + " فاکتور · " + Ui.money(x.optDouble("total")), 0)); } if (g == null || g.length() == 0) cd.addView(Ui.muted(c, "فروشی در این بازه نیست")); out.addView(cd); }); get("/reports/sales?start=" + (days == 1 ? to : from) + "&end=" + to + "&group=product", r -> { JSONArray g = ((JSONObject) r).optJSONArray("groups"); if (g == null || g.length() == 0) return; LinearLayout cd = Ui.card(c, "به تفکیک کالا"); for (int i = 0; i < Math.min(15, g.length()); i++) { JSONObject x = g.optJSONObject(i); cd.addView(Ui.kv(c, s(x, "name", s(x, "product_name")), Ui.num(x.optDouble("qty", x.optDouble("quantity"))) + " · " + Ui.money(x.optDouble("total")), 0)); } out.addView(cd); }); break; }
                 case 1: get("/reports/cashiers", r -> { JSONArray ar = arr(r); out.removeAllViews(); if (ar.length() == 0) out.addView(Ui.empty(c, "—")); for (int i = 0; i < ar.length(); i++) { JSONObject x = ar.optJSONObject(i); LinearLayout cd = Ui.card(c, x.optString("username")); cd.addView(Ui.kv(c, "فاکتور", Ui.num(x.optDouble("invoice_count")), 0)); cd.addView(Ui.kv(c, "فروش", Ui.money(x.optDouble("total_sales")), Ui.GREEN)); cd.addView(Ui.kv(c, "تخفیف", Ui.money(x.optDouble("total_discount")), 0)); if (Screens.can("pricing.view_cost")) cd.addView(Ui.kv(c, "سود", Ui.money(x.optDouble("profit")), 0)); out.addView(cd); } }); break;
-                case 2: get("/reports/inventory", r -> { JSONArray ar = arr(r); out.removeAllViews(); double tv = 0; for (int i = 0; i < ar.length(); i++) tv += ar.optJSONObject(i).optDouble("value_at_cost"); out.addView(Ui.kpi(c, "ارزش کل موجودی (قیمت خرید)", Ui.money(tv), Ui.num(ar.length()) + " کالا", Ui.AMBER)); LinearLayout cd = Ui.card(c, "کالاها"); Ui.paged(cd, ar, 50, x -> Ui.kv(c, x.optString("name"), Ui.num(x.optDouble("total_qty")) + " · " + Ui.money(x.optDouble("value_at_cost")), x.optDouble("total_qty") <= x.optDouble("min_stock_alert") ? Ui.RED : 0)); out.addView(cd); }); break;
+                case 2: get("/reports/inventory", r -> {
+                    JSONArray ar = arr(r); out.removeAllViews(); boolean canSeeCost = Screens.can("pricing.view_cost");
+                    double totalValue = 0; for (int i = 0; i < ar.length(); i++) totalValue += ar.optJSONObject(i).optDouble("value_at_cost");
+                    out.addView(Ui.kpi(c, canSeeCost ? "ارزش کل موجودی (قیمت خرید)" : "کالاهای فعال",
+                            canSeeCost ? Ui.money(totalValue) : Ui.num(ar.length()) + " کالا", null, Ui.AMBER));
+                    LinearLayout cd = Ui.card(c, "کالاها");
+                    Ui.paged(cd, ar, 50, item -> Ui.kv(c, item.optString("name"),
+                            Ui.num(item.optDouble("total_qty")) + (canSeeCost ? " · " + Ui.money(item.optDouble("value_at_cost")) : " موجود"),
+                            item.optDouble("total_qty") <= item.optDouble("min_stock_alert") ? Ui.RED : 0));
+                    out.addView(cd);
+                }); break;
                 case 3: get("/reports/expiry", r -> { JSONObject ex = (JSONObject) r; out.removeAllViews(); String[][] EK = {{"EXPIRED", "منقضی‌شده"}, {"EXPIRING_TODAY", "امروز"}, {"EXPIRING_3_DAYS", "تا ۳ روز"}, {"EXPIRING_7_DAYS", "تا ۷ روز"}, {"EXPIRING_30_DAYS", "تا ۳۰ روز"}}; boolean any = false; for (String[] k : EK) { JSONArray ar = ex.optJSONArray(k[0]); if (ar == null || ar.length() == 0) continue; any = true; LinearLayout cd = Ui.card(c, k[1]); Ui.paged(cd, ar, 50, b -> Ui.kv(c, s(b, "product_name", s(b, "name")), Ui.num(b.optDouble("current_qty")) + " · " + Ui.jdate(s(b, "expiry_date")), "EXPIRED".equals(k[0]) ? Ui.RED : Ui.AMBER)); out.addView(cd); } if (!any) out.addView(Ui.empty(c, "کالای نزدیک انقضا نیست")); }); break;
                 case 4: get("/reports/low-stock", r -> { JSONArray ar = arr(r); out.removeAllViews(); if (ar.length() == 0) out.addView(Ui.empty(c, "کمبودی نیست")); Ui.paged(out, ar, 50, x -> Ui.item(c, x.optString("name"), "حد هشدار " + Ui.num(x.optDouble("min_stock_alert")), Ui.num(x.optDouble("total_stock", x.optDouble("total_qty"))), Ui.RED, null)); }); break;
                 case 5: get("/reports/batches", r -> { out.removeAllViews(); render(out, r, "بچ‌ها"); }); break;
@@ -83,8 +121,13 @@ public final class AdminScreens {
         JSONArray roles = new JSONArray();
         Users(AppActivity a) { super(a); }
         public String key() { return "users"; } public String title() { return "کاربران و نقش‌ها"; }
-        public void load() { loading(); get("/users/roles", r -> { roles = arr(r); get("/users", r2 -> { JSONArray ar = arr(r2); clear(); body.addView(Ui.primary(c, "+ کاربر جدید", () -> form(null))); Ui.paged(body, ar, 50, u -> Ui.item(c, u.optString("username") + (s(u, "full_name").isEmpty() ? "" : " · " + s(u, "full_name")), "نقش: " + u.optJSONArray("roles"), u.optBoolean("is_active") ? "فعال" : "غیرفعال", u.optBoolean("is_active") ? Ui.GREEN : Ui.RED, () -> form(u))); LinearLayout rc = Ui.card(c, "نقش‌ها و دسترسی‌ها"); Ui.paged(rc, roles, 50, ro -> Ui.kv(c, ro.optString("name"), Ui.num(ro.optJSONArray("permissions") == null ? 0 : ro.optJSONArray("permissions").length()) + " دسترسی", 0)); body.addView(rc); }); }); }
-        void form(JSONObject u) { LinearLayout l = Ui.col(c); EditText un = Ui.input(c, "نام کاربری"); EditText fn = Ui.input(c, "نام کامل"); EditText pw = Ui.input(c, u == null ? "رمز عبور *" : "رمز جدید (خالی = بدون تغییر)"); pw.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); if (u != null) { un.setText(u.optString("username")); un.setEnabled(false); fn.setText(s(u, "full_name")); } java.util.Set<String> sel = new java.util.HashSet<>(); JSONArray ur = u == null ? null : u.optJSONArray("roles"); for (int i = 0; ur != null && i < ur.length(); i++) sel.add(ur.optString(i)); LinearLayout rc = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { rc.removeAllViews(); for (int i = 0; i < roles.length(); i++) { String n = roles.optJSONObject(i).optString("name"); rc.addView(Ui.chip(c, n, sel.contains(n), () -> { if (sel.contains(n)) sel.remove(n); else sel.add(n); rd[0].run(); })); } }; rd[0].run(); l.addView(un); l.addView(fn); l.addView(pw); l.addView(Ui.label(c, "نقش‌ها")); l.addView(Ui.chips(c, rc)); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, u == null ? "ایجاد کاربر" : "ذخیره", () -> { JSONObject b = j("full_name", Ui.str(fn)); try { b.put("roles", new JSONArray(sel)); } catch (Exception ignore) {} if (u == null) { if (Ui.str(pw).length() < 4) { Ui.toast("رمز حداقل ۴ کاراکتر"); return; } putIf(b, "username", Ui.str(un)); putIf(b, "password", Ui.str(pw)); d[0].dismiss(); post("/users", b, x -> load()); } else { putIf(b, "password", Ui.str(pw)); d[0].dismiss(); patch("/users/" + u.optLong("id"), b, x -> load()); } })); if (u != null && u.optLong("id") != Screens.user.optLong("id")) l.addView(Ui.danger(c, u.optBoolean("is_active") ? "غیرفعال کردن" : "فعال کردن", () -> { d[0].dismiss(); JSONObject b = j(); try { b.put("is_active", !u.optBoolean("is_active")); } catch (Exception ignore) {} patch("/users/" + u.optLong("id"), b, x -> load()); })); d[0] = Ui.sheet(c, u == null ? "کاربر جدید" : "ویرایش کاربر", l); }
+        public void load() { loading(); get("/users/roles", r -> { roles = arr(r); get("/users", r2 -> { JSONArray ar = arr(r2); clear(); body.addView(Ui.primary(c, "+ کاربر جدید", () -> form(null))); Ui.paged(body, ar, 50, u -> Ui.item(c, u.optString("username") + (s(u, "full_name").isEmpty() ? "" : " · " + s(u, "full_name")), "نقش: " + u.optJSONArray("roles") + (u.optBoolean("local_only", true) ? " · فقط شبکهٔ فروشگاه" : " · هر شبکه") + (u.optBoolean("offline_allowed") ? " · ورود آفلاین مجاز" : " · ورود آفلاین ممنوع"), u.optBoolean("is_active") ? "فعال" : "غیرفعال", u.optBoolean("is_active") ? Ui.GREEN : Ui.RED, () -> form(u))); LinearLayout rc = Ui.card(c, "نقش‌ها و دسترسی‌ها"); Ui.paged(rc, roles, 50, ro -> Ui.kv(c, ro.optString("name"), Ui.num(ro.optJSONArray("permissions") == null ? 0 : ro.optJSONArray("permissions").length()) + " دسترسی", 0)); body.addView(rc); }); }); }
+        void form(JSONObject u) { LinearLayout l = Ui.col(c); EditText un = Ui.input(c, "نام کاربری"); EditText fn = Ui.input(c, "نام کامل"); EditText pw = Ui.input(c, u == null ? "رمز عبور *" : "رمز جدید (خالی = بدون تغییر)"); pw.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); if (u != null) { un.setText(u.optString("username")); un.setEnabled(false); fn.setText(s(u, "full_name")); } java.util.Set<String> sel = new java.util.HashSet<>(); JSONArray ur = u == null ? null : u.optJSONArray("roles"); for (int i = 0; ur != null && i < ur.length(); i++) sel.add(ur.optString(i)); LinearLayout rc = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { rc.removeAllViews(); for (int i = 0; i < roles.length(); i++) { String n = roles.optJSONObject(i).optString("name"); rc.addView(Ui.chip(c, n, sel.contains(n), () -> { if (sel.contains(n)) sel.remove(n); else sel.add(n); rd[0].run(); })); } }; rd[0].run(); l.addView(un); l.addView(fn); l.addView(pw); l.addView(Ui.label(c, "نقش‌ها")); l.addView(Ui.chips(c, rc));
+        // v4.8.1 — «دسترسی فقط به صورت بومی»: فعال = فقط داخل شبکهٔ فروشگاه وارد می‌شود؛
+        // غیرفعال = بیرون از شبکه هم می‌تواند کار کند و داده‌ها هنگام بازگشت همگام می‌شود.
+        android.widget.Switch lo = new android.widget.Switch(c); lo.setText("دسترسی فقط به صورت بومی (فقط داخل شبکهٔ فروشگاه)"); lo.setTypeface(Ui.FONT); lo.setTextColor(Ui.TEXT); lo.setChecked(u == null || u.optBoolean("local_only", true)); l.addView(lo);
+        android.widget.Switch oa = new android.widget.Switch(c); oa.setText("اجازهٔ ورود با دادهٔ محلی هنگام قطع شبکه"); oa.setTypeface(Ui.FONT); oa.setTextColor(Ui.TEXT); oa.setChecked(u == null ? Api.standalone() : u.optBoolean("offline_allowed", !u.optBoolean("local_only", true))); l.addView(oa);
+        Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, u == null ? "ایجاد کاربر" : "ذخیره", () -> { JSONObject b = j("full_name", Ui.str(fn)); try { b.put("roles", new JSONArray(sel)); } catch (Exception ignore) {} try { b.put("local_only", lo.isChecked()); b.put("offline_allowed", oa.isChecked()); } catch (Exception ignore) {} if (u == null) { if (Ui.str(pw).length() < 4) { Ui.toast("رمز حداقل ۴ کاراکتر"); return; } putIf(b, "username", Ui.str(un)); putIf(b, "password", Ui.str(pw)); d[0].dismiss(); post("/users", b, x -> load()); } else { putIf(b, "password", Ui.str(pw)); d[0].dismiss(); patch("/users/" + u.optLong("id"), b, x -> load()); } })); if (u != null && u.optLong("id") != Screens.user.optLong("id")) l.addView(Ui.danger(c, u.optBoolean("is_active") ? "غیرفعال کردن" : "فعال کردن", () -> { d[0].dismiss(); JSONObject b = j(); try { b.put("is_active", !u.optBoolean("is_active")); } catch (Exception ignore) {} patch("/users/" + u.optLong("id"), b, x -> load()); })); d[0] = Ui.sheet(c, u == null ? "کاربر جدید" : "ویرایش کاربر", l); }
     }
 
     /* ---------------- Audit ---------------- */
@@ -97,7 +140,7 @@ public final class AdminScreens {
 
     /* ---------------- Settings (all categories, generic key/value editor) ---------------- */
     public static final class Settings extends Screens.Screen {
-        static final String[][] CATS = {{"store", "پروفایل فروشگاه", "store."}, {"general", "عمومی و زمان", "time.,sync."}, {"pos", "صندوق (POS)", "pos."}, {"inv", "انبار", "stocktake.,inventory."}, {"expiry", "تاریخ انقضا", "expiry."}, {"products", "محصولات", "products."}, {"barcode", "بارکد و اسکنر", "barcode."}, {"pricing", "قیمت‌گذاری", "pricing."}, {"customers", "مشتریان", "customers."}, {"ledger", "حساب دفتری", "ledger."}, {"campaign", "جشنواره و تخفیف", "marketing."}, {"sms", "پیامک", "sms."}, {"print", "پرینتر حرارتی", "printer."}, {"network", "شبکه", "network."}, {"security", "امنیت", "security."}, {"backup", "پشتیبان‌گیری", "backup."}, {"catalog", "بانک محصولات", "catalog."}, {"theme", "ظاهر (روشن/تیره)", "ui."}, {"update", "به‌روزرسانی", "update."}, {"license", "لایسنس", "license."}, {"mobile", "موبایل", "mobile."}, {"cloud", "همگام‌سازی ابری", "cloud."}};
+        static final String[][] CATS = {{"store", "پروفایل فروشگاه", "store."}, {"general", "عمومی و زمان", "time.,sync."}, {"pos", "صندوق (POS)", "pos."}, {"inv", "انبار", "stocktake.,inventory."}, {"expiry", "تاریخ انقضا", "expiry."}, {"products", "محصولات", "products."}, {"barcode", "بارکد و اسکنر", "barcode."}, {"pricing", "قیمت‌گذاری", "pricing."}, {"customers", "مشتریان", "customers."}, {"ledger", "حساب دفتری", "ledger."}, {"campaign", "جشنواره و تخفیف", "marketing."}, {"sms", "پیامک", "sms."}, {"print", "پرینتر حرارتی", "printer."}, {"network", "شبکه", "network."}, {"security", "امنیت", "security."}, {"backup", "پشتیبان‌گیری", "backup."}, {"factory", "بازنشانی کارخانه", ""}, {"catalog", "بانک محصولات", "catalog."}, {"theme", "ظاهر (روشن/تیره)", "ui."}, {"update", "به‌روزرسانی", "update."}, {"license", "لایسنس", "license."}, {"mobile", "موبایل", "mobile."}, {"cloud", "همگام‌سازی ابری", "cloud."}};
         int cat = 0; JSONArray rows = new JSONArray();
         Settings(AppActivity a) { super(a); }
         public String key() { return "settings"; } public String title() { return "تنظیمات"; }
@@ -109,6 +152,7 @@ public final class AdminScreens {
             if ("theme".equals(id)) { body.addView(Ui.ghost(c, "پوسته: خودکار ۰۷:۰۰ روشن / ۱۹:۰۰ تیره — تغییر", () -> { LinearLayout l = Ui.col(c); Dialog[] d = new Dialog[1]; for (String[] t : new String[][]{{"auto", "خودکار (۰۷:۰۰ / ۱۹:۰۰)"}, {"light", "روشن"}, {"dark", "تیره"}}) l.addView(Ui.ghost(c, t[1], () -> { d[0].dismiss(); put("/settings/theme", j("theme", t[0]), x -> { Ui.done(Ui.ctx, "ذخیره شد", null, null); Screens.loadConfig(a); load(); }); })); d[0] = Ui.sheet(c, "پوسته", l); })); }
             if ("license".equals(id)) body.addView(Ui.ghost(c, "وضعیت لایسنس", () -> a.route("license")));
             if ("backup".equals(id)) body.addView(Ui.primary(c, "پشتیبان‌گیری و بازیابی از فایل", () -> a.route("backup")));
+            if ("factory".equals(id)) body.addView(Ui.danger(c, "بازنشانی به تنظیمات کارخانه…", () -> factoryResetSheet()));
             if ("catalog".equals(id)) body.addView(Ui.primary(c, Catalog.present(c) ? "به‌روزرسانی بانک محصولات" : "دریافت بانک محصولات (نام + تصویر کالاها)", () -> a.route("catalog")));
             if ("mobile".equals(id)) body.addView(Ui.ghost(c, "دستگاه‌ها و همگام‌سازی", () -> a.route("sync")));
             if ("cloud".equals(id)) body.addView(Ui.ghost(c, "وضعیت همگام‌سازی ابری", () -> a.route("cloud")));
@@ -126,6 +170,66 @@ public final class AdminScreens {
             else { EditText e = Ui.input(c, "مقدار", cur.matches("[0-9.]+")); if (!s.optBoolean("is_secret")) e.setText(cur); l.addView(e); l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); save(k, Ui.str(e)); })); }
             d[0] = Ui.sheet(c, "ویرایش تنظیم", l); }
         void save(String k, String v) { put("/settings", j("key", k, "value", v), r -> { Ui.done(Ui.ctx, "ذخیره شد", null, null); if (k.equals("pos.currency")) Screens.loadConfig(a); load(); }); }
+
+        /* -------- build-497 — Factory Reset (§۱۲): پیش‌نمایش ← تأیید تایپی + رمز ← اجرا --------
+         * روی گوشیِ جفت‌شده: بازنشانیِ «رایانه» با پشتیبان اجباری سمت رایانه انجام می‌شود و
+         * همین‌جا دادهٔ محلی هم از نو همگام می‌شود. روی گوشی مستقل: فقط دادهٔ همین گوشی پاک می‌شود. */
+        void factoryResetSheet() {
+            LinearLayout l = Ui.col(c);
+            if (Api.standalone()) {
+                long products = Db.tableCount("products"), invoices = Db.tableCount("invoices");
+                l.addView(Ui.muted(c, "بازنشانی همین گوشی به وضعیت پایه: فروش‌ها (" + Ui.num(invoices) + ")، موجودی، کالاها (" + Ui.num(products) + ") و انبارگردانی‌ها پاک می‌شوند."));
+                l.addView(Ui.muted(c, "کاربران، نشست جاری و تنظیمات جفت‌سازی حفظ می‌شوند."));
+                l.addView(Ui.muted(c, "برای تأیید عبارت RESET را تایپ کنید:"));
+                EditText cf = Ui.input(c, "RESET");
+                l.addView(cf);
+                l.addView(Ui.danger(c, "بازنشانی کن", () -> {
+                    if (!"RESET".equals(Ui.str(cf))) { Ui.toast("برای تأیید باید RESET تایپ شود"); return; }
+                    int dropped = Db.wipeOperational();
+                    Ui.done(Ui.ctx, "بازنشانی انجام شد", dropped > 0 ? Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد" : null, null);
+                }));
+                Ui.sheet(c, "بازنشانی کارخانه (این گوشی)", l);
+                return;
+            }
+            final String[] scope = {"transactions"};
+            LinearLayout sc = Ui.row(c);
+            Runnable[] rd = new Runnable[1];
+            rd[0] = () -> { sc.removeAllViews();
+                for (String[] s : new String[][]{{"transactions", "دادهٔ عملیاتی"}, {"full", "کامل (کاتالوگ هم پاک می‌شود)"}})
+                    sc.addView(Ui.chip(c, s[1], scope[0].equals(s[0]), () -> { scope[0] = s[0]; rd[0].run(); })); };
+            rd[0].run();
+            l.addView(Ui.label(c, "دامنهٔ بازنشانی"));
+            l.addView(Ui.chips(c, sc));
+            LinearLayout rep = Ui.col(c); rep.addView(Ui.muted(c, "«نمایش گزارش» دقیقاً اعلام می‌کند چه چیزی حذف و چه چیزی حفظ می‌شود."));
+            l.addView(rep);
+            l.addView(Ui.ghost(c, "نمایش گزارش", () -> get("/system/factory-reset/preview?scope=" + scope[0], r -> {
+                JSONObject p = (JSONObject) r; rep.removeAllViews();
+                rep.addView(Ui.kv(c, "ردیف‌هایی که پاک می‌شوند", Ui.num(p.optDouble("wiped_total_rows", 0)), 0));
+                rep.addView(Ui.kv(c, "دورهٔ داده", Ui.num(p.optDouble("epoch_current", 0)) + " ← " + Ui.num(p.optDouble("epoch_after", 0)), 0));
+                StringBuilder w = new StringBuilder();
+                JSONArray wt = p.optJSONArray("wiped_tables");
+                for (int i = 0; wt != null && i < wt.length() && i < 8; i++) { JSONObject o = wt.optJSONObject(i); if (o == null) continue;
+                    java.util.Iterator<String> it = o.keys(); if (it.hasNext()) { String t = it.next(); w.append(t).append(" ").append(Ui.num(o.optDouble(t, 0))).append(" · "); } }
+                if (w.length() > 0) rep.addView(Ui.muted(c, "نمونه: " + w));
+                rep.addView(Ui.muted(c, "کاربران، نقش‌ها، لایسنس، جفت‌سازی گوشی‌ها و پشتیبان‌های دیسک حفظ می‌شوند."));
+            })));
+            l.addView(Ui.muted(c, "برای تأیید عبارت RESET و رمز مدیر را وارد کنید:"));
+            EditText cf = Ui.input(c, "RESET");
+            EditText pw = Ui.input(c, "رمز مدیر"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            l.addView(cf); l.addView(pw);
+            l.addView(Ui.danger(c, "بازنشانی کن", () -> {
+                if (!"RESET".equals(Ui.str(cf))) { Ui.toast("برای تأیید باید RESET تایپ شود"); return; }
+                try {
+                    JSONObject b = j("scope", scope[0], "confirm", "RESET", "password", Ui.str(pw));
+                    post("/system/factory-reset", b, r -> {
+                        int dropped = Db.wipeOperational();   // دادهٔ دورهٔ قبل روی گوشی هم پاک می‌شود
+                        Ui.done(Ui.ctx, "بازنشانی کارخانه انجام شد", "پشتیبان امن سمت رایانه ساخته شد" + (dropped > 0 ? " · " + Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد" : ""), null);
+                        Sync.kick();
+                    });
+                } catch (Exception ignore) {}
+            }));
+            Ui.sheet(c, "بازنشانی کارخانه", l);
+        }
     }
 
     /* ---------------- Store profile ---------------- */
@@ -183,7 +287,7 @@ public final class AdminScreens {
                 simRow.addView(Ui.label(c, "کدام سیم‌کارت؟")); LinearLayout ch = Ui.row(c); simRow.addView(ch); final String[] cur = {SmsLocal.get("sms.sim.sub_id", "-1")}; Runnable[] rc = new Runnable[1];
                 rc[0] = () -> { ch.removeAllViews(); for (String[] si : SmsLocal.sims(c)) ch.addView(Ui.chip(c, si[1] + (si[2].isEmpty() ? "" : " · " + Ui.fa(si[2])), si[0].equals(cur[0]), () -> { cur[0] = si[0]; SmsLocal.set("sms.sim.sub_id", si[0]); rc[0].run(); })); }; rc[0].run();
                 LinearLayout tr = Ui.row(c); simRow.addView(tr); EditText tp = Ui.input(c, "شمارهٔ آزمایشی (خودتان)", true); tr.addView(tp);
-                simRow.addView(Ui.ghost(c, "ارسال پیامک آزمایشی از سیم‌کارت", () -> { String ph = Db.norm(Ui.str(tp)); if (ph.length() < 10) { Ui.toast("شماره را کامل وارد کنید"); return; } Api.bg(() -> { try { SmsLocal.sendViaSim(ph, "پیامک آزمایشی «" + Prefs.get("store_name", "سوپری من") + "» — ارسال از سیم‌کارت با موفقیت فعال است."); Api.ui(() -> Ui.done(a, "ارسال شد", "پیامک آزمایشی از " + SmsLocal.simLabel(c) + " رفت", null)); } catch (Exception e) { Api.ui(() -> Ui.toast("خطا: " + e.getMessage())); } }); }));
+                simRow.addView(Ui.ghost(c, "ارسال پیامک آزمایشی از سیم‌کارت", () -> { String ph = Db.norm(Ui.str(tp)); if (ph.length() < 10) { Ui.toast("شماره را کامل وارد کنید"); return; } Api.bg(() -> { try { SmsLocal.sendViaSim(ph, "پیامک آزمایشی «" + Prefs.get("store_name", "رسا سیستم") + "» — ارسال از سیم‌کارت با موفقیت فعال است."); Api.ui(() -> Ui.done(a, "ارسال شد", "پیامک آزمایشی از " + SmsLocal.simLabel(c) + " رفت", null)); } catch (Exception e) { Api.ui(() -> Ui.toast("خطا: " + e.getMessage())); } }); }));
                 if (!Api.standalone()) simRow.addView(Ui.muted(c, "حالت متصل به رایانه: اگر در رایانه «سرویس پیامک = گوشی» انتخاب شود، پیامک‌های صف رایانه هم از همین سیم‌کارت فرستاده می‌شوند (گوشی باید روشن و متصل باشد)."));
             };
             sw.setOnCheckedChangeListener((b, v) -> { SmsLocal.set("sms.sim.enabled", v ? "true" : "false"); if (!Api.standalone()) s.v("sms.sim.enabled", v ? "true" : "false"); if (v && !SmsLocal.simPermitted(c)) SmsLocal.askSimPermission(a, () -> draw[0].run()); else draw[0].run(); });

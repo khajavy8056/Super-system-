@@ -21,6 +21,20 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """v1.0.526 — the login limiter is process-global; leaking an exhausted
+    bucket from one test into the next made ~15 unrelated tests fail with 429
+    in a full run while each passed alone. Every test starts with an empty
+    budget now, so order can never change an outcome."""
+    from app import main as app_main
+
+    reset = getattr(app_main, "reset_rate_limits", lambda: None)
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:

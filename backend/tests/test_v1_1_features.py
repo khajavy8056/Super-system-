@@ -186,7 +186,9 @@ def test_sms_templates_listed_with_placeholders(client, auth_headers):
     assert r.status_code == 200, r.text
     kinds = {t["kind"]: t for t in r.json()}
     assert {"invoice", "debt_reminder", "coupon", "low_stock", "daily_report"} <= set(kinds)
-    assert "amount" in kinds["invoice"]["placeholders"]
+    # v4.8.0 — قالب فاکتور حالا ردیف‌های مرتب کالاها را با {items} می‌گیرد
+    assert {"invoice", "items", "store"} <= set(kinds["invoice"]["placeholders"])
+    assert "amount" in kinds["debt_reminder"]["placeholders"]
 
 
 def test_sms_test_connection_and_daily_report(client, auth_headers, tmp_path):
@@ -255,8 +257,10 @@ def test_invoice_sms_legacy_short_pattern_cannot_hide_items(client, auth_headers
     assert mine
     text = mine[0]["text"]
     assert milk["name"] in text
-    assert "قیمت واحد 60,000" in text
-    assert "مبلغ نهایی: 60,000" in text
+    # v4.8.0 — چیدمان مرتب: یک ردیف برای هر کالا، با تعداد × قیمت واحد = جمع ردیف
+    assert "۱ × ۶۰,۰۰۰ = ۶۰,۰۰۰" in text, text
+    assert any(line.startswith("۱.") for line in text.splitlines()), text
+    assert "جمع کالاها: ۶۰,۰۰۰" in text and "پرداختی: ۶۰,۰۰۰" in text, text
     assert not text.startswith("TPL ")  # complete receipts supersede the legacy short template
 
 

@@ -141,8 +141,13 @@ def test_phone_identity_is_frozen_and_seeded_from_hardware():
     assert "ANDROID_ID" in _java("Prefs.java"), "the hardware seed is gone"
 
 
-def test_no_time_based_ids_and_no_mint_on_every_login():
+def test_no_time_based_ids_and_device_identity_is_reused_at_signin():
     login = _java("LoginActivity.java")
     assert "Long.toHexString(System.currentTimeMillis())" not in login, "time-based device id is back"
-    assert "Prefs.deviceToken(this) == null" in login, "minting a new device on every sign-in again"
-    assert "hwidSeed" in _java("SetupActivity.java")
+    # v4.8.1 (بیلد ۴۸۲) — قرارداد عمداً قوی‌تر شد: ورود همیشه توکن دستگاه را تازه
+    # می‌کند (پس از انقضا/ابطال دیگر بارکدی اسکن نمی‌شود) اما همیشه با همان
+    # device_id ذخیره‌شده؛ رایانه همان یک ردیف را به‌روز می‌کند (_mint با device_id
+    # ردیف را بازاستفاده می‌کند). پس هویت دستگاه ثابت می‌ماند — نگهبان قبلی
+    # («هر ورود = دستگاه تازه») همچنان پابرجاست.
+    assert 'dev.put("device_id", knownId)' in login, "sign-in must reuse the held device id, never mint a fresh one"
+    assert "hwidSeed" in login and "hwidSeed" in _java("SetupActivity.java")

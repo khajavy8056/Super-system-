@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableExtensions DisableDelayedExpansion
 REM Optional: drag your installed SupermarketSystem.exe onto this BAT.
 REM UI override only; no database, executable, registry or installed files are changed.
@@ -21,7 +21,7 @@ if not errorlevel 1 (
  pause
  exit /b 2
 )
-echo Starting the installed shop app with Desktop UI 3.6.6 ...
+echo Starting the installed shop app with RASA SYSTEM Desktop UI ...
 start "" "%SHOP_EXE%"
 exit /b 0
 :missing

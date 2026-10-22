@@ -1,6 +1,7 @@
 """Campaigns & coupons API (§31–38)."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Campaign, Coupon, CouponRedemption, Customer, User
+from ..models import Campaign, CampaignRedemption, Coupon, CouponRedemption, Customer, User
 from ..security import require_permission
 from ..services import coupons as svc
 from ..services.audit import write_audit
@@ -21,9 +22,12 @@ router = APIRouter(prefix="/marketing", tags=["marketing"])
 class CampaignIn(BaseModel):
     name: str
     description: str | None = None
-    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED)$")
+    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED|GIFT)$")
     discount_value: Decimal = Field(default=Decimal("0"), ge=0)
     min_purchase: Decimal = Field(default=Decimal("0"), ge=0)
+    #: build-515 — شرط تعداد خرید (جادوگر گام ۲): «بعد از N خرید»
+    min_purchase_count: int = Field(default=0, ge=0, le=10000)
+    reward_next_only: bool = False
     max_discount: Decimal | None = Field(default=None, ge=0)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
@@ -31,6 +35,18 @@ class CampaignIn(BaseModel):
     auto_issue_validity_days: int = Field(default=30, ge=1, le=3650)
     auto_issue_sms: bool = True
     status: str = Field(default="ACTIVE", pattern="^(ACTIVE|PAUSED|ENDED)$")
+    # build-481 — executable benefit rules (§23): only the capabilities that fit
+    # this business model and architecture are modelled; everything else stays out.
+    max_purchase: Decimal | None = Field(default=None, ge=0)
+    target_type: str = Field(default="ALL", pattern="^(ALL|PRODUCTS|CATEGORY)$")
+    #: build-515 — برای PRODUCTS شناسهٔ کالا؛ برای CATEGORY نام دسته
+    target_ids: list[int | str] | None = None
+    first_purchase_only: bool = False
+    usage_limit: int | None = Field(default=None, ge=1)
+    per_customer_limit: int | None = Field(default=None, ge=1)
+    stackable: bool = False
+    auto_apply: bool = False
+    priority: int = Field(default=3, ge=1, le=5)
 
 
 class CouponIn(BaseModel):
@@ -38,7 +54,7 @@ class CouponIn(BaseModel):
     campaign_id: int | None = None
     customer_id: int | None = None
     customer_phone: str | None = None
-    discount_type: str = Field(default="PERCENT", pattern="^(PERCENT|FIXED)$")
+    discount_type: str | None = Field(default=None, pattern="^(PERCENT|FIXED|GIFT)$")
     discount_value: Decimal = Field(default=Decimal("0"), ge=0)
     min_purchase: Decimal = Field(default=Decimal("0"), ge=0)
     max_discount: Decimal | None = Field(default=None, ge=0)
@@ -60,6 +76,8 @@ def _campaign_out(c: Campaign) -> dict:
         "id": c.id, "name": c.name, "description": c.description,
         "discount_type": c.discount_type, "discount_value": float(c.discount_value),
         "min_purchase": float(c.min_purchase),
+        "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+        "reward_next_only": bool(getattr(c, "reward_next_only", False)),
         "max_discount": float(c.max_discount) if c.max_discount is not None else None,
         "valid_from": c.valid_from.isoformat() if c.valid_from else None,
         "valid_until": c.valid_until.isoformat() if c.valid_until else None,
@@ -67,6 +85,19 @@ def _campaign_out(c: Campaign) -> dict:
         "auto_issue_validity_days": c.auto_issue_validity_days,
         "auto_issue_sms": c.auto_issue_sms,
         "status": c.status,
+        "max_purchase": float(c.max_purchase) if c.max_purchase is not None else None,
+        "target_type": c.target_type,
+        # build-515 — اعداد همان int قدیمی برمی‌گردند (سازگاری)؛ نام دسته رشته می‌ماند
+        "target_ids": ([int(x) if str(x).strip().isdigit() else str(x) for x in json.loads(c.target_ids)]
+                       if c.target_ids else None),
+        "first_purchase_only": bool(c.first_purchase_only),
+        "usage_limit": c.usage_limit,
+        "per_customer_limit": c.per_customer_limit,
+        "stackable": bool(c.stackable),
+        "auto_apply": bool(c.auto_apply),
+        "priority": c.priority,
+        "used_count": c.used_count or 0,
+        "source_insight_id": c.source_insight_id,
     }
 
 
@@ -76,6 +107,8 @@ def _coupon_out(c: Coupon) -> dict:
         "customer_id": c.customer_id, "customer_phone": c.customer_phone,
         "discount_type": c.discount_type, "discount_value": float(c.discount_value),
         "min_purchase": float(c.min_purchase),
+        "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+        "reward_next_only": bool(getattr(c, "reward_next_only", False)),
         "max_discount": float(c.max_discount) if c.max_discount is not None else None,
         "valid_from": c.valid_from.isoformat() if c.valid_from else None,
         "valid_until": c.valid_until.isoformat() if c.valid_until else None,
@@ -89,15 +122,23 @@ def _coupon_out(c: Coupon) -> dict:
 
 @router.get("/campaigns")
 def list_campaigns(db: Session = Depends(get_db),
-                   _: User = Depends(require_permission("reports.view"))):
+                   _: User = Depends(require_permission("marketing.view"))):
     rows = db.execute(select(Campaign).order_by(Campaign.id.desc())).scalars()
     return [_campaign_out(c) for c in rows]
 
 
+def _campaign_values(body: CampaignIn) -> dict:
+    data = body.model_dump()
+    targets = data.pop("target_ids", None)
+    # build-515 — PRODUCTS شناسهٔ عددی؛ CATEGORY نام دسته (رشته) — هر دو مجازند
+    data["target_ids"] = json.dumps([str(x).strip() for x in targets], ensure_ascii=False) if targets else None
+    return data
+
+
 @router.post("/campaigns", status_code=201)
 def create_campaign(body: CampaignIn, db: Session = Depends(get_db),
-                    user: User = Depends(require_permission("settings.manage"))):
-    c = Campaign(**body.model_dump(), created_by=user.id)
+                    user: User = Depends(require_permission("marketing.manage"))):
+    c = Campaign(**_campaign_values(body), created_by=user.id)
     db.add(c)
     db.flush()
     write_audit(db, action="CAMPAIGN_CREATED", user_id=user.id, entity_type="Campaign",
@@ -108,14 +149,18 @@ def create_campaign(body: CampaignIn, db: Session = Depends(get_db),
 
 @router.patch("/campaigns/{campaign_id}")
 def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(get_db),
-                    user: User = Depends(require_permission("settings.manage"))):
+                    user: User = Depends(require_permission("marketing.manage"))):
     c = db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="CAMPAIGN_NOT_FOUND")
-    for k, v in body.model_dump().items():
+    # §22 — editing an ACTIVE campaign changes FUTURE behaviour only: invoices
+    # already granted keep their immutable snapshot (campaign_name/benefit on the
+    # invoice row + campaign_redemptions), never re-derived from this row.
+    before = {k: _campaign_out(c).get(k) for k in ("name", "status", "discount_value", "valid_until")}
+    for k, v in _campaign_values(body).items():
         setattr(c, k, v)
     write_audit(db, action="CAMPAIGN_UPDATED", user_id=user.id, entity_type="Campaign",
-                entity_id=c.id, after={"name": c.name, "status": c.status})
+                entity_id=c.id, before=before, after={"name": c.name, "status": c.status})
     db.commit()
     return _campaign_out(c)
 
@@ -126,7 +171,7 @@ def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(ge
 def list_coupons(q: str | None = None, status: str | None = None,
                  customer_id: int | None = None, limit: int = Query(100, le=1000),
                  db: Session = Depends(get_db),
-                 _: User = Depends(require_permission("reports.view"))):
+                 _: User = Depends(require_permission("marketing.view"))):
     stmt = select(Coupon).order_by(Coupon.id.desc())
     if q:
         stmt = stmt.where(Coupon.code.ilike(f"%{q.strip().upper()}%") |
@@ -140,7 +185,7 @@ def list_coupons(q: str | None = None, status: str | None = None,
 
 @router.post("/coupons", status_code=201)
 def create_coupon(body: CouponIn, db: Session = Depends(get_db),
-                  user: User = Depends(require_permission("settings.manage"))):
+                  user: User = Depends(require_permission("marketing.manage"))):
     code = (body.code or svc.generate_code()).strip().upper()
     if svc.get_by_code(db, code):
         raise HTTPException(status_code=409, detail="COUPON_CODE_EXISTS")
@@ -161,7 +206,7 @@ def create_coupon(body: CouponIn, db: Session = Depends(get_db),
 
 @router.post("/coupons/{coupon_id}/block")
 def block_coupon(coupon_id: int, db: Session = Depends(get_db),
-                 user: User = Depends(require_permission("settings.manage"))):
+                 user: User = Depends(require_permission("marketing.manage"))):
     c = db.get(Coupon, coupon_id)
     if not c:
         raise HTTPException(status_code=404, detail="COUPON_NOT_FOUND")
@@ -189,7 +234,7 @@ def validate_coupon(body: ValidateIn, db: Session = Depends(get_db),
 
 @router.get("/coupons/{coupon_id}/redemptions")
 def coupon_redemptions(coupon_id: int, db: Session = Depends(get_db),
-                       _: User = Depends(require_permission("reports.view"))):
+                       _: User = Depends(require_permission("marketing.view"))):
     rows = db.execute(
         select(CouponRedemption).where(CouponRedemption.coupon_id == coupon_id)
         .order_by(CouponRedemption.id.desc())
@@ -200,7 +245,7 @@ def coupon_redemptions(coupon_id: int, db: Session = Depends(get_db),
 
 @router.get("/stats")
 def marketing_stats(db: Session = Depends(get_db),
-                    _: User = Depends(require_permission("reports.view"))):
+                    _: User = Depends(require_permission("marketing.view"))):
     total = int(db.execute(select(func.count()).select_from(Coupon)).scalar_one())
     by_status = dict(db.execute(
         select(Coupon.status, func.count()).group_by(Coupon.status)
@@ -208,6 +253,42 @@ def marketing_stats(db: Session = Depends(get_db),
     redeemed_value = float(db.execute(
         select(func.coalesce(func.sum(CouponRedemption.amount), 0))
     ).scalar_one())
+    # build-511 — تحلیلِ هر جشنواره (درخواست مالک: «همه‌چیز مشخص باشد، با نمودار و جدول»)
+    issued_sq = (
+        select(Coupon.campaign_id.label("cid"), func.count().label("n"))
+        .group_by(Coupon.campaign_id).subquery()
+    )
+    red_sq = (
+        select(CampaignRedemption.campaign_id.label("cid"),
+               func.count().label("n"),
+               func.coalesce(func.sum(CampaignRedemption.amount), 0).label("value"),
+               func.max(CampaignRedemption.created_at).label("last"))
+        .group_by(CampaignRedemption.campaign_id).subquery()
+    )
+    detail_rows = db.execute(
+        select(Campaign, func.coalesce(issued_sq.c.n, 0), func.coalesce(red_sq.c.n, 0),
+               func.coalesce(red_sq.c.value, 0), red_sq.c.last)
+        .outerjoin(issued_sq, issued_sq.c.cid == Campaign.id)
+        .outerjoin(red_sq, red_sq.c.cid == Campaign.id)
+        .order_by(Campaign.used_count.desc(), Campaign.id.desc())
+    ).all()
+    campaigns_detail = [{
+        "id": c.id, "name": c.name, "status": c.status,
+        "discount_type": c.discount_type, "discount_value": float(c.discount_value or 0),
+        "used_count": int(c.used_count or 0), "usage_limit": c.usage_limit,
+        "issued_coupons": int(issued or 0), "redemptions": int(red_n or 0),
+        "redeemed_value": float(red_v or 0),
+        "last_used": last.isoformat() if last else None,
+    } for c, issued, red_n, red_v, last in detail_rows]
+    by_day_rows = db.execute(
+        select(func.date(CampaignRedemption.created_at).label("day"), func.count())
+        .group_by(func.date(CampaignRedemption.created_at))
+        .order_by(func.date(CampaignRedemption.created_at).desc()).limit(30)
+    ).all()
+    by_day = [{"day": str(day), "n": int(n)} for day, n in reversed(by_day_rows)]
     return {"total_coupons": total, "by_status": by_status,
             "redeemed_value": redeemed_value,
-            "campaigns": int(db.execute(select(func.count()).select_from(Campaign)).scalar_one())}
+            "campaigns": int(db.execute(select(func.count()).select_from(Campaign)).scalar_one()),
+            #: build-511 — نمودار مصرف هر جشنواره + روند استفاده
+            "campaigns_detail": campaigns_detail,
+            "redemptions_by_day": by_day}

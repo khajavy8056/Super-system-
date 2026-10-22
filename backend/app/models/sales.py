@@ -35,6 +35,20 @@ class Invoice(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(24), default="PENDING")
     print_status: Mapped[str] = mapped_column(String(16), default="NONE")
 
+    #: build-481 (§26) — campaign/benefit provenance, snapshotted at sale time.
+    #: Editing a campaign later must never rewrite what this invoice actually got,
+    #: so the *name* and amounts are frozen here while ``campaign_id`` stays a
+    #: soft reference for the audit trail.
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: what granted the benefit: CAMPAIGN | COUPON | NONE (manual discounts are
+    #: already visible as ``invoice_discount``/line discounts)
+    benefit_source: Mapped[str] = mapped_column(String(16), default="NONE")
+    #: total campaign/coupon benefit money included in ``discount``
+    benefit_amount: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: the coupon code consumed by this invoice (persisted — audit without a join)
+    applied_coupon_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
@@ -105,6 +119,11 @@ class Customer(TimestampMixin, Base):
     credit_enabled: Mapped[bool] = mapped_column(default=True)
     #: 0 = unlimited; otherwise max outstanding debt allowed on account
     credit_limit: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: I-11 — explicit consent to receive SMS (قانون رضایت). No message is sent without it.
+    sms_consent: Mapped[bool] = mapped_column(default=False)
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: optional marketing opt-out reason
+    sms_opt_out_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(default=True)
 

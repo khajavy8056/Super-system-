@@ -12,10 +12,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__
+from .. import BUILD, __version__
 from ..config import settings
 from ..database import get_db
-from ..models import Notification, User
+from ..models import Notification, SystemSetting, User
 from ..security import get_current_user, require_permission
 from ..services import expiry as expiry_svc
 from ..services.audit import write_audit
@@ -27,6 +27,8 @@ router = APIRouter(tags=["system"])
 def health(db: Session = Depends(get_db)):
     db.execute(select(Notification.id).limit(1))
     return {"status": "ok", "app": settings.APP_NAME, "version": __version__,
+            #: build-510 — شناسهٔ بیلد برای جفت‌سازی رابط/بک‌اند در خود برنامه
+            "build": BUILD,
             "environment": settings.ENVIRONMENT, "time": datetime.utcnow().isoformat()}
 
 
@@ -149,7 +151,7 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
             raise HTTPException(status_code=400, detail=f"Backup file failed integrity check: {integrity}")
         if not _REQUIRED_TABLES <= tables:
             missing = _REQUIRED_TABLES - tables
-            if {"batches", "kv", "ops"} <= tables:   # v3.1: a phone (سوپری من) backup picked on the PC
+            if {"batches", "kv", "ops"} <= tables:   # v3.1: a phone (رسا سیستم) backup picked on the PC
                 raise HTTPException(status_code=400, detail="این فایل پشتیبان نسخهٔ موبایل است؛ آن را در اپ موبایل (تنظیمات ← پشتیبان) بازیابی کنید.")
             raise HTTPException(status_code=400, detail=f"این فایل پشتیبان سیستم نیست (جدول‌های {sorted(missing)} وجود ندارد)")
 
@@ -172,16 +174,40 @@ def restore(file: UploadFile = File(...), db: Session = Depends(get_db),
         Path(tmp_path).unlink(missing_ok=True)
 
     # v3.5 — the restored file was written by an older release, so it can be missing
-    # model columns and (always) the v3.3 performance indexes. Self-heal in place,
-    # otherwise the shop silently drops back to full table scans after a restore.
-    from ..database import heal_schema
+    # model columns and (always) the v3.3 performance indexes. v3.7: migrate it to
+    # the Alembic head FIRST (its stamp says an older revision), then self-heal
+    # in place, otherwise the shop silently drops back to full table scans after
+    # a restore. A failed upgrade aborts the restore loudly — the safety backup
+    # above holds the pre-restore state.
+    from ..database import heal_schema, upgrade_schema
+    upgrade_schema()
     heal = heal_schema()
 
-    write_audit(db, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
-                reference=getattr(file, "filename", None),
-                after={"columns_added": len(heal["columns_added"]),
-                       "indexes_ensured": len(heal["indexes_ensured"])})
-    db.commit()
+    # build-488 — یک پشتیبان قدیمی می‌تواند ردیف‌های پایهٔ نسخهٔ جدید را نداشته باشد
+    # (دسترسی‌های تازه مثل dev.mode، نقش‌های استاندارد، ادمین). درست مثل اولین اجرای
+    # برنامه بعد از بازیابی، پایه را افزودنی-محور دوباره می‌نشانیم؛ هیچ دادهٔ بازیابی‌شده‌ای
+    # پاک نمی‌شود. (این الگویی است که هر بازیابیِ نسخهٔ قدیمی روی نسخهٔ جدید به آن نیاز دارد.)
+    # build-489 — فایل DB زیر پای برنامه عوض شده؛ session درخواست ممکن است تراکنشی از
+    # «پیش از تعویض» را نگه داشته باشد و دو نمای ناسازگار ببیند (خطای UNIQUE در bootstrap).
+    # الگوی درست: اتصال‌های قدیمی بسته و engine بازنشسته می‌شود؛ بقیهٔ کار با session تازه.
+    from ..database import SessionLocal as _FreshSession, engine as _engine
+    from ..bootstrap import bootstrap
+    try:
+        db.close()
+    except Exception:
+        pass
+    _engine.dispose()
+    fresh = _FreshSession()
+    try:
+        bootstrap(fresh)
+        fresh.commit()
+        write_audit(fresh, action="BACKUP_RESTORED", entity_type="Backup", entity_id=None,
+                    reference=getattr(file, "filename", None),
+                    after={"columns_added": len(heal["columns_added"]),
+                           "indexes_ensured": len(heal["indexes_ensured"])})
+        fresh.commit()
+    finally:
+        fresh.close()
     return {"ok": True, "detail": "بازیابی انجام شد؛ نسخه وضعیت قبل از بازیابی نیز ذخیره شد.",
             "safety_backup": str(safety),
             "columns_added": heal["columns_added"], "indexes_ensured": len(heal["indexes_ensured"])}
@@ -317,19 +343,75 @@ def shutdown(body: ShutdownIn, db: Session = Depends(get_db), user: User = Depen
 
 
 @update_router.get("/update/check")
-def check_update(db: Session = Depends(get_db), _: User = Depends(require_permission("settings.manage"))):
+def check_update(platform: str = "windows", db: Session = Depends(get_db),
+                 _: User = Depends(get_current_user)):
     """Report whether a newer release exists. Read-only and side-effect free.
-    Channel = GitHub (§269) or the configured update server (§270)."""
+
+    build-488 (§۴۱–۴۴):
+    - Update Check ≠ License Validation (§۴۲) — هر کاربر واردشده می‌تواند بررسی
+      کند؛ اعمال به‌روزرسانی همچنان فقط مالک + رمز عبور (§۲۸) است.
+    - هر Client فقط پلتفرم خودش را می‌بیند (§۴۳): platform=windows|android
+    - اعلانِ «نسخهٔ جدید» فقط یک بار برای هر نسخه (§۴۴): notify=True فقط وقتی
+      نسخه از آخرین نسخهٔ اعلام‌شده جدیدتر باشد؛ POST /update/ack آن را ثبت می‌کند.
+    - مخزن انتشار: khajavy8056/Rasasys (فقط فایل نصبی، §۴۱).
+    """
     from ..services.updater import UpdateError, channel_from_settings, check_for_update
 
+    def _get(key, default=""):
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+        return row.value if row and row.value is not None else default
+
+    def _set(key, value):
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+        if row is None:
+            db.add(SystemSetting(key=key, value=value))
+            db.flush()  # همان‌جا ثبت؛ وگرنه add دوم در commit با UNIQUE می‌خورد
+        else:
+            row.value = value
+
+    # platform را برای این درخواست موقتاً در تنظیمات می‌گذاریم تا channel درست بسازد
+    prev_platform = _get("update.platform", "")
+    _set("update.platform", "android" if platform == "android" else "windows")
+    channel = None
     try:
         channel = channel_from_settings(db)
+        out = check_for_update(channel)
     except UpdateError as exc:
-        return {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
-                "detail": str(exc), "message": str(exc)}
-    out = check_for_update(channel)
-    out["channel"] = type(channel).__name__.replace("Channel", "").lower()
+        out = {"status": "UNAVAILABLE", "update_available": False, "code": exc.code,
+               "detail": str(exc), "message": str(exc)}
+    finally:
+        if not prev_platform:
+            _set("update.platform", "")
+        elif prev_platform != ("android" if platform == "android" else "windows"):
+            _set("update.platform", prev_platform)
+    out["channel"] = type(channel).__name__.replace("Channel", "").lower() if channel is not None else "github"
+    out["platform"] = "android" if platform == "android" else "windows"
+    latest = (out.get("latest") or {}).get("version") or ""
+    notified = _get("update.notified_version", "")
+    out["notified_version"] = notified
+    # §۴۴ — یک نسخه فقط یک بار اعلان می‌شود
+    out["notify"] = bool(out.get("update_available") and latest and latest != notified)
+    db.commit()
     return out
+
+
+@update_router.post("/update/ack")
+def ack_update(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """اعلان نسخهٔ جدید دیده شد — دیگر برای همین نسخه تکرار نمی‌شود (§۴۴)."""
+    from ..services.updater import UpdateError, channel_from_settings, check_for_update
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == "update.notified_version")).scalar_one_or_none()
+    try:
+        out = check_for_update(channel_from_settings(db))
+        latest = (out.get("latest") or {}).get("version") or ""
+    except UpdateError:
+        latest = ""
+    if row is None:
+        db.add(SystemSetting(key="update.notified_version", value=latest))
+        db.flush()
+    else:
+        row.value = latest
+    db.commit()
+    return {"ok": True, "acknowledged": latest}
 
 
 @update_router.post("/update/prepare")
@@ -354,5 +436,57 @@ def prepare_update_endpoint(body: UpdateAuthIn, db: Session = Depends(get_db),
     result = prepare_update(db, download=body.download)
     write_audit(db, action="UPDATE_PREPARE", user_id=user.id,
                 entity_type="System", after={"status": result["status"]})
+    db.commit()
+    return result
+
+
+# --- Factory Reset (build-497, دستورالعمل §۱۲) --------------------------------
+# روی راوتر مخصوص با پیشوند /system (مثل update_router) تا در سطح /api و در
+# OpenAPI schema ثبت شود — قرارداد اپ Native همین را الزامی می‌کند.
+factory_router = APIRouter(prefix="/system", tags=["system"])
+
+
+class FactoryResetIn(BaseModel):
+    scope: str = "transactions"          # transactions | full
+    confirm: str = ""                    # دقیقاً «RESET»
+    password: str = ""                   # احراز مجدد مدیر
+
+
+@factory_router.get("/factory-reset/preview")
+def factory_reset_preview(scope: str = "transactions", db: Session = Depends(get_db),
+                          _: User = Depends(require_permission("settings.manage"))):
+    """گزارش دقیق «چه حذف می‌شود / چه حفظ می‌شود / چه بازنشانی می‌شود» — بدون تغییر داده."""
+    from ..services import factory_reset as fr_svc
+    from ..services.factory_reset import FactoryResetError
+
+    try:
+        return fr_svc.preview(db, scope=scope)
+    except FactoryResetError as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
+
+
+@factory_router.post("/factory-reset")
+def factory_reset(body: FactoryResetIn, db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("settings.manage"))):
+    """بازنشانی به تنظیمات کارخانه — با احراز مجدد رمز مدیر، پشتیبان اجباری و تأیید صریح.
+
+    §28 (همان قاعدهٔ Update): نشست بازِ مدیر اثباتی برای «مدیر پشت کیبورد است»
+    نیست؛ رمز دوباره پرسیده می‌شود. §29: بدون پشتیبان موفق، حذفی انجام نمی‌شود.
+    """
+    from ..security import verify_password
+    from ..services import factory_reset as fr_svc
+    from ..services.factory_reset import FactoryResetError
+
+    if not verify_password(body.password, user.password_hash):
+        write_audit(db, action="FACTORY_RESET_AUTH_FAILED", user_id=user.id, entity_type="System")
+        db.commit()
+        raise HTTPException(status_code=403, detail={
+            "code": "BAD_PASSWORD", "message": "رمز عبور نادرست است؛ بازنشانی انجام نشد"})
+
+    try:
+        result = fr_svc.execute(db, scope=body.scope, actor=user, confirm=body.confirm)
+    except FactoryResetError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
     db.commit()
     return result

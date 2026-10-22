@@ -34,6 +34,15 @@ public final class Diagnostics extends android.app.Application {
     }
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
+        // build-505 — پله‌های کامل فشار حافظه: کش‌های مصرف‌کنندهٔ بیت‌مپ به‌ترتیب خالی می‌شوند
+        // تا سیستم به‌جای کشتن پروسه (OOM در Binder/Parcel) از کش‌های خود برنامه تغذیه کند.
+        if (level >= TRIM_MEMORY_RUNNING_MODERATE) Ui.tileCacheClear();
         if (level >= TRIM_MEMORY_RUNNING_LOW) Images.MEM.evictAll();
+    }
+
+    @Override public void onLowMemory() {
+        super.onLowMemory();
+        Ui.tileCacheClear();
+        Images.MEM.evictAll();
     }
 }

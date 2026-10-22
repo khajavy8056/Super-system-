@@ -168,11 +168,24 @@ def test_counting_closed_after_complete(client, admin_h, stocktaker_h):
 # --- Security hardening (BUG-011/013) -------------------------------------------
 
 def test_login_rate_limit_and_lockout(client):
+    """v1.0.526 — the limiter now counts FAILED attempts only (BUG-C), so this
+    test must actually make ``limit`` bad guesses instead of relying on the
+    bucket having been filled by *successful* logins from earlier tests."""
+    from app import main as app_main
+    from app.main import _RATE_LIMITS
+
+    app_main.reset_rate_limits()
+    limit, _window = _RATE_LIMITS["/api/auth/login"]
     codes = []
-    for _ in range(6):
+    for _ in range(limit + 2):
         r = client.post("/api/auth/login", data={"username": "bruteforce", "password": "x"})
         codes.append(r.status_code)
     assert 429 in codes, f"expected lockout, got {codes}"
+    # a *successful* sign-in must not be punished by the brute-force budget
+    app_main.reset_rate_limits()
+    for _ in range(limit + 5):
+        ok = client.post("/api/auth/login", data={"username": "admin", "password": "admin123"})
+        assert ok.status_code == 200, "legitimate logins must never be rate-limited"
     # failed logins are audited
     r = client.post("/api/auth/login", data={"username": "admin", "password": "admin123"})
     token = r.json()["access_token"]

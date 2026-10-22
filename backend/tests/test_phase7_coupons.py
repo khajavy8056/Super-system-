@@ -154,6 +154,33 @@ def test_expired_and_blocked_coupons(client, auth_headers):
 
 def test_next_purchase_coupon_is_auto_issued(client, auth_headers, stocked):
     """§36: a campaign threshold issues a coupon for the customer's NEXT visit."""
+    # build-481: auto-apply festivals now really discount the till (by design).
+    # Other modules leave such festivals active in this shared store; freeze them
+    # for THIS scenario (it measures the future-benefit coupon, not a festival)
+    # and put them back afterwards so later tests keep their own behaviour.
+    from app.database import SessionLocal
+    from app.models import Campaign
+    from sqlalchemy import select
+
+    frozen = []
+    with SessionLocal() as db:
+        for c in db.execute(select(Campaign)).scalars():
+            if c.auto_apply:
+                c.auto_apply = False
+                frozen.append(c.id)
+        db.commit()
+    try:
+        _next_purchase_coupon_case(client, auth_headers, stocked)
+    finally:
+        with SessionLocal() as db:
+            for cid in frozen:
+                c = db.get(Campaign, cid)
+                if c:
+                    c.auto_apply = True
+            db.commit()
+
+
+def _next_purchase_coupon_case(client, auth_headers, stocked):
     product, batch = stocked
     camp = client.post("/api/marketing/campaigns", headers=auth_headers, json={
         "name": "جشنواره پاییز", "discount_type": "PERCENT", "discount_value": 10,

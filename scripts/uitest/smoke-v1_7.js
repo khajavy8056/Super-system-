@@ -16,14 +16,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   window.eval(["jalali.js", "vendor-qrcode.js", "sfx.js", "onboarding.js", "app.js"].map((f) => fs.readFileSync(FE + "/" + f, "utf8")).join("\n;"));
   const $ = (s) => window.document.querySelector(s); const $$ = (s) => [...window.document.querySelectorAll(s)];
   let booted = false;
-  for (let i = 0; i < 40 && !booted; i++) { await sleep(500); booted = !$("#app-view").classList.contains("hidden"); }
+  for (let i = 0; i < 30 && !booted; i++) { await sleep(400); booted = !$("#app-view").classList.contains("hidden"); }
+  if (!booted) {
+    // این هارنس روی پایگاه‌دادهٔ تازه اجرا می‌شود و ممکن است ویزارد راه‌اندازی باز باشد؛
+    // آن را مثل کاربر «بستن» می‌کنیم و داشبورد را می‌خوانیم — همان مسیری که کاربر واقعی
+    // بعد از راه‌اندازی طی می‌کند.
+    try { window.Onboarding && window.Onboarding.closeOverlay && window.Onboarding.closeOverlay(); } catch (_) {}
+    if (window.showApp) window.showApp();          // همان کاری که بوت بعد از راه‌اندازی می‌کند
+    await window.go("dashboard"); await sleep(700);
+    booted = !$("#app-view").classList.contains("hidden");
+  }
   check(booted, "app booted to dashboard (setup done)");
+  check(!!$(".dash-hero"), "v1.0.0 dashboard hero (KPI + alert rail) renders");
   check(typeof window.qrcode === "function", "browser QR library loaded (vendor-qrcode.js)");
   // support view
   await window.go("support"); await sleep(900);
   check($$("#sup-type option").length >= 5, "support: request types populated (" + $$("#sup-type option").length + ")");
   $("#sup-subject").value = "چاپگر تست دسکتاپ"; $("#sup-desc").value = "smoke";
-  $("#sup-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); await sleep(1500);
+  // v1.0.0 — ارسال موقعیت مکانی اختیاری و پیش‌فرض خاموش است؛ کاربر خودش تیک می‌زند.
+  const geoBox = $("#sup-geo"); if (geoBox) geoBox.checked = true;
+  $("#sup-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 30; i++) { await sleep(200); if (!$("#sup-send").disabled) break; }
+  await sleep(300);
   const list = await (await fetch(BASE + "/api/support/tickets?limit=1", { headers: { Authorization: "Bearer " + tok } })).json();
   check(list[0] && list[0].subject === "چاپگر تست دسکتاپ" && list[0].latitude === 39.0997, "support: ticket stored with exact geo from the form");
   check(/چاپگر تست دسکتاپ/.test($("#sup-list").textContent), "support: previous-tickets list refreshed");

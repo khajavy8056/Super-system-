@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,10 +24,13 @@ from .routers import (
     accounting,
     audit,
     auth,
+    dev,
+    hr,
     batches,
     customers,
     diagnostics,
     hardware,
+    hw,
     inventory,
     mobile,
     invoices,
@@ -35,6 +41,7 @@ from .routers import (
     reports,
     resolvers,
     returns,
+    purchase,
     settings as settings_router,
     setup,
     sms,
@@ -130,7 +137,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=__version__,
-    description="Supermarket ERP / Smart Inventory / POS — batch-aware, offline-first.",
+    description="مدیریت سوپرمارکت رسا سیستم (RASA SYSTEM) — batch-aware, offline-first supermarket ERP: POS, inventory, expiry, accounting, store intelligence.",
     lifespan=lifespan,
 )
 
@@ -150,9 +157,10 @@ for r in (
     auth.router, products.router, products.unit_router, products.bank_router, products.catalog_router, batches.router, customers.router,
     inventory.router, pricing.router,
     pos.router, invoices.router, returns.router, resolvers.router, sms.router,
-    hardware.router, reports.router, users.router, audit.router, settings_router.router,
+    hardware.router, hw.router, reports.router, users.router, audit.router, settings_router.router,
     marketing.router, diagnostics.router, warehouses.router, accounting.router,
     setup.router, mobile.router, support.router, cloud.router, insights.router,
+    hr.router, dev.router, purchase.router,
 ):
     app.include_router(r, prefix=API)
 
@@ -163,6 +171,8 @@ app.include_router(system.router)
 app.include_router(system.router, prefix=API + "/system", include_in_schema=False)
 # ...but the update endpoints belong on the normal authenticated API surface
 app.include_router(system.update_router, prefix="/api")
+# build-497 — Factory Reset: مسیر /api/system/factory-reset (در schema هم ثبت می‌شود)
+app.include_router(system.factory_router, prefix="/api")
 
 
 # --- Error handling (BUG-020): users never see raw stack/SQL traces ----------
@@ -217,9 +227,167 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JS
     return _error_response(exc, request, "DATABASE_ERROR", 500)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """build-501 — خطای اعتبارسنجی ۴۲۲ باید قابل سریالایز باشد؛ NaN/∞ در ورودی
+    (کلاینت معیوب) خودِ هندلر را نمی‌شکند و پاسخ استاندارد فارسی برمی‌گردد.
+
+    v1.0.526 (audit 2026-10, BUG-A) — Pydantic v2 keeps the *constraint value* in
+    ``err["ctx"]``. For a ``Decimal`` field (``quantity: Decimal = Field(gt=0)``)
+    that ctx is ``{"gt": Decimal("0")}``, which ``json.dumps`` refuses. The handler
+    therefore raised ``TypeError`` while building the 422, Starlette fell through to
+    the generic 500 handler, and a cashier who typed quantity 0 saw
+    «خطای داخلی سرور» instead of «تعداد باید بزرگتر از صفر باشد». Every Decimal-
+    constrained endpoint (POS quantity, discount, payments, ledger amounts) was
+    affected. We now normalise through ``jsonable_encoder`` — the same encoder
+    FastAPI's own default handler uses — and keep NaN/∞ readable.
+    """
+    from fastapi.encoders import jsonable_encoder
+
+    def _safe(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
+        if isinstance(value, dict):
+            return {k: _safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_safe(v) for v in value]
+        return value
+
+    errors = exc.errors()
+    safe_errors = []
+    for err in errors:
+        # ``ctx`` may carry a Decimal constraint or the original Python exception;
+        # ``input`` may carry the raw (unsafe) body value. Both must be encodable.
+        encodable = {k: v for k, v in err.items() if k not in ("input", "ctx")}
+        encodable = _safe(encodable)
+        if "input" in err:
+            encodable["input"] = _safe(jsonable_encoder(err["input"], custom_encoder={
+                Decimal: lambda v: str(v)}))
+        if "ctx" in err:
+            encodable["ctx"] = _safe(jsonable_encoder(err["ctx"], custom_encoder={
+                Decimal: lambda v: str(v)}))
+        safe_errors.append(encodable)
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
+
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return _error_response(exc, request, "INTERNAL_ERROR", 500)
+
+
+# I-18 — restrict OpenAPI/docs in production (no public schema leak)
+_DOCS_FREE = os.environ.get("SUPERMARKET_EXPOSE_DOCS", "0") not in ("0", "false", "off", "")
+
+
+def _docs_caller_is_privileged(request: Request) -> bool:
+    """v1.0.526 (audit 2026-10, BUG-B) — a *presence* check is not authentication.
+
+    I-18 only looked at ``Authorization: Bearer`` being non-empty, so
+    ``curl -H 'Authorization: Bearer x' /openapi.json`` handed the complete API
+    map to an anonymous caller — the exact leak the gate was added to prevent.
+    The gate now verifies the token (signature + expiry + revocation), loads the
+    user, and requires the developer permission that already governs API/DB
+    tooling. ``/docs`` in a browser could never send this header anyway, so no
+    working flow changes; a shop that wants public docs still sets
+    ``SUPERMARKET_EXPOSE_DOCS=1`` explicitly.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return False
+    from .database import SessionLocal
+    from .models import User
+    from .security import decode_token, has_permission, is_revoked
+
+    try:
+        if is_revoked(token):
+            return False
+        payload = decode_token(token)
+        user_id = int(payload["sub"])
+    except Exception:  # noqa: BLE001 — any malformed/expired token is a "no"
+        return False
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        return bool(user and user.is_active and has_permission(user, "dev.mode"))
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        db.close()
+
+
+@app.middleware("http")
+async def docs_gate(request: Request, call_next):
+    if not _DOCS_FREE and request.url.path in ("/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"):
+        if not _docs_caller_is_privileged(request):
+            return JSONResponse(status_code=404, content={"detail": {"code": "NOT_FOUND", "message": "Not Found"}})
+    return await call_next(request)
+
+
+# Rate limiting for brute force (I-22: 30/60 for login, was 10 too tight for NAT shops)
+#
+# v1.0.526 (audit 2026-10, BUG-C) — the limiter used to count EVERY request to
+# the endpoint, successful sign-ins included, and the bucket was never pruned
+# for IPs that stopped calling. Two consequences that a real shop hits:
+#   * a busy counter (several cashiers switching accounts on one terminal, a
+#     phone re-pairing, a kiosk clocking staff in) reached 30 logins/minute and
+#     then locked out the *legitimate* staff for the rest of the window — the
+#     exact opposite of the intent, which is to stop password guessing;
+#   * `_RATE_BUCKET` keyed by client IP grew for the process lifetime.
+# It now counts only FAILED attempts (4xx), which is what brute force looks
+# like, and prunes empty buckets. A shop doing 200 successful logins a minute
+# is normal; 30 wrong passwords a minute is an attack.
+import time as _time
+
+_RATE_BUCKET: dict[str, list[float]] = {}
+_RATE_LIMITS = {
+    "/api/auth/login": (30, 60),
+    "/api/auth/refresh": (20, 60),
+}
+_RATE_PRUNE_EVERY = 256
+_rate_calls = 0
+
+
+def _rate_prune(now: float, window: float) -> None:
+    """Drop keys whose window has fully expired — otherwise the map only grows."""
+    for k in [k for k, v in _RATE_BUCKET.items() if not v or v[-1] <= now - window]:
+        _RATE_BUCKET.pop(k, None)
+
+
+def reset_rate_limits() -> None:
+    """Clear the limiter (tests, and an operator-driven unlock from Settings)."""
+    _RATE_BUCKET.clear()
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    global _rate_calls
+    key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
+    rule = _RATE_LIMITS.get(request.url.path)
+    if not rule:
+        return await call_next(request)
+
+    limit, window = rule
+    now = _time.monotonic()
+    bucket = _RATE_BUCKET.get(key)
+    if bucket is not None:
+        while bucket and bucket[0] <= now - window:
+            bucket.pop(0)
+        if len(bucket) >= limit:
+            # Plain string detail so both the web panel (body.detail) and the
+            # Android client (Api.java expects a string) render it correctly.
+            return JSONResponse(status_code=429, content={"detail": "درخواست‌ها بیش از حد مجاز است؛ لحظاتی بعد دوباره تلاش کنید."})
+
+    response = await call_next(request)
+    if response.status_code in (401, 403):
+        # only a rejected credential counts toward the brute-force budget
+        _RATE_BUCKET.setdefault(key, []).append(now)
+        _rate_calls += 1
+        if _rate_calls % _RATE_PRUNE_EVERY == 0:
+            _rate_prune(now, window)
+    return response
 
 
 # --- v1.5 licence gate ---------------------------------------------------------
@@ -227,7 +395,20 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # health, the setup/licence endpoints and static assets is refused with 402 so
 # the UI can show the activation wizard. The verdict comes from the cached state
 # (no network on the request path); a background worker re-validates every 24 h.
-_LICENSE_FREE_PREFIXES = ("/api/setup/", "/health", "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
+#
+# v1.0.0 (RASA) — «پشتیبانی» پشت دروازهٔ لایسنس حبس نمی‌شود. باگ گزارش‌شدهٔ مالک:
+# «از ویندوز تیکت پشتیبانی ثبت نمی‌شود» — ریشه‌اش همین بود. فروشگاهی که لایسنسش
+# منقضی/فعال‌نشده بود، به `/api/support/types` پاسخ ۴۰۲ می‌گرفت، فهرست «نوع
+# درخواست» خالی می‌ماند و ارسال با خطای «نوع درخواست نامعتبر» رد می‌شد — یعنی
+# دقیقاً وقتی فروشگاه به پشتیبانی نیاز داشت (برای همان لایسنس!) راه تماس بسته بود.
+# روی گوشی این اتفاق نمی‌افتاد چون حالت مستقل گوشی تیکت را مستقیم به رله می‌فرستد
+# و از بک‌اند عبور نمی‌کند؛ برای همین مشکل «فقط ویندوزی» به‌نظر می‌رسید.
+#
+# تصمیم آگاهانه: پشتیبانی *قابلیت لایسنس‌دار* نیست، راهِ کمک گرفتن است. پس
+# پشتیبانی و ورود (بدون توکن، هیچ درخواستی معنا ندارد) آزاد می‌شوند؛ دادهٔ
+# فروش، انبار، حسابداری و همهٔ قابلیت‌های واقعی همچنان با ۴۰۲ بسته می‌مانند.
+_LICENSE_FREE_PREFIXES = ("/api/setup/", "/api/support/", "/api/auth/", "/health",
+                          "/media/", "/icons/", "/docs", "/openapi.json", "/redoc")
 _LICENSE_GATE_ENABLED = os.environ.get("SUPERMARKET_LICENSE_GATE", "1") not in ("0", "false", "off")
 
 
@@ -265,19 +446,51 @@ async def license_gate(request: Request, call_next):
     return await call_next(request)
 
 
+#: v4.8.0 — آینهٔ پیش‌نمایش/دسکتاپ: به‌طور پیش‌فرض هیچ‌کس اجازهٔ قاب‌گرفتن پنل را ندارد
+#: (X-Frame-Options: DENY). برای اجرای پنل داخل یک قاب — مثل پیش‌نمایش میزبان ابری
+#: یا یک پوستهٔ دسکتاپ قاب‌محور — مالک می‌تواند با SUPERMARKET_ALLOW_EMBED=1 اجازه
+#: بدهد؛ در آن حالت هدر DENY فرستاده نمی‌شود و CSP با frame-ancestors باز می‌شود.
+_ALLOW_EMBED = os.environ.get("SUPERMARKET_ALLOW_EMBED", "0") not in ("0", "false", "off", "")
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    if not _ALLOW_EMBED:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    # v3.7 (§34) — camera/mic stay denied; **geolocation is allowed for our own
+    # origin only** (v1.0.0). The panel's support form offers «ارسال موقعیت
+    # مکانی دقیق»; sending `geolocation=()` made that feature impossible and, in
+    # the Windows WebView2 shell, left the permission request unanswered — the
+    # ticket submission then waited on a promise that could never settle.
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
+    )
     # CSP: inline handlers are used by the panel, so allow 'unsafe-inline' for
     # scripts in this phase; tighten when the frontend moves to a bundler.
+    frame_ancestors = " frame-ancestors *;" if _ALLOW_EMBED else ""
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'; connect-src 'self'",
+        "script-src 'self' 'unsafe-inline'; connect-src 'self';" + frame_ancestors,
     )
+    return response
+
+
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """build-485/492 — جلوگیری کامل از نمایش UI قدیمی پس از به‌روزرسانی (باگ مالک: «نصبی
+    جدید، ظاهر قدیمی»). WebView2/Edge فایل‌های JS/CSS را با کش تهاجمی نگه می‌داشت؛
+    حالا همهٔ پاسخ‌های غیر از /media با `no-store, no-cache, must-revalidate` ارسال می‌شوند."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/media/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
@@ -300,10 +513,26 @@ def _find_frontend_dir() -> Path | None:
 _MEDIA_DIR = Path(settings.MEDIA_DIR)
 _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
+from fastapi.staticfiles import StaticFiles  # build-510 — پیش از زیرکلاسِ ضدکش
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """build-510 — پایان تلهٔ «آپدیت نصب شد ولی رابط عوض نشد».
+
+    WebView2/مرورگر می‌توانست پاسخ قدیمی `app.js` را از کش خودش اجرا کند (پین
+    نسخهٔ `?v=` ماه‌ها ثابت مانده بود). با `Cache-Control: no-cache` کش باید پیش
+    از هر استفاده با سرور چک کند (ETag/Last-Modified سر جایش است، یعنی بدون
+    ترافیک اضافه) — فایل تازه همیشه همان بار اول می‌رسد؛ مستقل از پین نسخه.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 _FRONTEND_DIR = _find_frontend_dir()
 if _FRONTEND_DIR is not None:
-    from fastapi.staticfiles import StaticFiles
-
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
     # Dedicated mobile/PWA entry point (§10) — its own UX, not a shrunk desktop.
     _MOBILE_DIR = _FRONTEND_DIR / "mobile"
@@ -317,5 +546,5 @@ if _FRONTEND_DIR is not None:
         def _mobile_root():
             return RedirectResponse(url="/m/", status_code=307)
 
-        app.mount("/m", StaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+        app.mount("/m", _RevalidatingStaticFiles(directory=str(_MOBILE_DIR), html=True), name="mobile")
+    app.mount("/", _RevalidatingStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

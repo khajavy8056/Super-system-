@@ -63,27 +63,37 @@ def test_link_endpoint_gives_phone_the_pc_license_verdict(client, auth_headers):
     assert client.get("/api/mobile/link").status_code == 401
 
 
-def test_lan_beacon_answers_only_its_own_key(client, auth_headers):
+def test_lan_beacon_answers_only_its_own_key(client, auth_headers, monkeypatch):
     from app.database import SessionLocal
     from app.services import discovery
     key = client.post("/api/mobile/pair/code", headers=auth_headers).json()["link_key"]
-    discovery.start(SessionLocal, 8123)   # no-op if the app lifespan already started it (then port = settings.PORT)
-    time.sleep(0.3)
+    # bind روی پورت موقت (۰) → تست کاملاً ایزوله است و بیکنِ هیچ پروسهٔ دیگری
+    # (مثلاً سرور زندهٔ توسعه) نمی‌تواند پاسخ را بدزدد؛ پورت واقعی از BOUND_PORT.
+    # بیکنِ lifespan را (اگر فعال است) کامل خاموش کن تا بیکنِ ایزولهٔ همین تست
+    # جای آن بنشیند — وگرنه start() روی بیکنِ زندهٔ پورت ۴۸۷۶۵ no-op می‌شود.
+    discovery.stop()
+    if discovery._thread and discovery._thread.is_alive():
+        discovery._thread.join(timeout=3.0)
+    monkeypatch.setattr(discovery, "PORT", 0)
+    discovery.start(SessionLocal, 8123)
+    time.sleep(0.4)
+    port = discovery.BOUND_PORT
+    assert port and port != 48765, f"test beacon must bind an ephemeral port, got {port}"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(1.5)
-        s.sendto(f"SMKT-FIND {key}".encode(), ("127.0.0.1", discovery.PORT))
+        s.sendto(f"SMKT-FIND {key}".encode(), ("127.0.0.1", port))
         data, _ = s.recvfrom(256)
         parts = data.decode().split(" ", 3)
         assert parts[0] == "SMKT-HERE" and parts[1] in ("8123", "8000") and parts[2] == key
         # a stranger's key gets silence
-        s.sendto(b"SMKT-FIND DEADBEEF0000", ("127.0.0.1", discovery.PORT))
+        s.sendto(b"SMKT-FIND DEADBEEF0000", ("127.0.0.1", port))
         try:
             s.recvfrom(256)
             assert False, "beacon must not answer another shop's key"
         except socket.timeout:
             pass
         # an empty key (first-time auto-discover from the wizard) is answered
-        s.sendto(b"SMKT-FIND", ("127.0.0.1", discovery.PORT))
+        s.sendto(b"SMKT-FIND", ("127.0.0.1", port))
         data, _ = s.recvfrom(256)
         assert data.decode().split(" ")[2] == key
         s.close()
@@ -126,7 +136,9 @@ def test_inapp_google_signin_endpoints(client, auth_headers, monkeypatch):
 def test_android_v21_wizard_datepicker_name_and_support():
     src = _src()
     strings = (ANDROID / "res" / "values" / "strings.xml").read_text(encoding="utf-8")
-    assert "سوپرمارکت خواجوی" not in strings and 'name="app_name">سوپری من<' in strings
+    # v1.0.0 (RASA) — نام محصول «رسا سیستم» است (نسخهٔ بتا: «سوپری من»)
+    assert 'name="app_name">رسا سیستم<' in strings
+    assert "سوپرمارکت خواجوی" not in strings and "سوپری من" not in strings
     assert "طراحی و توسعه توسط خواجوی" in strings
     manifest = (ANDROID / "AndroidManifest.xml").read_text(encoding="utf-8")
     for act in (".SetupActivity", ".LockActivity", ".SupportActivity"):
@@ -136,7 +148,9 @@ def test_android_v21_wizard_datepicker_name_and_support():
     assert "نسخهٔ رایانه (ویندوز) را دارم" in setup and "فقط گوشی — رایانه ندارم" in setup
     for step in ("license", "store", "contact", "currency", "theme", "catalog", "admin", "finish"):
         assert f'"{step}"' in setup
-    assert "45L * 60L * 1000L" in setup and "first_loading_done" in setup
+    assert "45L * 60L * 1000L" not in setup and "first_loading_done" in setup
+    assert "Db.db();" in setup and "loadingScreen(() -> finishSetup(true))" in setup
+    assert "InstallRecovery.releaseLegacyDelay()" in setup
     loading_block = setup[setup.index("void loadingScreen"):setup.index("void finishSetup")]
     assert "دقیقه" not in loading_block
     assert "pair/claim" in setup and "Discovery.find" in setup and "Sync.checkPcLicense" in setup
@@ -158,7 +172,7 @@ def test_android_v21_wizard_datepicker_name_and_support():
     disc = (JAVA / "Discovery.java").read_text(encoding="utf-8")
     assert "SMKT-FIND" in disc and "SMKT-HERE" in disc and "48765" in disc
     # v3.5 — the bundled catalogue for the standalone wizard is now the full
-    # default bank (13 570 products), and the old 191-line placeholder is gone.
+    # default bank (16 953 products), and the old 191-line placeholder is gone.
     catalog = ANDROID / "assets" / "default_catalog.csv"
     assert catalog.exists()
     assert catalog.stat().st_size > 1_000_000, "the bundled catalogue looks truncated"

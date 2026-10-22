@@ -351,8 +351,8 @@ def about(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     from .. import __version__
 
     return {
-        "app_name": "سامانه جامع مدیریت سوپرمارکت",
-        "app_name_en": "Supermarket Smart Management System",
+        "app_name": "مدیریت سوپرمارکت رسا سیستم",
+        "app_name_en": "RASA SYSTEM — Supermarket Management",
         "version": __version__,
         "developer": "خواجوی",
         "developer_en": "Khajavy",

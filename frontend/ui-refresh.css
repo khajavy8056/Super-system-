@@ -1,0 +1,195 @@
+/* =====================================================================
+ * v4.8.0 — «بازآرایی ظاهر» (design refresh layer)
+ *
+ * Loaded LAST, after styles.css / theme-pro.css / mobile-shell.css /
+ * desktop.css, so it only *refines* the existing look: typography rhythm,
+ * table readability, control hierarchy, POS focus, and the new
+ * «بررسی اجراها» (execution health) surfaces. No layout structure is
+ * changed — every rule here is additive, so an older browser that skips
+ * this file still gets a complete, working panel.
+ *
+ * درخواست مالک: «ظاهر هر دو برنامه (اندروید و ویندوز) حرفه‌ای‌تر و
+ * مدرن‌تر شود.» این لایه نتیجهٔ همان کار است: فاصله‌های یکنواخت ۴/۸/۱۲،
+ * سایه‌های نرم‌تر، متن خواناتر، و جدول‌هایی که در فروشگاه شلوغ هم به‌سرعت
+ * خوانده می‌شوند.
+ * ===================================================================== */
+
+:root {
+  --r-sm: 10px; --r-md: 14px; --r-lg: 20px; --r-xl: 26px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --fs-xxs: 11px; --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-xxl: 26px;
+  --fs-num: 1.04em;                       /* Persian digits read better a hair larger */
+  --dur: .16s;
+  --shadow-soft: 0 1px 2px rgba(4, 10, 28, .18), 0 14px 34px rgba(4, 10, 28, .28);
+  --hairline: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+/* ------------------------------------------------------------------ base */
+html { scroll-behavior: smooth; }
+body {
+  font-family: Vazirmatn, "Vazir", "IRANSans", "Noto Naskh Arabic", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--primary) 45%, transparent); }
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 70%, #fff);
+  outline-offset: 2px;
+}
+/* thin, theme-aware scrollbars — the panel is used for hours at a till */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--border) 85%, transparent) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--border) 85%, transparent); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--primary) 60%, var(--border)); background-clip: content-box; }
+
+.muted { line-height: 1.7; }
+h1, h2, h3, h4 { letter-spacing: -.2px; }
+h1 { font-size: var(--fs-xxl); } h2 { font-size: var(--fs-xl); } h3 { font-size: var(--fs-lg); }
+.eyebrow { letter-spacing: .3px; }
+
+/* ------------------------------------------------------------- structure */
+.view { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); }
+.page-intro {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4);
+  padding: var(--sp-5); border-radius: var(--r-lg);
+  background:
+    radial-gradient(700px 220px at 92% -40%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 70%),
+    linear-gradient(180deg, color-mix(in srgb, var(--card) 92%, var(--bg2)), var(--card));
+  border: 1px solid var(--hairline); box-shadow: var(--shadow-soft);
+}
+.page-intro h2 { margin: 0; }
+.page-intro p { margin: 4px 0 0; color: var(--muted); }
+.intro-badge {
+  padding: 6px 14px; border-radius: 999px; font-size: var(--fs-xs); font-weight: 700;
+  background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--primary) 45%, transparent); white-space: nowrap;
+}
+.card { border-radius: var(--r-md); border: 1px solid var(--hairline); box-shadow: var(--shadow-soft); }
+.card + .card { margin-top: 2px; }
+.grid { gap: var(--sp-4); }
+.section-title, .card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+
+/* ------------------------------------------------------------------ kpis */
+.kpi { border-radius: var(--r-md); transition: transform var(--dur) ease, box-shadow var(--dur) ease; }
+.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.kpi-val { font-variant-numeric: tabular-nums; }
+.mini-stat { border-radius: var(--r-sm); }
+
+/* ---------------------------------------------------------------- tables */
+.table-wrap { border-radius: var(--r-md); border: 1px solid var(--hairline); background: color-mix(in srgb, var(--card) 70%, transparent); }
+.table-wrap table { border-collapse: separate; border-spacing: 0; }
+th { position: sticky; top: 0; z-index: 1; backdrop-filter: blur(6px); border-bottom: 1px solid var(--border); }
+td { border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg2) 45%, transparent); }
+tbody tr:last-child td { border-bottom: 0; }
+tr:hover td { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+td .badge, td .ok, td .err { white-space: nowrap; }
+.ok { color: var(--green); font-weight: 700; }
+.err { color: var(--red); font-weight: 700; }
+.warn { color: var(--amber); font-weight: 700; }
+
+/* --------------------------------------------------------------- controls */
+.btn { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn-sm { min-height: 32px; }
+.btn-ghost { border: 1px solid var(--hairline); background: color-mix(in srgb, var(--card) 60%, transparent); }
+.btn-ghost:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+.btn:disabled { opacity: .55; cursor: not-allowed; transform: none; filter: none; }
+.btn-primary { font-weight: 700; }
+.badge { border-radius: 999px; padding: 3px 10px; font-size: var(--fs-xxs); }
+.badge-green { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+.badge-red { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+.badge-amber { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber); }
+.badge-gray { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.badge-blue { background: color-mix(in srgb, var(--primary) 20%, transparent); color: color-mix(in srgb, var(--primary) 70%, #fff); }
+input, select, textarea { min-height: 38px; }
+label { font-size: var(--fs-xs); }
+.toast { border-inline-start: 4px solid var(--primary); }
+.toast.err { border-inline-start-color: var(--red); }
+.toast.ok { border-inline-start-color: var(--green); }
+.modal { border: 1px solid var(--hairline); max-height: 88vh; overflow: auto; }
+.modal-head { position: sticky; top: 0; z-index: 2; backdrop-filter: blur(8px); }
+.empty, .cart-empty, .sug-empty {
+  padding: var(--sp-5); text-align: center; color: var(--muted); border-radius: var(--r-md);
+  border: 1px dashed color-mix(in srgb, var(--border) 85%, transparent);
+  background: color-mix(in srgb, var(--bg2) 40%, transparent);
+}
+.view-feedback { border-radius: var(--r-md); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); padding: var(--sp-4); }
+
+/* ------------------------------------------------------------------- POS */
+.pos-screen { gap: var(--sp-3); }
+.pos-header { border-radius: var(--r-md); }
+.scan-field.pos-scan-wrap, .pos-scan { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent); }
+.pos-main { gap: var(--sp-3); }
+.pos-btn { border-radius: var(--r-sm); min-height: 44px; font-weight: 700; letter-spacing: .1px; }
+.pos-btn-pay { box-shadow: 0 8px 22px color-mix(in srgb, var(--green) 38%, transparent); }
+.pos-actions { gap: var(--sp-2); }
+.pos-cart { border-radius: var(--r-md); border: 1px solid var(--hairline); }
+.pos-cart-head h3 { font-size: var(--fs-md); }
+.pos-cart-list { gap: var(--sp-2); }
+.pos-totals, .pos-total { font-variant-numeric: tabular-nums; font-size: var(--fs-lg); font-weight: 800; }
+.pos-held, .held-chips { gap: var(--sp-2); }
+.held-chip { border-radius: 999px; }
+/* the whisper bar: one calm card, near-expiry items get the clock tone */
+.pos-nudge {
+  gap: var(--sp-2); padding: 10px 14px; border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%);
+  align-items: center; flex-wrap: wrap;
+}
+.pos-nudge .nudge-txt { font-size: var(--fs-xs); }
+.nudge-chip { min-height: 34px; font-weight: 600; transition: transform var(--dur) ease, border-color var(--dur) ease; }
+.nudge-chip:hover { transform: translateY(-1px); }
+
+/* -------------------------------------------------------------- insights */
+.ins-wrap { gap: var(--sp-4); }
+.ins-hero { border-radius: var(--r-lg); box-shadow: var(--shadow-soft); }
+.ins-grid { gap: var(--sp-3); }
+.ins-card { border-radius: var(--r-md); border: 1px solid var(--hairline); transition: transform var(--dur) ease, box-shadow var(--dur) ease; }
+.ins-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.ins-card.ins-urgent { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.ins-kind { border-radius: 999px; }
+.ins-actions .btn { min-height: 34px; }
+.ev-kpis { gap: var(--sp-3); }
+.ev-kpis > div { border-radius: var(--r-sm); }
+.ab2 { border-radius: var(--r-md); }
+.set-tabs { gap: var(--sp-2); }
+.set-tab, .acc-tab { border-radius: 999px; }
+
+/* --------------------------------------------------------------- motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+  .kpi:hover, .ins-card:hover, .nudge-chip:hover { transform: none; }
+}
+
+/* ---------------------------------------------------------------- mobile */
+.m-shell .view { padding: var(--sp-3); gap: var(--sp-3); }
+.m-shell .page-intro { padding: var(--sp-4); flex-direction: column; align-items: flex-start; }
+.m-shell .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.m-shell .table-wrap { border-radius: var(--r-sm); }
+.m-shell .pos-btn { min-height: 52px; }          /* fingertip targets on the phone */
+
+/* ----------------------------------------------------------------- light */
+[data-theme="light"] .page-intro { background: linear-gradient(180deg, #fff, color-mix(in srgb, var(--bg2) 70%, #fff)); }
+[data-theme="light"] .pos-nudge { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%); }
+
+/* ----------------------------------------------------------------- print */
+@media print {
+  .sidebar, .topbar, .pos-actions, .ins-actions, #topbar-actions { display: none !important; }
+  .view { padding: 0; }
+  .card, .table-wrap { border: 1px solid #999; box-shadow: none; }
+}
+
+/* ── v4.8.0 — نشان انقضا در انتخاب بچ صندوق و صفحهٔ کالا ─────────────────────
+   سه سطح: نزدیک (۳۰ روز) کهربایی، فوری (۷ روز) نارنجی، منقضی قرمز تیره.
+   هدف: صندوق‌دار بدون خواندن تاریخ بفهمد کدام بچ باید اول برود. */
+.exp-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; background: rgba(148, 163, 184, .18); color: #cbd5e1; white-space: nowrap; }
+.exp-chip.near { background: rgba(245, 158, 11, .16); color: #fbbf24; border: 1px solid rgba(245, 158, 11, .35); }
+.exp-chip.soon { background: rgba(249, 115, 22, .18); color: #fb923c; border: 1px solid rgba(249, 115, 22, .45); }
+.exp-chip.expired { background: rgba(239, 68, 68, .18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, .45); }
+body.light .exp-chip { color: #334155; }
+body.light .exp-chip.near { color: #b45309; }
+body.light .exp-chip.soon { color: #c2410c; }
+body.light .exp-chip.expired { color: #b91c1c; }
+.batch-option .b-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }

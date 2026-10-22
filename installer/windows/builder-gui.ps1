@@ -5,7 +5,7 @@
  Shows a WPF window with a progress bar, checks/installs every prerequisite,
  and produces one distributable file:
 
-     installer\output\SupermarketSystem-Setup-<version>.exe
+     installer\output\RasaSystem-Setup-<version>.exe
 
  Design notes that matter:
 

@@ -1,6 +1,7 @@
 """v3.5 — PRO intelligence pack (59 analyzers), AI advisor plumbing, groups, new actions."""
 import json
 import pathlib
+from datetime import timedelta
 
 DEMO = pathlib.Path(__file__).resolve().parents[1] / "demo" / "demo_store.db.gz"
 
@@ -8,6 +9,24 @@ DEMO = pathlib.Path(__file__).resolve().parents[1] / "demo" / "demo_store.db.gz"
 def _restore(client, auth_headers):
     r = client.post("/api/system/restore", headers=auth_headers, files={"file": ("demo_store.db.gz", DEMO.read_bytes(), "application/gzip")})
     assert r.status_code == 200, r.text
+
+
+def _make_replenishment_cycles_current():
+    """Keep the demo's stable purchase intervals while making their due dates relative to today."""
+    from sqlalchemy import select
+    from app.database import SessionLocal
+    from app.models import Invoice
+    from app.services.timeservice import local_now
+
+    with SessionLocal() as db:
+        invoices = db.execute(select(Invoice)).scalars().all()
+        if not invoices:
+            return
+        shift = local_now().date() - max(row.created_at.date() for row in invoices)
+        if shift.days:
+            for row in invoices:
+                row.created_at = row.created_at + timedelta(days=shift.days)
+            db.commit()
 
 
 def test_registry_has_60_kinds_and_groups_cover_all():
@@ -28,6 +47,7 @@ def test_all_actions_referenced_exist():
 
 def test_run_produces_pro_kinds_without_errors(client, auth_headers):
     _restore(client, auth_headers)
+    _make_replenishment_cycles_current()
     r = client.post("/api/insights/run", headers=auth_headers).json()
     assert not r["errors"], r["errors"]
     rows = client.get("/api/insights?status=NEW&limit=300", headers=auth_headers).json()
@@ -43,6 +63,7 @@ def test_run_produces_pro_kinds_without_errors(client, auth_headers):
 
 def test_personal_sms_action_and_accept(client, auth_headers):
     _restore(client, auth_headers)
+    _make_replenishment_cycles_current()
     client.post("/api/insights/run", headers=auth_headers)
     rows = client.get("/api/insights?status=NEW&kind=CUST_ITEM_DUE", headers=auth_headers).json()
     assert rows

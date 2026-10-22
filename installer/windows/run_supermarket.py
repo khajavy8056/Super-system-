@@ -1,22 +1,32 @@
-"""Windows/standalone launcher — starts the local backend and opens the web panel.
+"""Windows/standalone launcher — starts the local sync backend and opens the
+NATIVE Windows application (Qt widgets, no browser/webview/cookies).
 
 Used by the frozen executable (PyInstaller, onefile) and directly in dev:
 
     python installer/windows/run_supermarket.py
 
-Design notes (phase 6):
-- User data (SQLite DB, logs, per-install JWT secret) lives in ``~/SupermarketSystem``
+Design notes:
+- User data (SQLite DB, logs, per-install JWT secret) lives in ``~/RasaSystem``
   so reinstalling/updating the app never wipes data.
 - The JWT secret is generated once per install and persisted — tokens survive
   restarts (root-cause fix vs falling back to the dev default key).
-- The window opens only after ``/health`` answers 200 (real readiness probe),
-  not after a bare TCP connect.
+- The native window opens only after ``/health`` answers 200 (real readiness
+  probe), not after a bare TCP connect.
 
-Desktop contract (3.6.7):
-- WebView2 is an embedded renderer in the application's own resizable window.
-- A browser is never a fallback. Missing desktop dependencies are an explicit
-  startup failure with repair instructions, not a different product.
-- SUPERMARKET_KIOSK=1 explicitly requests full-screen; normal windows are default.
+Desktop contract (build-498, دستورالعمل §۶):
+- The Windows app is a NATIVE Qt Widgets application (no HTML/CSS/JS, no
+  WebView, no browser, no cookies, no web cache). Business logic is called
+  in-process through the same service layer the server uses.
+- The local HTTP server stays alive ONLY for the Android app's LAN sync and
+  pairing — the desktop UI never depends on it.
+- A browser is never a fallback. Missing native UI dependencies are an
+  explicit startup failure with repair instructions.
+
+Window contract (4.8.1 / build 482, unchanged):
+- The program is installed on shop POS machines and MUST open FULL SCREEN by
+  default. SUPERMARKET_KIOSK=0 switches back to a normal resizable window
+  (repair/development); SUPERMARKET_KIOSK=kiosk requests full-screen without a
+  frame (locked-down till).
 """
 from __future__ import annotations
 
@@ -30,7 +40,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-APP_NAME = "SupermarketSystem"
+# v1.0.0 (RASA) — brand + data folder. The folder is RasaSystem for new installs;
+# an existing ~/SupermarketSystem (v4.x and older) is taken over once, IN PLACE, so
+# an update never loses the shop's database. Both names are recognised forever.
+APP_NAME = "RasaSystem"
+LEGACY_APP_NAME = "SupermarketSystem"
 
 
 def backend_dir() -> Path:
@@ -40,7 +54,15 @@ def backend_dir() -> Path:
 
 
 def data_dir() -> Path:
+    """User data folder — migrates the pre-1.0 folder name without touching the data."""
     base = Path.home() / APP_NAME
+    legacy = Path.home() / LEGACY_APP_NAME
+    if not base.exists() and legacy.exists():
+        try:
+            legacy.rename(base)                       # same volume: atomic, nothing is copied
+        except OSError:
+            import shutil
+            shutil.copytree(legacy, base)             # different volume (rare): copy, keep the original
     (base / "logs").mkdir(parents=True, exist_ok=True)
     return base
 
@@ -107,6 +129,40 @@ def persistent_secret(base: Path) -> str:
     return key
 
 
+def purge_stale_webview_cache(base: Path) -> None:
+    """build-498 — پاک‌سازی باقی‌ماندهٔ پروفایل WebView2 نسخه‌های قدیمی.
+
+    برنامهٔ ویندوز از بیلد ۴۹۸ به بعد کاملاً نیتیو (Qt) است و هیچ پروفایلی
+    نگه نمی‌دارد؛ این تابع فقط میراث نصب‌های قبلی را پاک می‌کند تا کوکی/کش
+    قدیمی هیچ اثری روی اطلاعات نگذارد (دستورالعمل §۶/§۷)."""
+    import shutil
+    try:
+        from app import __version__
+    except Exception:
+        return
+    ver_file = base / "ui.version"
+    prev = ver_file.read_text(encoding="utf-8").strip() if ver_file.exists() else ""
+    if prev == __version__:
+        return
+    wv = base / "webview2"
+    if wv.exists():
+        for sub in (
+            "EBWebView/Default/Cache",
+            "EBWebView/Default/Code Cache",
+            "EBWebView/Default/Service Worker",
+            "Default/Cache",
+            "Default/Code Cache",
+            "Default/Service Worker",
+        ):
+            target = wv / sub
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+    try:
+        ver_file.write_text(__version__, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def wait_healthy(port: int, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -121,73 +177,40 @@ def wait_healthy(port: int, timeout: float = 30.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# §19 — dedicated desktop window
+# §19 — the NATIVE Windows application (build-498, دستورالعمل §۶)
 # ---------------------------------------------------------------------------
-def open_native_window(url: str, base: Path, log, on_closed):
-    """v1.3 — real desktop window (no browser). Uses pywebview on top of the
-    Microsoft Edge WebView2 runtime that ships with Windows 10/11, so the user
-    sees ONE application window with our icon/title, no address bar, no tabs,
-    no browser chrome. Returns True when the window was shown (the call blocks
-    until the window closes, then ``on_closed`` runs); False when pywebview or
-    WebView2 is unavailable so the caller can show repair instructions."""
+def open_native_app(base: Path, log) -> bool:
+    """بازکردن «برنامهٔ بومی ویندوز» — Qt Widgets، بدون مرورگر/WebView/کوکی.
+
+    build-498: رابط کاربری ویندوز دیگر HTML در WebView2 نیست؛ یک برنامهٔ
+    دسکتاپ واقعی با ویجت‌های نیتیو است که منطق کسب‌وکار را درون همان پروسه
+    صدا می‌زند. سرور محلی فقط برای همگام‌سازی گوشی اندروید در LAN زنده است.
+    Returns True when the app was shown (blocks until it closes); False when
+    the native UI dependencies are missing so the caller shows repair notes.
+    """
+    if not getattr(sys, "frozen", False):
+        repo_root = str(backend_dir().parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
     try:
-        import webview  # pywebview
+        from desktop.main import run_desktop_app  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001
-        log.warning("pywebview not available (%s); native startup blocked", exc)
+        log.warning("native desktop UI not available (%s); native startup blocked", exc)
         return False
     try:
-        # WebView2 keeps its profile here (cookies = login session, zoom, etc.)
-        profile = base / "webview2"
-        profile.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
-        kiosk = os.environ.get("SUPERMARKET_KIOSK", "").strip().lower() in ("1", "true", "yes")
-        win = webview.create_window(
-            "سیستم مدیریت سوپرمارکت", url,
-            width=1440, height=900, min_size=(640, 480),
-            fullscreen=kiosk, frameless=kiosk, easy_drag=False,
-            text_select=True, zoomable=True, confirm_close=False,
-        )
-        try:
-            win.events.closed += on_closed
-        except Exception:  # noqa: BLE001 - older pywebview
-            pass
-        if kiosk:
-            # v2.5 — belt and braces: some pywebview/WebView2 builds ignore the
-            # ``fullscreen=`` constructor flag on the first frame; toggling once
-            # the window exists guarantees a true full-screen, chrome-less panel.
-            def _force_fullscreen():
-                try:
-                    import time as _t
-                    _t.sleep(0.6)
-                    if not getattr(win, "fullscreen", True):
-                        win.toggle_fullscreen()
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                win.events.loaded += lambda *_: threading.Thread(target=_force_fullscreen, daemon=True).start()
-            except Exception:  # noqa: BLE001
-                pass
-        icon = backend_dir().parent / "installer" / "windows" / "icon.ico"
-        if not icon.exists():
-            icon = Path(getattr(sys, "_MEIPASS", ".")) / "icon.ico"
-        kwargs = {"private_mode": False, "storage_path": str(profile), "debug": False}
-        if sys.platform == "win32":
-            kwargs["gui"] = "edgechromium"
-        if icon.exists():
-            kwargs["icon"] = str(icon)
-        log.info("opening native WebView2 window")
-        webview.start(**kwargs)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.error("native window failed (%s); native startup blocked", exc)
-        return False
+        from app import __version__ as app_version  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        app_version = ""
+    log.info("opening the native Qt desktop application")
+    run_desktop_app(data_dir=base, version=app_version)
+    return True
 
 
 def native_window_error(log_file):
     _message_box(
-        "پنجرهٔ اختصاصی برنامه راه‌اندازی نشد. مرورگر باز نخواهد شد.\n\n"
-        "نصب برنامه را ترمیم کنید و Microsoft Edge WebView2 Runtime را نصب یا ترمیم کنید.\n"
-        "وابستگی‌های pywebview و pythonnet باید همراه نسخهٔ ویندوز نصب شده باشند.\n\n"
+        "برنامهٔ بومی ویندوز راه‌اندازی نشد (هیچ پنجرهٔ وبی جایگزین نمی‌شود).\n\n"
+        "نصب برنامه را ترمیم کنید؛ کتابخانهٔ رابط نیتیو (PySide6/Qt) باید همراه "
+        "نسخهٔ ویندوز نصب شده باشد.\n\n"
         f"گزارش خطا: {log_file}"
     )
 
@@ -247,8 +270,14 @@ def main() -> None:
     sys.path.insert(0, str(backend_dir()))
 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{base / 'supermarket.db'}")
+    # v4.0 — one data dir for everything the app persists (DB, logs, brain models,
+    # llama.cpp runtime). Without this the frozen backend would resolve its data
+    # dir inside the PyInstaller temp extraction dir and lose the model the
+    # installer placed in ~/SupermarketSystem/brain/models on every launch.
+    os.environ.setdefault("SUPERMARKET_DATA_DIR", str(base))
     os.environ.setdefault("SECRET_KEY", persistent_secret(base))
     os.environ.setdefault("SUPERMARKET_ALLOW_SHUTDOWN", "1")   # v1.6: in-app exit button
+    purge_stale_webview_cache(base)
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ENVIRONMENT", "production")
 
@@ -268,9 +297,8 @@ def main() -> None:
     # Second click while already running -> just bring the panel up again.
     running = _single_instance_port(base)
     if running:
-        log.info("instance already running on port %s; opening window only", running)
-        u = f"http://127.0.0.1:{running}"
-        if not open_native_window(u, base, log, lambda *_: None):
+        log.info("instance already running on port %s; opening the window only", running)
+        if not open_native_app(base, log):
             native_window_error(log_file)
         return
 
@@ -304,13 +332,11 @@ def main() -> None:
     server.start()
 
     url = f"http://127.0.0.1:{port}"
-    log.info("Supermarket System is starting at %s", url)
-    window = None
+    log.info("Supermarket System is starting at %s (local API for Android sync)", url)
     if wait_healthy(port):
-        log.info("healthy, opening the application window")
-        closed = {"flag": False}
-        if open_native_window(url, base, log, lambda *_: closed.__setitem__("flag", True)):
-            log.info("native window closed; shutting down")
+        log.info("healthy, opening the native desktop application")
+        if open_native_app(base, log):
+            log.info("native application closed; shutting down")
             try:
                 (base / "server.port").unlink()
             except OSError:

@@ -45,7 +45,7 @@ jobs:
         id: apk
         run: |
           v=$(sed -nE 's/__version__\s*=\s*"([^"]+)"/\1/p' backend/app/__init__.py)
-          out="SupermarketMobile-$v.apk"
+          out="RasaSystemMobile-$v.apk"
           cp "dist/$out" "$out"
           sha256sum "$out" > "$out.sha256"
           echo "path=$out" >> "$GITHUB_OUTPUT"

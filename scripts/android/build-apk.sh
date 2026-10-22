@@ -20,7 +20,13 @@ ECJ="$TOOLS/ecj.jar"; AAPT2="$TOOLS/aapt2"; D8JAR="$TOOLS/d8.jar"; APKSIGNER="$T
 for f in "$JAVA" "$ECJ" "$AAPT2" "$D8JAR" "$APKSIGNER" "$ANDROID_JAR"; do [ -e "$f" ] || { echo "missing tool: $f (run scripts/android/fetch-tools.sh)"; exit 1; }; done
 
 VER=$(sed -nE 's/__version__\s*=\s*"([^"]+)"/\1/p' "$ROOT/backend/app/__init__.py")
-IFS=. read -r MA MI PA <<<"$VER"; CODE=$((MA*10000 + MI*100 + PA))
+# v1.0.0 (RASA) — کد نسخه از mobile-android/BUILD (بیلد ۴۸۰ = 48000)؛ باید همیشه
+# بزرگ‌تر از نسخهٔ منتشرشدهٔ قبلی باشد وگرنه اندروید به‌روزرسانی درجا را رد می‌کند.
+CODE=$(tr -dc '0-9' < "$ROOT/mobile-android/BUILD" 2>/dev/null || true)
+IFS=. read -r MA MI PA <<<"$VER"
+SEMVER_CODE=$((MA*10000 + MI*100 + PA))
+[ -n "${CODE:-}" ] || CODE=$SEMVER_CODE
+[ "$CODE" -gt "$SEMVER_CODE" ] || CODE=$SEMVER_CODE
 APP="$ROOT/mobile-android/app/src/main"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/gen" "$W/classes" "$W/dex" "$OUT"
@@ -28,9 +34,20 @@ mkdir -p "$W/gen" "$W/classes" "$W/dex" "$OUT"
 echo "== 1/6 assets (fonts only — v2.0 is fully native, no bundled web app)"
 ASSETS="$W/assets"; mkdir -p "$ASSETS/fonts"
 cp "$APP"/assets/fonts/* "$ASSETS/fonts/"
-cp "$APP"/assets/default_catalog.csv "$ASSETS/"   # v3.5: bundled default catalogue (13 570 products, zero stock)
+cp "$APP"/assets/default_catalog.csv "$ASSETS/"   # v3.5: bundled default catalogue (16 953 products, zero stock)
 cp "$APP"/assets/product_bank_seed.csv "$ASSETS/"  # v2.7: bundled barcode→name bank seed
 echo "{\"version\":\"$VER\",\"built_at\":\"$(date -u +%FT%TZ)\",\"ui\":\"native\"}" > "$ASSETS/build.json"
+
+# v1.0.0 (RASA) — کانال پشتیبانی به‌ازای هر نصب، نه یک رمز ثابت در کد.
+# برای ساخت APK تأمین‌شده:  RASA_RELAY_TOKEN=... RASA_RELAY_URL=... scripts/android/build-apk.sh
+if [ -n "${RASA_RELAY_TOKEN:-}" ]; then
+  printf '{"token":"%s","url":"%s"}\n' "$RASA_RELAY_TOKEN" "${RASA_RELAY_URL:-https://botapi.rubika.ir/v3}" > "$ASSETS/relay.json"
+  chmod 600 "$ASSETS/relay.json"
+  echo "   کانال پشتیبانی: تأمین شد (توکن در مخزن نیست)"
+else
+  echo "   کانال پشتیبانی: تأمین نشده — بدون RASA_RELAY_TOKEN ساخته می‌شود؛"
+  echo "   گوشی‌های مستقل درخواست را ذخیره می‌کنند و در صف «ارسال مجدد» می‌مانند."
+fi
 
 echo "== 2/6 resources (aapt2)"
 "$AAPT2" compile --dir "$APP/res" -o "$W/res.zip"
@@ -53,6 +70,17 @@ find "$W/classes" -name '*.class' > "$W/classes.txt"
 echo "== 5/6 package + align"
 cp "$W/base.apk" "$W/unsigned.apk"
 ( cd "$W/dex" && zip -q "$W/unsigned.apk" classes.dex )
+# v4.1 — the on-device inference engine (llama.cpp, static aarch64 build of the
+# same b6283 tag the Windows installer bundles). It ships as lib/<abi>/libllamaserver.so
+# so Android extracts it next to the app and it can be executed from there.
+for ABI_DIR in "$APP"/jniLibs/*/; do
+  [ -d "$ABI_DIR" ] || continue
+  ABI=$(basename "$ABI_DIR")
+  mkdir -p "$W/native/lib/$ABI"
+  cp "$ABI_DIR"*.so "$W/native/lib/$ABI/"
+  ( cd "$W/native" && zip -q "$W/unsigned.apk" "lib/$ABI/"* )
+  echo "   engine: packed lib/$ABI ($(du -ch "$W/native/lib/$ABI"/*.so | tail -1 | cut -f1))"
+done
 if [ -x "$TOOLS/zipalign" ]; then "$TOOLS/zipalign" -f -p 4 "$W/unsigned.apk" "$W/aligned.apk"; else cp "$W/unsigned.apk" "$W/aligned.apk"; fi
 
 echo "== 6/6 sign (apksigner v2+v3)"
@@ -63,8 +91,18 @@ if [ ! -f "$KS" ]; then
   "$KEYTOOL" -genkeypair -keystore "$KS" -storepass "$KS_PASS" -keypass "$KEY_PASS" -alias "$KS_ALIAS" \
     -dname "CN=Khajavy Supermarket, O=Khajavy, C=IR" -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
 fi
-APK="$OUT/SupermarketMobile-$VER.apk"
+APK="$OUT/RasaSystemMobile-$VER.apk"   # v1.0.0 (RASA) — نام محصول جدید
 "$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --ks-key-alias "$KS_ALIAS" --out "$APK" "$W/aligned.apk" 2>/dev/null
 "$JAVA" -jar "$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | head -3
 ( cd "$OUT" && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256" )
-echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+
+echo "== install-preflight (v4.1.1)"
+# what PackageManager actually checks (arsc alignment/storage, ABIs, zip CRC) —
+# apksigner/aapt2 alone missed the class of bugs that broke the owner's install
+PY="${PY:-python3}"
+if "$PY" "$ROOT/scripts/android/verify-apk.py" "$APK"; then
+  echo "OK → $APK ($(du -h "$APK" | cut -f1))"
+else
+  echo "the APK fails install-preflight — refusing to call it done" >&2
+  exit 1
+fi

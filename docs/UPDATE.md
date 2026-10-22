@@ -25,7 +25,7 @@
 3 پشتیبان‌گیری پایگاه‌داده (SQLite online backup) → شکست ⇒ ABORTED (هیچ تغییری)
 4 دانلود بسته (stream, follow redirects)      → updates/<asset_name>
 5 اعتبارسنجی: اندازه + SHA-256 + امضای PE (MZ) → شکست ⇒ FAILED و حذف فایل
-6 آماده (PREPARED): مسیر Setup برای اجرا     → اجرای نصب توسط مدیر؛ داده‌ها در %USERPROFILE%\SupermarketSystem می‌مانند
+6 آماده (PREPARED): مسیر Setup برای اجرا     → اجرای نصب توسط مدیر؛ داده‌ها در %USERPROFILE%\RasaSystem می‌مانند
 7 پس از نصب: Alembic migration افزودنی (§274) ; Rollback = بازگردانی backup از تنظیمات ← پشتیبان‌گیری (§276)
 ```
 

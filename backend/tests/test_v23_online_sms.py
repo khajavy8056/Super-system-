@@ -111,22 +111,27 @@ def _relay_roundtrip(c):
 def test_launcher_stable_port_and_fullscreen():
     src = (ROOT / "installer" / "windows" / "run_supermarket.py").read_text(encoding="utf-8")
     assert "def stable_port(" in src and "PREFERRED_PORT = 8765" in src and 'os.environ["PORT"] = str(port)' in src
-    assert "fullscreen=kiosk, frameless=kiosk" in src and "SUPERMARKET_KIOSK" in src
+    # build-498 — قرارداد پنجره در برنامهٔ نیتیو (desktop/main.py): پیش‌فرض
+    # «تمام‌صفحه»؛ SUPERMARKET_KIOSK=0 حالت پنجره‌ای عیب‌یابی؛ kiosk هم تمام‌صفحه.
+    main_py = (ROOT / "desktop" / "main.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("SUPERMARKET_KIOSK", "1")' in main_py  # پیش‌فرض = تمام‌صفحه
+    assert "win.showFullScreen()" in main_py and "webbrowser" not in main_py
     disc = (ROOT / "backend" / "app" / "services" / "discovery.py").read_text(encoding="utf-8")
     assert 'os.environ.get("PORT"' in disc
 
 
 def test_android_v23_sources():
     m = MANIFEST.read_text(encoding="utf-8")
-    assert "FOREGROUND_SERVICE" in m and ".InstallService" in m and "USE_BIOMETRIC" in m
+    # Build 494 retires the fake timed foreground installer; biometric auth remains.
+    assert "FOREGROUND_SERVICE" not in m and ".InstallService" not in m and "USE_BIOMETRIC" in m
     for f, needles in {
         "SmsLocal.java": ["BaseServiceNumber", "SendSMS", "kavenegar", "renderInvoice", "flush()"],
         "SalesScreens.java": ["SmsLocal.enqueueAndSend"],
         "AdminScreens.java": ["SmsLocal.GUIDE", "آموزش راه‌اندازی", "ارسال پیامک فاکتور به محض تأیید"],
         "Relay.java": ["/call?key=", "pcOnline"],
         "Api.java": ["viaRelay", "healthAt", "pc_lan_json"],
-        "InstallService.java": ["startForeground", "install_t0", "percent()"],
-        "SetupActivity.java": ["InstallService.start", "resumeInstallIfRunning"],
+        "InstallRecovery.java": ["install_t0", "install_work_done", "Released legacy timed first-run gate"],
+        "SetupActivity.java": ["Db.db();", "loadingScreen(() -> finishSetup(true))", "install_starter"],
         "Biometric.java": ["BiometricPrompt", "createConfirmDeviceCredentialIntent"],
         "AppActivity.java": ["bioGate()"],
         "LoginActivity.java": ["ورود با اثر انگشت"],

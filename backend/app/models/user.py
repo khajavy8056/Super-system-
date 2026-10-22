@@ -9,6 +9,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ..database import Base
 from .base import TimestampMixin
 
+user_permissions = Table(
+    "user_permissions",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+)
+
 user_roles = Table(
     "user_roles",
     Base.metadata,
@@ -33,9 +40,28 @@ class User(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # «دسترسی فقط به صورت بومی» limits online sign-in to the shop LAN; it is not
+    # permission to use cached credentials with no network (see offline_allowed).
+    # The Administrator is exempt from this network restriction by role.
+    local_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Cached credentials on a previously paired phone are independent of local_only:
+    # administrators explicitly decide whether this account may sign in with local data
+    # when no PC/network is reachable.
+    offline_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # build-488 — تکمیل پروفایل کاربر (بخش ۱ دستور): شماره تماس، عنوان شغلی،
+    # تصویر پروفایل، تاریخ استخدام. فیلدها افزودنی‌اند و منطق موجود را نمی‌شکنند.
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    job_title: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hire_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: فروشگاه محل خدمت (برای مخاطب‌گیری اطلاعیه و گزارش‌ها؛ خالی = همهٔ فروشگاه‌ها)
+    store: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users")
+    #: build-488 — دسترسی مستقیم (مستقل از Role): User → Permissions
+    direct_permissions: Mapped[list["Permission"]] = relationship(
+        secondary=user_permissions, back_populates="users")
 
 
 class Role(TimestampMixin, Base):
@@ -58,3 +84,4 @@ class Permission(Base):
     description: Mapped[str] = mapped_column(String(255), default="")
 
     roles: Mapped[list["Role"]] = relationship(secondary=role_permissions, back_populates="permissions")
+    users: Mapped[list["User"]] = relationship(secondary=user_permissions, back_populates="direct_permissions")

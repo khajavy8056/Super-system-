@@ -12,7 +12,9 @@
   const iconOf = (i) => KIND_ICON[i.kind] || GROUP_ICON[i.group] || "chart";
   const CONF = { high: "بالا", medium: "متوسط", low: "پایین (اولین تجربه)", "n/a": "—" };
   const PRIO = { 1: ["فوری", "badge-red"], 2: ["مهم", "badge-amber"], 3: ["پیشنهاد", "badge-green"], 4: ["نکته", "badge-gray"] };
-  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده", DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
+  const STATUS = { NEW: "جدید", ACCEPTED: "در حال اندازه‌گیری", MEASURED: "اندازه‌گیری‌شده",
+                   RESOLVED: "خودکار بسته شد", SUPERSEDED: "جایگزین‌شده",
+                   DISMISSED: "ردشده", SNOOZED: "به تعویق", EXPIRED: "منقضی" };
   const ico = (k, s) => (typeof ICONS !== "undefined" && ICONS[k]) ? icon(k, s) : icon("chart", s);
 
   // ---------------------------------------------------------------- nav registration
@@ -32,23 +34,57 @@
 
   // ---------------------------------------------------------------- shared card
   function gainLine(i) {
+    const r = i.result || {};
+    const verdict = r.verdict || r.outcome_class || "";
+    // build-489 (§۳۶–۳۷) — «تاثیر» باید صادقانه برچسب بخورد: فرصت ازدست‌رفته هرگز
+    // ضرر/منفی نشان داده نمی‌شود؛ «منفی» فقط برای ضرر واقعیِ مستند (NEGATIVE_OUTCOME).
+    if (verdict === "MISSED_OPPORTUNITY" || (r.missed_gain != null && i.measured_gain == null)) {
+      return `<span class="ins-gain muted" title="فرصت ازدست‌رفته ضرر نیست و امتیاز منفی ندارد (§۳۷)">◇ فرصت ازدست‌رفته${r.missed_gain != null ? ` — سود ممکن: ${money(r.missed_gain)}` : ""} (ضرر نیست)</span>`;
+    }
     if (i.status === "MEASURED" || (i.status === "ACCEPTED" && i.measured_gain != null)) {
-      const g = Number(i.measured_gain || 0), r = i.result || {}, gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
-      return `<span class="ins-gain ${g >= 0 ? "ok" : "err"}">${g >= 0 ? "▲" : "▼"} ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}اثر واقعی: ${money(Math.abs(g))}</span>`;
+      const g = Number(i.measured_gain || 0), gr = r.profit_pct_adj != null ? r.profit_pct_adj : r.profit_pct;
+      if (g < 0 && verdict !== "NEGATIVE_OUTCOME") {
+        return `<span class="ins-gain muted">◇ بدون نتیجهٔ منفی قابل انتساب — در انتظار شواهد ضرر</span>`;
+      }
+      if (g < 0) {
+        return `<span class="ins-gain err" title="ضرر واقعی، قابل اندازه‌گیری و قابل انتساب — با شواهد (§۳۷)">▼ ضرر واقعی (مستند): ${money(Math.abs(g))}${gr != null ? ` · رشد سود ${pctTxt(gr)}` : ""}</span>`;
+      }
+      return `<span class="ins-gain ok">▲ ${gr != null ? `رشد سود ${pctTxt(gr)} · ` : ""}سود واقعی: ${money(g)}</span>`;
+    }
+    if (verdict === "NEGATIVE_OUTCOME") {
+      return `<span class="ins-gain err">▼ ضرر واقعی (مستند): ${money(Math.abs(r.adjusted_gain || 0))}</span>`;
     }
     const fc = (i.evidence || {}).forecast;
     if (fc && Number(fc.gain_month) > 0) return `<span class="ins-gain muted">پیش‌بینی سود ماهانه: <b>${money(fc.gain_month)}</b> <span class="ins-band">(${money(fc.low_month)} تا ${money(fc.high_month)}) · اطمینان ${CONF[fc.confidence] || "—"}</span>`;
     return Number(i.expected_gain) > 0 ? `<span class="ins-gain muted">برآورد اثر: ${money(i.expected_gain)} / ماه</span>` : "";
   }
 
+  // build-490 (§۶) — تصویر واقعی محصول: اگر Insight به کالای مشخصی مربوط باشد، تصویر واقعی
+  // همان کالا (از رکورد Product با شناسهٔ واقعی) جایگزین آیکون عمومی می‌شود؛ بدون تصویر → Fallback.
+  function prodImgs(i) {
+    const ps = (i.products || []).filter((p) => p && (p.image_url || p.gallery));
+    return ps.map((p) => {
+      let src = String(p.image_url || "").trim();
+      if (!src && p.gallery) {
+        try { const g = JSON.parse(p.gallery); src = Array.isArray(g) && g.length ? String(g[0]) : ""; } catch (_) {}
+      }
+      if (!src || src.startsWith("pack://")) return "";
+      return `<img class="ins-prod-img" src="${esc(src)}" alt="${esc(p.name || "")}" loading="lazy" onerror="this.remove()">`;
+    }).filter(Boolean).slice(0, 3);
+  }
   function card(i, compact) {
     const [pl, pc] = PRIO[i.priority] || PRIO[3];
+    /* v1.0.0 (RASA) — «چرا این پیشنهاد آمد؟» — مالک باید بداند چه چیزی دیده شده و
+     * چه چیزی در خطر است، نه فقط یک تیتر. متن از دادهٔ خود بینش ساخته می‌شود
+     * (`narrative` اگر موتور نوشته باشد، وگرنه خلاصهٔ شواهد). */
+    const why = String(i.narrative || (i.evidence && (i.evidence.summary || i.evidence.reason)) || "").trim();
     const c = el("article", { class: "ins-card ins-" + i.kind.toLowerCase() + (i.priority === 1 ? " ins-urgent" : "") });
     c.innerHTML = `
-      <header><span class="ins-ic">${ico(iconOf(i), 20)}</span>
+      <header><span class="ins-ic">${prodImgs(i).join("") || ico(iconOf(i), 20)}</span>
         <div class="ins-head"><span class="ins-kind">${esc(i.label)}</span><h4>${esc(i.title)}</h4></div>
         <span class="badge ${pc}">${pl}</span></header>
       ${compact ? "" : `<p class="ins-body">${esc(i.body)}</p>`}
+      ${compact || !why ? "" : `<p class="ins-why">${ico("sparkle", 14)}<span><b>چرا؟</b> ${esc(why)}</span></p>`}
       <div class="ins-foot">${gainLine(i)}<span class="muted">${faDateTime(i.created_at, false)}</span></div>
       <div class="ins-actions"></div>`;
     const act = c.querySelector(".ins-actions");
@@ -61,6 +97,8 @@
       }
     } else if (i.status === "ACCEPTED" && can("reports.view")) {
       act.append(el("button", { class: "btn btn-sm", text: "اندازه‌گیری الان", onclick: async () => { try { await api(`/insights/${i.id}/measure`, { method: "POST" }); toast("اندازه‌گیری به‌روز شد"); } catch (e) { toast(e.message, "err"); } refreshCurrent(); } }));
+      // «بررسی» — همان سیستم بررسی فروشگاه: آیا اثری که اجرا کردیم هنوز سر جایش است؟
+      act.append(el("button", { class: "btn btn-sm btn-ghost", text: "بررسی", onclick: () => healthDialog() }));
     }
     return c;
   }
@@ -94,10 +132,13 @@
       { name: "سود روزانه — قبل", color: "#8a94a6", points: [...bef, ...aft.map(() => null)], area: true },
       { name: "سود روزانه — بعد از اجرا", color: g >= 0 ? "#2f9e6b" : "#e5484d", points: [...bef.map(() => null), ...aft], area: true, width: 2.6 },
     ], { labels: [...bef.map((_, k) => (k === 0 ? "قبل" : null)), ...aft.map((_, k) => (k === 0 ? "اجرا ▶" : k === aft.length - 1 ? "امروز" : null))], height: 150 }) : "";
-    return `<div class="ab2 ${pending ? "" : g >= 0 ? "ok" : "err"}">
+    const vdict = r.verdict || r.outcome_class || "";
+    const missed = vdict === "MISSED_OPPORTUNITY" || (pending && r.missed_gain != null);
+    const realLoss = vdict === "NEGATIVE_OUTCOME";
+    return `<div class="ab2 ${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">
       <div class="ab2-kpis">
         <div><span class="muted">رشد سود</span><b class="${growth == null ? "" : growth >= 0 ? "ok" : "err"}">${pending ? "…" : pctTxt(growth)}</b><span class="muted">${r.control_ratio && r.control_ratio !== 1 ? `پس از حذف روند فروشگاه (${fa(Math.round((r.control_ratio - 1) * 100))}٪)` : "نسبت به قبل از اجرا"}</span></div>
-        <div><span class="muted">اثر بر سود</span><b class="${pending ? "" : g >= 0 ? "ok" : "err"}">${pending ? "در حال سنجش" : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
+        <div><span class="muted">اثر بر سود</span><b class="${pending || missed || (!realLoss && g < 0) ? "" : g >= 0 ? "ok" : "err"}">${missed ? "فرصت ازدست‌رفته (ضرر نیست)" : pending ? "در حال سنجش" : (realLoss && g < 0) ? "−" + money(Math.abs(g)) : (g >= 0 ? "+" : "−") + money(Math.abs(g))}</b><span class="muted">${r.projected_month != null ? "برآورد ماهانه " + money(r.projected_month) : ""}</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — قبل</span><b>${f(b.value)}</b><span class="muted">${fa(b.window_days || b.days || 28)} روز · ${money(Math.round(r.base_profit_per_day || 0))}/روز</span></div>
         <div><span class="muted">${METRIC_L[kind] || "شاخص"} — بعد</span><b>${f(r.value)}</b><span class="muted">${fa(r.elapsed_days || 0)} روز · ${money(Math.round(r.post_profit_per_day || 0))}/روز${r.change_pct != null ? ` · ${pctTxt(r.change_pct)}` : ""}</span></div>
       </div>
@@ -118,8 +159,20 @@
       parts.push(`<div class="ev-kpis"><div><span class="muted">تعداد راکد</span><b>${fa(ev.qty)}</b></div><div><span class="muted">سرمایهٔ قفل‌شده</span><b class="err">${money(ev.locked_value)}</b></div><div><span class="muted">عمر در انبار</span><b>${fa(ev.age_days)} روز</b></div><div><span class="muted">فروش ۶۰ روز</span><b>${fa(ev.sold_60d)}</b></div></div>`);
       parts.push(svgBars([{ label: "قفل در این کالا", value: Number(ev.locked_value), color: "#e5484d" }, { label: "کل کالاهای راکد", value: Number(ev.total_locked), color: "#f5a524" }]));
     } else if (k === "EXPIRY_LADDER") {
-      parts.push(`<div class="ev-kpis"><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
-      if (Array.isArray(ev.ladder)) parts.push(svgBars(ev.ladder.map((l, n) => ({ label: `از روز ${fa(l.from_day)} — ${fa(l.percent)}٪ تخفیف`, value: Number(l.price), color: PALETTE[n % PALETTE.length] }))));
+      // v4.8.0 — تایم‌لاین تاریخ‌دار: هر پله یک تاریخ شمسی و قیمت مشخص دارد، پس مدیر
+      // می‌داند دقیقاً چه روزی چه تخفیفی اعمال می‌شود (نه «روز صفر، وقتی دیر شده»).
+      const mode = ev.mode || "ladder";
+      const modeTxt = mode === "waste" ? "تاریخ گذشته — ثبت ضایعات"
+        : mode === "risk_only" ? "بدون تخفیف — بازبینی دستی قفسه"
+          : "تخفیف پله‌ای زمان‌بندی‌شده";
+      parts.push(`<div class="ev-kpis"><div><span class="muted">وضعیت</span><b class="${mode === "ladder" ? "ok" : "err"}">${modeTxt}</b></div><div><span class="muted">تا انقضا</span><b class="err">${fa(ev.days_left)} روز</b></div><div><span class="muted">موجودی</span><b>${fa(ev.qty)}</b></div><div><span class="muted">مازاد (ضایعات)</span><b class="err">${fa(ev.surplus)}</b></div><div><span class="muted">در خطر</span><b class="err">${money(ev.at_risk)}</b></div></div>`);
+      if (Array.isArray(ev.timeline) && ev.timeline.length) {
+        parts.push(`<div class="table-wrap"><table class="tbl"><thead><tr><th>پله</th><th>تاریخ (شمسی)</th><th>تخفیف</th><th>قیمت پیشنهادی</th><th>کار</th></tr></thead><tbody>${ev.timeline.map((t) => `<tr><td>${fa(t.step)}</td><td>${esc(t.jdate || t.date || "")}</td><td>${t.percent != null ? fa(t.percent) + "٪" : "—"}</td><td>${t.suggested_price != null ? money(t.suggested_price) : "—"}</td><td class="muted">${esc(t.label || "")}</td></tr>`).join("")}</tbody></table></div>`);
+        const priced = ev.timeline.filter((t) => t.suggested_price != null);
+        if (priced.length > 1) parts.push(svgLine([{ name: "قیمت بچ در هر پله", color: "#f5a524", points: priced.map((t) => Number(t.suggested_price)), area: true }], { labels: priced.map((t) => t.jdate || null), height: 140 }));
+      }
+      if (ev.velocity_per_day != null) parts.push(`<p class="muted">سرعت واقعی فروش (محافظه‌کارانه — کندترین نرخ ۷/۲۸/۹۰ روز): ${fa(ev.velocity_per_day)} عدد در روز · پیش‌بینی فروش تا انقضا: ${fa(ev.will_sell)} عدد${ev.final_runway_days != null ? ` · آخرین پله ${fa(ev.final_runway_days)} روز پیش از انقضا` : ""}</p>`);
+      if (ev.urgent) parts.push(`<p class="err"><b>امروز آخرین فرصت فروش این بچ است.</b></p>`);
     } else if (k === "CROSS_SELL") {
       parts.push(`<div class="ev-kpis"><div><span class="muted">هم‌خرید</span><b>${fa(ev.pair_count)}</b><span class="muted">از ${fa(ev.invoices)} فاکتور</span></div><div><span class="muted">اطمینان</span><b>${pct(ev.confidence)}</b></div><div><span class="muted">ضریب هم‌خرید</span><b class="ok">${fa(ev.lift)}×</b></div><div><span class="muted">پشتیبانی</span><b>${pct(ev.support)}</b></div></div>`);
       parts.push(donut([{ label: "با هم", value: Number(ev.pair_count), color: "#3dd6c4" }, { label: "جدا", value: Math.max(0, Number(ev.invoices) - Number(ev.pair_count)), color: "#2a3140" }], `${pct(Number(ev.pair_count) / Math.max(1, Number(ev.invoices)))} فاکتورها`));
@@ -233,7 +286,13 @@
       <div class="ins-kpi"><span class="muted">سود ماهانهٔ پایه (روند فعلی)</span><b>${money(b.profit_month)}</b><span class="muted">روند ${m.trend_pct_per_week >= 0 ? "+" : ""}${fa(m.trend_pct_per_week)}٪ در هفته · ${fa(m.weeks_of_history)} هفته سابقه</span></div>
       <div class="ins-kpi"><span class="muted">با اجرای ${fa(pl.open)} پیشنهاد باز</span><b class="ok">${money(pl.profit_month)}</b><span class="muted">+${money(pl.gain_month)} (${pl.growth_pct != null ? fa(pl.growth_pct) + "٪" : "—"}) در ماه</span></div>
       <div class="ins-kpi"><span class="muted">بازهٔ اطمینان ماهانه</span><b>${money(pl.low_month)} – ${money(pl.high_month)}</b><span class="muted">۹۰ روز: +${money(pl.gain_horizon)}</span></div>
-      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>`;
+      <div class="ins-kpi"><span class="muted">دقت مدل تا امروز</span><b>${m.direction_accuracy != null ? fa(Math.round(m.direction_accuracy * 100)) + "٪ جهت درست" : "—"}</b><span class="muted">${m.measured_count ? `${fa(m.measured_count)} اقدام سنجیده · خطای میانگین ${m.mean_abs_pct_error != null ? fa(m.mean_abs_pct_error) + "٪" : "—"}` : "هنوز اقدامی سنجیده نشده"}</span></div></div>
+      ${m.outcomes ? `<div class="outcome-strip" title="ارزیابی صادقانهٔ مدل (§۳۶–۳۷): فرصت ازدست‌رفته ضرر نیست">
+        <span class="oc oc-pos">سود واقعی <b>${fa(m.outcomes.positive || 0)}</b></span>
+        <span class="oc oc-neu">بدون اثر <b>${fa(m.outcomes.neutral || 0)}</b></span>
+        <span class="oc oc-miss">فرصت ازدست‌رفته <b>${fa(m.outcomes.missed || 0)}</b></span>
+        <span class="oc oc-neg">ضرر واقعی <b>${fa(m.outcomes.negative || 0)}</b></span>
+      </div>` : ""}`;
     const wk = p.history_weeks.slice(-14), fc = p.forecast;
     const labels = [...wk.map((w, i) => (i % 2 ? "" : faMonthDay(w.week_start))), ...fc.map((f, i) => (i % 2 ? "" : faMonthDay(f.day)))];
     const hist = [...wk.map((w) => w.profit), ...fc.map(() => null)], base = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_baseline)], plan = [...wk.map((w, i) => (i === wk.length - 1 ? w.profit : null)), ...fc.map((f) => f.week_plan)];
@@ -260,6 +319,7 @@
     openModal(`<div class="ins-detail">
       <header><span class="ins-ic">${ico(iconOf(i), 26)}</span><div><span class="ins-kind">${esc(i.label)} · ${STATUS[i.status] || i.status}</span><h3>${esc(i.title)}</h3></div></header>
       ${i.narrative ? `<div class="ins-narr">${esc(i.narrative).replace(/\n/g, "<br/>")}</div>` : `<p>${esc(i.body)}</p>`}
+      ${guideBlock(i)}
       ${abBlock(i)}
       ${predictBlock(i)}
       <h4>اقدام‌ها</h4><ul class="ins-list">${(i.actions || []).map((a) => `<li>${esc(a.label)}</li>`).join("") || "<li class='muted'>—</li>"}</ul>
@@ -269,6 +329,25 @@
         <button class="btn" onclick="closeModal()">بستن</button></div>
     </div>`);
     const b = $("#ins-acc"); if (b) b.onclick = () => { closeModal(); acceptDialog(i); };
+  }
+
+  // v4.6.0 — the complete plain-language guide (owner's rule: «توضیحات کامل
+  // باشد که هر کسی درک کند — کاربر چه می‌داند مشتری VIP چیست؟»).
+  function guideBlock(i) {
+    const g = i.guide;
+    if (!g || !g.what) return "";
+    const section = (label, text) => text ? `<div class="ins-guide-sec"><b>${esc(label)}</b><p style="margin:4px 0 0;line-height:1.9">${esc(text)}</p></div>` : "";
+    const how = (g.how || []).length
+      ? `<div class="ins-guide-sec"><b>چه کاری انجام دهید؟ (گام‌به‌گام)</b><ol style="margin:6px 0 0;padding-inline-start:20px;line-height:1.9">${g.how.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></div>`
+      : "";
+    return `<div class="card" style="margin:12px 0;background:rgba(20,184,176,.06);border:1px solid rgba(20,184,176,.25)">
+      <h3 style="font-size:14.5px;margin:0 0 4px">این پیشنهاد یعنی چه؟ (راهنمای کامل)</h3>
+      ${section("تعریف", g.what)}
+      ${section("چرا برای فروشگاه شما مهم است؟", g.why)}
+      ${how}
+      ${section("اگر انجام نشود چه می‌شود؟", g.if_ignored)}
+      ${section("مثال ملموس", g.example)}
+    </div>`;
   }
 
   function acceptDialog(i) {
@@ -287,8 +366,80 @@
         const failed = (r.executed || []).filter((x) => !x.ok);
         toast(failed.length ? `اجرا شد؛ ${fa(failed.length)} اقدام ناموفق: ${failed.map((x) => x.error).join("، ")}` : "اجرا شد — اندازه‌گیری آغاز شد", failed.length ? "err" : "ok");
         if (window.Sfx) Sfx.play("success");
-        closeModal(); refreshCurrent();
+        // build-481 — «اجرا» باید نتیجهٔ واقعی بگوید، نه فقط تیک سبز: هر اقدام
+        // با وضعیت اجرا و بازبینی‌اش نمایش داده می‌شود، و اگر ادامهٔ کار در
+        // صفحه‌ای است (مثلاً ورود کالا برای محصول کم‌موجودی) همان‌جا می‌رود.
+        const nav = (r.executed || []).map((x) => (x.result && x.result.navigate) || null).find(Boolean);
+        const done = (r.executed || []).filter((x) => x.ok && x.status !== "SKIPPED");
+        if (done.length && done.every((x) => x.verify || x.status === "EXECUTED_UNVERIFIED")) {
+          const rows = (r.executed || []).map((x) => `<tr>
+            <td>${esc(x.type)}</td>
+            <td><span class="badge ${x.ok ? (x.status === "SKIPPED" ? "badge-amber" : "badge-green") : "badge-red"}">${esc(x.status)}</span></td>
+            <td class="muted">${esc(x.verify || x.error || "")}</td></tr>`).join("");
+          openModal(`<h3>نتیجهٔ اجرا</h3>
+            <div class="table-wrap"><table><thead><tr><th>اقدام</th><th>وضعیت</th><th>بازبینی</th></tr></thead>
+            <tbody>${rows}</tbody></table></div>
+            ${nav ? `<p class="muted" style="margin-top:10px">ادامهٔ کار: فرم ${nav.screen === "inventory_receive" ? "ورود کالا" : esc(nav.screen)} با کالاهای موردنظر از پیش انتخاب می‌شود.</p>` : ""}
+            <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+              ${nav && nav.screen === "inventory_receive" ? `<button class="btn btn-primary" id="ins-nav-go">رفتن به ورود کالا</button>` : ""}
+              <button class="btn" onclick="closeModal()">بستن</button></div>`);
+          const nb = $("#ins-nav-go");
+          if (nb) nb.onclick = () => {
+            closeModal();
+            // مسیر واقعیِ «تدارک کالا»: انبار ← ورود کالا، با محصول از پیش انتخاب‌شده
+            if (window.go) { window.go("inventory"); }
+            setTimeout(() => {
+              if (typeof window.showGoodsReceive === "function") {
+                window.showGoodsReceive((nav.product_ids || []).slice(0, 5));
+              } else {
+                window.__pendingReceiveProducts = (nav.product_ids || []).slice(0, 5);
+              }
+            }, 250);
+          };
+        } else {
+          closeModal(); refreshCurrent();
+        }
       } catch (e) { toast(e.message, "err"); $("#ins-go").disabled = false; }
+    };
+  }
+
+  /** v4.8.0 — «سیستم بررسی فروشگاه»: آیا اقدام‌هایی که «اجرا» کردیم هنوز برقرارند؟
+   *
+   *  درخواست مالک: «دکمهٔ اجرا باید واقعاً کار را انجام دهد» و «یک سیستم بررسی کلی
+   *  برای مسیر پیشنهاد → اجرا». هر اجرا با پارامترهایش ذخیره می‌شود، همان لحظه
+   *  بازبینی می‌شود، و کارگر پس‌زمینه هم اگر اثرش از بین برود خبر می‌دهد.
+   */
+  const HEALTH_L = { OK: ["برقرار", "ok"], LOST: ["از بین رفته", "err"], FAILED: ["اجرا ناموفق", "err"], UNVERIFIED: ["بدون بازبینی", "warn"], UNKNOWN: ["نامعلوم", "warn"], WARNING: ["قابل بازبینی", "warn"] };
+  const ACT_L = { markdown_ladder: "تخفیف پله‌ای", write_off_waste: "ثبت ضایعات", set_price: "تغییر قیمت", set_min_stock: "حد موجودی", reorder_note: "لیست سفارش", shelf_note: "چیدمان قفسه", note: "یادداشت", pos_nudge: "پیشنهاد صندوق", enable_nudges: "فعال‌سازی پیشنهاد صندوق", sms_buyers: "پیامک به خریداران", visit_sms: "پیامک دعوت", debt_reminders: "یادآوری بدهی", personal_sms: "پیامک شخصی", vip_coupons: "کوپن VIP", winback_sms: "پیامک بازگشت", flash_sale: "فروش ویژه", bundle_campaign: "باندل", threshold_campaign: "کمپین سقف خرید", tag_customers: "برچسب مشتری", set_credit_limit: "سقف اعتبار", set_setting: "تنظیمات" };
+  async function healthDialog() {
+    let rep;
+    try { rep = await api("/insights/actions/report"); } catch (e) { toast(e.message, "err"); return; }
+    const c = rep.counts || {}, rows = rep.rows || [];
+    const body = rows.flatMap((r) => (r.actions || []).map((a) => {
+      const [label, cls] = HEALTH_L[a.health] || [a.health || "—", ""];
+      return `<tr><td>${esc(r.title || "")}</td><td>${esc(ACT_L[a.type] || a.type || "")}</td><td><span class="badge ${cls === "ok" ? "badge-green" : cls === "err" ? "badge-red" : "badge-amber"}">${esc(label)}</span></td><td class="muted">${esc(a.health_detail || a.detail || "")}</td></tr>`;
+    })).join("");
+    openModal(`<div class="ins-detail">
+      <h3>بررسی اجراها — آیا کارها سر جایشان مانده‌اند؟</h3>
+      <p class="muted">هر «اجرا» با پارامترهایش ثبت می‌شود و همان لحظه بازبینی می‌شود. اگر بعداً کسی قیمت، حد موجودی یا تنظیمات را دستی تغییر دهد یا بچ پاک شود، اینجا دیده می‌شود (کارگر پس‌زمینه هم یک‌بار اعلان می‌دهد).</p>
+      <div class="ev-kpis">
+        <div><span class="muted">برقرار</span><b class="ok">${fa(c.OK || 0)}</b></div>
+        <div><span class="muted">از بین رفته</span><b class="err">${fa(c.LOST || 0)}</b></div>
+        <div><span class="muted">اجرای ناموفق</span><b class="err">${fa(c.FAILED || 0)}</b></div>
+        <div><span class="muted">بدون بازبینی / نامعلوم</span><b class="warn">${fa((c.UNVERIFIED || 0) + (c.UNKNOWN || 0))}</b></div>
+      </div>
+      ${body ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>پیشنهاد</th><th>اقدام</th><th>وضعیت</th><th>جزئیات</th></tr></thead><tbody>${body}</tbody></table></div>` : `<p class="muted">هنوز اقدام اجراشده‌ای ثبت نشده است.</p>`}
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn btn-primary" id="hs-scan">بازبینی همین حالا</button><button class="btn" onclick="closeModal()">بستن</button></div>
+    </div>`);
+    const btn = $("#hs-scan");
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const r = await api("/insights/actions/health-scan", { method: "POST" });
+        const lost = r.lost || [];
+        toast(lost.length ? `${fa(lost.length)} اقدام از بین رفته پیدا شد: ${lost.map((x) => x.title).slice(0, 3).join("، ")}` : "همهٔ اقدام‌های اجراشده برقرارند", lost.length ? "err" : "ok");
+        closeModal(); healthDialog();
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; }
     };
   }
 
@@ -310,10 +461,10 @@
       try { const r = await api("/insights/run", { method: "POST" }); toast(`${fa(r.created || 0)} پیشنهاد جدید، ${fa(r.refreshed || 0)} به‌روزرسانی`); if (state.view === "insights") await RENDER.insights(); }
       catch (e) { toast(e.message, "err"); } finally { button.disabled = false; }
     } }));
+    $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "بررسی اجراها", onclick: healthDialog }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-primary", text: "برنامه‌ریزی و پیش‌بینی سود", onclick: () => go("insightsPlan") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm", text: "پیش‌بینی خرید مشتریان", onclick: () => go("insightsCustomers") }));
     $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "گزارش هفتگی", onclick: weeklyReport }));
-    $("#topbar-actions").append(el("button", { class: "btn btn-sm btn-ghost", text: "مشاور هوش مصنوعی", onclick: aiAdvisor }));
     let s, list, gr;
     try {
       [s, list, gr] = await Promise.all([api("/insights/summary"), api(`/insights?status=${insTab}&limit=300${insGroup ? "&group=" + insGroup : ""}`), api("/insights/groups").catch(() => null)]);
@@ -349,7 +500,7 @@
         <div class="ins-kpi"><span class="muted">اثر اندازه‌گیری‌شدهٔ کل</span><b class="${s.total_gain >= 0 ? "ok" : "err"}">${money(s.total_gain)}</b><span class="muted">${fa(s.measured)} اقدام اندازه‌گیری‌شده</span></div>
         <div class="ins-kpi"><span class="muted">اثر ۳۰ روز اخیر</span><b>${money(s.month_gain)}</b><span class="muted">${share || "—"}</span></div>
         <div class="ins-kpi"><span class="muted">پیشنهادهای باز</span><b>${fa(s.open)}</b><span class="muted">برآورد ${money(s.expected_open)} / ماه</span></div>
-        <div class="ins-kpi"><span class="muted">موتور تحلیل</span><b>${s.ai && s.ai.online ? "محلی + روایت ابری" : "محلی (آفلاین)"}</b><span class="muted">${s.ai && s.ai.online ? esc(s.ai.model) : "روایت متنی داخلی"}</span></div>
+        <div class="ins-kpi"><span class="muted">موتور تحلیل</span><b>محلی (آفلاین)</b><span class="muted">مدل اختصاصی فروشگاه — بدون سرویس خارجی</span></div>
       </div>
       ${s.by_kind && s.by_kind.length ? `<div class="ins-bars">${s.by_kind.map((k) => `<div class="ins-bar"><span>${esc(k.label)}</span><i style="width:${Math.min(100, Math.round(Math.abs(k.gain) / Math.max(1, Math.abs(s.by_kind[0].gain)) * 100))}%" class="${k.gain >= 0 ? "" : "neg"}"></i><b>${money(k.gain)}</b></div>`).join("")}</div>` : ""}`;
   }
@@ -358,9 +509,9 @@
   async function aiAdvisor() {
     const s = await api("/insights/summary");
     if (!s.ai || !s.ai.online) {
-      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">هنوز سرویسی انتخاب نشده. از تنظیمات ← هوش فروشگاه یکی از سرویس‌های رایگان (OpenRouter، Groq، Gemini یا Ollama محلی) را انتخاب کنید و کلید رایگان را وارد کنید.</p>
-        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به تنظیمات</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
-      $("#aa-go").onclick = () => { closeModal(); go("settings"); setTimeout(() => { const b = document.querySelector('[data-cat="ai"]'); if (b) b.click(); }, 200); };
+      openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی</h3><p class="muted">مشاور این محصول همان «هوش فروشگاه» است — تحلیل محلی روی دادهٔ خودتان. هر پیشنهاد را از بخش هوش فروشگاه باز کنید؛ توضیح کامل آن، دلیل و طرز اجرا آنجاست.</p>
+        <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn btn-primary" id="aa-go">رفتن به هوش فروشگاه</button><button class="btn" onclick="closeModal()">بستن</button></div></div>`);
+      $("#aa-go").onclick = () => { closeModal(); go("insights"); };
       return;
     }
     openModal(`<div class="ins-detail"><h3>مشاور هوش مصنوعی <span class="muted" style="font-size:12px">(${esc(s.ai.model)})</span></h3>
@@ -420,7 +571,7 @@
           if (!r.length) { host.innerHTML = ""; host.classList.add("hidden"); return; }
           host.classList.remove("hidden");
           host.innerHTML = `<span class="nudge-ic">${ico("sparkle", 16)}</span><span class="nudge-txt">پیشنهاد به مشتری:</span>` +
-            r.map((n) => `<button class="nudge-chip" title="چون ${esc(n.because)} در سبد است" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}</button>`).join("");
+            r.map((n) => `<button class="nudge-chip" title="${n.near_expiry ? esc(n.reason || "نزدیک انقضا") : "چون " + esc(n.because) + " در سبد است"}" onclick="PosNudges.add(${n.product_id})">${esc(n.name)}${n.near_expiry ? ` <span style="opacity:.8">⏰ ${fa(n.days_left)} روز</span>` : ""}</button>`).join("");
         } catch (_) { host.classList.add("hidden"); }
       }, 350);
     },
@@ -468,43 +619,18 @@
       const g = (k) => { const r = allRows.find((x) => x.key === k); return r ? (r.value || "") : ""; };
       const card = el("div", { class: "card" });
       card.innerHTML = `<h3>${ico("sparkle", 18)} هوش فروشگاه</h3>
-        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود. «روایت ابری» اختیاری است: فقط متن گزارش‌ها را زیباتر می‌نویسد و هیچ شمارهٔ تلفن یا نام مشتری ارسال نمی‌شود.</p>
+        <p class="muted">تحلیل‌ها همیشه روی همین دستگاه و آفلاین انجام می‌شود — با موتور تحلیل خود برنامه، بدون هیچ سرویس خارجی؛ هیچ داده‌ای از دستگاه خارج نمی‌شود.</p>
         <div class="form-grid">
           <label>موتور تحلیل<select id="ai-en"><option value="true" ${g("insights.enabled") !== "false" ? "selected" : ""}>فعال</option><option value="false" ${g("insights.enabled") === "false" ? "selected" : ""}>غیرفعال</option></select></label>
           <label>فاصلهٔ تحلیل (ساعت)<input id="ai-int" type="number" min="1" max="48" value="${esc(g("insights.interval_hours") || "6")}"/></label>
           <label>پیشنهاد لحظه‌ای در صندوق<select id="ai-nd"><option value="true" ${g("insights.pos_nudges") === "true" ? "selected" : ""}>نمایش</option><option value="false" ${g("insights.pos_nudges") !== "true" ? "selected" : ""}>خاموش</option></select></label>
-          <label>روایت ابری<select id="ai-pr"><option value="" ${!g("ai.provider") ? "selected" : ""}>خاموش (متن داخلی)</option><option value="openai_compatible" ${g("ai.provider") === "openai_compatible" ? "selected" : ""}>سرویس سازگار با OpenAI</option></select></label>
-          <label>آدرس سرویس (Base URL)<input id="ai-url" class="ltr" placeholder="https://api.openai.com/v1" value="${esc(g("ai.base_url"))}"/></label>
-          <label>کلید API<input id="ai-key" class="ltr" type="password" placeholder="${g("ai.api_key") ? "•••••• (ذخیره‌شده)" : "sk-…"}"/></label>
-          <label>مدل<input id="ai-model" class="ltr" placeholder="gpt-4o-mini" value="${esc(g("ai.model"))}"/></label>
         </div>
-        <div id="ai-presets" class="ins-presets" style="margin-top:10px"></div>
-        <p class="muted" style="margin-top:8px">هر سرویس با API سازگار با OpenAI کار می‌کند (OpenAI، OpenRouter، Groq، یا مدل محلی مثل Ollama روی همین شبکه). هزینهٔ آن بر عهدهٔ شماست و بدون آن هم همهٔ امکانات کار می‌کند.</p>
-        <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button><button class="btn" id="ai-test">تست روایت</button></div>`;
+        <div class="row" style="gap:8px;margin-top:10px"><button class="btn btn-primary" id="ai-save">ذخیره</button></div>`;
       body.append(card);
-      api("/insights/ai/presets").then((p) => {   // v3.5 — one-tap free providers
-        const box = $("#ai-presets"); if (!box) return;
-        box.append(el("div", { class: "muted", text: "سرویس‌های رایگان — یکی را انتخاب کنید، کلید رایگان را از سایتش بگیرید و همین‌جا وارد کنید:" }));
-        const wrap = el("div", { class: "row", style: "flex-wrap:wrap;gap:6px;margin-top:6px" });
-        p.presets.forEach((pr) => wrap.append(el("button", { class: "btn btn-sm" + (p.current.preset === pr.id ? " btn-primary" : ""), text: pr.label + (pr.free ? "" : " (پولی)"), title: pr.note, onclick: async () => {
-          const key = $("#ai-key").value.trim();
-          try { const r = await api("/insights/ai/preset", { method: "POST", body: JSON.stringify({ preset: pr.id, api_key: key || null }) });
-            $("#ai-pr").value = "openai_compatible"; $("#ai-url").value = r.base_url; $("#ai-model").value = r.model; toast(`${pr.label} انتخاب شد`);
-            if (!r.has_key && pr.id !== "ollama") { window.open(pr.keys_url, "_blank"); toast("کلید رایگان را از صفحهٔ بازشده بگیرید و در «کلید API» وارد و ذخیره کنید", "ok"); }
-          } catch (e) { toast(e.message, "err"); }
-        } })));
-        box.append(wrap);
-        const tb = el("button", { class: "btn btn-sm btn-ghost", text: "تست اتصال", style: "margin-top:6px", onclick: async () => {
-          try { const r = await api("/insights/ai/test", { method: "POST" }); toast(r.ok ? `متصل شد (${fa(r.ms)} ms): ${r.reply}` : r.error, r.ok ? "ok" : "err"); } catch (e) { toast(e.message, "err"); }
-        } });
-        box.append(tb);
-      }).catch(() => {});
       $("#ai-save").onclick = async () => {
-        const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value, "ai.provider": $("#ai-pr").value, "ai.base_url": $("#ai-url").value.trim(), "ai.model": $("#ai-model").value.trim() };
-        if ($("#ai-key").value) upd["ai.api_key"] = $("#ai-key").value.trim();
-        try { for (const [k, v] of Object.entries(upd)) await api("/settings", { method: "PUT", body: JSON.stringify({ key: k, value: v, is_secret: k === "ai.api_key" }) }); toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
+        const upd = { "insights.enabled": $("#ai-en").value, "insights.interval_hours": $("#ai-int").value, "insights.pos_nudges": $("#ai-nd").value };
+        try { for (const [k, v] of Object.entries(upd)) await api("/settings", { method: "PUT", body: JSON.stringify({ key: k, value: v }) }); toast("ذخیره شد"); } catch (e) { toast(e.message, "err"); }
       };
-      $("#ai-test").onclick = async () => { try { const r = await api("/insights/report"); openModal(`<div class="ins-detail"><h3>نمونهٔ روایت</h3><div class="ins-narr">${esc(r.narrative).replace(/\n/g, "<br/>")}</div><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">بستن</button></div></div>`); } catch (e) { toast(e.message, "err"); } };
     },
   };
 

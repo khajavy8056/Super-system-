@@ -1,5 +1,13 @@
-"""v3.0 — «فروشگاه نمونه»: generate one realistic year of a neighbourhood
+"""v3.0 — «فروشگاه نمونه»: generate one realistic year (or two) of a neighbourhood
 supermarket through the REAL service layer, then back-date the timestamps.
+
+v4.8.0 — the simulated shop now lives the new timeline too: the daily loop plays
+the store-intelligence worker (dated markdown steps land on their day, exactly
+like ``apply_markdown_steps`` in production), the periodic manager review accepts
+the expiry cards as well (discount ladder for the living batch, «ثبت ضایعات» for
+the expired one), and the finished year carries a **verification report** —
+``insight_actions.health_scan`` re-checks every executed action against the data,
+so a Colab run proves the suggestions were not just accepted but still hold.
 
 Why through the service layer: checkout allocates batches, writes movements,
 profit per line, ledger entries, payments, coupons; receiving writes batches,
@@ -40,9 +48,10 @@ from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from ..models import (Brand, Category, Cheque, Customer, CustomerLedgerEntry, Expense, ExpenseCategory, Invoice, InvoiceItem,
-                      Payment, Product, ProductBatch, Return, StockMovement, Supplier, Unit, User)
+                      Payment, Product, ProductBatch, Return, StockMovement, Stocktake, StocktakeItem, Supplier, Unit, User)
 from . import accounting as acc_svc
 from . import catalog
+from . import inventory as inv_svc
 from . import pos as pos_svc
 from .audit import write_audit
 
@@ -166,6 +175,14 @@ def _settle_demo_customer(db: Session, *, customer: Customer, amount: D, day: da
     return entry
 
 
+def _stocktake_days(total_days: int) -> set[int]:
+    """Roughly quarterly stocktakes; ≥3 even in a short run (tests, quick builds)."""
+    if total_days <= 2:
+        return set()
+    marks = {total_days // 4, total_days // 2, (3 * total_days) // 4, total_days - 2}
+    return {d for d in marks if 0 <= d < total_days}
+
+
 def _supplier_weights(n: int) -> list[float]:
     """v3.5.9 — ``random.choices`` silently ignores a population longer than its weight list,
     so a big-store build with 15 wholesalers would have kept buying from the first three only."""
@@ -183,6 +200,7 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
     rnd = _rng(seed)
     from contextlib import nullcontext
     from . import simulation_checkpoint as checkpoint
+    from . import insights as ins_clock     # v4.8.0 — ساعت شبیه‌سازی برای کل روزِ فروشگاه
     if resumable and not isinstance(db, checkpoint.ReplaySession):
         raise ValueError("RESUMABLE_REQUIRES_REPLAY_SESSION")
     if pause_after_days is not None and (not resumable or pause_after_days < 1):
@@ -361,10 +379,13 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         if d["shelf"]:
             life = shelf_override or (int(d["shelf"] * rnd.uniform(0.45, 0.7)) if rnd.random() < short else int(d["shelf"] * rnd.uniform(0.8, 1.2)))
             exp = (when + timedelta(days=max(2, life))).date()
-        # The POS filters expired batches against the REAL clock, so historical batches are received
-        # without an expiry and get their (back-dated) expiry stamped at the end of the simulation.
+        # v4.8.0 — تاریخ انقضا همان لحظهٔ دریافت ثبت می‌شود (کار واقعی انبار همین است).
+        # قبلاً تاریخ‌ها تا پایان شبیه‌سازی نگه داشته می‌شدند چون صندوق هنوز ساعت
+        # واقعی ماشین را «امروز» می‌گرفت و بچ‌های تاریخ‌دارِ گذشته را منقضی می‌دید.
+        # حالا کل روزِ شبیه‌سازی با ساعت شبیه‌سازی اجرا می‌شود (timeservice)، پس
+        # تاریخ‌ها از روز اول واقعی‌اند و موتور می‌تواند وسط سال هم کارت انقضا بسازد.
         b = catalog.receive_batch(db, product=d["p"], quantity_received=D(str(round(qty, 3 if d["loose"] else 0))), buy_price=D(buy),
-                                  consumer_price=D(d["cons"]) if d["cons"] else None, sell_price=D(d["sell"]), expiry_date=None,
+                                  consumer_price=D(d["cons"]) if d["cons"] else None, sell_price=D(d["sell"]), expiry_date=exp,
                                   received_at=when, user=admin, paid_from="PAYABLE" if rnd.random() < 0.6 else "CASH", supplier_id=s.id)
         d["stock"] += float(b.quantity_received)
         db.flush()
@@ -376,10 +397,15 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         return b
 
     def sellable(d: dict, on: date) -> float:
-        """Stock the POS would actually allocate: ACTIVE batches not expired on that day."""
+        """Stock the POS would actually allocate: ACTIVE batches not expired on that day.
+
+        v4.8.0 — تاریخ انقضا حالا از لحظهٔ دریافت ثبت می‌شود، پس این تابع هم مثل
+        صندوق واقعی، بچِ تاریخ‌گذشته را «موجودی قابل فروش» نمی‌شمارد (وگرنه انبار
+        از نظر برنامه پر بود ولی قفسه خالی).
+        """
         rows = db.execute(select(ProductBatch.current_qty, ProductBatch.expiry_date).where(
             ProductBatch.product_id == d["p"].id, ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)).all()
-        return float(sum(q for q, _ in rows))
+        return float(sum(q for q, exp in rows if exp is None or exp >= on))
 
     def order(d: dict, day: date):
         """Place a purchase order. Suppliers deliver the next morning (50 %), in two days (35 %)
@@ -419,7 +445,8 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         for cu in customers:   # nobody's "usual basket" contains the dead SKUs
             cu["fav"] = [x for x in cu["fav"] if not x.get("planted_dead")] or rnd.sample([x for x in products if not x.get("planted_dead")], 6)
 
-        stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0}
+        stats = {"invoices": 0, "lines": 0, "sales": 0.0, "voids": 0, "returns": 0, "credit": 0, "accepted_insights": 0, "lost_sales": 0,
+                 "cash_sessions": 0, "stocktakes": 0}
         # effects of manager-accepted suggestions (filled by _manager_reviews); the simulation honours them
         fx = {"pair_boost": {}, "vip_ids": set(), "winback_ids": set(), "visit_ids": set(), "price_fixed": set(), "nudge_pairs": {}, "boosted_products": {}}
         # Do not retain every historical invoice id in Python; the database is the ledger.
@@ -451,11 +478,29 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
         event_callback({"phase": "days", "done": (day - start).days,
                         "total": (today - start).days + 1, "invoices": stats["invoices"]})
     completed_here = 0
+
+    def _sim_clock(d: date) -> datetime:
+        """ساعت شبیه‌سازی برای یک روز فروشگاه (۱۰ صبح تهران، مثل وقتی مدیر کار می‌کند)."""
+        return datetime.combine(d, datetime.min.time()) + timedelta(hours=6, minutes=30)
+
     while day <= today:
         with db.atomic_day() if resumable else nullcontext():
+            # v4.8.0 — کلِ روزِ شبیه‌سازی روی ساعت شبیه‌سازی اجرا می‌شود: صندوق،
+            # انقضا، تایم‌لاین تخفیف و کارگر هوش فروشگاه همه همان «امروز» را
+            # می‌بینند که فروشِ فردا خواهد دید. بدون این، یک سالِ شبیه‌سازی‌شده
+            # نمی‌توانست رفتار نسخهٔ جدید را واقعاً تمرین کند.
+            ins_clock.set_clock(_sim_clock(day))
             di = (day - start).days
             if progress:
                 progress(0.05 + 0.87 * (di / total_days))   # v3.5.9: daily, mapped into the build's 5..92 %
+            # ---- v4.8.0: کارگر روزانهٔ هوش فروشگاه ----------------------------------
+            # پله‌های تخفیفی که مدیر پذیرفته **تاریخ** دارند؛ اگر کسی آن‌ها را روی
+            # روز خودشان اعمال نکند، قیمت روی پلهٔ اول می‌ماند و سال شبیه‌سازی‌شده
+            # دروغ می‌گوید. پس هر روز، ساعت موتور را روی همان روز می‌گذاریم و
+            # دقیقاً همان تابعی را صدا می‌زنیم که کارگر پس‌زمینه در فروشگاه اجرا
+            # می‌کند (apply_markdown_steps) — با همان نوشتن تاریخچهٔ قیمت و حسابرسی.
+            _run_daily_intelligence(db, day, stats)
+
             if di in (total_days - 45, total_days - 20):
                 db.commit()
                 _manager_reviews(db, day, admin, products, customers, fx, stats, by_name)
@@ -720,7 +765,81 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 except Exception as exc:
                     sp.rollback(); log.warning("cheque settle skipped: %s", exc)
             db.commit()  # bounded daily transactions; avoid month-sized WAL growth
+
+            # ---- v4.7.0: cashier SHIFTS — one cash session per cashier per week
+            # (opening float → the week's real sales → counted cash with a small
+            # human difference → Z-report journal), so «شیفت‌بندی کارمندها» and the
+            # shift reports have a full year of history. Runs AFTER the day's
+            # commit, in its own transaction — the same isolation pattern
+            # _manager_reviews uses — so a failure can never eat the day's work
+            # (pysqlite SAVEPOINTs are unreliable; we don't gamble with them).
+            if day.weekday() == 3:   # Thursday close: the week is summed up
+                week_start = datetime.combine(day - timedelta(days=6), datetime.min.time()) + timedelta(hours=8)
+                week_end = datetime.combine(day, datetime.min.time()) + timedelta(hours=21)
+                for cashier in cashiers:
+                    try:
+                        s = acc_svc.open_cash_session(db, user=cashier, opening_float=D(3_000_000))
+                        s.opened_at = week_start
+                        db.flush()
+                        summ = acc_svc.session_summary(db, s)
+                        expected = D(str(round(summ["expected_cash"] / 1000.0) * 1000))   # counted to the nearest 1,000
+                        acc_svc.close_cash_session(db, session_id=s.id, counted_cash=expected,
+                                                   note=f"جمع‌بندی شیفت هفتگی — {day.isoformat()}", user=admin)
+                        s.opened_at, s.closed_at = week_start, week_end
+                        _fix_created(db, "acc_cash_sessions", [s.id], week_start)
+                        if s.journal_entry_id:
+                            _stamp_journal(db, "CashSession", s.id, week_end)
+                        db.commit()
+                        stats["cash_sessions"] = stats.get("cash_sessions", 0) + 1
+                    except Exception as exc:
+                        db.rollback()
+                        log.warning("demo: cash session skipped: %r", exc)
+
+            # ---- v4.7.0: quarterly STOCKTAKES — count a sample, small human
+            # variances, completed AND approved through the real service path
+            # (adjustments + STOCKTAKE movements + audit), several times a year.
+            # Same own-transaction isolation as above.
+            if di in _stocktake_days(total_days):
+                when = datetime.combine(day, datetime.min.time()) + timedelta(hours=7)
+                try:
+                    batches = db.execute(
+                        select(ProductBatch).where(ProductBatch.status == "ACTIVE", ProductBatch.current_qty > 0)
+                        .order_by(ProductBatch.id).limit(400)).scalars().all()
+                    rnd.shuffle(batches)
+                    st = Stocktake(name=f"انبارگردانی دوره‌ای — {day.isoformat()}", status="DRAFT",
+                                   started_at=when, created_by=admin.id, note="شمارش نمونه‌ای دوره‌ای در شبیه‌سازی یک‌ساله")
+                    db.add(st)
+                    db.flush()
+                    for b in batches[:60]:
+                        counted = b.current_qty
+                        if rnd.random() < 0.18:   # a human miss here and there
+                            step = max(D(1), (counted * D("0.03")).quantize(D("1")))
+                            counted = max(D(0), counted + (step if rnd.random() < 0.5 else -step))
+                        db.add(StocktakeItem(stocktake_id=st.id, product_id=b.product_id, batch_id=b.id,
+                                             system_qty=b.current_qty, physical_qty=counted,
+                                             difference=counted - b.current_qty,
+                                             reason="شمارش فیزیکی", status="COUNTED",
+                                             counted_at=when, counted_by=admin.id))
+                    db.flush()
+                    inv_svc.complete_stocktake(db, stocktake_id=st.id, user=admin)
+                    inv_svc.approve_stocktake(db, stocktake_id=st.id, user=admin,
+                                              reason="تأیید مدیر — شبیه‌سازی یک‌ساله")
+                    st.started_at, st.completed_at = when, when + timedelta(hours=3)
+                    _fix_created(db, "stocktakes", [st.id], when)
+                    # (stocktake_items has no created_at — counted_at is already set per item)
+                    mv_ids = [m.id for m in db.execute(
+                        select(StockMovement).where(StockMovement.movement_type == "STOCKTAKE", StockMovement.created_at >= when)
+                        .order_by(StockMovement.id.desc()).limit(120)).scalars().all()]
+                    if mv_ids:
+                        _fix_created(db, "stock_movements", mv_ids, when)
+                    db.commit()
+                    stats["stocktakes"] = stats.get("stocktakes", 0) + 1
+                except Exception as exc:
+                    db.rollback()
+                    log.warning("demo: stocktake skipped: %r", exc)
+
             day += timedelta(days=1)
+            ins_clock.set_clock(None)
 
             if resumable:
                 checkpoint.save(db, config, checkpoint_state())
@@ -761,6 +880,15 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             stamp_expiries()
             db.commit()
 
+        # ---- build-505: سال کامل منابع انسانی (شیفت/حضور/حقوق/مدال/اطلاعیه) ----
+        try:
+            stats["hr"] = _simulate_hr_year(db, admin=admin, start=start, end=today, rnd=rnd, stats=stats)
+            db.commit()
+        except Exception:
+            db.rollback()
+            stats["hr"] = {"errors": ["HR_PHASE_FAILED"]}
+            log.exception("demo: HR year failed (the store is still valid without it)")
+
         # ---- v3.5.9: run the model on the FINAL data and actually act on it -----------------
         # A stress file that only *contains* sales proves nothing about the intelligence engine.
         # So: run every generator over the finished year, accept the strongest suggestions through
@@ -778,7 +906,9 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
                 progress(0.96)
             accepted = 0
             for r in db.execute(select(Insight).where(Insight.status == "NEW")
-                                .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(0 if full_catalog else 14)).scalars().all():
+                                # v4.7.0: the owner wants suggestions EXECUTED with measured
+                                # results even in the full-catalog Colab run — accept the top 12.
+                                .order_by(Insight.priority.asc(), Insight.expected_gain.desc()).limit(12 if full_catalog else 14)).scalars().all():
                 try:
                     ins_svc.accept(db, r, user=admin)
                     accepted += 1
@@ -788,9 +918,30 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             db.commit()
             if progress:
                 progress(0.98)
+            # ---- v4.8.0: «سیستم بررسی فروشگاه» روی کل سال اجرا می‌شود ----------------
+            # هر اقدامی که در طول شبیه‌سازی اجرا شده (تخفیف پله‌ای، ضایعات، تغییر قیمت،
+            # کوپن…) دوباره روی داده بازبینی می‌شود؛ حاصل در خلاصهٔ اجرا می‌آید تا
+            # کاربر کولب ببیند «اجرا» واقعاً انجام شده و اثرش سر جایش هست.
+            verification = {"checked": 0, "lost": [], "counts": {}}
+            try:
+                from . import insight_actions as ia_svc
+                with db.begin_nested():   # its own SAVEPOINT: a report must never poison the year
+                    scan = ia_svc.health_scan(db, notify_lost=True)
+                    report = ia_svc.execution_report(db)
+                verification = {"checked": int(scan.get("checked", 0)),
+                                "insights_checked": int(report.get("insights_checked", len(scan.get("lost") or [])) or 0),
+                                "actions_checked": int(report.get("actions_checked", 0) or 0),
+                                "lost": [{"insight_id": x.get("insight_id"), "kind": x.get("kind"),
+                                          "type": x.get("type"), "state": x.get("state"),
+                                          "detail": x.get("detail")} for x in (scan.get("lost") or [])][:20],
+                                "counts": report.get("counts") or {}}
+                db.flush()
+            except Exception as exc:                    # never fail the build over a report
+                verification["errors"] = [repr(exc)]
             ins = {"errors": run_res.get("errors", []), "generated": int(run_res.get("created", 0)) + int(run_res.get("refreshed", 0)),
                    "accepted": accepted, "measured": ins_svc.measure_all(db),
-                   "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all())}
+                   "open": len(db.execute(select(Insight.id).where(Insight.status == "NEW")).scalars().all()),
+                   "verification": verification}
             db.commit()
         except Exception:
             db.rollback()
@@ -804,13 +955,50 @@ def generate(db: Session, *, days: int = 365, seed: int = 1404, invoices_per_day
             db.commit()
         except Exception:
             db.rollback()
-        summary = {"days": days, "start_date": str(start), "end_date": str(today), "products": len(products), "long_tail_products": len(long_tail),
+        summary = {"days": days, "start_date": str(start), "end_date": str(today),
+                   "verification": (ins or {}).get("verification") or {"checked": 0, "lost": [], "counts": {}},
+                   "months": round(days / 30.4375, 1),
+                   "products": len(products), "long_tail_products": len(long_tail),
                 "suppliers": len(sups), "customers": len(customers), "insights": ins,
                 **{k: (round(v) if isinstance(v, float) else v) for k, v in stats.items()}}
 
         if resumable:
             checkpoint.save(db, config, {"phase": "complete", "summary": summary})
         return summary
+
+
+def _run_daily_intelligence(db: Session, day: date, stats: dict) -> None:
+    """یک تیکِ کارگر هوش فروشگاه در پایان روزِ شبیه‌سازی‌شده (v4.8.0).
+
+    ساعت موتور روی ``day`` تنظیم می‌شود تا «امروز» همان روزِ شبیه‌سازی باشد؛ بعد:
+
+    * ``insight_actions.apply_markdown_steps`` — پله‌های سررسیدشده روی بچ می‌نشینند
+      (قیمت + تاریخچهٔ قیمت + حسابرسی + اعلان، همان مسیر تولید)،
+    * ردیف‌هایی که این تابع با ساعت واقعیِ ماشین نوشته، به روزِ شبیه‌سازی برگردانده
+      می‌شوند تا گزارش‌های سالانه (تاریخچهٔ قیمت، حسابرسی) تاریخ درست بدهند.
+
+    هیچ استثنایی روزِ شبیه‌سازی را نمی‌خورد: خرابی این قلاب فقط لاگ می‌شود.
+    """
+    from . import insight_actions as ia_svc
+    from . import insights as ins_svc
+
+    when = datetime.combine(day, datetime.min.time()) + timedelta(hours=7)
+    previous = ins_svc._CLOCK.get()          # caller (the day loop) may have its own sim clock
+    try:
+        with db.begin_nested():
+            ins_svc.set_clock(when)
+            try:
+                applied = int(ia_svc.apply_markdown_steps(db) or 0)
+            finally:
+                ins_svc.set_clock(previous)
+            if applied:
+                stats["markdown_steps"] = stats.get("markdown_steps", 0) + applied
+        # ردیف‌هایی که این تیک با ساعت واقعی ماشین نوشت، به روزِ شبیه‌سازی برمی‌گردند
+        for table in ("price_versions", "audit_logs", "notifications"):
+            db.execute(text(f"UPDATE {table} SET created_at=:t WHERE created_at > :t"), {"t": when})
+        db.flush()
+    except Exception as exc:                                  # a broken tick must never kill the day
+        log.warning("demo: daily intelligence tick skipped on %s: %r", day, exc)
 
 
 def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dict, stats: dict, by_name: dict) -> None:
@@ -820,6 +1008,7 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
     from . import insights as ins
     from ..models import Insight
     clock = datetime.combine(day, datetime.min.time()) + timedelta(hours=6, minutes=30)   # 10:00 Tehran
+    previous = ins._CLOCK.get()
     ins.set_clock(clock)
     try:
         ins.run(db)
@@ -861,6 +1050,23 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
             elif r.kind == "DEAD_STOCK":
                 take = True   # bundle + shelf move: the dead stock starts to move slowly
                 fx["boosted_products"][ev["product_id"]] = 0.035
+            # v4.8.0 — کارت‌های انقضا هم مثل یک مدیر واقعی «اجرا» می‌شوند:
+            # بچ زنده نردبان تخفیف می‌گیرد (پله‌ها بعداً روی تاریخ خودشان می‌نشینند)
+            # و بچِ تاریخ‌گذشته «ثبت ضایعات» — همان دو اقدامی که در نسخهٔ جدید آمد.
+            elif r.kind == "EXPIRY_LADDER" and accepted < 26:
+                mode = str(ev.get("mode") or "")
+                if mode == "ladder":
+                    take, only = True, ["markdown_ladder"]
+                    pid = ev.get("product_id")
+                    if pid:
+                        # حراج، تقاضای همان کالا را بالا می‌برد (اثر واقعی تخفیف پله‌ای)
+                        fx["boosted_products"][pid] = max(fx["boosted_products"].get(pid, 0.0), 0.12)
+                        stats["expiry_markdowns"] = stats.get("expiry_markdowns", 0) + 1
+                elif mode == "waste":
+                    take, only = True, ["write_off_waste"]
+                    stats["expiry_waste_actions"] = stats.get("expiry_waste_actions", 0) + 1
+                elif mode == "risk_only":
+                    take, only = True, ["shelf_note"]
             elif r.kind == "VELOCITY" and accepted < 20:
                 take, only = True, ["set_min_stock"]
             elif r.kind == "VISIT_PATTERN":
@@ -888,7 +1094,7 @@ def _manager_reviews(db: Session, day: date, admin, products, customers, fx: dic
         stats["accepted_insights"] += accepted
         log.warning("demo manager review on %s: %d suggestions accepted", day, accepted)
     finally:
-        ins.set_clock(None)
+        ins.set_clock(previous)
 
 
 def is_demo(db: Session) -> bool:
@@ -935,6 +1141,230 @@ with file_lock(_cfg["worker_lock"]) if _cfg.get("worker_lock") else nullcontext(
         sys.exit(75)
 print("__DEMO__" + json.dumps(s))
 """
+
+
+def _jalali_periods(start: date, end: date) -> list[str]:
+    """دوره‌های حقوق جلالی («1404-07») برای بازهٔ شبیه‌سازی — به‌ترتیب، بدون تکرار.
+
+    build-508 — مبنا اولِ **ماه جلالی** است، نه میلادی؛ نسخهٔ قبلی `start.replace(day=1)`
+    را روی تاریخ میلادی می‌گرفت و برای پنجره‌های کوتاهِ اوایل ماه میلادی فقط یک دوره
+    برمی‌گرداند — یعنی «پرداخت‌شده/در انتظار» وابسته به روزِ اجرا می‌شد.
+    """
+    from .timeservice import to_jalali
+    jy, jm, _jd = to_jalali(datetime.combine(start, datetime.min.time()))
+    ey, em, _ejd = to_jalali(datetime.combine(end, datetime.min.time()))
+    periods: list[str] = []
+    while (jy, jm) <= (ey, em):
+        periods.append(f"{jy}-{jm:02d}")
+        jm += 1
+        if jm > 12:
+            jm, jy = 1, jy + 1
+    return periods
+
+
+def _simulate_hr_year(db, *, admin, start, end, rnd, stats) -> dict:
+    """build-505 — سال کامل منابع انسانی با سرویس‌های واقعی برنامه:
+    شیفت‌ها و تخصیص دائمی، حضور روزانه (ورود/خروج با ساعت شبیه‌سازی، تأخیر/ترک زودهنگام/غیبت)،
+    حقوق ماهانه (DRAFT → APPROVED → PAID؛ دورهٔ آخر عمداً پرداخت‌نشده می‌ماند)،
+    «مراسم اهدای مدال» بر پایهٔ عملکرد واقعی سال (فروش/انضباط/فوق‌العاده) با پاداش مالی
+    که از مسیر خودِ حقوق (فیلد bonus) ثبت می‌شود، و اطلاعیه‌های داخلی برای مراسم.
+    هر شکستِ جزئی فقط همان تکه را رد می‌کند — سال فروشگاه همیشه سالم می‌ماند."""
+    from ..models.hr import Announcement
+    from ..models import Invoice, ShiftAttendance
+    from . import payroll as pay_svc
+    from . import shifts as shift_svc
+    from .timeservice import to_jalali
+
+    hr: dict = {"shifts": 0, "attendance_days": 0, "late_minutes": 0,
+                "payroll_paid": 0, "payroll_pending": 0, "announcements": 0,
+                "medals": [], "staff": [], "errors": []}
+    staff = [u for u in db.execute(select(User).where(User.is_active.is_(True))).scalars()
+             if u.username != "admin"][:6]
+    if not staff:
+        hr["errors"].append("NO_STAFF")
+        return hr
+
+    # ---- ۱) شیفت‌ها + تخصیص دائمی (الگوی هفتگی، day="") ----
+    specs = [("شیفت صبح — فروشگاه شبیه‌سازی", "07:30", "15:30"),
+             ("شیفت عصر — فروشگاه شبیه‌سازی", "15:00", "22:30"),
+             ("شیفت پیک — فروشگاه شبیه‌سازی", "11:00", "19:00")]
+    shifts = []
+    for nm, st_t, en_t in specs:
+        try:
+            sh = shift_svc.create_shift(db, name=nm, start_time=st_t, end_time=en_t,
+                                        workdays=[], store="فروشگاه شبیه‌سازی‌شده",
+                                        department="صندوق", user=admin)
+            shifts.append(sh)
+            hr["shifts"] += 1
+        except Exception as exc:
+            db.rollback()
+            hr["errors"].append(f"SHIFT:{exc}")
+    for i, u in enumerate(staff):
+        if shifts:
+            try:
+                shift_svc.assign(db, shifts[i % len(shifts)], u.id, actor=admin)
+            except Exception as exc:
+                db.rollback()
+                hr["errors"].append(f"ASSIGN:{u.username}:{exc}")
+
+    def _parse_hhmm(v: str) -> tuple[int, int]:
+        a, b = v.split(":")
+        return int(a), int(b)
+
+    # ---- ۲) حضور روزانه با سرویس واقعی (ورود/خروج روی ساعت شبیه‌سازی) ----
+    if shifts:
+        d = start
+        while d <= end:
+            roster = [u for i, u in enumerate(staff) if (d.toordinal() + i) % 7 != 3]   # چرخش روز استراحت
+            for k, u in enumerate(roster):
+                sh = shifts[k % len(shifts)]
+                h1, m1 = _parse_hhmm(sh.start_time)
+                h2, m2 = _parse_hhmm(sh.end_time)
+                base_in = datetime.combine(d, datetime.min.time()) + timedelta(hours=h1, minutes=m1)
+                base_out = datetime.combine(d, datetime.min.time()) + timedelta(hours=h2, minutes=m2)
+                try:
+                    # سرویس شیفت خودش commit می‌کند؛ SAVEPOINT اینجا معنا ندارد
+                    shift_svc.clock_in(db, u, shift_id=sh.id, day=d.isoformat(),
+                                       at=base_in + timedelta(minutes=rnd.choice([0, 0, 0, 0, 0, 0, 0, 4, 9, 14, 23, 38])))
+                    shift_svc.clock_out(db, u, day=d.isoformat(),
+                                        at=base_out + timedelta(minutes=rnd.choice([0, 0, 0, 0, 10, 25, 45, 75])))
+                    hr["attendance_days"] += 1
+                except Exception as exc:
+                    db.rollback()
+                    hr["errors"].append(f"ATT:{u.username}:{d}:{exc}")
+            d += timedelta(days=1)
+        db.commit()
+
+    # ---- ۳) عملکرد واقعی سال از روی داده (نه عدد ساختگی) ----
+    sales_rows = db.execute(text(
+        "SELECT created_by AS user_id, COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS s "
+        "FROM invoices WHERE status<>'VOID' AND created_by IS NOT NULL GROUP BY created_by")).mappings().all()
+    sales_by_user = {int(r["user_id"]): (int(r["n"]), float(r["s"])) for r in sales_rows}
+    att_rows = db.execute(text(
+        "SELECT user_id, COUNT(*) AS days, COALESCE(SUM(late_minutes),0) AS late, "
+        "COALESCE(SUM(CAST((julianday(ended_at)-julianday(started_at))*24 AS REAL)),0) AS hours "
+        "FROM hr_shift_attendance WHERE started_at IS NOT NULL AND ended_at IS NOT NULL GROUP BY user_id")).mappings().all()
+    att_by_user = {int(r["user_id"]): dict(r) for r in att_rows}
+
+    # ---- ۴) حقوق ماهانه (همهٔ دوره‌ها؛ دورهٔ آخر برای مدال/وضعیت پرداخت‌نشده نگه داشته می‌شود) ----
+    periods = _jalali_periods(start, end)
+    # build-508 — تضمینِ تاریخ‌مستقل «پرداخت‌شده + یک دوره در انتظار»: یک دورهٔ کاملِ
+    # قبل از شروع هم به دوره‌ها اضافه و کامل پرداخت می‌شود (فروشگاه نمونه، قبل از
+    # شبیه‌سازی هم فعالیت داشته) — وگرنه در پنجره‌های کوتاهِ اوایل ماه جلالی فقط
+    # «یک دورهٔ پرداخت‌نشده» تولید می‌شد و دمو/تست‌ها به روزِ اجرا وابسته می‌شدند.
+    if periods:
+        pjy, pjm, _pd = to_jalali(datetime.combine(start, datetime.min.time()))
+        pjm -= 1
+        if pjm == 0:
+            pjm, pjy = 12, pjy - 1
+        prev = f"{pjy}-{pjm:02d}"
+        if prev not in periods:
+            periods.insert(0, prev)
+    rows_by_user_period: dict[tuple[int, str], object] = {}
+    for pi, per in enumerate(periods):
+        last_of_year = (pi == len(periods) - 1)
+        for si, u in enumerate(staff):
+            base = 12_000_000 + 1_000_000 * si
+            worked = round(rnd.uniform(150, 190), 1)
+            overtime = 0 if si == len(staff) - 1 and rnd.random() < 0.3 else round(rnd.uniform(0, 26), 1)
+            bonus = rnd.choice([0, 0, 0, 500_000, 800_000, 1_500_000])
+            benefits = 1_500_000
+            try:
+                # سرویس حقوق خودش commit می‌کند؛ SAVEPOINT اینجا معنا ندارد
+                row = pay_svc.create_entry(
+                    db, user_id=u.id, period=per, user=admin,
+                    base_salary=base, hourly_pay=round(base / 176 / 1000) * 1000,
+                    worked_hours=worked, overtime_hours=overtime,
+                    bonus=bonus, benefits=benefits, deductions=0, penalty=0,
+                    note="دورهٔ شبیه‌سازی‌شدهٔ فروشگاه")
+                if not last_of_year:
+                    pay_svc.approve(db, row)
+                    pay_svc.pay(db, row, user=admin)
+                    hr["payroll_paid"] += 1
+                else:
+                    hr["payroll_pending"] += 1
+                rows_by_user_period[(u.id, per)] = row
+            except Exception as exc:
+                db.rollback()
+                hr["errors"].append(f"PAYROLL:{u.username}:{per}:{exc}")
+        db.commit()
+    last_period = periods[-1] if periods else None
+
+    # ---- ۵) مراسم اهدای مدال — بر پایهٔ عملکرد واقعی سال، با پاداش مالی از مسیر حقوق ----
+    def _metric(u):
+        n, rev = sales_by_user.get(u.id, (0, 0.0))
+        a = att_by_user.get(u.id, {})
+        return {"user": u, "invoices": n, "revenue": rev,
+                "days": int(a.get("days", 0)), "late": int(a.get("late", 0)),
+                "hours": float(a.get("hours", 0.0)),
+                "overtime": round(float(a.get("hours", 0.0)) - 8.0 * int(a.get("days", 0)), 1)}
+
+    board = sorted((_metric(u) for u in staff), key=lambda m: m["revenue"], reverse=True)
+    medals: dict[int, dict] = {}
+    RANK = [("🥇", "مدال طلای فروش سال", 5_000_000), ("🥈", "مدال نقرهٔ فروش سال", 3_000_000),
+            ("🥉", "مدال برنز فروش سال", 2_000_000)]
+    for i, m in enumerate(board[:3]):
+        emoji, title, bonus = RANK[i]
+        medals[m["user"].id] = {"emoji": emoji, "title": title, "bonus": bonus, "m": m}
+    with_life = [m for m in board if m["days"] > 0]
+    if with_life:
+        punct = min(with_life, key=lambda m: m["late"])
+        if punct["user"].id not in medals:
+            medals[punct["user"].id] = {"emoji": "⏱", "title": "مدال منضبط‌ترین سال", "bonus": 1_000_000, "m": punct}
+    if board:
+        tireless = max(board, key=lambda m: max(0.0, m["overtime"]))
+        if tireless["user"].id not in medals:
+            medals[tireless["user"].id] = {"emoji": "🌟", "title": "مدال پرتلاش‌ترین سال", "bonus": 1_000_000, "m": tireless}
+
+    for uid, medal in medals.items():
+        m = medal["m"]; u = m["user"]
+        row = rows_by_user_period.get((uid, last_period)) if last_period else None
+        try:
+            if row is not None:
+                pay_svc.update_entry(db, row, bonus=float((row.bonus or 0)) + medal["bonus"],
+                                     note=f"پاداش {medal['title']} {medal['emoji']}")
+                pay_svc.approve(db, row)   # دورهٔ آخر تأیید می‌شود ولی عمداً پرداخت‌نشده می‌ماند
+            hr["medals"].append({"username": u.username, "full_name": u.full_name,
+                                 "emoji": medal["emoji"], "title": medal["title"],
+                                 "bonus": medal["bonus"],
+                                 "invoices": m["invoices"], "revenue": round(m["revenue"]),
+                                 "attendance_days": m["days"], "late_minutes": m["late"],
+                                 "overtime_hours": max(0.0, m["overtime"])})
+        except Exception as exc:
+            db.rollback()
+            hr["errors"].append(f"MEDAL:{u.username}:{exc}")
+    db.commit()
+
+    # ---- ۶) اطلاعیه‌های مراسم (مثل اعلان واقعی مدیر در برنامه) ----
+    ceremony_time = datetime.combine(end, datetime.min.time()) + timedelta(hours=10)
+    try:
+        lines = [f"{medal['emoji']} {medal['full_name']} — {medal['title']} · پاداش {medal['bonus']:,} تومان"
+                 for medal in hr["medals"]]
+        ann = Announcement(title="🎖 مراسم اهدای مدال سال فروشگاه",
+                           body="به پاس یک سال تلاش:\n" + "\n".join(lines),
+                           created_by=admin.id, status="PUBLISHED", priority=2,
+                           target_kind="ALL")
+        db.add(ann)
+        db.flush()
+        _fix_created(db, "announcements", [ann.id], ceremony_time)
+        hr["announcements"] += 1
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        hr["errors"].append(f"ANNOUNCE:{exc}")
+
+    # ---- ۷) پروفایل عملکرد هر کارمند (در خلاصهٔ ماشین‌خوان شبیه‌سازی) ----
+    for m in board:
+        medal = medals.get(m["user"].id) or {}
+        hr["staff"].append({"username": m["user"].username, "full_name": m["user"].full_name,
+                            "medal": medal.get("emoji", "—"), "medal_title": medal.get("title", ""),
+                            "medal_bonus": medal.get("bonus", 0),
+                            "invoices": m["invoices"], "revenue": round(m["revenue"]),
+                            "attendance_days": m["days"], "late_minutes": m["late"],
+                            "worked_hours": round(m["hours"], 1),
+                            "overtime_hours": max(0.0, m["overtime"])})
+    hr["late_minutes"] = sum(int(a.get("late", 0)) for a in att_by_user.values())
+    return hr
 
 
 def generate_backup_file(path, *, days: int = 365, seed: int = 1404,

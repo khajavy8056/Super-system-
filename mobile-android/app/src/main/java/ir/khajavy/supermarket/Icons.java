@@ -150,7 +150,8 @@ public final class Icons {
     /** icon inside a soft tinted rounded square — used by tiles, drawer rows, list rows. */
     public static ImageView badge(android.content.Context c, String name, int accent, int sizeDp) {
         ImageView iv = view(c, name, accent, sizeDp); int pad = Ui.dp(sizeDp * 0.24f); iv.setPadding(pad, pad, pad, pad);
-        iv.setBackground(Ui.rounded((accent & 0x00FFFFFF) | (Ui.dark ? 0x2E000000 : 0x1A000000), 0, sizeDp * 0.32f)); return iv;
+        // build-484 — کاشی پاستلی (الهام از تصویر مرجع): پس‌زمینهٔ رنگی روشن + آیکون رنگی.
+        iv.setBackground(Ui.rounded((accent & 0x00FFFFFF) | (Ui.dark ? 0x3A000000 : 0x2E000000), 0, sizeDp * 0.32f)); return iv;
     }
     /** icon inside a filled circle (hero, avatars, big CTAs). */
     public static ImageView disc(android.content.Context c, String name, int fill, int fg, int sizeDp) {
