@@ -254,7 +254,8 @@ def test_version_is_consistent_everywhere(client, auth_headers):
         f"setup.iss fallback disagrees with {__version__}"
     health = client.get("/health").json()
     assert health["version"] == __version__
-    assert client.get("/openapi.json").json()["info"]["version"] == __version__
+    # v1.0.526 — the schema endpoint requires a developer token (I-18/BUG-B).
+    assert client.get("/openapi.json", headers=auth_headers).json()["info"]["version"] == __version__
 
     from app.config import settings
     assert settings.APP_VERSION == __version__

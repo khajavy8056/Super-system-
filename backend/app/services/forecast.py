@@ -213,12 +213,76 @@ def calibrate(db: Session, kind: str, raw_gain: float, cal: dict | None = None) 
 
 # ----------------------------------------------------------------------------- time series
 def _daily_profit(db: Session, days: int) -> list[tuple[datetime, float]]:
-    since = _now() - timedelta(days=days)
-    rows = db.execute(select(func.date(Invoice.created_at), func.coalesce(func.sum(InvoiceItem.profit), 0))
-                      .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-                      .where(Invoice.status == PAID, Invoice.created_at >= since)
-                      .group_by(func.date(Invoice.created_at)).order_by(func.date(Invoice.created_at))).all()
-    by = {str(d): _f(v) for d, v in rows}
+    """Daily NET profit — the same definition the rest of the app uses.
+
+    v1.0.526 (audit 2026-10, BUG-D) — this used to be ``SUM(InvoiceItem.profit)``
+    over ``status == PAID`` only, which disagreed with ``insights._net_profit``
+    and with every report in three ways:
+
+    * invoice-level discounts (manual invoice discount, coupon, campaign benefit)
+      were never subtracted, so the trend — and therefore every forecast and
+      every "expected gain" derived from it — was optimistic by exactly the
+      benefit the shop gave away;
+    * ``PARTIALLY_REFUNDED`` invoices were excluded **entirely**, so one partial
+      return deleted a whole day's legitimate profit from the history (this is
+      the same I-09 class of bug that was already fixed in the insights loader);
+    * there was no upper bound, so a row dated in the future (simulation clock,
+      OS clock change, restore of a future-dated backup) leaked into the past
+      trend — the one thing a forecast must never do.
+
+    Definition (identical to ``insights._net_profit``):
+        Σ line profit − Σ(invoice.discount − Σ line discount) − Σ return profit
+    """
+    now = _now()
+    since = now - timedelta(days=days)
+    from ..models import Return
+
+    # per invoice: line profit + line-level discount (what is already inside profit)
+    item_agg = (
+        select(
+            InvoiceItem.invoice_id.label("iid"),
+            func.coalesce(func.sum(InvoiceItem.profit), 0).label("line_profit"),
+            func.coalesce(func.sum(InvoiceItem.discount), 0).label("line_disc"),
+        )
+        .group_by(InvoiceItem.invoice_id)
+        .subquery()
+    )
+    # per invoice: profit destroyed by returns = refund − cost of the returned units
+    ret_agg = (
+        select(
+            InvoiceItem.invoice_id.label("iid"),
+            func.coalesce(func.sum(Return.refund_amount - InvoiceItem.unit_buy_price * Return.qty), 0)
+            .label("ret_profit"),
+        )
+        .select_from(Return)
+        .join(InvoiceItem, InvoiceItem.id == Return.invoice_item_id)
+        .group_by(InvoiceItem.invoice_id)
+        .subquery()
+    )
+    day = func.date(Invoice.created_at)
+    rows = db.execute(
+        select(
+            day,
+            func.coalesce(func.sum(func.coalesce(item_agg.c.line_profit, 0)), 0),
+            # invoice.discount already CONTAINS the line discounts, so only the
+            # difference (invoice-level + coupon + campaign) is still owed
+            func.coalesce(func.sum(
+                Invoice.discount - func.coalesce(item_agg.c.line_disc, 0)), 0),
+            func.coalesce(func.sum(func.coalesce(ret_agg.c.ret_profit, 0)), 0),
+        )
+        .select_from(Invoice)
+        .outerjoin(item_agg, item_agg.c.iid == Invoice.id)
+        .outerjoin(ret_agg, ret_agg.c.iid == Invoice.id)
+        .where(
+            Invoice.status.in_([PAID, "PARTIALLY_REFUNDED", "REFUNDED"]),
+            Invoice.created_at >= since,
+            Invoice.created_at <= now,
+        )
+        .group_by(day)
+        .order_by(day)
+    ).all()
+    by = {str(d): _f(line_profit) - max(0.0, _f(extra_disc)) - _f(ret_profit)
+          for d, line_profit, extra_disc, ret_profit in rows}
     out = []
     d0 = (since + timedelta(days=1)).date()
     for i in range(days):

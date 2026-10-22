@@ -21,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as _app  # noqa: E402
+from tests.release_gate import require_artifact  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = _app.__version__
@@ -93,8 +94,7 @@ def test_version_pins_are_current():
 def test_windows_portable_package_is_complete_system():
     """پایانِ «تنها دارایی ویندوزی، رونویسی UI بود»: بستهٔ پرتابل باید کل سیستم را بدهد."""
     import zipfile
-    zp = ROOT / "releases/windows" / f"RasaSystem-Windows-Portable-{VERSION}.zip"
-    assert zp.exists(), f"بستهٔ پرتابل {zp.name} ساخته نشده"
+    zp = require_artifact(ROOT / "releases/windows" / f"RasaSystem-Windows-Portable-{VERSION}.zip")
     with zipfile.ZipFile(zp) as z:
         names = set(z.namelist())
         run = z.read("RUN.bat").decode("utf-8")

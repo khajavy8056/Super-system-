@@ -121,8 +121,11 @@ def test_customer_progress_card_and_receipt_line_anchors():
 
 
 def test_version_pins():
-    assert VERSION == "1.0.520" and _app.BUILD == 52000
-    assert (ROOT / "mobile-android/BUILD").read_text().strip() == "52000"
+    # v1.0.526 — the frozen literal compared the constant with itself and broke
+    # every release; the contract is that version, build and the UI agree.
+    assert VERSION == _app.__version__
+    assert int(VERSION.split(".")[-1]) == _app.BUILD // 100
+    assert (ROOT / "mobile-android/BUILD").read_text().strip() == str(_app.BUILD)
     web = (ROOT / "frontend/app.js").read_text("utf-8")
-    assert "const UI_BUILD = 520;" in web
+    assert f"const UI_BUILD = {_app.BUILD // 100};" in web
     assert f"?v={VERSION}" in (ROOT / "frontend/index.html").read_text("utf-8")

@@ -24,6 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 import app as _app  # noqa: E402
+from tests.release_gate import require_artifact  # noqa: E402
 
 VERSION = _app.__version__
 BUILD = _app.BUILD
@@ -73,8 +74,7 @@ def test_windows_native_campaigns_page():
 
 def test_portable_carries_native_desktop_package():
     import zipfile
-    zp = ROOT / "releases/windows" / f"RasaSystem-Windows-Portable-{VERSION}.zip"
-    assert zp.exists(), f"بستهٔ پرتابل {zp.name} ساخته نشده"
+    zp = require_artifact(ROOT / "releases/windows" / f"RasaSystem-Windows-Portable-{VERSION}.zip")
     with zipfile.ZipFile(zp) as z:
         names = set(z.namelist())
     assert "desktop/main.py" in names, "پرتابل باید پکیج desktop/ را داشته باشد (رابط نیتیو)"

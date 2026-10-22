@@ -8,6 +8,7 @@ import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -229,7 +230,20 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JS
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """build-501 — خطای اعتبارسنجی ۴۲۲ باید قابل سریالایز باشد؛ NaN/∞ در ورودی
-    (کلاینت معیوب) خودِ هندلر را نمی‌شکند و پاسخ استاندارد فارسی برمی‌گردد."""
+    (کلاینت معیوب) خودِ هندلر را نمی‌شکند و پاسخ استاندارد فارسی برمی‌گردد.
+
+    v1.0.526 (audit 2026-10, BUG-A) — Pydantic v2 keeps the *constraint value* in
+    ``err["ctx"]``. For a ``Decimal`` field (``quantity: Decimal = Field(gt=0)``)
+    that ctx is ``{"gt": Decimal("0")}``, which ``json.dumps`` refuses. The handler
+    therefore raised ``TypeError`` while building the 422, Starlette fell through to
+    the generic 500 handler, and a cashier who typed quantity 0 saw
+    «خطای داخلی سرور» instead of «تعداد باید بزرگتر از صفر باشد». Every Decimal-
+    constrained endpoint (POS quantity, discount, payments, ledger amounts) was
+    affected. We now normalise through ``jsonable_encoder`` — the same encoder
+    FastAPI's own default handler uses — and keep NaN/∞ readable.
+    """
+    from fastapi.encoders import jsonable_encoder
+
     def _safe(value):
         if isinstance(value, float) and not math.isfinite(value):
             return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
@@ -238,11 +252,22 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         if isinstance(value, (list, tuple)):
             return [_safe(v) for v in value]
         return value
+
     errors = exc.errors()
+    safe_errors = []
     for err in errors:
+        # ``ctx`` may carry a Decimal constraint or the original Python exception;
+        # ``input`` may carry the raw (unsafe) body value. Both must be encodable.
+        encodable = {k: v for k, v in err.items() if k not in ("input", "ctx")}
+        encodable = _safe(encodable)
         if "input" in err:
-            err["input"] = _safe(err["input"])
-    return JSONResponse(status_code=422, content={"detail": _safe(errors)})
+            encodable["input"] = _safe(jsonable_encoder(err["input"], custom_encoder={
+                Decimal: lambda v: str(v)}))
+        if "ctx" in err:
+            encodable["ctx"] = _safe(jsonable_encoder(err["ctx"], custom_encoder={
+                Decimal: lambda v: str(v)}))
+        safe_errors.append(encodable)
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 
 @app.exception_handler(Exception)
@@ -253,38 +278,116 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # I-18 — restrict OpenAPI/docs in production (no public schema leak)
 _DOCS_FREE = os.environ.get("SUPERMARKET_EXPOSE_DOCS", "0") not in ("0", "false", "off", "")
 
+
+def _docs_caller_is_privileged(request: Request) -> bool:
+    """v1.0.526 (audit 2026-10, BUG-B) — a *presence* check is not authentication.
+
+    I-18 only looked at ``Authorization: Bearer`` being non-empty, so
+    ``curl -H 'Authorization: Bearer x' /openapi.json`` handed the complete API
+    map to an anonymous caller — the exact leak the gate was added to prevent.
+    The gate now verifies the token (signature + expiry + revocation), loads the
+    user, and requires the developer permission that already governs API/DB
+    tooling. ``/docs`` in a browser could never send this header anyway, so no
+    working flow changes; a shop that wants public docs still sets
+    ``SUPERMARKET_EXPOSE_DOCS=1`` explicitly.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return False
+    from .database import SessionLocal
+    from .models import User
+    from .security import decode_token, has_permission, is_revoked
+
+    try:
+        if is_revoked(token):
+            return False
+        payload = decode_token(token)
+        user_id = int(payload["sub"])
+    except Exception:  # noqa: BLE001 — any malformed/expired token is a "no"
+        return False
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        return bool(user and user.is_active and has_permission(user, "dev.mode"))
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        db.close()
+
+
 @app.middleware("http")
 async def docs_gate(request: Request, call_next):
     if not _DOCS_FREE and request.url.path in ("/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"):
-        auth = request.headers.get("authorization", "")
-        if not auth.lower().startswith("bearer "):
+        if not _docs_caller_is_privileged(request):
             return JSONResponse(status_code=404, content={"detail": {"code": "NOT_FOUND", "message": "Not Found"}})
     return await call_next(request)
 
 
 # Rate limiting for brute force (I-22: 30/60 for login, was 10 too tight for NAT shops)
+#
+# v1.0.526 (audit 2026-10, BUG-C) — the limiter used to count EVERY request to
+# the endpoint, successful sign-ins included, and the bucket was never pruned
+# for IPs that stopped calling. Two consequences that a real shop hits:
+#   * a busy counter (several cashiers switching accounts on one terminal, a
+#     phone re-pairing, a kiosk clocking staff in) reached 30 logins/minute and
+#     then locked out the *legitimate* staff for the rest of the window — the
+#     exact opposite of the intent, which is to stop password guessing;
+#   * `_RATE_BUCKET` keyed by client IP grew for the process lifetime.
+# It now counts only FAILED attempts (4xx), which is what brute force looks
+# like, and prunes empty buckets. A shop doing 200 successful logins a minute
+# is normal; 30 wrong passwords a minute is an attack.
 import time as _time
+
 _RATE_BUCKET: dict[str, list[float]] = {}
 _RATE_LIMITS = {
     "/api/auth/login": (30, 60),
     "/api/auth/refresh": (20, 60),
 }
+_RATE_PRUNE_EVERY = 256
+_rate_calls = 0
+
+
+def _rate_prune(now: float, window: float) -> None:
+    """Drop keys whose window has fully expired — otherwise the map only grows."""
+    for k in [k for k, v in _RATE_BUCKET.items() if not v or v[-1] <= now - window]:
+        _RATE_BUCKET.pop(k, None)
+
+
+def reset_rate_limits() -> None:
+    """Clear the limiter (tests, and an operator-driven unlock from Settings)."""
+    _RATE_BUCKET.clear()
+
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
+    global _rate_calls
     key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
     rule = _RATE_LIMITS.get(request.url.path)
-    if rule:
-        limit, window = rule
-        now = _time.monotonic()
-        bucket = _RATE_BUCKET.setdefault(key, [])
+    if not rule:
+        return await call_next(request)
+
+    limit, window = rule
+    now = _time.monotonic()
+    bucket = _RATE_BUCKET.get(key)
+    if bucket is not None:
         while bucket and bucket[0] <= now - window:
             bucket.pop(0)
         if len(bucket) >= limit:
-            # Return plain string detail so both frontend (body.detail) and Api.java (string) render correctly
+            # Plain string detail so both the web panel (body.detail) and the
+            # Android client (Api.java expects a string) render it correctly.
             return JSONResponse(status_code=429, content={"detail": "درخواست‌ها بیش از حد مجاز است؛ لحظاتی بعد دوباره تلاش کنید."})
-        bucket.append(now)
-    return await call_next(request)
+
+    response = await call_next(request)
+    if response.status_code in (401, 403):
+        # only a rejected credential counts toward the brute-force budget
+        _RATE_BUCKET.setdefault(key, []).append(now)
+        _rate_calls += 1
+        if _rate_calls % _RATE_PRUNE_EVERY == 0:
+            _rate_prune(now, window)
+    return response
 
 
 # --- v1.5 licence gate ---------------------------------------------------------

@@ -112,7 +112,12 @@ def test_role_dashboard_contract_is_present_in_windows_and_native_android():
     assert "dashboard_profile" in screens
     assert "renderManagementActions(profile)" in screens
     assert "redactDashboardPermissions(d)" in local
-    assert "status='PAID' AND user_id=?" in local
+    # v1.0.526 (audit 2026-10) — 1.0.525 deliberately widened the phone's filter
+    # from status='PAID' to status!='VOID' (I-09: a partially refunded sale is
+    # still a sale). The test was left asserting the old literal, so it failed
+    # while the code was already the more correct one. Intent kept: the seller's
+    # figures are self-scoped and exclude voided invoices.
+    assert "status!='VOID' AND user_id=?" in local
     assert 'Long userId = Screens.can("reports.view_all") ? null : Db.localUserId();' in local
     assert 'AND i.user_id=?' in local
     assert 'accountingDashboard(Jalali.daysAgoIso(30))' in local

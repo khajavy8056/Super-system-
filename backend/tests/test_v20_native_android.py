@@ -42,9 +42,10 @@ def test_native_app_has_no_webview_and_ships_every_section():
     assert "profit" not in pos_cls.lower() and "سود" not in pos_cls
 
 
-def test_every_api_path_called_by_the_native_app_exists(client):
+def test_every_api_path_called_by_the_native_app_exists(client, auth_headers):
+    # v1.0.526 — the schema endpoint is authenticated now (I-18/BUG-B).
     src = _java_sources()
-    schema_paths = client.get("/openapi.json").json()["paths"]
+    schema_paths = client.get("/openapi.json", headers=auth_headers).json()["paths"]
     called = set()
     for m in re.finditer(r'(?:get|getQuiet|post|patch|put|delete|call\("[A-Z]+",)\(\s*"(/[^"?]+)', src):
         called.add(m.group(1))

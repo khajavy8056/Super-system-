@@ -156,9 +156,11 @@ def test_more_menu_list_endpoints_all_answer(client, auth_headers):
 # --------------------------------------------------------------------------
 # static guard: the shipped JS must not call an endpoint that does not exist
 # --------------------------------------------------------------------------
-def test_every_api_path_in_mobile_js_exists_in_the_openapi_schema(client):
+def test_every_api_path_in_mobile_js_exists_in_the_openapi_schema(client, auth_headers):
+    # v1.0.526 — I-18 now really authenticates the schema endpoint (BUG-B);
+    # an anonymous GET is a deliberate 404, so ask as a developer.
     src = MOBILE_JS.read_text(encoding="utf-8")
-    schema_paths = client.get("/openapi.json").json()["paths"]
+    schema_paths = client.get("/openapi.json", headers=auth_headers).json()["paths"]
 
     called = set(re.findall(r'api\(\s*[`"\']([^`"\'?]+)', src))
     called |= set(re.findall(r'api\(\s*`([^`?]+)', src))
