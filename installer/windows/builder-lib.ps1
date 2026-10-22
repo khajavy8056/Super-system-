@@ -606,10 +606,10 @@ $Steps = @(
 
         # A desktop build without its native shell is not a valid deliverable.
         $Script:NativeWindow = $false
-        & $Report 'نصب وابستگی‌های ضروری پنجرهٔ اختصاصی (pywebview/pythonnet) ...'
+        & $Report 'نصب وابستگی‌های رابط نیتیو ویندوز (PySide6/Qt) ...'
         & $pipTry @('-r', (Join-Path $RepoRoot 'backend\requirements-desktop.txt')) 'required desktop shell' | Out-Null
         $Script:NativeWindow = $true
-        & $Report 'وابستگی‌های پنجرهٔ اختصاصی WebView2 نصب شدند.'
+        & $Report 'رابط نیتیو Qt نصب شد.'
         & $Report 'مرحلهٔ وابستگی‌ها کامل شد.'
     }}
 

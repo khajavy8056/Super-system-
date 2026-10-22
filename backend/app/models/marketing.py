@@ -48,6 +48,11 @@ class Campaign(TimestampMixin, Base):
     valid_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    #: build-515 — شرط «تعداد خرید»: پاداش پس از N خرید مشتری فعال/صادر می‌شود
+    #: (مثلاً «سه‌چهار بار خرید کن، خرید بعدی هدیه بگیر»). صفر = غیرفعال.
+    min_purchase_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: build-515 — پاداش این جشنواره فقط «کوپن خرید بعدی» است، نه تخفیف همین فاکتور
+    reward_next_only: Mapped[bool] = mapped_column(Boolean, default=False)
     #: auto-issue a next-purchase coupon when an invoice total reaches this (§36)
     auto_issue_threshold: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     auto_issue_validity_days: Mapped[int] = mapped_column(Integer, default=30)

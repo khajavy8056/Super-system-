@@ -119,6 +119,11 @@ class Customer(TimestampMixin, Base):
     credit_enabled: Mapped[bool] = mapped_column(default=True)
     #: 0 = unlimited; otherwise max outstanding debt allowed on account
     credit_limit: Mapped[Decimal] = mapped_column(MONEY, default=0)
+    #: I-11 — explicit consent to receive SMS (قانون رضایت). No message is sent without it.
+    sms_consent: Mapped[bool] = mapped_column(default=False)
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: optional marketing opt-out reason
+    sms_opt_out_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(default=True)
 

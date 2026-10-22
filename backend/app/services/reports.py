@@ -55,8 +55,18 @@ def _day_range(d: date) -> tuple[datetime, datetime]:
 
 
 def _paid_filter(start: datetime, end: datetime):
-    return and_(Invoice.status == PAID, Invoice.created_at >= start, Invoice.created_at < end)
+    # I-09: include partially refunded (net sales = total - refunds, not excluded)
+    return and_(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= start, Invoice.created_at < end)
+# I-09 helper: extend to REFUNDED for net-zero completeness (same as including then subtracting refunds)
+_PAID_STATUSES = ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"]
 
+def _net_refunds(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
+    from ..models.sales import Return as ReturnModel
+    q = select(func.coalesce(func.sum(ReturnModel.refund_amount), 0)).where(ReturnModel.created_at >= start, ReturnModel.created_at < end)
+    if user_id is not None:
+        q = q.where(ReturnModel.created_by == user_id)
+    val = db.execute(q).scalar_one()
+    return Decimal(val)
 
 def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> tuple[int, Decimal]:
     cond = _paid_filter(start, end)
@@ -66,7 +76,14 @@ def _sales_agg(db: Session, start: datetime, end: datetime, user_id: int | None 
         select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.total_amount), 0))
         .where(cond)
     ).one()
-    return int(row[0]), Decimal(row[1])
+    total = Decimal(row[1])
+    # I-09: subtract refunds in same window to get net sales (e.g., 1000 with 200 return → 800)
+    refunds = _net_refunds(db, start, end, user_id)
+    # Ensure we don't subtract refunds that belong to invoices outside window twice? We simply subtract period refunds.
+    net = total - refunds
+    if net < 0:
+        net = ZERO
+    return int(row[0]), net
 
 
 def _today_by_payment(db: Session, start: datetime, end: datetime,
@@ -90,15 +107,89 @@ def _today_by_payment(db: Session, start: datetime, end: datetime,
 
 
 def _profit_agg(db: Session, start: datetime, end: datetime, user_id: int | None = None) -> Decimal:
+    # I-08: profit must be net of invoice-level discounts (coupon/campaign/invoice_discount) and refunds
     cond = _paid_filter(start, end)
     if user_id is not None:
         cond = and_(cond, Invoice.created_by == user_id)
-    val = db.execute(
-        select(func.coalesce(func.sum(InvoiceItem.profit), 0))
-        .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+    # Per-invoice grouped profit to avoid duplicating invoice.discount per item row (I-08)
+    rows = db.execute(
+        select(Invoice.id, Invoice.discount, func.coalesce(func.sum(InvoiceItem.profit), 0), func.coalesce(func.sum(InvoiceItem.discount), 0))
+        .join(InvoiceItem, InvoiceItem.invoice_id == Invoice.id)
         .where(cond)
-    ).scalar_one()
-    return Decimal(val)
+        .group_by(Invoice.id, Invoice.discount)
+    ).all()
+    gross_profit = ZERO
+    for inv_id, inv_disc, sum_profit, sum_line_disc in rows:
+        inv_disc = Decimal(inv_disc)
+        sum_profit = Decimal(sum_profit)
+        sum_line_disc = Decimal(sum_line_disc)
+        invoice_level = inv_disc - sum_line_disc
+        gross_profit += sum_profit - invoice_level
+    # Subtract profit attributable to returns in window (refund - cost) (I-09)
+    try:
+        from ..models.sales import Return as ReturnModel
+        q = select(func.coalesce(func.sum(ReturnModel.refund_amount), 0),
+                   func.coalesce(func.sum(ReturnModel.qty * InvoiceItem.unit_buy_price), 0))\
+            .join(InvoiceItem, ReturnModel.invoice_item_id == InvoiceItem.id)\
+            .where(ReturnModel.created_at >= start, ReturnModel.created_at < end)
+        if user_id is not None:
+            q = q.where(ReturnModel.created_by == user_id)
+        rc = db.execute(q).one()
+        if rc[0]:
+            refund = Decimal(rc[0])
+            cost = Decimal(rc[1])
+            refund_profit = refund - cost
+            gross_profit -= refund_profit
+    except Exception:
+        pass
+    return gross_profit
+
+
+
+def dashboard_profile(user) -> str:
+    """Select a presentation profile from effective permissions, never from a role label.
+
+    This is display metadata only. Route authorization and data scope remain enforced
+    independently; a profile can never grant permission or widen a report.
+    (build-499 — از routers به services منتقل شد: لایهٔ UI دسکتاپ هم همین را صدا می‌زند.)
+    """
+    from ..security import has_permission
+    admin = has_permission(user, "users.manage") and has_permission(user, "settings.manage")
+    if admin:
+        return "administrator"
+    supervisor = (
+        has_permission(user, "reports.view_all")
+        and has_permission(user, "shifts.manage")
+        and has_permission(user, "inventory.adjust")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if supervisor:
+        return "supervisor"
+    accountant = (
+        has_permission(user, "accounting.view")
+        and not has_permission(user, "pos.sell")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if accountant:
+        return "accountant"
+    seller = (
+        has_permission(user, "pos.sell")
+        and not has_permission(user, "reports.view_all")
+        and not has_permission(user, "accounting.view")
+        and not has_permission(user, "shifts.manage")
+        and not has_permission(user, "users.manage")
+        and not has_permission(user, "settings.manage")
+    )
+    if seller:
+        return "seller"
+    if has_permission(user, "users.manage") or has_permission(user, "settings.manage"):
+        return "manager"
+    if has_permission(user, "reports.view_all"):
+        return "operations"
+    return "staff"
 
 
 def dashboard(db: Session, *, user_id: int | None = None) -> dict:

@@ -277,8 +277,21 @@ public final class Api {
             else if (d instanceof JSONArray) { JSONArray a = (JSONArray) d; if (a.length() > 0) { JSONObject f = a.optJSONObject(0); msg = f == null ? a.optString(0) : f.optString("msg", msg); } }
             else if (d != null) msg = String.valueOf(d);
         }
-        if (code == 401) msg = "نشست منقضی شده؛ دوباره وارد شوید";
-        if (code == 403) msg = "دسترسی لازم را ندارید";
+        // I-22: 401 during login means wrong password, not expired session.
+        // Keep the server-provided Persian detail (نام کاربری یا رمز اشتباه است) if present;
+        // only fall back to generic session message when the server gave no detail.
+        if (code == 401) {
+            if (msg.equals("خطای 401") || msg.equals("خطای " + code) || msg.toLowerCase(java.util.Locale.ROOT).contains("invalid")) {
+                // backend previously sent English "Invalid username or password" — map to Persian
+                if (msg.toLowerCase(java.util.Locale.ROOT).contains("invalid")) msg = "نام کاربری یا رمز اشتباه است";
+                else if (msg.equals("خطای 401") || msg.equals("خطای " + code)) msg = "نشست منقضی شده؛ دوباره وارد شوید";
+            }
+        }
+        if (code == 403) {
+            // preserve server reason (e.g. قفل محلی) if present
+            if (msg.equals("خطای 403") || msg.equals("خطای " + code)) msg = "دسترسی لازم را ندارید";
+        }
+        // 429 from lockout/rate-limit already carries a Persian message — keep it verbatim
         return new ApiError(code, ecode, msg);
     }
     private static String slurp(InputStream in) throws Exception {

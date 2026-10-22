@@ -140,7 +140,7 @@ public final class AdminScreens {
 
     /* ---------------- Settings (all categories, generic key/value editor) ---------------- */
     public static final class Settings extends Screens.Screen {
-        static final String[][] CATS = {{"store", "پروفایل فروشگاه", "store."}, {"general", "عمومی و زمان", "time.,sync."}, {"pos", "صندوق (POS)", "pos."}, {"inv", "انبار", "stocktake.,inventory."}, {"expiry", "تاریخ انقضا", "expiry."}, {"products", "محصولات", "products."}, {"barcode", "بارکد و اسکنر", "barcode."}, {"pricing", "قیمت‌گذاری", "pricing."}, {"customers", "مشتریان", "customers."}, {"ledger", "حساب دفتری", "ledger."}, {"campaign", "جشنواره و تخفیف", "marketing."}, {"sms", "پیامک", "sms."}, {"print", "پرینتر حرارتی", "printer."}, {"network", "شبکه", "network."}, {"security", "امنیت", "security."}, {"backup", "پشتیبان‌گیری", "backup."}, {"catalog", "بانک محصولات", "catalog."}, {"theme", "ظاهر (روشن/تیره)", "ui."}, {"update", "به‌روزرسانی", "update."}, {"license", "لایسنس", "license."}, {"mobile", "موبایل", "mobile."}, {"cloud", "همگام‌سازی ابری", "cloud."}};
+        static final String[][] CATS = {{"store", "پروفایل فروشگاه", "store."}, {"general", "عمومی و زمان", "time.,sync."}, {"pos", "صندوق (POS)", "pos."}, {"inv", "انبار", "stocktake.,inventory."}, {"expiry", "تاریخ انقضا", "expiry."}, {"products", "محصولات", "products."}, {"barcode", "بارکد و اسکنر", "barcode."}, {"pricing", "قیمت‌گذاری", "pricing."}, {"customers", "مشتریان", "customers."}, {"ledger", "حساب دفتری", "ledger."}, {"campaign", "جشنواره و تخفیف", "marketing."}, {"sms", "پیامک", "sms."}, {"print", "پرینتر حرارتی", "printer."}, {"network", "شبکه", "network."}, {"security", "امنیت", "security."}, {"backup", "پشتیبان‌گیری", "backup."}, {"factory", "بازنشانی کارخانه", ""}, {"catalog", "بانک محصولات", "catalog."}, {"theme", "ظاهر (روشن/تیره)", "ui."}, {"update", "به‌روزرسانی", "update."}, {"license", "لایسنس", "license."}, {"mobile", "موبایل", "mobile."}, {"cloud", "همگام‌سازی ابری", "cloud."}};
         int cat = 0; JSONArray rows = new JSONArray();
         Settings(AppActivity a) { super(a); }
         public String key() { return "settings"; } public String title() { return "تنظیمات"; }
@@ -152,6 +152,7 @@ public final class AdminScreens {
             if ("theme".equals(id)) { body.addView(Ui.ghost(c, "پوسته: خودکار ۰۷:۰۰ روشن / ۱۹:۰۰ تیره — تغییر", () -> { LinearLayout l = Ui.col(c); Dialog[] d = new Dialog[1]; for (String[] t : new String[][]{{"auto", "خودکار (۰۷:۰۰ / ۱۹:۰۰)"}, {"light", "روشن"}, {"dark", "تیره"}}) l.addView(Ui.ghost(c, t[1], () -> { d[0].dismiss(); put("/settings/theme", j("theme", t[0]), x -> { Ui.done(Ui.ctx, "ذخیره شد", null, null); Screens.loadConfig(a); load(); }); })); d[0] = Ui.sheet(c, "پوسته", l); })); }
             if ("license".equals(id)) body.addView(Ui.ghost(c, "وضعیت لایسنس", () -> a.route("license")));
             if ("backup".equals(id)) body.addView(Ui.primary(c, "پشتیبان‌گیری و بازیابی از فایل", () -> a.route("backup")));
+            if ("factory".equals(id)) body.addView(Ui.danger(c, "بازنشانی به تنظیمات کارخانه…", () -> factoryResetSheet()));
             if ("catalog".equals(id)) body.addView(Ui.primary(c, Catalog.present(c) ? "به‌روزرسانی بانک محصولات" : "دریافت بانک محصولات (نام + تصویر کالاها)", () -> a.route("catalog")));
             if ("mobile".equals(id)) body.addView(Ui.ghost(c, "دستگاه‌ها و همگام‌سازی", () -> a.route("sync")));
             if ("cloud".equals(id)) body.addView(Ui.ghost(c, "وضعیت همگام‌سازی ابری", () -> a.route("cloud")));
@@ -169,6 +170,66 @@ public final class AdminScreens {
             else { EditText e = Ui.input(c, "مقدار", cur.matches("[0-9.]+")); if (!s.optBoolean("is_secret")) e.setText(cur); l.addView(e); l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); save(k, Ui.str(e)); })); }
             d[0] = Ui.sheet(c, "ویرایش تنظیم", l); }
         void save(String k, String v) { put("/settings", j("key", k, "value", v), r -> { Ui.done(Ui.ctx, "ذخیره شد", null, null); if (k.equals("pos.currency")) Screens.loadConfig(a); load(); }); }
+
+        /* -------- build-497 — Factory Reset (§۱۲): پیش‌نمایش ← تأیید تایپی + رمز ← اجرا --------
+         * روی گوشیِ جفت‌شده: بازنشانیِ «رایانه» با پشتیبان اجباری سمت رایانه انجام می‌شود و
+         * همین‌جا دادهٔ محلی هم از نو همگام می‌شود. روی گوشی مستقل: فقط دادهٔ همین گوشی پاک می‌شود. */
+        void factoryResetSheet() {
+            LinearLayout l = Ui.col(c);
+            if (Api.standalone()) {
+                long products = Db.tableCount("products"), invoices = Db.tableCount("invoices");
+                l.addView(Ui.muted(c, "بازنشانی همین گوشی به وضعیت پایه: فروش‌ها (" + Ui.num(invoices) + ")، موجودی، کالاها (" + Ui.num(products) + ") و انبارگردانی‌ها پاک می‌شوند."));
+                l.addView(Ui.muted(c, "کاربران، نشست جاری و تنظیمات جفت‌سازی حفظ می‌شوند."));
+                l.addView(Ui.muted(c, "برای تأیید عبارت RESET را تایپ کنید:"));
+                EditText cf = Ui.input(c, "RESET");
+                l.addView(cf);
+                l.addView(Ui.danger(c, "بازنشانی کن", () -> {
+                    if (!"RESET".equals(Ui.str(cf))) { Ui.toast("برای تأیید باید RESET تایپ شود"); return; }
+                    int dropped = Db.wipeOperational();
+                    Ui.done(Ui.ctx, "بازنشانی انجام شد", dropped > 0 ? Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد" : null, null);
+                }));
+                Ui.sheet(c, "بازنشانی کارخانه (این گوشی)", l);
+                return;
+            }
+            final String[] scope = {"transactions"};
+            LinearLayout sc = Ui.row(c);
+            Runnable[] rd = new Runnable[1];
+            rd[0] = () -> { sc.removeAllViews();
+                for (String[] s : new String[][]{{"transactions", "دادهٔ عملیاتی"}, {"full", "کامل (کاتالوگ هم پاک می‌شود)"}})
+                    sc.addView(Ui.chip(c, s[1], scope[0].equals(s[0]), () -> { scope[0] = s[0]; rd[0].run(); })); };
+            rd[0].run();
+            l.addView(Ui.label(c, "دامنهٔ بازنشانی"));
+            l.addView(Ui.chips(c, sc));
+            LinearLayout rep = Ui.col(c); rep.addView(Ui.muted(c, "«نمایش گزارش» دقیقاً اعلام می‌کند چه چیزی حذف و چه چیزی حفظ می‌شود."));
+            l.addView(rep);
+            l.addView(Ui.ghost(c, "نمایش گزارش", () -> get("/system/factory-reset/preview?scope=" + scope[0], r -> {
+                JSONObject p = (JSONObject) r; rep.removeAllViews();
+                rep.addView(Ui.kv(c, "ردیف‌هایی که پاک می‌شوند", Ui.num(p.optDouble("wiped_total_rows", 0)), 0));
+                rep.addView(Ui.kv(c, "دورهٔ داده", Ui.num(p.optDouble("epoch_current", 0)) + " ← " + Ui.num(p.optDouble("epoch_after", 0)), 0));
+                StringBuilder w = new StringBuilder();
+                JSONArray wt = p.optJSONArray("wiped_tables");
+                for (int i = 0; wt != null && i < wt.length() && i < 8; i++) { JSONObject o = wt.optJSONObject(i); if (o == null) continue;
+                    java.util.Iterator<String> it = o.keys(); if (it.hasNext()) { String t = it.next(); w.append(t).append(" ").append(Ui.num(o.optDouble(t, 0))).append(" · "); } }
+                if (w.length() > 0) rep.addView(Ui.muted(c, "نمونه: " + w));
+                rep.addView(Ui.muted(c, "کاربران، نقش‌ها، لایسنس، جفت‌سازی گوشی‌ها و پشتیبان‌های دیسک حفظ می‌شوند."));
+            })));
+            l.addView(Ui.muted(c, "برای تأیید عبارت RESET و رمز مدیر را وارد کنید:"));
+            EditText cf = Ui.input(c, "RESET");
+            EditText pw = Ui.input(c, "رمز مدیر"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            l.addView(cf); l.addView(pw);
+            l.addView(Ui.danger(c, "بازنشانی کن", () -> {
+                if (!"RESET".equals(Ui.str(cf))) { Ui.toast("برای تأیید باید RESET تایپ شود"); return; }
+                try {
+                    JSONObject b = j("scope", scope[0], "confirm", "RESET", "password", Ui.str(pw));
+                    post("/system/factory-reset", b, r -> {
+                        int dropped = Db.wipeOperational();   // دادهٔ دورهٔ قبل روی گوشی هم پاک می‌شود
+                        Ui.done(Ui.ctx, "بازنشانی کارخانه انجام شد", "پشتیبان امن سمت رایانه ساخته شد" + (dropped > 0 ? " · " + Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد" : ""), null);
+                        Sync.kick();
+                    });
+                } catch (Exception ignore) {}
+            }));
+            Ui.sheet(c, "بازنشانی کارخانه", l);
+        }
     }
 
     /* ---------------- Store profile ---------------- */

@@ -511,10 +511,17 @@ def _apply(db: Session, user: User, op: SyncOp) -> dict:
                 return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
             if kind == "PAYROLL_APPROVE":
                 res = hr_router.approve_payroll(payroll_id, db=db, user=user)  # type: ignore[arg-type]
-                return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
+                # build-500 — وضعیت نهایی برنگردد، بخش «کارکنان» گوشی برای همیشه
+                # «در انتظار همگام‌سازی» می‌ماند در حالی که حسابداری پرداخت را دیده است.
+                return {"id": op.id, "status": "APPLIED", "result": {
+                    "payroll_id": res.get("id") if isinstance(res, dict) else payroll_id,
+                    "status": res.get("status", "APPROVED") if isinstance(res, dict) else "APPROVED"}}
             if kind == "PAYROLL_PAY":
                 res = hr_router.pay_payroll(payroll_id, db=db, user=user)  # type: ignore[arg-type]
-                return {"id": op.id, "status": "APPLIED", "result": {"payroll_id": res.get("id") if isinstance(res, dict) else payroll_id}}
+                return {"id": op.id, "status": "APPLIED", "result": {
+                    "payroll_id": res.get("id") if isinstance(res, dict) else payroll_id,
+                    "status": res.get("status", "PAID") if isinstance(res, dict) else "PAID",
+                    "payment_ref": res.get("payment_ref") if isinstance(res, dict) else None}}
         return {"id": op.id, "status": "REJECTED", "error": f"نوع عملیات ناشناخته: {op.type}"}
     except HTTPException as exc:
         db.rollback()
@@ -665,6 +672,9 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
                 "auto_issue_threshold": float(c.auto_issue_threshold) if c.auto_issue_threshold is not None else None,
                 "auto_issue_validity_days": c.auto_issue_validity_days,
                 "auto_issue_sms": bool(c.auto_issue_sms),
+                # build-515 — جادوگر: شرط تعداد خرید + «پاداش فقط خرید بعدی»
+                "min_purchase_count": int(getattr(c, "min_purchase_count", 0) or 0),
+                "reward_next_only": bool(getattr(c, "reward_next_only", False)),
                 "target_type": c.target_type, "target_ids": c.target_ids,
                 "first_purchase_only": bool(c.first_purchase_only),
                 "usage_limit": c.usage_limit, "per_customer_limit": c.per_customer_limit,
@@ -826,6 +836,9 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         pull["batches"] = redact_costs(pull["batches"])
     from ..security import allowed_views_for_user as _av, is_admin as _ia, user_permissions as _up
     from ..services import shifts as _shift_svc
+    # build-497 — epoch دادهٔ سمت رایانه؛ گوشی با مقایسهٔ آن، بازنشانی کارخانهٔ
+    # سرور را تشخیص می‌دهد و دادهٔ محلی قدیمی را با همگام‌سازی تازه جایگزین می‌کند.
+    from ..services.factory_reset import data_epoch as _data_epoch
     current_user_payload = {
         "id": user.id, "pc_id": user.id,
         "username": user.username,
@@ -847,4 +860,5 @@ def sync(body: SyncIn, db: Session = Depends(get_db), user: User = Depends(get_c
         log.exception("mobile sync could not compute attendance status for user_id=%s", user.id)
         raise
     return {"applied": applied, "pull": pull, "cursor": cursor, "server_time": now,
-            "has_more": has_more, "current_user": current_user_payload, "shift_status": shift_status}
+            "has_more": has_more, "current_user": current_user_payload, "shift_status": shift_status,
+            "data_epoch": _data_epoch(db)}

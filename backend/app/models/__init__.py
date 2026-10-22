@@ -1,5 +1,5 @@
 """Aggregate all models so ``Base.metadata`` is fully populated."""
-from . import accounting, catalog, external, hr, insights, inventory, marketing, sales, sync, system, user  # noqa: F401
+from . import accounting, catalog, external, hr, insights, inventory, marketing, sales, sync, system, user, purchase  # noqa: F401
 from .accounting import (Account, CashSession, Cheque, Expense, ExpenseCategory,
                          FiscalPeriod, JournalEntry, JournalLine, Supplier)
 from .base import SoftDeleteMixin, TimestampMixin
@@ -19,6 +19,7 @@ from .sales import (Customer, CustomerLedgerEntry, Invoice, InvoiceItem,
                     Payment, Return)
 from .system import AuditLog, Counter, HardwareDevice, Notification, SmsMessage, SupportMessage, SupportTicket, SystemSetting
 from .user import Permission, Role, User, user_permissions, user_roles, role_permissions
+from .purchase import PurchaseOrder, PurchaseOrderLine, DailySalesSummary
 
 __all__ = [
     "Base",
@@ -65,4 +66,5 @@ __all__ = [
     "CouponRedemption", "CampaignRedemption",
     "SyncJob",
     "DiagnosticRun",
+    "PurchaseOrder", "PurchaseOrderLine", "DailySalesSummary",
 ]

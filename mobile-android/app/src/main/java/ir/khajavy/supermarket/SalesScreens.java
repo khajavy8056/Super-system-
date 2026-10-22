@@ -2,6 +2,7 @@ package ir.khajavy.supermarket;
 
 import android.app.Dialog;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
@@ -48,6 +49,7 @@ public final class SalesScreens {
             root.addView(sr);
             search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { if (pending != null) h.removeCallbacks(pending); pending = () -> suggest(e.toString().trim()); h.postDelayed(pending, 220); } });
             search.setOnEditorActionListener((v, id, ev) -> { if (ev != null && ev.getAction() != android.view.KeyEvent.ACTION_DOWN) return true; String q = Ui.str(search); if (!q.isEmpty()) onBarcode(q); return true; });
+            buildFastStrip(root);   // build-508 — نوار «پرفروش‌ها» با تصویر (افزودن با یک لمس)
             sugg = Ui.col(c); root.addView(sugg);
             // customer, coupon, campaign and invoice-discount controls
             benefitsStrip = Ui.row(c); benefitsStrip.setPadding(0, Ui.dp(4), 0, Ui.dp(2));
@@ -98,6 +100,28 @@ public final class SalesScreens {
         @Override public void refresh() { renderCart(); if (search != null) suggest(Ui.str(search)); }
 
         /* ---- search / add ---- */
+        /** build-508 — نوار «پرفروش‌ها» (درخواست مالک): کاشی‌های تصویریِ اسکرول‌افقی بالای
+         *  صندوق؛ پرفروش‌ترین‌های فروش واقعی (آفلاین، از پایگاه محلی) با تصویر کالا — صندوق‌دار
+         *  بدون تایپ، با یک لمس پرفروش‌ها را به سبد می‌افزاید (همان مسیر افزودن جست‌وجو). */
+        void buildFastStrip(LinearLayout root) {
+            try {
+                List<JSONObject> picks = Db.fastMovers(12);
+                if (picks.isEmpty()) return;
+                LinearLayout inner = new LinearLayout(c); inner.setOrientation(LinearLayout.HORIZONTAL); inner.setGravity(Gravity.CENTER_VERTICAL);
+                TextView cap = Ui.text(c, "پرفروش‌ها", 12, Ui.PRIMARY, true); cap.setPadding(0, 0, Ui.dp(8), 0); inner.addView(cap);
+                for (JSONObject p : picks) {
+                    LinearLayout tile = Ui.col(c); tile.setGravity(Gravity.CENTER_HORIZONTAL); tile.setBackground(Ui.surface(12)); tile.setPadding(Ui.dp(6), Ui.dp(6), Ui.dp(6), Ui.dp(5));
+                    tile.addView(Ui.thumb(c, p, 44));
+                    TextView nm = Ui.text(c, p.optString("name"), 10.5f, Ui.TEXT, true); nm.setMaxLines(1); nm.setGravity(Gravity.CENTER_HORIZONTAL); nm.setEllipsize(android.text.TextUtils.TruncateAt.END); nm.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT), 0, 2, 0, 0)); tile.addView(nm);
+                    tile.addView(Ui.muted(c, Ui.fa(String.valueOf(p.optDouble("sold_qty", 0))) + " فروش"));
+                    tile.setOnClickListener(v -> { add(p, null); if (search != null) search.setText(""); if (sugg != null) sugg.removeAllViews(); });
+                    LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(Ui.dp(84), ViewGroup.LayoutParams.WRAP_CONTENT); tl.setMargins(Ui.dp(3), Ui.dp(3), Ui.dp(3), Ui.dp(3)); tile.setLayoutParams(tl);
+                    inner.addView(tile);
+                }
+                root.addView(Ui.chips(c, inner));   // اسکرول افقی RTL — قبل از فهرست پیشنهاد جست‌وجو
+            } catch (Exception ignore) {}
+        }
+
         void suggest(String q) {
             sugg.removeAllViews(); if (q.length() < 2) return;
             List<JSONObject> local = Db.searchProducts(q, 8); showSugg(local);
@@ -134,13 +158,13 @@ public final class SalesScreens {
             JSONObject b = batch != null ? batch : bs.optJSONObject(0);
             long pid = p.optLong("product_id", p.optLong("id")), bid = b.optLong("batch_id", b.optLong("id"));
             Sfx.play("add");
-            for (JSONObject l : cart) if (l.optLong("product_id") == pid && l.optLong("batch_id") == bid) { try { l.put("quantity", l.optDouble("quantity") + 1); } catch (Exception ignore) {} renderCart(); return; }
+            for (JSONObject l : cart) if (l.optLong("product_id") == pid && l.optLong("batch_id") == bid) { try { l.put("quantity", l.optDouble("quantity", 0) + 1); } catch (Exception ignore) {} renderCart(); return; }
             try { JSONObject l = new JSONObject(); l.put("product_id", pid); l.put("name", p.optString("name")); l.put("barcode", p.optString("barcode")); l.put("batch_id", bid); l.put("batch_number", b.optString("batch_number")); l.put("quantity", 1); l.put("price", b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))); l.put("discount", 0); l.put("avail", b.optDouble("current_qty", 0)); l.put("expiry", b.isNull("expiry_date") ? "" : b.optString("expiry_date")); cart.add(0, l); } catch (Exception ignore) {}
             renderCart();
         }
         void chooseBatch(JSONObject p, JSONArray bs) {
             LinearLayout l = Ui.col(c); l.addView(Ui.muted(c, "چند بچ با قیمت/انقضای متفاوت موجود است. بچ پیشنهادی (FEFO) بالاست.")); Dialog[] d = new Dialog[1];
-            Ui.paged(l, bs, 50, b -> Ui.item(c, Ui.money(b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))) + (b.optBoolean("is_recommended") ? "  ★ پیشنهادی" : ""), "بچ " + Ui.fa(b.optString("batch_number")) + " · موجودی " + Ui.num(b.optDouble("current_qty")) + (b.isNull("expiry_date") ? "" : " · انقضا " + Ui.jdate(b.optString("expiry_date"))), null, 0, () -> { d[0].dismiss(); add(p, b); }));
+            Ui.paged(l, bs, 50, b -> Ui.item(c, Ui.money(b.optDouble("sell_price", b.optDouble("unit_sell_price", 0))) + (b.optBoolean("is_recommended") ? "  ★ پیشنهادی" : ""), "بچ " + Ui.fa(b.optString("batch_number")) + " · موجودی " + Ui.num(b.optDouble("current_qty", 0)) + (b.isNull("expiry_date") ? "" : " · انقضا " + Ui.jdate(b.optString("expiry_date"))), null, 0, () -> { d[0].dismiss(); add(p, b); }));
             d[0] = Ui.sheet(c, p.optString("name"), l);
         }
         /* ---- v4.7.0: POS suggestions (both platforms, owner's rule) ---- */
@@ -231,24 +255,45 @@ public final class SalesScreens {
             String campaignLabel = campaign == null ? "جشنواره" : "جشنواره · " + campaign.optString("name");
             benefitsStrip.addView(Ui.pill(c, "gift", campaignLabel, campaign != null, this::askCampaign));
             benefitsStrip.addView(Ui.pill(c, "percent", "تخفیف", invoiceDiscount > 0, this::askDiscount));
+            /* build-520 — «کد تخفیف خرید بعدی در راه است» باید در خود سبد دیده شود */
+            if (giftHint != null && !giftHint.isEmpty())
+                benefitsStrip.addView(Ui.pill(c, "gift", "🎁 کد هدیه", true, this::askCampaign));
         }
         double amountBeforeBenefits() {
             double amount = 0;
-            for (JSONObject line : cart) amount += line.optDouble("quantity") * line.optDouble("price") - line.optDouble("discount");
+            for (JSONObject line : cart) amount += line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
             return Math.max(0, amount - invoiceDiscount);
         }
-        JSONObject campaignRequest() throws Exception {
-            JSONObject request = new JSONObject(); JSONArray productIds = new JSONArray(); JSONObject lineAmounts = new JSONObject();
+        /* build-509 — ضدخطای «اطلاعات سبد برای بررسی جشنواره آماده نشد»: هیچ عددِ
+         * ناسالم (NaN/∞ از سطر خراب) به JSON نمی‌رود (put با NaN می‌شکند) و هر سطر
+         * جداگانه محافظت شده؛ در بدترین حالت، درخواستِ حداقلیِ «مبلغ کل» می‌رود. */
+        JSONObject campaignRequest() {
+            JSONObject request = new JSONObject(); JSONArray productIds = new JSONArray(); JSONObject lineAmounts = new JSONObject(); JSONObject lineQtys = new JSONObject(), lineCats = new JSONObject();
             for (JSONObject line : cart) {
-                long productId = line.optLong("product_id");
-                if (productId > 0) productIds.put(productId);
-                String key = String.valueOf(productId);
-                double lineAmount = line.optDouble("quantity") * line.optDouble("price") - line.optDouble("discount");
-                lineAmounts.put(key, lineAmounts.optDouble(key) + lineAmount);
+                try {
+                    long productId = line.optLong("product_id");
+                    if (productId > 0) productIds.put(productId);
+                    String key = String.valueOf(productId);
+                    double lineAmount = line.optDouble("quantity", 0) * line.optDouble("price", 0) - line.optDouble("discount", 0);
+                    lineAmounts.put(key, finBenefit(finBenefit(lineAmounts.optDouble(key)) + finBenefit(lineAmount)));
+                    /* build-515 — دسته و تعداد هر خط: برای جشنوارهٔ دسته‌ای و «هدیهٔ رایگان» */
+                    lineQtys.put(key, finBenefit(finBenefit(lineQtys.optDouble(key)) + line.optDouble("quantity", 0)));
+                    String lbc = Db.norm(line.optString("barcode"));
+                    if (!lbc.isEmpty()) {
+                        JSONObject bk = Local.one("SELECT category FROM bank WHERE barcode=? LIMIT 1", lbc);
+                        if (bk != null && !bk.isNull("category") && !bk.optString("category").isEmpty()) lineCats.put(key, bk.optString("category"));
+                    }
+                } catch (Exception ignore) { /* one bad line never blocks the festival list */ }
             }
-            request.put("amount", amountBeforeBenefits()); request.put("product_ids", productIds);
-            request.put("line_amounts", lineAmounts); request.put("include_auto_apply", true);
-            if (customer != null) request.put("customer_id", customer.optLong("id"));
+            try {
+                request.put("amount", finBenefit(amountBeforeBenefits()));
+                request.put("product_ids", productIds);
+                request.put("line_amounts", lineAmounts);
+                request.put("line_qtys", lineQtys);
+                request.put("line_categories", lineCats);
+                request.put("include_auto_apply", true);
+                if (customer != null) request.put("customer_id", customer.optLong("id"));
+            } catch (Exception ignore) {}
             return request;
         }
         String benefitsKey() {
@@ -256,7 +301,7 @@ public final class SalesScreens {
             key.append(customer == null ? 0 : customer.optLong("id")).append('|').append(coupon == null ? "" : coupon).append('|')
                     .append(campaign == null ? 0 : campaign.optLong("campaign_id")).append('|').append(invoiceDiscount);
             for (JSONObject line : cart) key.append('|').append(line.optLong("product_id")).append(':').append(line.optLong("batch_id"))
-                    .append(':').append(line.optDouble("quantity")).append(':').append(line.optDouble("price")).append(':').append(line.optDouble("discount"));
+                    .append(':').append(line.optDouble("quantity", 0)).append(':').append(line.optDouble("price", 0)).append(':').append(line.optDouble("discount", 0));
             return key.toString();
         }
         void requestBenefitData(String path, JSONObject request, Api.Cb<Object> ok, Api.ErrCb error) {
@@ -269,8 +314,11 @@ public final class SalesScreens {
                 });
             } else Api.post(path, request, ok, error);
         }
+        /** build-501 — تخفیف مزایا هرگز NaN نمی‌شود (کلید غایب/NULL → صفر)؛ جلوی «Forbidden numeric value» گرفته می‌شود. */
+        static double finBenefit(double v) { return Double.isFinite(v) && v > 0 ? v : 0; }
+        String giftHint = "";
         void refreshBenefits() {
-            if (cart.isEmpty()) return;
+            if (cart.isEmpty()) { giftHint = ""; renderBenefitsStrip(); return; }
             String requestedKey = benefitsKey();
             if (requestedKey.equals(resolvedBenefitsKey) || requestedKey.equals(pendingBenefitsKey)) return;
             pendingBenefitsKey = requestedKey;
@@ -291,19 +339,32 @@ public final class SalesScreens {
                     if (offer.optBoolean("auto_apply") && (auto == null
                             || offer.optInt("priority", 3) < auto.optInt("priority", 3)
                             || (offer.optInt("priority", 3) == auto.optInt("priority", 3)
-                            && offer.optDouble("discount") > auto.optDouble("discount")))) auto = offer;
+                            && finBenefit(offer.optDouble("discount", 0)) > finBenefit(auto.optDouble("discount", 0))))) auto = offer;
                 }
                 if (campaign != null) {
                     if (selected == null) { campaign = null; campaignDiscount = 0; }
-                    else { campaign = selected; campaignDiscount = selected.optDouble("discount"); }
+                    else { campaign = selected; campaignDiscount = finBenefit(selected.optDouble("discount", 0)); }
                 }
                 if (campaign == null && auto != null) {
                     if (couponDiscount > 0 && !auto.optBoolean("stackable")) {
                         coupon = null; couponDiscount = 0;
                         Ui.toast("جشنوارهٔ خودکار با کوپن قابل ترکیب نیست؛ کوپن حذف شد");
                     }
-                    campaign = auto; campaignDiscount = auto.optDouble("discount");
+                    campaign = auto; campaignDiscount = finBenefit(auto.optDouble("discount", 0));
+                    /* build-520 — اعمال خودکار باید «دیده» شود، نه بی‌صدا در عدد بنشیند */
+                    Ui.toast("جشنوارهٔ «" + auto.optString("name") + "» خودکار اعمال شد (−" + Ui.money(campaignDiscount) + ")");
                 }
+                /* build-520 — بنر «کد تخفیف خرید بعدی در راه است» از issue_on_checkout */
+                JSONArray giftHints = response.optJSONArray("issue_on_checkout");
+                if (giftHints != null && giftHints.length() > 0) {
+                    StringBuilder gb = new StringBuilder();
+                    for (int i = 0; i < giftHints.length(); i++) {
+                        JSONObject gh = giftHints.optJSONObject(i); if (gh == null) continue;
+                        if (gb.length() > 0) gb.append(" + ");
+                        gb.append(gh.optString("name", "جشنواره"));
+                    }
+                    giftHint = "🎁 کد تخفیف خرید بعدی با همین فاکتور صادر می‌شود: " + gb;
+                } else giftHint = null;
                 String[] expected = {benefitsKey()}; pendingBenefitsKey = expected[0];
                 if (coupon == null) {
                     if (expected[0].equals(benefitsKey())) resolvedBenefitsKey = expected[0];
@@ -322,7 +383,7 @@ public final class SalesScreens {
                     }
                     JSONObject validation = couponResult instanceof JSONObject ? (JSONObject) couponResult : new JSONObject();
                     if (validation.optBoolean("valid", validation.optBoolean("ok", false)))
-                        couponDiscount = validation.optDouble("discount");
+                        couponDiscount = finBenefit(validation.optDouble("discount", 0));
                     else { coupon = null; couponDiscount = 0; }
                     resolvedBenefitsKey = benefitsKey(); pendingBenefitsKey = ""; renderCart();
                 }, error -> {
@@ -340,7 +401,7 @@ public final class SalesScreens {
             refreshNudges();   // v4.7.0 — suggestions follow the cart, on the phone like on Windows
             if (cart.isEmpty()) lines.addView(Ui.empty(c, "سبد خالی است — کالا را جست‌وجو یا اسکن کنید"));
             for (JSONObject l : cart) {
-                double q = l.optDouble("quantity"), pr = l.optDouble("price"), disc = l.optDouble("discount"); double sub = q * pr - disc; total += sub; n += q;
+                double q = l.optDouble("quantity", 1), pr = l.optDouble("price", 0), disc = l.optDouble("discount", 0); double sub = q * pr - disc; total += sub; n += q;
                 LinearLayout row = Ui.col(c); row.setBackground(Ui.surface(18)); row.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10)); row.setLayoutParams(Ui.margin(Ui.match(), 0, 0, 0, 8));
                 LinearLayout r1 = Ui.row(c);
                 android.widget.ImageView ic = Ui.thumb(c, Db.productById(l.optLong("product_id")) == null ? l : Db.productById(l.optLong("product_id")), 40); r1.addView(ic);
@@ -350,7 +411,7 @@ public final class SalesScreens {
                 LinearLayout r2 = Ui.row(c); r2.setPadding(0, Ui.dp(4), 0, 0);
                 r2.addView(qbtn("−", () -> { double nq = q - 1; if (nq <= 0) cart.remove(l); else set(l, "quantity", nq); renderCart(); }));
                 TextView qt = Ui.text(c, Ui.num(q), 15, Ui.TEXT, true); qt.setGravity(Gravity.CENTER); qt.setMinWidth(Ui.dp(44)); qt.setOnClickListener(v -> Ui.prompt(c, "تعداد / مقدار", "مثلاً 2 یا 1.5 (کیلوگرم)", true, s -> { try { double nq = Double.parseDouble(Db.norm(s)); if (nq > 0) { set(l, "quantity", nq); renderCart(); } } catch (Exception ignore) {} })); r2.addView(qt);
-                r2.addView(qbtn("+", () -> { if (q + 1 > l.optDouble("avail", 1e9) && l.optDouble("avail", 0) > 0) Ui.toast("بیش از موجودی بچ (" + Ui.num(l.optDouble("avail")) + ")"); set(l, "quantity", q + 1); renderCart(); }));
+                r2.addView(qbtn("+", () -> { if (q + 1 > l.optDouble("avail", 1e9) && l.optDouble("avail", 0) > 0) Ui.toast("بیش از موجودی بچ (" + Ui.num(l.optDouble("avail", 0)) + ")"); set(l, "quantity", q + 1); renderCart(); }));
                 View sp = new View(c); sp.setLayoutParams(Ui.weight(1)); r2.addView(sp);
                 r2.addView(Ui.small(c, "تخفیف", () -> Ui.prompt(c, "تخفیف این ردیف (مبلغ)", "0", true, s -> { try { set(l, "discount", Math.max(0, Double.parseDouble(Db.norm(s).isEmpty() ? "0" : Db.norm(s)))); } catch (Exception ignore) {} renderCart(); })));
                 r2.addView(Ui.small(c, "حذف", () -> { cart.remove(l); renderCart(); }));
@@ -390,8 +451,26 @@ public final class SalesScreens {
             LinearLayout l = Ui.col(c); EditText q = Ui.input(c, "نام یا شماره موبایل…"); l.addView(q); LinearLayout res = Ui.col(c); l.addView(res); Dialog[] d = new Dialog[1];
             l.addView(Ui.ghost(c, "مشتری آزاد (بدون ثبت)", () -> { customer = null; d[0].dismiss(); renderCart(); }));
             l.addView(Ui.primary(c, "ثبت مشتری جدید", () -> { d[0].dismiss(); newCustomer(Ui.str(q), cu -> { customer = cu; renderCart(); }); }));
-            Runnable fill = () -> { res.removeAllViews(); for (JSONObject cu : Db.customers(Ui.str(q))) res.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(cu.optString("phone")), null, 0, () -> { customer = cu; d[0].dismiss(); renderCart(); })); };
-            q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { fill.run(); } }); fill.run();
+            // build-501 — بازسازی ۲۰۰ ردیف در هر حرف تایپ، حافظه را می‌خورد (OOM در pickCustomer)؛
+            // اکنون: debounce ۲۵۰ms + سقف ۳۰ ردیف + آزادسازی کش تصاویر در صورت فشار حافظه.
+            final android.os.Handler debounce = new android.os.Handler(android.os.Looper.getMainLooper());
+            final Runnable[] pending = {null};
+            Runnable fill = () -> {
+                try {
+                    res.removeAllViews();
+                    java.util.List<JSONObject> found = Db.customers(Ui.str(q));
+                    int n = Math.min(30, found.size());
+                    for (int i = 0; i < n; i++) { JSONObject cu = found.get(i); res.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(cu.optString("phone")), null, 0, () -> { customer = cu; d[0].dismiss(); renderCart(); })); }
+                    if (found.size() > n) res.addView(Ui.muted(c, "برای یافتن مشتری دقیق‌تر، جست‌وجو را کامل‌تر کنید (" + Ui.fa(String.valueOf(found.size())) + " نتیجه)"));
+                    if (found.isEmpty()) res.addView(Ui.muted(c, "مشتری‌ای یافت نشد — «ثبت مشتری جدید» را بزنید"));
+                } catch (OutOfMemoryError mem) {
+                    Images.MEM.evictAll(); Ui.tileCacheClear();
+                    res.removeAllViews(); res.addView(Ui.muted(c, "حافظهٔ گوشی پر شد — عبارت کوتاه‌تری جست‌وجو کنید"));
+                }
+            };
+            Runnable debounced = () -> { if (pending[0] != null) debounce.removeCallbacks(pending[0]); pending[0] = fill; debounce.postDelayed(fill, 250); };
+            q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { debounced.run(); } });
+            try { fill.run(); } catch (Throwable firstPaint) { /* اولین پرکردن هم محافظت می‌شود */ }
             d[0] = Ui.sheet(c, "انتخاب مشتری", l);
         }
         void newCustomer(String prefill, java.util.function.Consumer<JSONObject> cb) { Customers.newCustomer(a, prefill, cb); }
@@ -423,23 +502,70 @@ public final class SalesScreens {
         void askCampaign() {
             if (cart.isEmpty()) { Ui.toast("سبد خالی است؛ ابتدا کالا اضافه کنید"); return; }
             final JSONObject request;
-            try { request = campaignRequest(); request.put("include_auto_apply", false); }
+            try { request = campaignRequest(); /* build-520 — خودکارها هم در فهرست می‌آیند (برچسب «· خودکار») */ }
             catch (Exception e) { Ui.toast("اطلاعات سبد برای بررسی جشنواره آماده نشد"); return; }
             requestBenefitData("/pos/campaigns/eligible", request, result -> {
                 JSONObject response = result instanceof JSONObject ? (JSONObject) result : new JSONObject();
                 JSONArray offers = response.optJSONArray("campaigns");
-                if (offers == null || offers.length() == 0) { Ui.toast("جشنوارهٔ واجد شرایطی برای این سبد فعال نیست"); return; }
+                if (offers == null || offers.length() == 0) {
+                    /* build-512 — پایان پیام مبهم: اگر هیچ جشنواره‌ای جمع نشد، «چرا» را
+                     * برای هر جشنوارهٔ فعال با دلیل دقیق نشان بده (شیشه‌ای، نه جعبهٔ سیاه). */
+                    JSONArray rejections = response.optJSONArray("rejections");
+                    if (rejections != null && rejections.length() > 0) {
+                        LinearLayout why = Ui.col(c);
+                        why.addView(Ui.muted(c, "هیچ جشنواره‌ای با این سبد جمع نشد؛ دلیل هر کدام:"));
+                        for (int i = 0; i < rejections.length(); i++) {
+                            JSONObject r = rejections.optJSONObject(i); if (r == null) continue;
+                            why.addView(Ui.item(c, r.optString("name", "جشنواره"), r.optString("reason", ""), "", Ui.RED, () -> { }));
+                        }
+                        Ui.sheet(c, "جشنواره‌های فعال", why);
+                    } else Ui.toast("جشنوارهٔ واجد شرایطی برای این سبد فعال نیست");
+                    return;
+                }
                 LinearLayout content = Ui.col(c); content.addView(Ui.muted(c, "فقط جشنواره‌های سازگار با همین سبد نمایش داده می‌شوند؛ شرایط هنگام ثبت فروش دوباره بررسی می‌شود."));
+                /* build-510 — بنر «با همین فاکتور کد تخفیف خرید بعدی صادر می‌شود»:
+                 * اول پاسخ سرور (issue_on_checkout)، وگرنه ردیف‌های محلیِ دارای آستانه. */
+                String issueHint = null;
+                JSONArray issueNow = response.optJSONArray("issue_on_checkout");
+                if (issueNow != null) {
+                    StringBuilder b = new StringBuilder();
+                    for (int i = 0; i < issueNow.length(); i++) {
+                        JSONObject x = issueNow.optJSONObject(i); if (x == null) continue;
+                        if (b.length() > 0) b.append(" + ");
+                        b.append(x.optString("name", "جشنواره")).append(" (")
+                         .append("PERCENT".equalsIgnoreCase(x.optString("discount_type"))
+                                 ? Ui.num(x.optDouble("discount_value", 0)) + "٪" : Ui.money(x.optDouble("discount_value", 0)))
+                         .append(")");
+                    }
+                    if (b.length() > 0) issueHint = "کد تخفیف خرید بعدی صادر می‌شود: " + b + " — روی فاکتور و پیامک هم می‌آید";
+                }
+                if (issueHint == null) {
+                    StringBuilder b = new StringBuilder();
+                    double cartAmount = request.optDouble("amount", 0);
+                    for (int i = 0; i < offers.length(); i++) {
+                        JSONObject o = offers.optJSONObject(i);
+                        if (o == null || o.optDouble("auto_issue_threshold", 0) <= 0) continue;
+                        if (cartAmount + 0.5 < o.optDouble("auto_issue_threshold", 0)) continue;
+                        if (b.length() > 0) b.append(" + ");
+                        b.append(o.optString("name", "جشنواره")).append(" (")
+                         .append("PERCENT".equalsIgnoreCase(o.optString("discount_type"))
+                                 ? Ui.num(o.optDouble("discount_value", 0)) + "٪" : Ui.money(o.optDouble("discount_value", 0)))
+                         .append(o.optInt("auto_issue_validity_days", 0) > 0 ? " · اعتبار " + Ui.fa(String.valueOf(o.optInt("auto_issue_validity_days", 0))) + " روز" : "")
+                         .append(")");
+                    }
+                    if (b.length() > 0) issueHint = "کد تخفیف خرید بعدی صادر می‌شود: " + b + " — روی فاکتور و پیامک هم می‌آید";
+                }
+                if (issueHint != null) content.addView(Ui.item(c, "🎁 با ثبت همین فاکتور…", issueHint, "", Ui.GREEN, () -> { }));
                 Dialog[] sheet = new Dialog[1];
                 for (int i = 0; i < offers.length(); i++) {
                     JSONObject offer = offers.optJSONObject(i); if (offer == null) continue;
                     String title = offer.optString("name") + (offer.optBoolean("auto_apply") ? " · خودکار" : "");
                     String detail = ("PERCENT".equalsIgnoreCase(offer.optString("discount_type"))
-                            ? Ui.num(offer.optDouble("discount_value")) + "٪ تخفیف" : "تخفیف ثابت")
-                            + " · حداقل خرید " + Ui.money(offer.optDouble("min_purchase"));
-                    content.addView(Ui.item(c, title, detail, "−" + Ui.money(offer.optDouble("discount")), Ui.GREEN, () -> {
+                            ? Ui.num(offer.optDouble("discount_value", 0)) + "٪ تخفیف" : "تخفیف ثابت")
+                            + " · حداقل خرید " + Ui.money(offer.optDouble("min_purchase", 0));
+                    content.addView(Ui.item(c, title, detail, "−" + Ui.money(offer.optDouble("discount", 0)), Ui.GREEN, () -> {
                         Runnable apply = () -> {
-                            campaign = offer; campaignDiscount = offer.optDouble("discount");
+                            campaign = offer; campaignDiscount = offer.optDouble("discount", 0);
                             if (sheet[0] != null) sheet[0].dismiss(); renderCart();
                         };
                         if (couponDiscount > 0 && !offer.optBoolean("stackable"))
@@ -479,9 +605,11 @@ public final class SalesScreens {
             if (!taxConfigured) { Ui.toast("در حال دریافت نرخ مالیات صندوق؛ چند لحظه دیگر دوباره پرداخت را بزنید"); loadPosTaxConfig(); return; }
             String key = benefitsKey();
             if (!key.equals(resolvedBenefitsKey)) {
-                if (key.equals(pendingBenefitsKey)) Ui.toast("در حال بررسی کوپن و جشنواره؛ لحظه‌ای صبر کنید");
-                else { refreshBenefits(); Ui.toast("پیش از پرداخت، مزایا دوباره بررسی می‌شوند"); }
-                return;
+                if (key.equals(pendingBenefitsKey)) { Ui.toast("در حال بررسی کوپن و جشنواره؛ لحظه‌ای صبر کنید"); return; }
+                // build-500 — خطای بررسی مزایا هرگز نباید فروش را ببندد: سرور همان
+                // لحظه در /pos/checkout کوپن و جشنواره را دوباره راستی‌آزمایی می‌کند؛
+                // جدول پرداخت بی‌درنگ باز می‌شود و بررسی در پس‌زمینه ادامه می‌یابد.
+                refreshBenefits();
             }
             double total;
             try { total = payableTotal(); }
@@ -501,8 +629,11 @@ public final class SalesScreens {
         }
         void checkout(String method, double paidAmt, double total) {
             try {
+                // build-501 — هیچ عدد NaN/منفی به موتور فروش محلی یا رایانه نمی‌رود
+                if (!Double.isFinite(total) || total < 0) { Ui.toast("مبلغ فاکتور نامعتبر است؛ سبد را بازبینی کنید"); return; }
+                if (!Double.isFinite(paidAmt) || paidAmt < 0) paidAmt = 0;
                 JSONObject body = new JSONObject(); JSONArray items = new JSONArray();
-                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", l.optDouble("quantity")); it.put("price", l.optDouble("price")); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", l.optDouble("discount")); items.put(it); }
+                for (JSONObject l : cart) { JSONObject it = new JSONObject(); it.put("product_id", l.optLong("product_id")); it.put("barcode", l.optString("barcode")); it.put("quantity", Math.max(0, l.optDouble("quantity", 1))); it.put("price", Math.max(0, l.optDouble("price", 0))); if (l.optLong("batch_id") > 0) it.put("batch_id", l.optLong("batch_id")); it.put("discount", Math.max(0, l.optDouble("discount", 0))); items.put(it); }
                 body.put("items", items); JSONArray pays = new JSONArray(); JSONObject p = new JSONObject();
                 boolean credit = "CREDIT".equals(method) || (paidAmt < total && customer != null);
                 if (credit) { if (paidAmt > 0) { p.put("method", "CASH"); p.put("amount", paidAmt); pays.put(p); } JSONObject cr = new JSONObject(); cr.put("method", "CREDIT"); cr.put("amount", total - paidAmt); pays.put(cr); } else { p.put("method", method); p.put("amount", total); pays.put(p); }
@@ -525,7 +656,15 @@ public final class SalesScreens {
                 if (Api.standalone() || !Api.online) {
                     JSONObject stored = (JSONObject) Local.handle("POST", "/pos/checkout", body.toString());
                     no = stored.optString("local_no", stored.optString("invoice_number"));
-                } else no = Db.localSale(body, total);
+                } else {
+                    no = Db.localSale(body, total);
+                    /* build-513 — مسیر جفت‌شدهٔ آنلاین هم باید پاداش خرید بعدی را صادر کند
+                     * (قبلاً فقط مسیر موتور محلی وصل بود؛ این‌جا صدور اجرا نمی‌شد). */
+                    try {
+                        JSONObject saleRow = Local.one("SELECT rowid AS id,* FROM invoices WHERE local_no=?", no);
+                        if (saleRow != null) Local.issueLocalAutoCoupons(saleRow, no, total);
+                    } catch (Throwable rewardFail) { android.util.Log.w("POS", "auto coupon issue skipped", rewardFail); }
+                }
                 if (no.isEmpty()) throw new IllegalStateException("شمارهٔ فاکتور محلی ساخته نشد");
                 if (heldId != null) removeHeld(heldId);
                 String issuedCouponCodes = Local.issuedCouponCodesForInvoice(no);
@@ -538,7 +677,16 @@ public final class SalesScreens {
                 cart.clear(); customer = null; coupon = null; couponDiscount = 0; campaign = null; campaignDiscount = 0; invoiceDiscount = 0; resolvedBenefitsKey = ""; pendingBenefitsKey = ""; heldId = null; renderCart();
                 Ui.done(a, "فروش ثبت شد", "فاکتور " + Ui.fa(no) + " · " + Ui.money(total)
                         + (issuedCouponCodes.isEmpty() ? "" : "\nکد تخفیف خرید بعدی: " + issuedCouponCodes), null);
-            } catch (Exception e) { Ui.toast("خطا: " + e.getMessage()); }
+            } catch (Exception e) {
+                // build-503 — پیام خطا «شناسنامه» دارد: شمارهٔ نسخهٔ دقیق + علت فنی واقعی.
+                // هدف: هر گزارش کاربر در یک نگاه قابل ریشه‌یابی باشد (نه پیام‌های مبهمِ تکرارشونده).
+                String m = String.valueOf(e.getMessage());
+                android.util.Log.e("POS", "checkout failed", e);
+                String detail = e.getClass().getSimpleName() + ": " + m;
+                if (m.contains("invalid POS tax")) Ui.toast("نرخ مالیات صندوق نامعتبر است — از تنظیمات صندوق اصلاح کنید [" + Version.NAME + "]");
+                else if (m.contains("Forbidden numeric") || m.contains("NaN")) Ui.toast("ثبت فروش ناموفق [" + Version.NAME + "]: مقدار عددی نامعتبر (" + detail + ")");
+                else Ui.toast("ثبت فروش ناموفق [" + Version.NAME + "]: " + detail);
+            }
         }
     }
 
@@ -550,7 +698,7 @@ public final class SalesScreens {
             clear(); try { JSONArray held = new JSONArray(Prefs.get("pos_held", "[]")); if (held.length() == 0) { body.addView(Ui.empty(c, "فاکتور نگه‌داشته‌ای نیست. در صندوق «نگه‌داشتن» را بزنید.")); return; }
                 body.addView(Ui.muted(c, Ui.num(held.length()) + " از " + Ui.fa("10") + " — برای بازگردانی ضربه بزنید"));
                 for (int i = held.length() - 1; i >= 0; i--) { JSONObject hj = held.optJSONObject(i); JSONObject cu = hj.optJSONObject("customer"); String id = hj.optString("id");
-                    LinearLayout it = Ui.item(c, hj.optString("label"), Ui.jdate(hj.optString("at")) + (cu == null ? " · مشتری آزاد" : " · " + cu.optString("name")) + " · " + Ui.num(hj.optJSONArray("cart").length()) + " قلم", Ui.money(hj.optDouble("total")), Ui.PRIMARY, () -> { Prefs.set("pos_restore", id); a.route("pos"); });
+                    LinearLayout it = Ui.item(c, hj.optString("label"), Ui.jdate(hj.optString("at")) + (cu == null ? " · مشتری آزاد" : " · " + cu.optString("name")) + " · " + Ui.num(hj.optJSONArray("cart").length()) + " قلم", Ui.money(hj.optDouble("total", 0)), Ui.PRIMARY, () -> { Prefs.set("pos_restore", id); a.route("pos"); });
                     it.setOnLongClickListener(v -> { Ui.confirm(c, "این فاکتور نگه‌داشته حذف شود؟", () -> { Pos.removeHeld(id); load(); }); return true; }); body.addView(it); }
                 body.addView(Ui.muted(c, "نگه‌داشتن طولانی روی هر مورد → حذف"));
             } catch (Exception e) { body.addView(Ui.empty(c, "—")); }
@@ -565,10 +713,10 @@ public final class SalesScreens {
         public boolean autoRefresh() { return tab == 0; }
         public void load() {
             clear(); body.addView(tabs(new String[]{Api.standalone() ? "همهٔ فاکتورها (ابطال / مرجوعی)" : "فاکتورهای رایانه", "فاکتورهای این گوشی"}, tab, t -> { tab = t; load(); }));
-            if (tab == 1) { java.util.List<JSONObject> li = Db.localInvoices(); LinearLayout ll = Ui.col(c); body.addView(ll); Ui.paged(ll, li.size(), 40, ix -> { JSONObject o = li.get(ix); return Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total")), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, () -> a.open(new LocalInvoiceDetail(a, o.optLong("id")), true)); }); if (li.isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
+            if (tab == 1) { java.util.List<JSONObject> li = Db.localInvoices(); LinearLayout ll = Ui.col(c); body.addView(ll); Ui.paged(ll, li.size(), 40, ix -> { JSONObject o = li.get(ix); return Ui.item(c, Ui.fa(o.optString("local_no")) + (o.optInt("synced") == 1 ? " ← " + Ui.fa(s(o, "invoice_number")) : ""), Ui.jdate(o.optString("at")) + " · " + Ui.num(o.optInt("items")) + " قلم · " + label(o.optString("payment"), PAY), Ui.money(o.optDouble("total", 0)), o.optInt("synced") == 1 ? Ui.GREEN : Ui.AMBER, () -> a.open(new LocalInvoiceDetail(a, o.optLong("id")), true)); }); if (li.isEmpty()) body.addView(Ui.empty(c, "هنوز فاکتوری روی این گوشی ثبت نشده")); return; }
             body.addView(Ui.empty(c, "…")); get("/invoices?limit=400", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "فاکتوری نیست")); LinearLayout list = Ui.col(c); body.addView(list);
                 // v3.5 — staged: 40 rows per page, next page on demand (no ANR with thousands of invoices)
-                Ui.paged(list, ar, 40, inv -> Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); });
+                Ui.paged(list, ar, 40, inv -> Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount", 0)), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); });
         }
     }
     public static final class LocalInvoiceDetail extends Screens.Screen {
@@ -593,13 +741,13 @@ public final class SalesScreens {
             summary.addView(Ui.kv(c, "تاریخ", Ui.jdate(invoice.optString("created_at")), 0));
             summary.addView(Ui.kv(c, "وضعیت", "PAID".equals(status) ? "پرداخت‌شده" : "PARTIALLY_REFUNDED".equals(status) ? "مرجوعی جزئی" : status, stColor(status)));
             summary.addView(Ui.kv(c, "پرداخت", Screens.Screen.label(invoice.optString("payment_method"), Screens.Screen.PAY), 0));
-            summary.addView(Ui.kv(c, "جمع کالاها", Ui.money(invoice.optDouble("subtotal")), 0));
-            summary.addView(Ui.kv(c, "تخفیف کل", Ui.money(invoice.optDouble("discount")), Ui.GREEN));
-            if (invoice.optDouble("invoice_discount") > 0) summary.addView(Ui.kv(c, "تخفیف فاکتور", Ui.money(invoice.optDouble("invoice_discount")), Ui.GREEN));
-            if (invoice.optDouble("coupon_discount") > 0) summary.addView(Ui.kv(c, "تخفیف کوپن " + invoice.optString("coupon"), Ui.money(invoice.optDouble("coupon_discount")), Ui.GREEN));
-            if (invoice.optDouble("campaign_discount") > 0) summary.addView(Ui.kv(c, "تخفیف جشنواره " + invoice.optString("campaign_name"), Ui.money(invoice.optDouble("campaign_discount")), Ui.GREEN));
-            if (invoice.optDouble("tax") > 0) summary.addView(Ui.kv(c, "مالیات", Ui.money(invoice.optDouble("tax")), 0));
-            summary.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(invoice.optDouble("total_amount")), Ui.GREEN));
+            summary.addView(Ui.kv(c, "جمع کالاها", Ui.money(invoice.optDouble("subtotal", 0)), 0));
+            summary.addView(Ui.kv(c, "تخفیف کل", Ui.money(invoice.optDouble("discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("invoice_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف فاکتور", Ui.money(invoice.optDouble("invoice_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("coupon_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف کوپن " + invoice.optString("coupon"), Ui.money(invoice.optDouble("coupon_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("campaign_discount", 0) > 0) summary.addView(Ui.kv(c, "تخفیف جشنواره " + invoice.optString("campaign_name"), Ui.money(invoice.optDouble("campaign_discount", 0)), Ui.GREEN));
+            if (invoice.optDouble("tax", 0) > 0) summary.addView(Ui.kv(c, "مالیات", Ui.money(invoice.optDouble("tax", 0)), 0));
+            summary.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(invoice.optDouble("total_amount", 0)), Ui.GREEN));
             String issued = invoice.optString("auto_issued_coupon_codes", "");
             if (!issued.isEmpty()) summary.addView(Ui.kv(c, "کد خرید بعدی", issued, Ui.VIOLET));
             body.addView(summary);
@@ -608,11 +756,11 @@ public final class SalesScreens {
             JSONArray lines = invoice.optJSONArray("items"); boolean hasReturnableLine = false;
             for (int i = 0; lines != null && i < lines.length(); i++) {
                 JSONObject line = lines.optJSONObject(i); if (line == null) continue;
-                double remaining = Math.max(0, line.optDouble("qty") - line.optDouble("returned_qty"));
-                String sub = Ui.num(line.optDouble("qty")) + " × " + Ui.money(line.optDouble("unit_sell_price"));
-                if (line.optDouble("discount") > 0) sub += " · تخفیف " + Ui.money(line.optDouble("discount"));
-                if (remaining < line.optDouble("qty")) sub += " · مرجوع‌شده " + Ui.num(line.optDouble("returned_qty"));
-                LinearLayout row = Ui.item(c, line.optString("name", "کالا"), sub, Ui.money(line.optDouble("subtotal")), 0, null);
+                double remaining = Math.max(0, line.optDouble("qty", 0) - line.optDouble("returned_qty", 0));
+                String sub = Ui.num(line.optDouble("qty", 0)) + " × " + Ui.money(line.optDouble("unit_sell_price", 0));
+                if (line.optDouble("discount", 0) > 0) sub += " · تخفیف " + Ui.money(line.optDouble("discount", 0));
+                if (remaining < line.optDouble("qty", 0)) sub += " · مرجوع‌شده " + Ui.num(line.optDouble("returned_qty", 0));
+                LinearLayout row = Ui.item(c, line.optString("name", "کالا"), sub, Ui.money(line.optDouble("subtotal", 0)), 0, null);
                 boolean returnable = "PAID".equals(status) || "PARTIALLY_REFUNDED".equals(status);
                 if (Screens.can("pos.return") && returnable && remaining > 0) {
                     hasReturnableLine = true; row.setOnClickListener(v -> returnItem(line, remaining));
@@ -694,11 +842,11 @@ public final class SalesScreens {
         void render() {
             clear(); LinearLayout hd = Ui.card(c, Ui.fa(inv.optString("invoice_number")));
             hd.addView(Ui.kv(c, "تاریخ", Ui.jdate(inv.optString("created_at")), 0)); hd.addView(Ui.kv(c, "وضعیت", label(inv.optString("status"), INV_ST), stColor(inv.optString("status")))); hd.addView(Ui.kv(c, "پرداخت", label(inv.optString("payment_method"), PAY) + " · " + label(inv.optString("payment_status"), INV_ST), 0));
-            hd.addView(Ui.kv(c, "جمع", Ui.money(inv.optDouble("subtotal")), 0)); hd.addView(Ui.kv(c, "تخفیف", Ui.money(inv.optDouble("discount")), 0)); hd.addView(Ui.kv(c, "مالیات", Ui.money(inv.optDouble("tax")), 0)); hd.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(inv.optDouble("total_amount")), Ui.GREEN)); body.addView(hd);
+            hd.addView(Ui.kv(c, "جمع", Ui.money(inv.optDouble("subtotal", 0)), 0)); hd.addView(Ui.kv(c, "تخفیف", Ui.money(inv.optDouble("discount", 0)), 0)); hd.addView(Ui.kv(c, "مالیات", Ui.money(inv.optDouble("tax", 0)), 0)); hd.addView(Ui.kv(c, "مبلغ نهایی", Ui.money(inv.optDouble("total_amount", 0)), Ui.GREEN)); body.addView(hd);
             LinearLayout its = Ui.card(c, "اقلام"); JSONArray ar = inv.optJSONArray("items");
-            for (int i = 0; ar != null && i < ar.length(); i++) { JSONObject it = ar.optJSONObject(i); JSONObject p = Db.productById(it.optLong("product_id")); String name = p == null ? "کالا #" + it.optLong("product_id") : p.optString("name"); LinearLayout row = Ui.item(c, name, Ui.num(it.optDouble("qty")) + " × " + Ui.money(it.optDouble("unit_sell_price")) + (it.optDouble("discount") > 0 ? " − " + Ui.money(it.optDouble("discount")) : ""), Ui.money(it.optDouble("subtotal")), 0, null);
+            for (int i = 0; ar != null && i < ar.length(); i++) { JSONObject it = ar.optJSONObject(i); JSONObject p = Db.productById(it.optLong("product_id")); String name = p == null ? "کالا #" + it.optLong("product_id") : p.optString("name"); LinearLayout row = Ui.item(c, name, Ui.num(it.optDouble("qty", 0)) + " × " + Ui.money(it.optDouble("unit_sell_price", 0)) + (it.optDouble("discount", 0) > 0 ? " − " + Ui.money(it.optDouble("discount", 0)) : ""), Ui.money(it.optDouble("subtotal", 0)), 0, null);
                 boolean returnable = "PAID".equals(inv.optString("status")) || "PARTIALLY_REFUNDED".equals(inv.optString("status"));
-                double remainingQty = Math.max(0, it.optDouble("qty") - it.optDouble("returned_qty"));
+                double remainingQty = Math.max(0, it.optDouble("qty", 0) - it.optDouble("returned_qty", 0));
                 if (Screens.can("pos.return") && returnable && remainingQty > 0) { row.setOnClickListener(v -> returnItem(it, name)); }
                 its.addView(row); }
             boolean returnable = "PAID".equals(inv.optString("status")) || "PARTIALLY_REFUNDED".equals(inv.optString("status"));
@@ -711,7 +859,7 @@ public final class SalesScreens {
         }
         void voidInvoice() { LinearLayout l = Ui.col(c); EditText reason = Ui.input(c, "دلیل ابطال"); l.addView(reason); EditText pw = Ui.input(c, "رمز مدیر (برای فاکتور پرداخت‌شده)"); pw.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); l.addView(pw); Dialog[] d = new Dialog[1]; l.addView(Ui.danger(c, "تأیید ابطال", () -> { d[0].dismiss(); JSONObject b = j("reason", Ui.str(reason)); putIf(b, "admin_password", Ui.str(pw)); post("/invoices/" + id + "/void", b, r -> { Sfx.play("void"); Ui.toast("فاکتور باطل شد"); Sync.kick(); load(); }); })); d[0] = Ui.sheet(c, "ابطال " + Ui.fa(inv.optString("invoice_number")), l); }
         void returnItem(JSONObject it, String name) {
-            double remaining = Math.max(0, it.optDouble("qty") - it.optDouble("returned_qty"));
+            double remaining = Math.max(0, it.optDouble("qty", 0) - it.optDouble("returned_qty", 0));
             if (remaining <= 0) { Ui.toast("مقدار قابل مرجوعی باقی نمانده است"); return; }
             LinearLayout content = Ui.col(c);
             content.addView(Ui.body(c, name + " — ماندهٔ قابل مرجوعی: " + Ui.num(remaining)));
@@ -741,7 +889,7 @@ public final class SalesScreens {
             if (tab == 1) { body.addView(Ui.empty(c, "…")); get("/customers/debtors", r -> { body.removeViewAt(body.getChildCount() - 1); JSONArray ar = arr(r); if (ar.length() == 0) body.addView(Ui.empty(c, "بدهکاری نیست")); Ui.paged(body, ar, 50, cu -> Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")), Ui.money(cu.optDouble("balance", cu.optDouble("debt", 0))), Ui.RED, () -> a.open(new CustomerDetail(a, cu), true))); }); return; }
             LinearLayout sr = Ui.row(c); q = Ui.input(c, "جست‌وجو نام / موبایل"); q.setLayoutParams(Ui.weight(1)); sr.addView(q); View add = Ui.primary(c, "+ جدید", () -> newCustomer(a, Ui.str(q), cu -> load())); add.setLayoutParams(Ui.margin(Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(44)), 6, 0, 0, 6)); sr.addView(add); body.addView(sr);
             LinearLayout list = Ui.col(c); body.addView(list);
-            Runnable fill = () -> { list.removeAllViews(); List<JSONObject> cs = Db.customers(Ui.str(q)); if (cs.isEmpty()) list.addView(Ui.empty(c, "مشتری‌ای نیست")); for (JSONObject cu : cs) list.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")) + (cu.optBoolean("_local") ? " · در انتظار ارسال" : ""), cu.optDouble("credit_limit") > 0 ? "سقف " + Ui.money(cu.optDouble("credit_limit")) : null, Ui.MUTED, () -> a.open(new CustomerDetail(a, cu), true))); };
+            Runnable fill = () -> { list.removeAllViews(); List<JSONObject> cs = Db.customers(Ui.str(q)); if (cs.isEmpty()) list.addView(Ui.empty(c, "مشتری‌ای نیست")); for (JSONObject cu : cs) list.addView(Ui.item(c, cu.optString("name") + " " + s(cu, "last_name"), Ui.fa(s(cu, "phone")) + (cu.optBoolean("_local") ? " · در انتظار ارسال" : ""), cu.optDouble("credit_limit", 0) > 0 ? "سقف " + Ui.money(cu.optDouble("credit_limit", 0)) : null, Ui.MUTED, () -> a.open(new CustomerDetail(a, cu), true))); };
             q.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int i, int i1, int i2) {} public void onTextChanged(CharSequence s, int i, int i1, int i2) {} public void afterTextChanged(Editable e) { fill.run(); } }); fill.run();
         }
         static void newCustomer(AppActivity a, String prefill, java.util.function.Consumer<JSONObject> cb) {
@@ -757,18 +905,33 @@ public final class SalesScreens {
         CustomerDetail(AppActivity a, JSONObject cu) { super(a); this.cu = cu; id = cu.optLong("id"); }
         public String key() { return "customers"; } public String title() { return "پروندهٔ مشتری"; }
         public void load() {
-            clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit") > 0 ? Ui.money(cu.optDouble("credit_limit")) : "بدون سقف", 0)); body.addView(hd);
+            clear(); LinearLayout hd = Ui.card(c, cu.optString("name") + " " + s(cu, "last_name")); hd.addView(Ui.kv(c, "موبایل", Ui.fa(s(cu, "phone", "—")), 0)); if (!s(cu, "address").isEmpty()) hd.addView(Ui.kv(c, "آدرس", s(cu, "address"), 0)); hd.addView(Ui.kv(c, "سقف اعتبار", cu.optDouble("credit_limit", 0) > 0 ? Ui.money(cu.optDouble("credit_limit", 0)) : "بدون سقف", 0)); body.addView(hd);
             if (id < 0 && !Api.standalone()) { body.addView(Ui.note(c, null, "این مشتری هنوز به رایانه ارسال نشده؛ دفتر حساب پس از همگام‌سازی در دسترس است.")); return; }
             LinearLayout act = Ui.row(c); act.addView(Ui.small(c, "فروش به این مشتری", () -> { Prefs.set("pos_restore", ""); a.route("pos"); ((Pos) a.current()).customer = cu; ((Pos) a.current()).renderCart(); })); act.addView(Ui.small(c, "ویرایش", this::edit)); body.addView(act);
+            /* build-516 — «خریدها برای مشتری قشنگ مشخص باشد»: پیشرفت هر جشنوارهٔ
+             * تعدادی («هر N خرید») همین‌جا دیده می‌شود و تا کوپن بعدی شمارش می‌کند. */
+            LinearLayout prog = Ui.card(c, "پیشرفت جشنواره‌ها"); body.addView(prog);
+            boolean anyProg = false;
+            for (JSONObject cnp : Local.rows("SELECT id,name,min_purchase_count,valid_from,valid_until FROM campaigns WHERE status='ACTIVE' AND min_purchase_count>0 ORDER BY id DESC LIMIT 6")) {
+                int n2 = cnp.optInt("min_purchase_count", 0);
+                if (n2 <= 0) continue;
+                int done2 = Local.countPurchases(id, cnp.optString("valid_from", ""), cnp.optString("valid_until", ""));
+                int inCycle = done2 % n2;
+                if (inCycle == 0 && done2 > 0) inCycle = n2;
+                anyProg = true;
+                prog.addView(Ui.kv(c, cnp.optString("name") + " · هر " + Ui.fa(String.valueOf(n2)) + " خرید", Ui.fa(String.valueOf(inCycle)) + " از " + Ui.fa(String.valueOf(n2)), inCycle > 0 ? Ui.PRIMARY : 0));
+                prog.addView(Ui.muted(c, inCycle == n2 ? "🎁 کوپن همین دوره صادر شد؛ دورهٔ جدید شروع شده" : Ui.fa(String.valueOf(n2 - inCycle)) + " خرید دیگر تا کوپن هدیه"));
+            }
+            if (!anyProg) prog.addView(Ui.muted(c, "جشنوارهٔ تعدادی فعالی نیست"));
             LinearLayout led = Ui.card(c, "دفتر حساب"); body.addView(led); LinearLayout invs = Ui.card(c, "فاکتورها"); body.addView(invs);
-            getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance"); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged")) + " / " + Ui.money(lg.optDouble("total_paid")), 0));
+            getQuiet("/customers/" + id + "/ledger", r -> { JSONObject lg = (JSONObject) r; double bal = lg.optDouble("balance", 0); led.addView(Ui.kv(c, "ماندهٔ بدهی", Ui.money(bal), bal > 0 ? Ui.RED : Ui.GREEN)); led.addView(Ui.kv(c, "کل نسیه / کل پرداخت", Ui.money(lg.optDouble("total_charged", 0)) + " / " + Ui.money(lg.optDouble("total_paid", 0)), 0));
                 LinearLayout br = Ui.row(c); if (Screens.can("customers.settle")) { br.addView(Ui.small(c, "تسویه", () -> settle(bal))); br.addView(Ui.small(c, "اصلاح دستی", this::adjust)); } br.addView(Ui.small(c, "پیامک یادآوری", () -> post("/customers/" + id + "/debt-reminder", j(), x -> Ui.toast("پیامک در صف ارسال قرار گرفت")))); led.addView(br);
-                JSONArray en = lg.optJSONArray("entries"); for (int i = 0; en != null && i < Math.min(30, en.length()); i++) { JSONObject e = en.optJSONObject(i); String ty = s(e, "entry_type", s(e, "type")); led.addView(Ui.kv(c, Ui.jdate(s(e, "created_at")) + " · " + label(ty, new String[][]{{"SALE", "خرید نسیه"}, {"CHARGE", "خرید نسیه"}, {"PAYMENT", "پرداخت"}, {"SETTLEMENT", "تسویه"}, {"ADJUSTMENT_DEBIT", "اصلاح بدهکار"}, {"ADJUSTMENT_CREDIT", "اصلاح بستانکار"}}), Ui.money(e.optDouble("amount")), ty.contains("PAY") || ty.contains("SETTLE") || ty.contains("CREDIT") ? Ui.GREEN : Ui.AMBER)); } if (en == null || en.length() == 0) led.addView(Ui.muted(c, "گردشی ندارد")); });
-            getQuiet("/customers/" + id + "/invoices", r -> { JSONArray ar = arr(r); if (ar.length() == 0) invs.addView(Ui.muted(c, "—")); for (int i = 0; i < Math.min(20, ar.length()); i++) { JSONObject inv = ar.optJSONObject(i); invs.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount")), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
+                JSONArray en = lg.optJSONArray("entries"); for (int i = 0; en != null && i < Math.min(30, en.length()); i++) { JSONObject e = en.optJSONObject(i); String ty = s(e, "entry_type", s(e, "type")); led.addView(Ui.kv(c, Ui.jdate(s(e, "created_at")) + " · " + label(ty, new String[][]{{"SALE", "خرید نسیه"}, {"CHARGE", "خرید نسیه"}, {"PAYMENT", "پرداخت"}, {"SETTLEMENT", "تسویه"}, {"ADJUSTMENT_DEBIT", "اصلاح بدهکار"}, {"ADJUSTMENT_CREDIT", "اصلاح بستانکار"}}), Ui.money(e.optDouble("amount", 0)), ty.contains("PAY") || ty.contains("SETTLE") || ty.contains("CREDIT") ? Ui.GREEN : Ui.AMBER)); } if (en == null || en.length() == 0) led.addView(Ui.muted(c, "گردشی ندارد")); });
+            getQuiet("/customers/" + id + "/invoices", r -> { JSONArray ar = arr(r); if (ar.length() == 0) invs.addView(Ui.muted(c, "—")); for (int i = 0; i < Math.min(20, ar.length()); i++) { JSONObject inv = ar.optJSONObject(i); invs.addView(Ui.item(c, Ui.fa(inv.optString("invoice_number")), Ui.jdate(inv.optString("created_at")) + " · " + label(inv.optString("status"), INV_ST), Ui.money(inv.optDouble("total_amount", 0)), stColor(inv.optString("status")), () -> a.open(new InvoiceDetail(a, inv.optLong("id")), true))); } });
         }
         void settle(double bal) { LinearLayout l = Ui.col(c); l.addView(Ui.body(c, "ماندهٔ فعلی: " + Ui.money(bal))); EditText amt = Ui.input(c, "مبلغ (خالی = تسویهٔ کامل)", true); l.addView(amt); final String[] m = {"CASH"}; LinearLayout ch = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { ch.removeAllViews(); for (String[] p : new String[][]{{"CASH", "نقدی"}, {"CARD", "کارت"}, {"TRANSFER", "کارت‌به‌کارت"}}) ch.addView(Ui.chip(c, p[1], p[0].equals(m[0]), () -> { m[0] = p[0]; rd[0].run(); })); }; rd[0].run(); l.addView(ch); EditText note = Ui.input(c, "توضیح"); l.addView(note); Dialog[] d = new Dialog[1]; l.addView(Ui.success(c, "ثبت تسویه", () -> { d[0].dismiss(); JSONObject b = j("method", m[0], "note", Ui.str(note)); if (!Ui.str(amt).isEmpty()) putNum(b, "amount", Ui.numVal(amt, 0)); post("/customers/" + id + "/settle", b, r -> { Ui.done(Ui.ctx, "تسویه ثبت شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "تسویهٔ بدهی", l); }
         void adjust() { LinearLayout l = Ui.col(c); final String[] t = {"ADJUSTMENT_DEBIT"}; LinearLayout ch = Ui.row(c); Runnable[] rd = new Runnable[1]; rd[0] = () -> { ch.removeAllViews(); ch.addView(Ui.chip(c, "افزایش بدهی", t[0].endsWith("DEBIT"), () -> { t[0] = "ADJUSTMENT_DEBIT"; rd[0].run(); })); ch.addView(Ui.chip(c, "کاهش بدهی", t[0].endsWith("CREDIT"), () -> { t[0] = "ADJUSTMENT_CREDIT"; rd[0].run(); })); }; rd[0].run(); l.addView(ch); EditText amt = Ui.input(c, "مبلغ", true); l.addView(amt); EditText note = Ui.input(c, "توضیح *"); l.addView(note); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ثبت", () -> { if (Ui.str(note).isEmpty()) { Ui.toast("توضیح لازم است"); return; } d[0].dismiss(); JSONObject b = j("entry_type", t[0], "note", Ui.str(note)); putNum(b, "amount", Ui.numVal(amt, 0)); post("/customers/" + id + "/ledger/adjust", b, r -> { Ui.done(Ui.ctx, "ثبت شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "اصلاح دستی دفتر حساب", l); }
-        void edit() { LinearLayout l = Ui.col(c); EditText name = Ui.input(c, "نام"); name.setText(s(cu, "name")); EditText last = Ui.input(c, "نام خانوادگی"); last.setText(s(cu, "last_name")); EditText phone = Ui.input(c, "موبایل", true); phone.setText(s(cu, "phone")); EditText addr = Ui.input(c, "آدرس"); addr.setText(s(cu, "address")); EditText limit = Ui.input(c, "سقف اعتبار", true); limit.setText(Ui.num(cu.optDouble("credit_limit"))); l.addView(name); l.addView(last); l.addView(phone); l.addView(addr); l.addView(limit); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); JSONObject b = j("name", Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); putNum(b, "credit_limit", Ui.numVal(limit, 0)); patch("/customers/" + id, b, r -> { cu = (JSONObject) r; Db.putCustomer(cu, false); Ui.done(Ui.ctx, "ذخیره شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "ویرایش مشتری", l); }
+        void edit() { LinearLayout l = Ui.col(c); EditText name = Ui.input(c, "نام"); name.setText(s(cu, "name")); EditText last = Ui.input(c, "نام خانوادگی"); last.setText(s(cu, "last_name")); EditText phone = Ui.input(c, "موبایل", true); phone.setText(s(cu, "phone")); EditText addr = Ui.input(c, "آدرس"); addr.setText(s(cu, "address")); EditText limit = Ui.input(c, "سقف اعتبار", true); limit.setText(Ui.num(cu.optDouble("credit_limit", 0))); l.addView(name); l.addView(last); l.addView(phone); l.addView(addr); l.addView(limit); Dialog[] d = new Dialog[1]; l.addView(Ui.primary(c, "ذخیره", () -> { d[0].dismiss(); JSONObject b = j("name", Ui.str(name), "last_name", Ui.str(last), "phone", Db.norm(Ui.str(phone)), "address", Ui.str(addr)); putNum(b, "credit_limit", Ui.numVal(limit, 0)); patch("/customers/" + id, b, r -> { cu = (JSONObject) r; Db.putCustomer(cu, false); Ui.done(Ui.ctx, "ذخیره شد", null, null); load(); }); })); d[0] = Ui.sheet(c, "ویرایش مشتری", l); }
     }
 
     /* ---------------- Marketing: campaigns + coupons ---------------- */
@@ -776,71 +939,641 @@ public final class SalesScreens {
         int tab = 0;
         Marketing(AppActivity a) { super(a); }
         public String key() { return "marketing"; } public String title() { return "جشنواره و کوپن"; }
+        /* build-518 — نسخهٔ مستقل/آفلاین: فهرست‌ها از حافظهٔ خود گوشی می‌آیند؛
+         * نبودِ رایانه فقط وقتی پیام می‌دهد که واقعاً هیچ داده‌ای محلی نباشد. */
+        void getWithOffline(String path, java.util.function.Consumer<Object> cb) {
+            Api.get(path, cb::accept, e -> {
+                Object local = null;
+                try { local = Local.handle("GET", path, "{}"); } catch (Throwable ignore) {}
+                if (local instanceof JSONArray && ((JSONArray) local).length() > 0) { cb.accept(local); return; }
+                if (local instanceof JSONObject) { cb.accept(local); return; }
+                if (e != null && e.offline()) offline(title());
+                else { clear(); body.addView(Ui.empty(c, e == null ? "خطای نامشخص" : e.getMessage())); }
+            });
+        }
         public void load() {
             clear(); body.addView(tabs(new String[]{"جشنواره‌ها", "کوپن‌ها", "آمار"}, tab, t -> { tab = t; load(); })); LinearLayout list = Ui.col(c); body.addView(list);
-            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::newCampaign)); get("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i); LinearLayout it = Ui.item(c, cp.optString("name"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value")) + "٪" : Ui.money(cp.optDouble("discount_value"))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase")) + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until"))), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> { String next = "ACTIVE".equals(cp.optString("status")) ? "PAUSED" : "ACTIVE"; Ui.confirm(c, "وضعیت به «" + ("ACTIVE".equals(next) ? "فعال" : "متوقف") + "» تغییر کند؟", () -> patch("/marketing/campaigns/" + cp.optLong("id"), j("status", next), x -> load())); }); list.addView(it); } }); }
-            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); get("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value")) + "٪" : Ui.money(cp.optDouble("discount_value"))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
-            else get("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns")), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons")), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value")), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
+            if (tab == 0) { body.addView(Ui.primary(c, "+ جشنوارهٔ جدید", this::campaignWizardNew)); getWithOffline("/marketing/campaigns", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "جشنواره‌ای تعریف نشده")); for (int i = 0; i < ar.length(); i++) { JSONObject cp = ar.optJSONObject(i);
+                        /* build-514 — عملکرد هر جشنواره روی خود ردیف: استفاده، کوپن صادره، ارزش مصرف */
+                        long cid = cp.optLong("id"); int issued = Local.countWhere("coupons", "campaign_id=?", cid);
+                        double spent = Local.sumInvoices("campaign_discount", cid);
+                        String lastUse = Local.lastInvoiceUse(cid);
+                        String sub = ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + " · حداقل خرید " + Ui.money(cp.optDouble("min_purchase", 0))
+                                + " · استفاده " + Ui.fa(String.valueOf(cp.optInt("used_count"))) + (cp.isNull("usage_limit") ? "" : "/" + Ui.fa(String.valueOf(cp.optInt("usage_limit")))) + " بار"
+                                + " · کوپن صادره " + Ui.fa(String.valueOf(issued)) + (spent > 0 ? " · تخفیف داده‌شده " + Ui.money(spent) : "") + (lastUse.isEmpty() ? "" : " · آخرین " + Ui.jdate(lastUse))
+                                + (Local.offerFlag(cp, "auto_apply") ? " · اعمال خودکار" : "") + (Local.offerFlag(cp, "stackable") ? " · ترکیب با کوپن" : "") + (cp.isNull("valid_until") ? "" : " · تا " + Ui.jdate(cp.optString("valid_until")));
+                        LinearLayout it = Ui.item(c, cp.optString("name"), sub, label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status")), () -> campaignWizard(cp));
+                        it.setOnLongClickListener(v -> { campaignReport(cp, issued, spent); return true; });
+                        list.addView(it); } }); }
+            else if (tab == 1) { body.addView(Ui.primary(c, "+ صدور کوپن", this::newCoupon)); getWithOffline("/marketing/coupons", r -> { JSONArray ar = arr(r); if (ar.length() == 0) list.addView(Ui.empty(c, "کوپنی نیست")); Ui.paged(list, ar, 50, cp -> Ui.item(c, cp.optString("code"), ("PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0))) + (s(cp, "customer_phone").isEmpty() ? "" : " · " + Ui.fa(s(cp, "customer_phone"))) + " · استفاده " + Ui.fa(cp.optInt("used_count") + "/" + cp.optInt("usage_limit", 1)), label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"USED", "مصرف‌شده"}, {"BLOCKED", "مسدود"}, {"EXPIRED", "منقضی"}}), stColor(cp.optString("status")), () -> { if ("ACTIVE".equals(cp.optString("status"))) Ui.confirm(c, "کوپن " + cp.optString("code") + " مسدود شود؟", () -> post("/marketing/coupons/" + cp.optLong("id") + "/block", null, x -> load())); })); }); }
+            else getWithOffline("/marketing/stats", r -> { JSONObject st = (JSONObject) r; LinearLayout cd = Ui.card(c, "آمار"); cd.addView(Ui.kv(c, "جشنواره‌ها", Ui.num(st.optDouble("campaigns", 0)), 0)); cd.addView(Ui.kv(c, "کل کوپن‌ها", Ui.num(st.optDouble("total_coupons", 0)), 0)); cd.addView(Ui.kv(c, "ارزش تخفیف مصرف‌شده", Ui.money(st.optDouble("redeemed_value", 0)), Ui.GREEN)); JSONObject bs = st.optJSONObject("by_status"); if (bs != null) { java.util.Iterator<String> it = bs.keys(); while (it.hasNext()) { String k = it.next(); cd.addView(Ui.kv(c, k, Ui.num(bs.optDouble(k)), 0)); } } list.addView(cd); });
         }
-        void newCampaign() {
-            LinearLayout form = Ui.col(c);
-            EditText name = Ui.input(c, "نام جشنواره *");
-            EditText value = Ui.input(c, "مقدار تخفیف", true);
-            EditText minimum = Ui.input(c, "حداقل خرید", true);
-            EditText maximumPurchase = Ui.input(c, "سقف خرید (اختیاری)", true);
-            EditText maximumDiscount = Ui.input(c, "سقف تخفیف (اختیاری)", true);
-            EditText usageLimit = Ui.input(c, "سقف استفادهٔ کل (خالی = نامحدود)", true);
-            EditText until = DatePicker.field(c, "پایان (اختیاری)");
-            EditText issueThreshold = Ui.input(c, "صدور کوپن خرید بعدی از مبلغ (اختیاری)", true);
-            EditText issueDays = Ui.input(c, "اعتبار کوپن بعدی (روز)", true); issueDays.setText("30");
-            final String[] type = {"PERCENT"};
-            final boolean[] autoApply = {false}, stackable = {false};
-            LinearLayout typeRow = Ui.row(c), applyRow = Ui.row(c), stackRow = Ui.row(c);
-            Runnable[] renderType = new Runnable[1];
-            renderType[0] = () -> {
-                typeRow.removeAllViews();
-                typeRow.addView(Ui.chip(c, "درصدی", type[0].equals("PERCENT"), () -> { type[0] = "PERCENT"; renderType[0].run(); }));
-                typeRow.addView(Ui.chip(c, "مبلغ ثابت", type[0].equals("FIXED"), () -> { type[0] = "FIXED"; renderType[0].run(); }));
-            };
-            Runnable[] renderRules = new Runnable[1];
-            renderRules[0] = () -> {
-                applyRow.removeAllViews();
-                applyRow.addView(Ui.chip(c, "انتخاب صندوق‌دار", !autoApply[0], () -> { autoApply[0] = false; renderRules[0].run(); }));
-                applyRow.addView(Ui.chip(c, "اعمال خودکار", autoApply[0], () -> { autoApply[0] = true; renderRules[0].run(); }));
-                stackRow.removeAllViews();
-                stackRow.addView(Ui.chip(c, "بدون ترکیب با کوپن", !stackable[0], () -> { stackable[0] = false; renderRules[0].run(); }));
-                stackRow.addView(Ui.chip(c, "ترکیب با کوپن", stackable[0], () -> { stackable[0] = true; renderRules[0].run(); }));
-            };
-            renderType[0].run(); renderRules[0].run();
-            form.addView(name); form.addView(Ui.muted(c, "نوع تخفیف")); form.addView(typeRow);
-            form.addView(value); form.addView(minimum); form.addView(maximumPurchase); form.addView(maximumDiscount); form.addView(usageLimit);
-            form.addView(until); form.addView(issueThreshold); form.addView(issueDays);
-            form.addView(Ui.muted(c, "اعمال در صندوق")); form.addView(applyRow);
-            form.addView(Ui.muted(c, "ترکیب با کوپن")); form.addView(stackRow);
-            form.addView(Ui.muted(c, "صدور کوپن خرید بعدی پس از رسیدن فروش به آستانه؛ کد در رسید/پیامک فاکتور ثبت می‌شود."));
-            Dialog[] dialog = new Dialog[1];
-            form.addView(Ui.primary(c, "ایجاد جشنواره", () -> {
-                try {
-                    JSONObject request = j("name", Ui.str(name), "discount_type", type[0]);
-                    request.put("auto_apply", autoApply[0]); request.put("stackable", stackable[0]); request.put("auto_issue_sms", true);
-                    putNum(request, "discount_value", Ui.numVal(value, 0));
-                    putNum(request, "min_purchase", Ui.numVal(minimum, 0));
-                    if (!Ui.str(maximumPurchase).isEmpty() && Ui.numVal(maximumPurchase, 0) > 0)
-                        putNum(request, "max_purchase", Ui.numVal(maximumPurchase, 0));
-                    if (!Ui.str(maximumDiscount).isEmpty() && Ui.numVal(maximumDiscount, 0) > 0)
-                        putNum(request, "max_discount", Ui.numVal(maximumDiscount, 0));
-                    if (!Ui.str(usageLimit).isEmpty()) putNum(request, "usage_limit", (int) Ui.numVal(usageLimit, 0));
-                    String endDate = dateIn(until);
-                    if (endDate != null) request.put("valid_until", endDate + "T23:59:59");
-                    if (!Ui.str(issueThreshold).isEmpty() && Ui.numVal(issueThreshold, 0) > 0)
-                        putNum(request, "auto_issue_threshold", Ui.numVal(issueThreshold, 0));
-                    putNum(request, "auto_issue_validity_days", Math.max(1, Math.min(3650, (int) Ui.numVal(issueDays, 30))));
-                    dialog[0].dismiss();
-                    post("/marketing/campaigns", request, result -> { Ui.toast("جشنواره ایجاد شد"); load(); });
-                } catch (IllegalArgumentException invalid) { /* dateIn already shows a precise date error */ }
-                catch (org.json.JSONException error) { Ui.toast("اطلاعات جشنواره ذخیره نشد: " + error.getMessage()); }
-            }));
-            dialog[0] = Ui.sheet(c, "جشنوارهٔ جدید", form);
+        /* build-514 — گزارش کامل یک جشنواره (لمس طولانی روی ردیف) */
+        void campaignReport(JSONObject cp, int issued, double spent) {
+            LinearLayout l = Ui.col(c);
+            long cid = cp.optLong("id");
+            int used = cp.optInt("used_count");
+            l.addView(Ui.kv(c, "وضعیت", label(cp.optString("status"), new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}}), stColor(cp.optString("status"))));
+            l.addView(Ui.kv(c, "مقدار تخفیف", "PERCENT".equals(cp.optString("discount_type")) ? Ui.num(cp.optDouble("discount_value", 0)) + "٪" : Ui.money(cp.optDouble("discount_value", 0)) + " تومان", 0));
+            l.addView(Ui.kv(c, "حداقل خرید", Ui.money(cp.optDouble("min_purchase", 0)) + " تومان", 0));
+            l.addView(Ui.kv(c, "دفعات استفاده", Ui.fa(String.valueOf(used)) + (cp.isNull("usage_limit") ? " (بدون سقف)" : " از " + Ui.fa(String.valueOf(cp.optInt("usage_limit")))), 0));
+            l.addView(Ui.kv(c, "کوپن خرید بعدی صادرشده", Ui.fa(String.valueOf(issued)) + " کد", 0));
+            l.addView(Ui.kv(c, "مجموع تخفیف داده‌شده", Ui.money(spent) + " تومان", spent > 0 ? Ui.GREEN : 0));
+            String lastUse = Local.lastInvoiceUse(cid);
+            l.addView(Ui.kv(c, "آخرین استفاده", lastUse.isEmpty() ? "— هنوز استفاده نشده" : Ui.jdate(lastUse), 0));
+            double thr = cp.optDouble("auto_issue_threshold", 0);
+            if (thr > 0) l.addView(Ui.kv(c, "صدور خودکار کوپن از", Ui.money(thr) + " تومان · اعتبار " + Ui.fa(String.valueOf(cp.optInt("auto_issue_validity_days", 30))) + " روز" + (Local.offerFlag(cp, "auto_issue_sms") ? " + پیامک" : ""), 0));
+            if (!cp.isNull("valid_until")) l.addView(Ui.kv(c, "پایان جشنواره", Ui.jdate(cp.optString("valid_until")), 0));
+            l.addView(Ui.muted(c, "برای ویرایش، روی خود ردیف ضربه بزنید."));
+            Ui.sheet(c, "گزارش «" + cp.optString("name") + "»", l);
+        }
+        /* build-511 — فرم واحد ساخت/ویرایش: با cp غیر null، فیلدها پیش‌پر می‌شوند و
+         * ذخیره روی PATCH می‌رود؛ وضعیت هم داخل فرم قابل تغییر است. */
+        /* ================= build-515 — جادوگر ۸ گامی تعریف جشنواره =================
+         * به‌جای فرمِ طولانی، گام‌به‌گام (مطابق طرح مالک): نوع جشنواره → شرط خرید
+         * (مبلغ یا تعداد) → محصولات/دسته‌ها → زمان → پاداش → تنظیمات تکمیلی → نام و
+         * پیش‌نمایش → تایید. هر گام یک پرسشِ روشن با کارت‌های قابل‌لمس + نوار پیشرفت.
+         * ویرایش هم با همین جادوگر باز می‌شود (همهٔ گام‌ها پیش‌پر شده). */
+        Dialog wDialog; LinearLayout wBody; int wStep = 1; JSONObject wDraft = new JSONObject(); JSONObject wEdit;
+        EditText wName; EditText wUntil; EditText wSearch;
+        LinearLayout wPickList; java.util.LinkedHashSet<String> wPicked = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> wCats = new java.util.LinkedHashSet<>();
+
+        static JSONObject wput(JSONObject d, String k, Object v) { try { d.put(k, v); } catch (Exception ignore) {} return d; }
+
+        JSONObject wizardDraft(JSONObject cp) {
+            JSONObject d = new JSONObject();
+            wput(d, "condMode", "SPEND"); wput(d, "spend", 0); wput(d, "count", 3);
+            wput(d, "scope", "ALL"); wput(d, "time", "NONE"); wput(d, "days", 30);
+            wput(d, "rewardType", "PERCENT"); wput(d, "value", 0); wput(d, "couponDays", 30);
+            wput(d, "autoApply", false); wput(d, "stackable", false); wput(d, "firstOnly", false);
+            wput(d, "usageLimit", 0); wput(d, "perCustomer", 0); wput(d, "status", "ACTIVE");
+            if (cp == null) return d;
+            String dt = s(cp, "discount_type", "PERCENT");
+            wput(d, "kind", cp.optInt("reward_next_only", 0) == 1 ? "NEXT" : ("GIFT".equalsIgnoreCase(dt) ? "GIFT" : dt));
+            wput(d, "name", s(cp, "name"));
+            int mpc = cp.optInt("min_purchase_count", 0);
+            double minp = cp.optDouble("min_purchase", 0), thr = cp.isNull("auto_issue_threshold") ? 0 : cp.optDouble("auto_issue_threshold", 0);
+            wput(d, "condMode", mpc > 0 ? "COUNT" : (minp > 0 ? "SPEND" : "NONE"));
+            wput(d, "spend", Math.max(minp, thr));
+            wput(d, "count", Math.max(1, mpc));
+            wput(d, "scope", s(cp, "target_type", "ALL").isEmpty() ? "ALL" : s(cp, "target_type", "ALL"));
+            try { wput(d, "targetIds", cp.isNull("target_ids") ? new JSONArray() : new JSONArray(cp.optString("target_ids", "[]"))); } catch (Exception ignore) {}
+            wput(d, "time", cp.isNull("valid_until") ? "NONE" : "DATE");
+            wput(d, "value", cp.optDouble("discount_value", 0));
+            wput(d, "rewardType", "FIXED".equals(dt) ? "FIXED" : "PERCENT");
+            wput(d, "couponDays", cp.optInt("auto_issue_validity_days", 30));
+            wput(d, "maxDiscount", cp.isNull("max_discount") ? 0 : cp.optDouble("max_discount", 0));
+            wput(d, "autoApply", cp.optInt("auto_apply", 0) == 1);
+            wput(d, "stackable", Local.offerFlag(cp, "stackable"));
+            wput(d, "firstOnly", Local.offerFlag(cp, "first_purchase_only"));
+            wput(d, "usageLimit", cp.isNull("usage_limit") ? 0 : cp.optInt("usage_limit", 0));
+            wput(d, "perCustomer", cp.isNull("per_customer_limit") ? 0 : cp.optInt("per_customer_limit", 0));
+            wput(d, "status", s(cp, "status", "ACTIVE"));
+            return d;
+        }
+
+        void campaignWizard(JSONObject cp) {
+            wEdit = cp; wStep = 1; wDraft = wizardDraft(cp); wPicked.clear(); wCats.clear();
+            try {
+                JSONArray tg = wDraft.optJSONArray("targetIds");
+                if (tg != null) for (int i = 0; i < tg.length(); i++) wPicked.add(tg.optString(i));
+            } catch (Exception ignore) {}
+            wDialog = new Dialog(c);
+            wDialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+            LinearLayout root = Ui.col(c);
+            root.setBackground(Ui.rounded(Ui.BG2, 0, 22));
+            root.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(14));
+            wBody = Ui.col(c);
+            android.widget.ScrollView sc = Ui.scroll(c, wBody);
+            wDialog.setContentView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            root.addView(sc, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+            wDialog.show();
+            wDialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            wRender();
+        }
+
+        TextView wDot(int n, int current) {
+            TextView t = new TextView(c);
+            t.setText(Ui.fa(String.valueOf(n)));
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setTextSize(11f);
+            t.setTextColor(n == current ? Color.WHITE : n < current ? Ui.PRIMARY : Ui.MUTED);
+            t.setBackground(Ui.rounded(n == current ? Ui.PRIMARY : n < current ? 0xE8EEFF : Ui.CARD2, 0, 999));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Ui.dp(26), Ui.dp(26));
+            lp.setMargins(Ui.dp(2), 0, Ui.dp(2), 0);
+            t.setLayoutParams(lp);
+            return t;
+        }
+
+        void wRender() {
+            wBody.removeAllViews();
+            if (wPushNote != null && !wPushNote.isEmpty()) {
+                LinearLayout note = Ui.col(c);
+                note.setBackground(Ui.rounded(0x1A22CBA6, 0, 12));
+                note.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
+                TextView nt = new TextView(c); nt.setText("✓ " + wPushNote); nt.setTextSize(12.5f); nt.setTextColor(Ui.GREEN);
+                note.addView(nt);
+                wBody.addView(note);
+                wBody.addView(space(Ui.dp(6)));
+            }
+            if (wSaveError != null && !wSaveError.isEmpty()) {
+                LinearLayout errBox = Ui.col(c);
+                errBox.setBackground(Ui.rounded(0x22EF647D, Ui.RED, 12));
+                errBox.setPadding(Ui.dp(12), Ui.dp(10), Ui.dp(12), Ui.dp(10));
+                TextView et = new TextView(c); et.setText("⚠ " + wSaveError); et.setTextSize(12.5f); et.setTextColor(Ui.RED);
+                errBox.addView(et);
+                wBody.addView(errBox);
+                wBody.addView(space(Ui.dp(6)));
+            }
+            LinearLayout head = Ui.row(c);
+            TextView title = new TextView(c);
+            title.setText(wEdit == null ? "تعریف جشنواره جدید" : "ویرایش جشنواره");
+            title.setTextSize(17f); title.setTypeface(Typeface.DEFAULT_BOLD); title.setTextColor(Ui.TEXT);
+            head.addView(title);
+            android.widget.Space sp = new android.widget.Space(c); sp.setLayoutParams(new LinearLayout.LayoutParams(1, 1, 1f)); head.addView(sp);
+            for (int i = 1; i <= 8; i++) head.addView(wDot(i, wStep));
+            wBody.addView(head);
+            wBody.addView(space(Ui.dp(6)));
+            if (wStep == 1) wStepKind();
+            else if (wStep == 2) wStepCond();
+            else if (wStep == 3) wStepScope();
+            else if (wStep == 4) wStepTime();
+            else if (wStep == 5) wStepReward();
+            else if (wStep == 6) wStepExtras();
+            else if (wStep == 7) wStepReview();
+            else wStepDone();
+            if (wStep < 8) {
+                /* build-516 — ریشهٔ «دکمهٔ ادامه نیست (مرحلهٔ ۲ به بعد)»: دکمه‌های
+                 * Ui.btn عرض match_parent می‌گیرند؛ در ردیف افقی، «بازگشت» تمام عرض
+                 * را می‌خورد و «مرحلهٔ بعد» صفر می‌شد. حالا هر دو عرض‌۰+وزن‌دارند و
+                 * همیشه کنار هم دیده می‌شوند (بازگشت کوچک‌تر). */
+                LinearLayout nav = Ui.row(c);
+                if (wStep > 1 && wStep < 8) {
+                    android.widget.Button back = Ui.ghost(c, "بازگشت", () -> { wStep--; wRender(); });
+                    back.setLayoutParams(wNavLp(1f));
+                    nav.addView(back);
+                }
+                android.widget.Button next = Ui.primary(c, wStep == 7 ? (wEdit == null ? "ایجاد جشنواره ✓" : "ذخیرهٔ تغییرات ✓") : "مرحلهٔ بعد", () -> {
+                    if (!wValidate(wStep)) return;
+                    if (wStep == 7) { wSave(); return; }
+                    wStep++; wRender();
+                });
+                next.setLayoutParams(wNavLp(wStep > 1 ? 1.4f : 1f));
+                nav.addView(next);
+                nav.setPadding(0, Ui.dp(8), 0, Ui.dp(4));
+                wBody.addView(nav);
+            }
+        }
+
+        android.widget.LinearLayout.LayoutParams wNavLp(float weight) {
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+            lp.setMargins(Ui.dp(3), 0, Ui.dp(3), 0);
+            return lp;
+        }
+
+        android.widget.Space space(float h) { android.widget.Space s = new android.widget.Space(c); s.setLayoutParams(new LinearLayout.LayoutParams(1, Ui.dp(h))); return s; }
+
+        LinearLayout wOption(String title, String sub, boolean selected, Runnable pick) {
+            LinearLayout card = Ui.row(c);
+            card.setBackground(Ui.rounded(selected ? 0xE8EEFF : Ui.CARD2, selected ? Ui.PRIMARY : 0, 14));
+            card.setPadding(Ui.dp(12), Ui.dp(11), Ui.dp(12), Ui.dp(11));
+            TextView radio = new TextView(c);
+            radio.setText(selected ? "◉" : "○");
+            radio.setTextColor(selected ? Ui.PRIMARY : Ui.MUTED);
+            radio.setTextSize(16f);
+            radio.setPadding(0, 0, Ui.dp(9), 0);
+            card.addView(radio);
+            LinearLayout txt = Ui.col(c);
+            TextView t = new TextView(c); t.setText(title); t.setTextSize(14.5f); t.setTypeface(Typeface.DEFAULT_BOLD); t.setTextColor(Ui.TEXT); txt.addView(t);
+            TextView st = new TextView(c); st.setText(sub); st.setTextSize(11.5f); st.setTextColor(Ui.MUTED); txt.addView(st);
+            card.addView(txt);
+            card.setOnClickListener(v -> pick.run());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(0, 0, 0, Ui.dp(8));
+            card.setLayoutParams(lp);
+            return card;
+        }
+
+        void wQuestion(String q, String hint) {
+            TextView h = new TextView(c); h.setText(q); h.setTextSize(15.5f); h.setTypeface(Typeface.DEFAULT_BOLD); h.setTextColor(Ui.TEXT); wBody.addView(h);
+            if (hint != null && !hint.isEmpty()) { TextView m = Ui.muted(c, hint); m.setPadding(0, Ui.dp(2), 0, Ui.dp(8)); wBody.addView(m); }
+            else wBody.addView(space(Ui.dp(8)));
+        }
+
+        LinearLayout wStepper(String label, int[] val, int min, int max, int stepBy) {
+            LinearLayout r = Ui.row(c);
+            TextView lb = new TextView(c); lb.setText(label); lb.setTextColor(Ui.MUTED); lb.setTextSize(13f);
+            lb.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            r.addView(lb);
+            android.widget.Button minus = Ui.ghost(c, "−", () -> { val[0] = Math.max(min, val[0] - stepBy); wRender(); });
+            minus.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(52), ViewGroup.LayoutParams.WRAP_CONTENT));
+            r.addView(minus);
+            TextView num = new TextView(c); num.setText(Ui.fa(String.valueOf(val[0]))); num.setTextSize(15f); num.setTypeface(Typeface.DEFAULT_BOLD); num.setGravity(android.view.Gravity.CENTER); num.setMinWidth(Ui.dp(44));
+            r.addView(num);
+            android.widget.Button plus = Ui.ghost(c, "+", () -> { val[0] = Math.min(max, val[0] + stepBy); wRender(); });
+            plus.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(52), ViewGroup.LayoutParams.WRAP_CONTENT));
+            r.addView(plus);
+            return r;
+        }
+
+        boolean wValidate(int step) {
+            String kind = wDraft.optString("kind", "");
+            if (step == 1 && kind.isEmpty()) { Ui.toast("نوع جشنواره را انتخاب کنید"); return false; }
+            if (step == 2) {
+                String cm = wDraft.optString("condMode", "NONE");
+                if ("SPEND".equals(cm) && wDraft.optDouble("spend", 0) <= 0) { Ui.toast("مبلغ شرط خرید را وارد کنید"); return false; }
+                if ("COUNT".equals(cm) && wDraft.optInt("count", 0) < 1) { Ui.toast("تعداد خرید باید حداقل ۱ باشد"); return false; }
+                if ("NEXT".equals(kind) && "NONE".equals(cm)) { Ui.toast("برای پاداش خرید بعدی، یک شرط لازم است"); return false; }
+            }
+            if (step == 3) {
+                String sc = wDraft.optString("scope", "ALL");
+                if ("CATEGORY".equals(sc) && wCats.isEmpty()) { Ui.toast("حداقل یک دسته انتخاب کنید"); return false; }
+                if ("PRODUCTS".equals(sc) && wPicked.isEmpty()) { Ui.toast("حداقل یک کالا انتخاب کنید"); return false; }
+            }
+            if (step == 4 && "DATE".equals(wDraft.optString("time")) && dateIn(wUntil) == null) return false;
+            if (step == 5) {
+                if ("NEXT".equals(kind)) {
+                    if (wDraft.optDouble("value", 0) <= 0) { Ui.toast("مقدار پاداش کوپن را وارد کنید"); return false; }
+                    if (Ui.numVal(wCouponDays, 30) < 1) { Ui.toast("اعتبار کوپن باید حداقل ۱ روز باشد"); return false; }
+                } else if ("GIFT".equals(kind)) {
+                    if (wGiftPid == 0) { Ui.toast("کالای هدیه را انتخاب کنید"); return false; }
+                    if (wDraft.optDouble("value", 0) < 1) { Ui.toast("تعداد رایگان حداقل ۱ است"); return false; }
+                } else if (wDraft.optDouble("value", 0) <= 0) { Ui.toast("مقدار تخفیف را وارد کنید"); return false; }
+            }
+            if (step == 7 && Ui.str(wName).isEmpty()) { Ui.toast("نام جشنواره را بنویسید"); return false; }
+            return true;
+        }
+
+        EditText wCouponDays; long wGiftPid = 0; String wGiftName = "";
+
+        void wStepKind() {
+            wQuestion("نوع جشنواره را انتخاب کنید", "بعداً هم می‌توانید از فهرست جشنواره‌ها ویرایشش کنید.");
+            String k = wDraft.optString("kind", "");
+            wBody.addView(wOption("هدیهٔ خرید بعدی", "مشتری با این خرید، کوپنِ تخفیف خرید بعدی می‌گیرد", "NEXT".equals(k), () -> { wput(wDraft, "kind", "NEXT"); wRender(); }));
+            wBody.addView(wOption("تخفیف درصدی", "مثلاً ۲۰٪ تخفیف روی همین خرید اعمال شود", "PERCENT".equals(k), () -> { wput(wDraft, "kind", "PERCENT"); wRender(); }));
+            wBody.addView(wOption("تخفیف مبلغی", "مثلاً ۵۰٫۰۰۰ تومان تخفیف روی همین خرید", "FIXED".equals(k), () -> { wput(wDraft, "kind", "FIXED"); wRender(); }));
+            wBody.addView(wOption("هدیه رایگان", "مثلاً ۲ عدد بخرد، ۱ عدد رایگان", "GIFT".equals(k), () -> { wput(wDraft, "kind", "GIFT"); wput(wDraft, "value", 1); wRender(); }));
+        }
+
+        void wStepCond() {
+            wQuestion("شرط خرید را مشخص کنید", "پاداش وقتی می‌آید که مشتری این شرط را داشته باشد.");
+            String k = wDraft.optString("kind", "");
+            String cm = wDraft.optString("condMode", "SPEND");
+            Ui.Flow mode = Ui.wrap(c);
+            mode.addView(Ui.chip(c, "مبلغ خرید", "SPEND".equals(cm), () -> { wput(wDraft, "condMode", "SPEND"); wRender(); }));
+            mode.addView(Ui.chip(c, "تعداد خرید", "COUNT".equals(cm), () -> { wput(wDraft, "condMode", "COUNT"); wRender(); }));
+            if (!"NEXT".equals(k)) mode.addView(Ui.chip(c, "بدون شرط", "NONE".equals(cm), () -> { wput(wDraft, "condMode", "NONE"); wRender(); }));
+            wBody.addView(mode);
+            wBody.addView(space(Ui.dp(6)));
+            if ("SPEND".equals(cm)) {
+                wBody.addView(Ui.muted(c, "مشتری حداقل چقدر خرید کند؟ (تومان)"));
+                EditText spend = Ui.input(c, "مثلاً ۱۰٫۰۰۰٫۰۰۰", true);
+                spend.setText(wDraft.optDouble("spend", 0) > 0 ? Ui.num(wDraft.optDouble("spend", 0)) : "");
+                wBody.addView(spend);
+                Ui.Flow quick = Ui.wrap(c);
+                for (double q : new double[]{500000, 1000000, 5000000, 10000000, 20000000})
+                    quick.addView(Ui.chip(c, Ui.moneyShort(q), Math.abs(wDraft.optDouble("spend", 0) - q) < 1, () -> { wput(wDraft, "spend", q); wRender(); }));
+                wBody.addView(quick);
+                spend.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "spend", Ui.numVal(spend, 0)); } catch (Exception ignore) {} }
+                });
+            } else if ("COUNT".equals(cm)) {
+                wBody.addView(Ui.muted(c, "مشتری چند بار خرید کند تا پاداش بگیرد؟ (هر N خرید یک بار)"));
+                int[] cnt = {Math.max(1, wDraft.optInt("count", 3))};
+                wBody.addView(wStepper("تعداد خرید", cnt, 1, 999, 1));
+                wput(wDraft, "count", cnt[0]);
+                wBody.addView(Ui.muted(c, "مثلاً ۳ = بعد از هر ۳ خرید، پاداشِ خرید بعدی صادر می‌شود."));
+            } else {
+                wBody.addView(Ui.muted(c, "بدون شرط: هر مشتری در هر خرید مشمول می‌شود."));
+            }
+        }
+
+        void wStepScope() {
+            wQuestion("محصولات و دسته‌ها", "این جشنواره روی چه کالاهایی اعمال شود؟");
+            String sc = wDraft.optString("scope", "ALL");
+            LinearLayout opts = Ui.col(c);
+            opts.addView(wOption("همهٔ محصولات", "کل سبد خرید مشمول می‌شود", "ALL".equals(sc), () -> { wput(wDraft, "scope", "ALL"); wPicked.clear(); wCats.clear(); wRender(); }));
+            opts.addView(wOption("دسته‌های خاص", "فقط کالاهای دسته‌های انتخابی", "CATEGORY".equals(sc), () -> { wput(wDraft, "scope", "CATEGORY"); wPicked.clear(); wRender(); }));
+            opts.addView(wOption("محصولات مشخص", "فقط کالاهای انتخابی", "PRODUCTS".equals(sc), () -> { wput(wDraft, "scope", "PRODUCTS"); wCats.clear(); wRender(); }));
+            wBody.addView(opts);
+            if ("CATEGORY".equals(sc)) {
+                wBody.addView(Ui.muted(c, "دسته‌ها را انتخاب کنید:"));
+                Ui.Flow chips = Ui.wrap(c);
+                for (JSONObject b : Local.rows("SELECT DISTINCT category FROM bank WHERE IFNULL(category,'')<>'' ORDER BY category LIMIT 60")) {
+                    String cat = b.optString("category");
+                    chips.addView(Ui.chip(c, cat, wCats.contains(cat), () -> { if (!wCats.add(cat)) wCats.remove(cat); wRender(); }));
+                }
+                wBody.addView(chips);
+            } else if ("PRODUCTS".equals(sc)) {
+                if (wSearch == null) wSearch = Ui.input(c, "جست‌وجوی نام یا بارکد کالا…");
+                wSearch.setText(""); wBody.addView(wSearch);
+                wPickList = Ui.col(c); wBody.addView(wPickList);
+                wSearch.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { wFillPick(Ui.str(wSearch)); }
+                });
+                wFillPick("");
+                Ui.Flow sel = Ui.wrap(c);
+                for (String pid : wPicked) {
+                    JSONObject p = Local.one("SELECT name FROM products WHERE id=?", Long.parseLong(pid));
+                    sel.addView(Ui.chip(c, p == null ? "کالا #" + pid : p.optString("name"), true, () -> { wPicked.remove(pid); wRender(); }));
+                }
+                if (!wPicked.isEmpty()) wBody.addView(sel);
+            }
+        }
+
+        void wFillPick(String q) {
+            if (wPickList == null) return;
+            wPickList.removeAllViews();
+            for (JSONObject p : Db.searchProducts(q, 12, 0)) {
+                if (p == null) continue;
+                String pid = String.valueOf(p.optLong("id"));
+                boolean on = wPicked.contains(pid);
+                LinearLayout it = Ui.item(c, p.optString("name"), s(p, "barcode"), null, on ? Ui.PRIMARY : 0, () -> { if (!wPicked.add(pid)) wPicked.remove(pid); wFillPick(Ui.str(wSearch)); });
+                wPickList.addView(it);
+            }
+        }
+
+        void wStepTime() {
+            wQuestion("زمان اجرا را مشخص کنید", null);
+            String tm = wDraft.optString("time", "NONE");
+            wBody.addView(wOption("بدون محدودیت زمانی", "تا وقتی خودتان متوقفش کنید", "NONE".equals(tm), () -> { wput(wDraft, "time", "NONE"); wRender(); }));
+            wBody.addView(wOption("تاریخ مشخص", "در تاریخ انتخابی پایان می‌یابد", "DATE".equals(tm), () -> { wput(wDraft, "time", "DATE"); wRender(); }));
+            wBody.addView(wOption("مدت زمان", "چند روز از امروز فعال بماند", "DAYS".equals(tm), () -> { wput(wDraft, "time", "DAYS"); wRender(); }));
+            if ("DATE".equals(tm)) {
+                if (wUntil == null) wUntil = DatePicker.field(c, "تاریخ پایان (مثلاً ۱۴۰۴/۰۶/۱۵)");
+                wBody.addView(wUntil);
+            } else if ("DAYS".equals(tm)) {
+                int[] dys = {Math.max(1, wDraft.optInt("days", 7))};
+                wBody.addView(wStepper("مدت (روز)", dys, 1, 3650, 1));
+                wput(wDraft, "days", dys[0]);
+            }
+        }
+
+        void wStepReward() {
+            String k = wDraft.optString("kind", "");
+            if ("NEXT".equals(k)) {
+                wQuestion("پاداش خرید بعدی چقدر باشد؟", "کوپن مخصوص همان مشتری صادر می‌شود؛ روی فاکتور می‌آید و پیامک می‌گیرد.");
+                String rt = wDraft.optString("rewardType", "PERCENT");
+                Ui.Flow tr = Ui.wrap(c);
+                tr.addView(Ui.chip(c, "درصدی", "PERCENT".equals(rt), () -> { wput(wDraft, "rewardType", "PERCENT"); wRender(); }));
+                tr.addView(Ui.chip(c, "مبلغی", "FIXED".equals(rt), () -> { wput(wDraft, "rewardType", "FIXED"); wRender(); }));
+                wBody.addView(tr);
+                wBody.addView(Ui.muted(c, "PERCENT".equals(rt) ? "چند درصد تخفیف برای خرید بعدی؟" : "چقدر تخفیف مبلغی برای خرید بعدی؟ (تومان)"));
+                EditText v = Ui.input(c, "مقدار پاداش", true);
+                v.setText(wDraft.optDouble("value", 0) > 0 ? Ui.num(wDraft.optDouble("value", 0)) : "");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Ui.numVal(v, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+                if (wCouponDays == null) wCouponDays = Ui.input(c, "اعتبار کوپن (روز)", true);
+                if (Ui.str(wCouponDays).isEmpty()) wCouponDays.setText(String.valueOf(wDraft.optInt("couponDays", 30)));
+                wBody.addView(wCouponDays);
+            } else if ("GIFT".equals(k)) {
+                wQuestion("کالای هدیه را انتخاب کنید", "به‌ازای خرید، تعداد مشخصی از این کالا رایگان می‌شود.");
+                if (wGiftPid > 0) wBody.addView(Ui.muted(c, "هدیهٔ انتخابی: " + wGiftName));
+                if (wSearch == null) wSearch = Ui.input(c, "جست‌وجوی نام یا بارکد کالا…");
+                wBody.addView(wSearch);
+                wPickList = Ui.col(c); wBody.addView(wPickList);
+                wSearch.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { wFillPick(Ui.str(wSearch)); }
+                });
+                wFillPick("");
+                wBody.addView(Ui.muted(c, "چند عدد رایگان؟"));
+                EditText v = Ui.input(c, "تعداد رایگان", true);
+                v.setText(wDraft.optDouble("value", 0) >= 1 ? Ui.num(wDraft.optDouble("value", 1)) : "1");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Math.max(1, (int) Ui.numVal(v, 1))); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+            } else {
+                wQuestion("مقدار پاداش را مشخص کنید", "روی همین خرید اعمال می‌شود؛ بعد از ثبت فاکتور هم کوپن خرید بعدی صادر می‌شود.");
+                wBody.addView(Ui.muted(c, "PERCENT".equals(k) ? "چند درصد تخفیف؟" : "چقدر تخفیف مبلغی؟ (تومان)"));
+                EditText v = Ui.input(c, "مقدار تخفیف", true);
+                v.setText(wDraft.optDouble("value", 0) > 0 ? Ui.num(wDraft.optDouble("value", 0)) : "");
+                v.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "value", Ui.numVal(v, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(v);
+                wBody.addView(Ui.muted(c, "سقف تخفیف (اختیاری — برای درصدی)"));
+                EditText cap = Ui.input(c, "مثلاً ۵۰۰٫۰۰۰", true);
+                if (wDraft.optDouble("maxDiscount", 0) > 0) cap.setText(Ui.num(wDraft.optDouble("maxDiscount", 0)));
+                cap.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                    public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "maxDiscount", Ui.numVal(cap, 0)); } catch (Exception ignore) {} }
+                });
+                wBody.addView(cap);
+            }
+        }
+
+        void wStepExtras() {
+            wQuestion("تنظیمات تکمیلی", "همه اختیاری‌اند — با پیش‌فرض‌ها هم جشنواره درست کار می‌کند.");
+            boolean aa = wDraft.optBoolean("autoApply", false), st = wDraft.optBoolean("stackable", false), fo = wDraft.optBoolean("firstOnly", false);
+            Ui.Flow rules = Ui.wrap(c);
+            rules.addView(Ui.chip(c, aa ? "اعمال خودکار ✓" : "انتخاب صندوق‌دار", aa, () -> { wput(wDraft, "autoApply", !aa); wRender(); }));
+            rules.addView(Ui.chip(c, st ? "ترکیب با کوپن ✓" : "بدون ترکیب", st, () -> { wput(wDraft, "stackable", !st); wRender(); }));
+            rules.addView(Ui.chip(c, fo ? "فقط اولین خرید ✓" : "همهٔ خریدها", fo, () -> { wput(wDraft, "firstOnly", !fo); wRender(); }));
+            wBody.addView(rules);
+            wBody.addView(Ui.muted(c, "سقف استفادهٔ کل (خالی = نامحدود)"));
+            EditText ul = Ui.input(c, "مثلاً ۱۰۰ بار", true);
+            if (wDraft.optInt("usageLimit", 0) > 0) ul.setText(String.valueOf(wDraft.optInt("usageLimit", 0)));
+            ul.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "usageLimit", (int) Ui.numVal(ul, 0)); } catch (Exception ignore) {} }
+            });
+            wBody.addView(ul);
+            wBody.addView(Ui.muted(c, "سقف برای هر مشتری (خالی = نامحدود)"));
+            EditText pc = Ui.input(c, "مثلاً ۱ بار برای هر مشتری", true);
+            if (wDraft.optInt("perCustomer", 0) > 0) pc.setText(String.valueOf(wDraft.optInt("perCustomer", 0)));
+            pc.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s2, int a, int b, int cc) {} public void onTextChanged(CharSequence s2, int a, int b, int cc) {}
+                public void afterTextChanged(android.text.Editable e2) { try { wput(wDraft, "perCustomer", (int) Ui.numVal(pc, 0)); } catch (Exception ignore) {} }
+            });
+            wBody.addView(pc);
+            if (wEdit != null) {
+                wBody.addView(Ui.muted(c, "وضعیت"));
+                Ui.Flow sr = Ui.wrap(c);
+                String cs = wDraft.optString("status", "ACTIVE");
+                for (String[] stt : new String[][]{{"ACTIVE", "فعال"}, {"PAUSED", "متوقف"}, {"ENDED", "پایان‌یافته"}})
+                    sr.addView(Ui.chip(c, stt[1], stt[0].equals(cs), () -> { wput(wDraft, "status", stt[0]); wRender(); }));
+                wBody.addView(sr);
+            }
+        }
+
+        String wAutoName() {
+            String k = wDraft.optString("kind", ""), cm = wDraft.optString("condMode", "NONE");
+            if ("NEXT".equals(k)) {
+                if ("COUNT".equals(cm)) return "هدیهٔ خرید بعدی پس از " + Ui.fa(String.valueOf(wDraft.optInt("count", 3))) + " خرید";
+                return "هدیهٔ خرید بعدی بالای " + Ui.money(wDraft.optDouble("spend", 0));
+            }
+            if ("GIFT".equals(k)) return "هدیهٔ " + Ui.fa(String.valueOf(Math.max(1, (int) wDraft.optDouble("value", 1)))) + " عدد " + (wGiftName.isEmpty() ? "کالای منتخب" : wGiftName);
+            if ("FIXED".equals(k)) return "تخفیف " + Ui.money(wDraft.optDouble("value", 0)) + " تومانی";
+            return "تخفیف " + Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + " درصدی";
+        }
+
+        String wCondText() {
+            String cm = wDraft.optString("condMode", "NONE");
+            if ("SPEND".equals(cm)) return "حداقل خرید " + Ui.money(wDraft.optDouble("spend", 0)) + " تومان";
+            if ("COUNT".equals(cm)) return "هر " + Ui.fa(String.valueOf(wDraft.optInt("count", 3))) + " خرید";
+            return "بدون شرط";
+        }
+
+        String wRewardText() {
+            String k = wDraft.optString("kind", "");
+            if ("NEXT".equals(k)) return "کوپن خرید بعدی " + ("FIXED".equals(wDraft.optString("rewardType")) ? Ui.money(wDraft.optDouble("value", 0)) + " تومان" : Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + "٪") + " (اعتبار " + Ui.fa(String.valueOf(wDraft.optInt("couponDays", 30))) + " روز)";
+            if ("GIFT".equals(k)) return Ui.fa(String.valueOf(Math.max(1, (int) wDraft.optDouble("value", 1)))) + " عدد «" + (wGiftName.isEmpty() ? "کالای منتخب" : wGiftName) + "» رایگان";
+            return "PERCENT".equals(k) ? Ui.fa(String.valueOf((int) wDraft.optDouble("value", 0))) + "٪ تخفیف" : Ui.money(wDraft.optDouble("value", 0)) + " تومان تخفیف";
+        }
+
+        String wScopeText() {
+            String sc = wDraft.optString("scope", "ALL");
+            if ("CATEGORY".equals(sc)) return "دسته‌ها: " + String.join("، ", wCats);
+            if ("PRODUCTS".equals(sc)) return Ui.fa(String.valueOf(wPicked.size())) + " کالای مشخص";
+            return "همهٔ محصولات";
+        }
+
+        String wTimeText() {
+            String tm = wDraft.optString("time", "NONE");
+            if ("DATE".equals(tm)) return "تا " + Ui.str(wUntil);
+            if ("DAYS".equals(tm)) return Ui.fa(String.valueOf(wDraft.optInt("days", 7))) + " روز از امروز";
+            return "بدون محدودیت زمانی";
+        }
+
+        void wStepReview() {
+            wQuestion("پیش‌نمایش و تایید", "نام جشنواره را بنویسید؛ همه‌چیز را چک کنید و ثبت کنید.");
+            if (wName == null) wName = Ui.input(c, "نام جشنواره *");
+            if (Ui.str(wName).isEmpty()) wName.setText(wAutoName());
+            wBody.addView(wName);
+            LinearLayout card = Ui.col(c);
+            card.setBackground(Ui.rounded(Ui.PRIMARY, 0, 18));
+            card.setPadding(Ui.dp(14), Ui.dp(14), Ui.dp(14), Ui.dp(14));
+            TextView hero = new TextView(c);
+            hero.setText("🎁 " + Ui.str(wName));
+            hero.setTextSize(16f); hero.setTypeface(Typeface.DEFAULT_BOLD); hero.setTextColor(Color.WHITE);
+            card.addView(hero);
+            TextView heroSub = new TextView(c);
+            heroSub.setText(wRewardText() + " با " + wCondText());
+            heroSub.setTextSize(12.5f); heroSub.setTextColor(0xE6FFFFFF);
+            heroSub.setPadding(0, Ui.dp(4), 0, 0);
+            card.addView(heroSub);
+            wBody.addView(card);
+            LinearLayout info = Ui.card(c, "خلاصه");
+            info.addView(Ui.kv(c, "پاداش", wRewardText(), Ui.GREEN));
+            info.addView(Ui.kv(c, "شرط", wCondText(), 0));
+            info.addView(Ui.kv(c, "محدوده", wScopeText(), 0));
+            info.addView(Ui.kv(c, "زمان", wTimeText(), 0));
+            info.addView(Ui.kv(c, "نحوهٔ اعمال", wDraft.optBoolean("autoApply", false) ? "خودکار در صندوق" : "انتخاب صندوق‌دار", 0));
+            if ("NEXT".equals(wDraft.optString("kind")))
+                info.addView(Ui.muted(c, "هنگام ثبت فاکتورِ واجد شرط، کوپن مخصوص مشتری صادر و پیامک می‌شود."));
+            wBody.addView(info);
+        }
+
+        /* build-518 — معماری واقعی محصول: نسخهٔ اندروید «مستقل» است؛ ذخیرهٔ جشنواره
+         * همیشه و اول روی خود گوشی انجام می‌شود (فوری، بدون هیچ نیاز به رایانه).
+         * اگر رایانهٔ جفت‌شده در دسترس بود، همان جشنواره در پس‌زمینه به آن هم
+         * منتقل می‌شود (به‌ترین‌تلاش = همگام‌سازی)؛ در دسترس نبودنش «خطا» نیست —
+         * فقط یک یادآوری کوچک است. هیچ پیام «اتصال به رایانه» در مسیر ذخیره نیست. */
+        String wSaveError = "";
+        String wPushNote = "";
+        void wSave() {
+            try { wSaveError = ""; wPushNote = ""; wSaveLocalFirst(); }
+            catch (Throwable error) {
+                String msg = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                wSaveError("ذخیره انجام نشد: " + msg);
+            }
+        }
+        void wSaveLocalFirst() throws Exception {
+            JSONObject req = wBuildRequest();
+            String method = wEdit != null ? "PATCH" : "POST";
+            String path = wEdit != null ? "/marketing/campaigns/" + wEdit.optLong("id") : "/marketing/campaigns";
+            long localRow = wEdit == null ? 0 : wEdit.optLong("id");
+            Object res = Local.handle(method, path, req.toString());
+            if (wEdit == null && res instanceof JSONObject) localRow = ((JSONObject) res).optLong("id");
+            if (Api.standalone() || localRow == 0) { wStep = 8; wRender(); return; }
+            final long lrow = localRow;
+            final long pcId = wEdit == null ? 0 : wEdit.optLong("pc_id", 0);
+            Runnable done = () -> { wStep = 8; wRender(); };
+            if (wEdit != null && pcId > 0)
+                Api.patch("/marketing/campaigns/" + pcId, req, r -> done.run(),
+                        e -> { wPushNote = "روی گوشی ذخیره شد؛ همگام‌سازی با رایانه بعد از اتصال انجام می‌شود"; done.run(); });
+            else
+                Api.post("/marketing/campaigns", req, r -> {
+                    try { long sid = r instanceof JSONObject ? ((JSONObject) r).optLong("id") : 0;
+                          if (sid > 0) Local.exec("UPDATE campaigns SET pc_id=?, is_local=0 WHERE id=?", sid, lrow); } catch (Throwable ignore) {}
+                    done.run();
+                }, e -> { wPushNote = "روی گوشی ذخیره شد؛ همگام‌سازی با رایانه بعد از اتصال انجام می‌شود"; done.run(); });
+        }
+        void wSaveError(String msg) { wSaveError = msg == null ? "" : msg; wRender(); }
+
+        JSONObject wBuildRequest() throws org.json.JSONException {
+            String name = Ui.str(wName);
+            JSONObject req = j("name", name, "status", wDraft.optString("status", "ACTIVE"));
+            String k = wDraft.optString("kind", ""), cm = wDraft.optString("condMode", "NONE");
+            boolean nextOnly = "NEXT".equals(k);
+            String dt = nextOnly ? ("FIXED".equals(wDraft.optString("rewardType")) ? "FIXED" : "PERCENT") : ("GIFT".equals(k) ? "GIFT" : k);
+            req.put("discount_type", dt);
+            putNum(req, "discount_value", "GIFT".equals(k) ? Math.max(1, (int) wDraft.optDouble("value", 1)) : wDraft.optDouble("value", 0));
+            putNum(req, "min_purchase", !nextOnly && "SPEND".equals(cm) ? wDraft.optDouble("spend", 0) : 0);
+            req.put("min_purchase_count", "COUNT".equals(cm) ? wDraft.optInt("count", 0) : 0);
+            req.put("reward_next_only", nextOnly);
+            if (nextOnly && "SPEND".equals(cm)) putNum(req, "auto_issue_threshold", wDraft.optDouble("spend", 0));
+            req.put("auto_issue_validity_days", Math.max(1, Math.min(3650, wDraft.optInt("couponDays", 30))));
+            req.put("auto_issue_sms", true);
+            String scope = wDraft.optString("scope", "ALL");
+            if ("GIFT".equals(k)) scope = "PRODUCTS"; /* هدیه همیشه به کالای هدف گره است */
+            req.put("target_type", scope);
+            JSONArray ids = new JSONArray();
+            try {
+                if ("PRODUCTS".equals(scope)) { for (String pid : wPicked) ids.put(Long.parseLong(pid)); }
+                else if ("CATEGORY".equals(scope)) { for (String cat : wCats) ids.put(cat); }
+                else if ("GIFT".equals(k)) ids.put(wGiftPid);
+            } catch (Exception ignore) {}
+            req.put("target_ids", ids);
+            req.put("auto_apply", wDraft.optBoolean("autoApply", false));
+            req.put("stackable", wDraft.optBoolean("stackable", false));
+            req.put("first_purchase_only", wDraft.optBoolean("firstOnly", false));
+            if (wDraft.optInt("usageLimit", 0) > 0) putNum(req, "usage_limit", wDraft.optInt("usageLimit", 0));
+            if (wDraft.optInt("perCustomer", 0) > 0) putNum(req, "per_customer_limit", wDraft.optInt("perCustomer", 0));
+            String tm = wDraft.optString("time", "NONE");
+            if ("DATE".equals(tm)) { String ed = dateIn(wUntil); if (ed != null) req.put("valid_until", ed + "T23:59:59"); }
+            else if ("DAYS".equals(tm)) {
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.add(java.util.Calendar.DAY_OF_YEAR, Math.max(1, wDraft.optInt("days", 7)));
+                req.put("valid_until", new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.getTime()) + "T23:59:59");
+            }
+            return req;
+        }
+
+        void wStepDone() {
+            LinearLayout ok = Ui.col(c);
+            ok.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            ok.setPadding(0, Ui.dp(30), 0, 0);
+            TextView tick = new TextView(c); tick.setText("✓"); tick.setTextSize(44f); tick.setTextColor(Ui.GREEN); tick.setGravity(android.view.Gravity.CENTER);
+            tick.setBackground(Ui.rounded(0x2222CBA6, 0, 999));
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(Ui.dp(86), Ui.dp(86)); tlp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            tick.setLayoutParams(tlp); tick.setGravity(android.view.Gravity.CENTER);
+            ok.addView(tick);
+            TextView t1 = new TextView(c); t1.setText(wEdit == null ? "جشنواره با موفقیت ایجاد شد!" : "تغییرات ذخیره شد!"); t1.setTextSize(17f); t1.setTypeface(Typeface.DEFAULT_BOLD); t1.setTextColor(Ui.TEXT); t1.setGravity(android.view.Gravity.CENTER); t1.setPadding(0, Ui.dp(16), 0, 0);
+            ok.addView(t1);
+            TextView t2 = Ui.muted(c, "می‌توانید از لیست جشنواره‌ها آن را مشاهده و در صورت نیاز ویرایش کنید.");
+            t2.setGravity(android.view.Gravity.CENTER); t2.setPadding(0, Ui.dp(6), 0, 0);
+            ok.addView(t2);
+            wBody.addView(ok);
+            wBody.addView(space(Ui.dp(18)));
+            wBody.addView(Ui.primary(c, "مشاهدهٔ جشنواره‌ها", () -> { wDialog.dismiss(); load(); }));
+            wBody.addView(space(Ui.dp(8)));
+            wBody.addView(Ui.ghost(c, "ایجاد جشنوارهٔ جدید", () -> { wEdit = null; wStep = 1; wDraft = wizardDraft(null); wName = null; wGiftPid = 0; wGiftName = ""; wPicked.clear(); wCats.clear(); wRender(); }));
+        }
+
+        void campaignWizardNew() { campaignWizard(null); }
+        static String trimNum(double v) {
+            return v == Math.floor(v) ? String.valueOf((long) v) : String.valueOf(v);
         }
         void newCoupon() {
             LinearLayout form = Ui.col(c);

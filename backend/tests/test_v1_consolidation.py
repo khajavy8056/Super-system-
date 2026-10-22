@@ -357,9 +357,12 @@ def test_release_workflow_is_real_and_version_dynamic():
 def test_launcher_opens_a_dedicated_window_not_the_default_browser():
     """§19 — a real Windows app, not a tab in whatever browser is default."""
     src = (WINDOWS_DIR / "run_supermarket.py").read_text(encoding="utf-8")
-    # The current contract explicitly rejects the old browser/app-mode fallback.
-    assert "webview.create_window" in src and '"edgechromium"' in src
+    # build-498: the contract is a NATIVE Qt app — the web shell is rejected outright.
+    # (تنها مجازِ باقی‌مانده: تابع پاک‌سازی «میراث» پروفایل قدیمی نصب‌های قبلی.)
+    assert "import webview" not in src and "pywebview" not in src
+    assert "webview.create_window" not in src and "edgechromium" not in src
     assert "webbrowser.open" not in src and "--app=" not in src
+    assert "from desktop.main import run_desktop_app" in src
     assert "native_window_error(log_file)" in src
 
 
@@ -375,7 +378,7 @@ def test_launcher_is_testable_on_linux():
     sys.modules["_launcher_probe"] = mod
     spec.loader.exec_module(mod)
 
-    assert callable(mod.open_native_window)
+    assert callable(mod.open_native_app)
     assert callable(mod.native_window_error)
 
 

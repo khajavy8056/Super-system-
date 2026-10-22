@@ -24,3 +24,6 @@ python-bidi>=0.4,<0.6          # from bidi.algorithm import get_display
 fonttools[woff]>=4.40,<5.0     # + brotli برای رمزگشایی WOFF2 وزیرمتن
 # چاپگر/سخت‌افزار اختیاری است و به‌صورت پیش‌فرض نصب نمی‌شود — requirements-hw.txt
 # (تست قرارداد «درایور نبود» در test_phase3 بر همین نصب پیش‌فرض حساب می‌کند).
+# I-15 — every CI image must reproduce tests; lock the toolchain:
+pytest>=8.2,<9.0
+pytest-asyncio>=0.23,<1.0

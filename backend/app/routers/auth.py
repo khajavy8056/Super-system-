@@ -95,7 +95,7 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()],
         write_audit(db, action="USER_LOGIN_FAILED", entity_type="User",
                     reference=form.username, ip_address=request.client.host if request.client else None)
         db.commit()
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="نام کاربری یا رمز اشتباه است")
 
     _clear_failures(key)
     user.last_login_at = datetime.utcnow()

@@ -49,7 +49,15 @@ public final class Db extends SQLiteOpenHelper {
     /** v3.0: close before a restore replaces the file; the next db() call reopens and re-runs onOpen(). */
     public static synchronized void shutdown() { try { if (I != null) I.close(); } catch (Exception ignore) {} }
     @Override public void onConfigure(SQLiteDatabase d) { super.onConfigure(d); d.setLocale(new java.util.Locale("fa", "IR")); try { d.enableWriteAheadLogging(); } catch (Exception ignore) {} }   // v3.3: readers never block on a long write (restore/import)
-    @Override public void onOpen(SQLiteDatabase d) { super.onOpen(d); try { d.execSQL(Insights.DDL); } catch (Exception ignore) {} try { indexes(d); } catch (Exception ignore) {} }
+    @Override public void onOpen(SQLiteDatabase d) {
+        super.onOpen(d);
+        try { d.execSQL(Insights.DDL); } catch (Exception ignore) {}
+        try { indexes(d); } catch (Exception ignore) {}
+        /* build-519 — خودترمیمی اسکیما: در هر باز شدن دیتابیس، ستون‌های جدید
+         * جشنواره‌ها ایدمپوتنت بررسی/ساخته می‌شوند؛ اگر مسیر upgrade از قلم
+         * بیفتد یا فایل قدیمی restore شود، «no such column» دیگر ممکن نیست. */
+        try { v13CampaignWizard(d); } catch (Exception ignore) {}
+    }
     /** v3.3 — indexes for stores with years of history (tens of thousands of invoices): every dashboard /
      *  report query is now a range scan on an index instead of a full-table scan. Idempotent. */
     static final String[] V4_INDEX = {
@@ -74,7 +82,7 @@ public final class Db extends SQLiteOpenHelper {
         android.database.sqlite.SQLiteStatement st = d.compileStatement("INSERT INTO journal_lines(jid,code,debit,credit) VALUES(?,?,?,?)");
         d.beginTransaction();
         try (Cursor c = d.rawQuery("SELECT id, lines FROM journal", null)) {
-            while (c.moveToNext()) { try { JSONArray ls = new JSONArray(c.getString(1)); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); st.clearBindings(); st.bindLong(1, c.getLong(0)); st.bindString(2, l.optString("code")); st.bindDouble(3, l.optDouble("debit")); st.bindDouble(4, l.optDouble("credit")); st.executeInsert(); } } catch (Exception ignore) {} }
+            while (c.moveToNext()) { try { JSONArray ls = new JSONArray(c.getString(1)); for (int i = 0; i < ls.length(); i++) { JSONObject l = ls.optJSONObject(i); st.clearBindings(); st.bindLong(1, c.getLong(0)); st.bindString(2, l.optString("code")); st.bindDouble(3, l.optDouble("debit", 0)); st.bindDouble(4, l.optDouble("credit", 0)); st.executeInsert(); } } catch (Exception ignore) {} }
             d.setTransactionSuccessful();
         } finally { d.endTransaction(); st.close(); }
     }
@@ -105,7 +113,7 @@ public final class Db extends SQLiteOpenHelper {
         "CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
         "CREATE TABLE IF NOT EXISTS bank(barcode TEXT PRIMARY KEY, name TEXT, brand TEXT, unit TEXT, category TEXT, image_url TEXT, source TEXT, updated_at TEXT)",   // v2.7 بانک کالا
         "CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, symbol TEXT, allow_decimal INTEGER DEFAULT 0, decimals INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)",
-        "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, max_discount REAL, valid_until TEXT, status TEXT DEFAULT 'ACTIVE', auto_issue_threshold REAL, min_purchase_count INTEGER DEFAULT 0, reward_next_only INTEGER DEFAULT 0, created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_value REAL, min_purchase REAL DEFAULT 0, customer_phone TEXT, valid_until TEXT, usage_limit INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'ACTIVE', created_at TEXT)",
         "CREATE TABLE IF NOT EXISTS price_history(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, price_type TEXT, price REAL, effective_from TEXT, is_active INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS stocktakes(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, area TEXT, status TEXT DEFAULT 'DRAFT', scheduled_for TEXT, created_at TEXT, started_at TEXT, completed_at TEXT, approved_at TEXT)",
@@ -178,7 +186,7 @@ public final class Db extends SQLiteOpenHelper {
     // bump, so the ALTER never executed and every putProduct then threw
     // "no column named gallery", aborting the whole catalogue import. Bumping the
     // version is what makes the migration actually reach existing installs.
-    static final int VERSION = 12;
+    static final int VERSION = 13;
     static void v9UserIdentity(SQLiteDatabase d) {
         try { d.execSQL("ALTER TABLE users ADD COLUMN pc_username TEXT"); } catch (Exception ignore) {}
         try { d.execSQL("CREATE INDEX IF NOT EXISTS ix_users_pc_id ON users(pc_id)"); } catch (Exception ignore) {}
@@ -269,6 +277,14 @@ public final class Db extends SQLiteOpenHelper {
         addColumn(d, "campaigns", "auto_issue_validity_days INTEGER NOT NULL DEFAULT 30");
         addColumn(d, "campaigns", "auto_issue_sms INTEGER NOT NULL DEFAULT 1");
     }
+    /** build-519 — جادوگر جشنواره: شرط تعداد خرید + «پاداش فقط خرید بعدی».
+     *  ریشهٔ خطای «no such column: min_purchase_count» روی گوشی‌هایی که دیتابیس‌شان
+     *  از قبل در نسخهٔ ۱۲ بود: ستون‌ها داخل بلوک v12 گره خورده بودند و هرگز اجرا
+     *  نمی‌شدند. حالا بلوک ارتقای مستقل + خودترمیمی در onOpen (پایین). */
+    static void v13CampaignWizard(SQLiteDatabase d) {
+        addColumn(d, "campaigns", "min_purchase_count INTEGER NOT NULL DEFAULT 0");
+        addColumn(d, "campaigns", "reward_next_only INTEGER NOT NULL DEFAULT 0");
+    }
 
     @Override public void onUpgrade(SQLiteDatabase d, int a, int b) {
         if (a < 3) v2(d);
@@ -281,6 +297,7 @@ public final class Db extends SQLiteOpenHelper {
         if (a < 10) v10OfflineAllowed(d); // per-user cached/offline sign-in permission
         if (a < 11) v11PosBenefits(d); // offline coupons/campaigns and invoice benefit snapshots
         if (a < 12) v12PosAutoIssue(d); // next-purchase offer settings for offline POS
+        if (a < 13) v13CampaignWizard(d); // build-519 — campaign wizard columns
     }
 
     /* ---------------- kv ---------------- */
@@ -294,6 +311,58 @@ public final class Db extends SQLiteOpenHelper {
     private static void cachePut0(String path, String json) { ContentValues cv = new ContentValues(); cv.put("path", path); cv.put("json", json); cv.put("at", now()); w().insertWithOnConflict("cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE); }
     public static String cacheGet(String path) { try (Cursor c = w().rawQuery("SELECT json FROM cache WHERE path=?", new String[]{path})) { return c.moveToFirst() ? c.getString(0) : null; } }
     public static void cacheClearForUser(long userId) { if (userId > 0) w().delete("cache", "path LIKE ?", new String[]{"u/" + userId + "/%"}); }
+
+    /* ---------------- build-497 — Factory Reset سمت گوشی ----------------
+     * پاک‌سازی دادهٔ عملیاتی محلی؛ «هویت» می‌ماند: کاربران، نشست، جفت‌سازی
+     * (Prefs) و تنظیمات سیستمی kv. بعد از بازنشانی رایانه، گوشی با همین متد
+     * دادهٔ دورهٔ قبلی را پاک می‌کند تا اطلاعات دو دوره با هم قاطی نشود (§۵/§۷). */
+
+    /** جداول عملیاتی محلی که در بازنشانی خالی می‌شوند (کاربران/نشست/تنظیمات سیستمی حذف نمی‌شوند). */
+    private static final String[] WIPE_TABLES = {
+            "invoice_items", "movements", "ledger", "conflicts", "ops", "invoices",
+            "batches", "products", "customers",
+            "campaigns", "coupons", "pos_campaign_redemptions", "price_history",
+            "stocktakes", "stocktake_items", "warehouses", "locations",
+            "expense_categories", "expenses", "suppliers", "cheques", "journal",
+            "journal_lines", "cash_sessions",
+            "local_shifts", "local_shift_assignments", "local_attendance",
+            "local_announcements", "local_announcement_reads", "local_payroll",
+            "cache",
+    };
+
+    /**
+     * دادهٔ عملیاتی محلی را پاک می‌کند و تعداد فاکتورِ همگام‌نشدهٔ حذف‌شده را
+     * برمی‌گرداند (برای اطلاع صادقانه به کاربر). کاربران، kv سیستمی و Prefs
+     * (نشست/جفت‌سازی) دست‌نخورده می‌مانند — برنامه بلافاصله از نو همگام می‌شود.
+     */
+    public static int wipeOperational() {
+        BULK_WRITE_LOCK.lock();
+        SQLiteDatabase d = w();
+        try {
+            d.beginTransaction();
+            int unsynced = 0;
+            try {
+                unsynced = (int) countForUser("ops", null);
+                for (String t : WIPE_TABLES) { try { d.delete(t, null, null); } catch (Exception ignore) {} }
+                // شمارندهٔ شماره‌گذاری محلی و نشانگرهای همگام‌سازی از نو شروع می‌شوند
+                try { d.delete("kv", "k LIKE ?", new String[]{"cursor_user_%"}); } catch (Exception ignore) {}
+                try { d.delete("kv", "k LIKE ?", new String[]{"data_epoch_user_%"}); } catch (Exception ignore) {}
+                try { d.delete("kv", "k LIKE ?", new String[]{"shift_status_%"}); } catch (Exception ignore) {}
+                kv("last_pull", "");
+                kv("last_sync", "");
+                d.setTransactionSuccessful();
+            } finally { d.endTransaction(); }
+            return unsynced;
+        } finally { BULK_WRITE_LOCK.unlock(); }
+    }
+
+    /** تعداد ردیف جدول برای گزارش بازنشانی (کارت پیش‌نمایش گوشی). */
+    public static long tableCount(String table) { try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM " + table, null)) { return c.moveToFirst() ? c.getLong(0) : 0; } catch (Exception e) { return 0; } }
+
+    private static long countForUser(String table, Long userId) {
+        if (userId == null) { try (Cursor c = w().rawQuery("SELECT COUNT(*) FROM ops WHERE synced=0", null)) { return c.moveToFirst() ? c.getLong(0) : 0; } catch (Exception e) { return 0; } }
+        return 0;
+    }
 
     /* ---------------- catalogue merge from PC ---------------- */
     public static void applyPull(JSONObject pull, boolean full) {
@@ -382,11 +451,11 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("discount_type", campaign.optString("discount_type", "PERCENT"));
         cv.put("discount_value", campaign.optDouble("discount_value", 0));
         cv.put("min_purchase", campaign.optDouble("min_purchase", 0));
-        if (campaign.isNull("max_purchase")) cv.putNull("max_purchase"); else cv.put("max_purchase", campaign.optDouble("max_purchase"));
-        if (campaign.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", campaign.optDouble("max_discount"));
+        if (campaign.isNull("max_purchase")) cv.putNull("max_purchase"); else cv.put("max_purchase", campaign.optDouble("max_purchase", 0));
+        if (campaign.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", campaign.optDouble("max_discount", 0));
         cv.put("valid_from", campaign.isNull("valid_from") ? null : campaign.optString("valid_from"));
         cv.put("valid_until", campaign.isNull("valid_until") ? null : campaign.optString("valid_until"));
-        if (campaign.isNull("auto_issue_threshold")) cv.putNull("auto_issue_threshold"); else cv.put("auto_issue_threshold", campaign.optDouble("auto_issue_threshold"));
+        if (campaign.isNull("auto_issue_threshold")) cv.putNull("auto_issue_threshold"); else cv.put("auto_issue_threshold", campaign.optDouble("auto_issue_threshold", 0));
         cv.put("auto_issue_validity_days", campaign.optInt("auto_issue_validity_days", 30));
         cv.put("auto_issue_sms", campaign.optBoolean("auto_issue_sms", true) ? 1 : 0);
         cv.put("target_type", campaign.optString("target_type", "ALL"));
@@ -410,7 +479,7 @@ public final class Db extends SQLiteOpenHelper {
         cv.put("customer_phone", coupon.isNull("customer_phone") ? null : coupon.optString("customer_phone"));
         cv.put("discount_type", coupon.optString("discount_type", "PERCENT")); cv.put("discount_value", coupon.optDouble("discount_value", 0));
         cv.put("min_purchase", coupon.optDouble("min_purchase", 0));
-        if (coupon.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", coupon.optDouble("max_discount"));
+        if (coupon.isNull("max_discount")) cv.putNull("max_discount"); else cv.put("max_discount", coupon.optDouble("max_discount", 0));
         cv.put("valid_from", coupon.isNull("valid_from") ? null : coupon.optString("valid_from"));
         cv.put("valid_until", coupon.isNull("valid_until") ? null : coupon.optString("valid_until"));
         if (coupon.isNull("usage_limit")) cv.putNull("usage_limit"); else cv.put("usage_limit", coupon.optInt("usage_limit", 1));
@@ -545,6 +614,16 @@ public final class Db extends SQLiteOpenHelper {
         }
         d.execSQL("UPDATE local_payroll SET pc_id=?,is_local=0,updated_at=? WHERE id=?", new Object[]{remoteId, now(), remoteId});
     }
+    /** build-500 — وضعیت حقوق پس از تأیید/پرداخت (اتصال کارکنان↔حسابداری) به‌روز شود. */
+    public static void markPayrollStatus(long id, String status, String paymentRef) {
+        if (id == 0 || status == null || status.isEmpty()) return;
+        ContentValues cv = new ContentValues();
+        cv.put("status", status);
+        if (paymentRef != null && !paymentRef.isEmpty()) cv.put("payment_ref", paymentRef);
+        cv.put("updated_at", now());
+        w().update("local_payroll", cv, "id=?", new String[]{String.valueOf(id)});
+    }
+
     public static void markAnnouncementSynced(long localId, long remoteId) {
         if (localId == 0 || remoteId <= 0) return;
         kv("hr_announcement_remote_" + localId, String.valueOf(remoteId));
@@ -1120,13 +1199,34 @@ public final class Db extends SQLiteOpenHelper {
     public static JSONObject productById(long id) {
         try (Cursor c = w().rawQuery("SELECT json FROM products WHERE id=?", new String[]{String.valueOf(id)})) { return c.moveToFirst() ? withBatches(c.getString(0)) : null; }
     }
+
+    /** build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای فروش محلی
+     *  (فاکتورهای ابطال‌نشده) که همین حالا قابل فروش‌اند (بچ فعال با موجودی). خروجی همان
+     *  شکل نتایج جست‌وجوست، پس لمس هر کاشی مستقیماً همان مسیر افزودن به سبد را می‌رود. */
+    public static List<JSONObject> fastMovers(int limit) {
+        List<JSONObject> out = new ArrayList<>();
+        int cap = Math.max(1, Math.min(60, limit)), scan = cap * 3;
+        String sql = "SELECT ii.product_id, SUM(ii.qty) sq FROM invoice_items ii JOIN invoices i ON i.id=ii.invoice_id" +
+                     " WHERE ii.product_id>0 AND IFNULL(i.status,'PAID')<>'VOID' GROUP BY ii.product_id ORDER BY sq DESC LIMIT ?";
+        try (Cursor c = w().rawQuery(sql, new String[]{String.valueOf(scan)})) {
+            while (c.moveToNext() && out.size() < cap) {
+                JSONObject p = productById(c.getLong(0));
+                if (p == null || !p.optBoolean("is_active", true)) continue;
+                JSONArray bs = p.optJSONArray("batches");
+                if (bs == null || bs.length() == 0 || p.optDouble("available_qty", 0) <= 0) continue;
+                try { p.put("sold_qty", c.getDouble(1)); } catch (Exception ignore) {}
+                out.add(p);
+            }
+        } catch (Exception ignore) {}
+        return out;
+    }
     /** Live eligibility for a POS action, distinct from inventory (which must show expired stock). */
     public static JSONObject sellableProductById(long id) {
         try (Cursor c=w().rawQuery("SELECT json FROM products WHERE id=? AND is_active=1",new String[]{String.valueOf(id)})) {
             if(!c.moveToFirst()) return null;
             JSONObject p=withBatches(c.getString(0)); JSONArray all=p.optJSONArray("batches"), good=new JSONArray(); double total=0;
             boolean block="true".equals(Local.setting("expiry.block_sale","true")); String today=Jalali.todayIso().substring(0,10);
-            for(int i=0;all!=null&&i<all.length();i++){JSONObject b=all.optJSONObject(i);String expiry=b.isNull("expiry_date")?"":b.optString("expiry_date");if(block&&!expiry.isEmpty()&&expiry.compareTo(today)<0)continue;good.put(b);total+=b.optDouble("current_qty");}
+            for(int i=0;all!=null&&i<all.length();i++){JSONObject b=all.optJSONObject(i);String expiry=b.isNull("expiry_date")?"":b.optString("expiry_date");if(block&&!expiry.isEmpty()&&expiry.compareTo(today)<0)continue;good.put(b);total+=b.optDouble("current_qty", 0);}
             p.put("batches",good);p.put("available_qty",total);return p;
         } catch(Exception e) { return null; }
     }
@@ -1159,7 +1259,9 @@ public final class Db extends SQLiteOpenHelper {
         String qty = "IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty END),0)";
         StringBuilder sql = new StringBuilder(
             "SELECT p.id, p.name, p.barcode, p.min_stock_alert, " + qty + ","
-            + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0)"
+            + " IFNULL(SUM(CASE WHEN b.status='ACTIVE' THEN b.current_qty*b.buy_price END),0),"
+            + " IFNULL(NULLIF(p.image_url,''), IFNULL((SELECT bk.image_url FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')),"
+            + " IFNULL((SELECT bk.category FROM bank bk WHERE bk.barcode=p.barcode LIMIT 1),'')"
             + " FROM products p LEFT JOIN batches b ON b.product_id=p.id WHERE p.is_active=1");
         java.util.List<String> args = new ArrayList<>();
         if (!f.isEmpty()) { sql.append(" AND (p.name LIKE ? OR p.barcode LIKE ?)"); args.add("%" + f + "%"); args.add("%" + f + "%"); }
@@ -1176,6 +1278,8 @@ public final class Db extends SQLiteOpenHelper {
                     o.put("product_id", c.getLong(0)); o.put("name", c.getString(1)); o.put("barcode", c.getString(2));
                     o.put("min_stock_alert", c.getDouble(3)); o.put("total_stock", c.getDouble(4));
                     o.put("total_qty", c.getDouble(4)); o.put("value_at_cost", c.getDouble(5));
+                    /* build-513 — تصویر و دسته برای فهرست انبار (کاشی تصویری مثل «کالاها») */
+                    o.put("image_url", c.getString(6)); o.put("category_name", c.getString(7));
                 } catch (Exception ignore) {}
                 out.add(o);
             }
@@ -1224,6 +1328,11 @@ public final class Db extends SQLiteOpenHelper {
     }
     /** Apply a sale locally: decrement batches, store the invoice; returns the local number. */
     public static String localSale(JSONObject payload, double total) throws Exception {
+        // build-501 — NaN هرگز به ContentValues/execSQL نمی‌رسد («Forbidden numeric value» در مبدأ خنثی می‌شود)
+        if (!Double.isFinite(total)) throw new IllegalStateException("مبلغ فاکتور نامعتبر است");
+        // build-502 — سد نهایی: کل بارِ فروش (هم شاخهٔ آنلاین و هم موتور محلی) بازگشتی پاک‌سازی می‌شود؛
+        // هیچ Double غیرمتناهی در خودِ payload یا هر تودرتوی آن باقی نمی‌ماند.
+        payload = Local.sanitizePayload(payload);
         try { Insights.applyMarkdownSteps(); } catch (Exception ignore) {}   // v4.8.0 — تخفیف سررسیدشده پیش از فروش (مثل صندوق رایانه)
         SQLiteDatabase d = w(); d.beginTransaction();
         try {
@@ -1233,7 +1342,11 @@ public final class Db extends SQLiteOpenHelper {
                 if (bid != 0) d.execSQL("UPDATE batches SET current_qty=MAX(0, current_qty-?) WHERE id=?", new Object[]{it.optDouble("quantity", 1), bid});
             }
             String no = "M-" + String.format("%06d", counter("inv_no"));
-            JSONObject issuedCodes = Local.issueLocalAutoCoupons(payload, no, total);
+            // build-502 — صدور کوپن خودکار «پاداشِ» فروش است، نه پیش‌نیاز آن؛ هر خطایی در آن
+            // (مثل ستون NULL جشنواره) هرگز نباید کل فروش را rollback کند.
+            JSONObject issuedCodes;
+            try { issuedCodes = Local.issueLocalAutoCoupons(payload, no, total); }
+            catch (Throwable couponFailure) { issuedCodes = new JSONObject(); android.util.Log.w("Db", "auto-coupon issue skipped", couponFailure); }
             if (issuedCodes.length() > 0) payload.put("client_issued_coupon_codes", issuedCodes);
             ContentValues cv = new ContentValues(); cv.put("local_no", no); cv.put("total", total); cv.put("item_count", items == null ? 0 : items.length());
             JSONArray pays = payload.optJSONArray("payments"); String method = pays != null && pays.length() > 0 ? pays.optJSONObject(0).optString("method", "CASH") : "CASH";
@@ -1261,7 +1374,7 @@ public final class Db extends SQLiteOpenHelper {
                 d.execSQL("INSERT INTO invoice_items(inv,product_id,batch_id,qty,unit_sell_price,unit_buy_price,discount,subtotal) VALUES(?,?,?,?,?,?,?,?)", new Object[]{rid, it.optLong("product_id"), bid, q, pr, buy, it.optDouble("discount", 0), q * pr - it.optDouble("discount", 0)});
                 d.execSQL("INSERT INTO movements(product_id,batch_id,movement_type,quantity,reference_type,reference_id,user,created_at) VALUES(?,?,'SALE_OUT',?,'Invoice',?,?,?)", new Object[]{it.optLong("product_id"), bid, -q, no, Screens.userName(), now()});
             }
-            if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += pays.optJSONObject(i).optDouble("amount"); d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
+            if (credit && payload.has("customer_id")) { double cr = 0; for (int i = 0; i < pays.length(); i++) if ("CREDIT".equals(pays.optJSONObject(i).optString("method"))) cr += Double.isFinite(pays.optJSONObject(i).optDouble("amount", 0)) ? pays.optJSONObject(i).optDouble("amount", 0) : 0; d.execSQL("INSERT INTO ledger(customer_id,entry_type,amount,note,ref,created_at) VALUES(?,'CHARGE',?,?,?,?)", new Object[]{payload.optLong("customer_id"), cr, "خرید نسیه", no, now()}); }
             if (!payload.optString("coupon_code").isEmpty()) d.execSQL("UPDATE coupons SET used_count=used_count+1, status=CASE WHEN used_count+1>=usage_limit THEN 'USED' ELSE status END WHERE code=?", new Object[]{payload.optString("coupon_code")});
             long campaignId = payload.optLong("campaign_id", 0);
             if (campaignId > 0) {

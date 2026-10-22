@@ -90,7 +90,7 @@ class Ext:
     @property
     def first_visit(self) -> dict[int, datetime]:
         return self._m("first_visit", lambda: {r[0]: r[1] for r in self.db.execute(
-            select(Invoice.customer_id, func.min(Invoice.created_at)).where(Invoice.status == PAID, Invoice.customer_id.is_not(None))
+            select(Invoice.customer_id, func.min(Invoice.created_at)).where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.customer_id.is_not(None))
             .group_by(Invoice.customer_id)).all()})
 
     @property
@@ -185,7 +185,7 @@ class Ext:
     def first_sold(self) -> dict[int, datetime]:
         return self._m("first_sold", lambda: {r[0]: r[1] for r in self.db.execute(
             select(InvoiceItem.product_id, func.min(Invoice.created_at)).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-            .where(Invoice.status == PAID).group_by(InvoiceItem.product_id)).all()})
+            .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"])).group_by(InvoiceItem.product_id)).all()})
 
     @property
     def stocktake_diffs(self) -> list[StocktakeItem]:
@@ -1047,7 +1047,7 @@ def a_seasonal_yoy(ctx: Ctx) -> list[Draft]:
     db = ctx.db
     since = ctx.now_utc - timedelta(days=400)
     rows_db = db.execute(select(InvoiceItem.product_id, Invoice.created_at, InvoiceItem.qty).join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-                         .where(Invoice.status == PAID, Invoice.created_at >= since, Invoice.created_at < ctx.since(300))).all()
+                         .where(Invoice.status.in_(["PAID", "PARTIALLY_REFUNDED"]), Invoice.created_at >= since, Invoice.created_at < ctx.since(300))).all()
     if len(rows_db) < 200:
         return []
     jy, jm, _ = to_jalali(datetime.combine(ctx.today, datetime.min.time()) + timedelta(days=20))   # the month we are about to enter / in

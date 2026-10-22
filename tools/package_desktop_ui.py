@@ -20,4 +20,6 @@ def build(version: str = UI_VERSION):
     out.with_suffix('.zip.sha256').write_text(digest+'  '+out.name+'\n')
     print(out,digest)
     return out
-if __name__=='__main__':build()
+if __name__=='__main__':
+    import sys
+    build(sys.argv[1] if len(sys.argv)>1 else UI_VERSION)

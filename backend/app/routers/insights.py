@@ -65,7 +65,8 @@ def summary(db: Session = Depends(get_db), _: User = Depends(require_permission(
 
 @router.post("/run")
 def run_now(kinds: str | None = None, days: int = 90, db: Session = Depends(get_db),
-            _: User = Depends(require_permission("reports.view"))):
+            _: User = Depends(require_permission("reports.view_all"))):
+    """I-18: running full intelligence analysis is heavy (DQ gate + 78 analyzers); require manager permission."""
     return svc.run(db, kinds=kinds.split(",") if kinds else None, days=days)
 
 

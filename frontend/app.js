@@ -154,6 +154,18 @@ function el(tag, attrs = {}, ...children) {
 function showLogin() {
   $("#app-view").classList.add("hidden");
   $("#login-view").classList.remove("hidden");
+  /* build-511 — شناسنامهٔ نسخه روی خود صفحهٔ ورود: اگر «بک‌اند» قدیمی بود،
+   * همین‌جا معلوم می‌شود نه بعد از اینکه امکان‌ها کار نکنند. */
+  const el = $("#login-build");
+  if (el) {
+    el.textContent = `رابط ${fa(UI_BUILD)}`;
+    api("/system/health").then((h) => {
+      const b = h && h.build ? fa(String(h.build)) : "؟";
+      el.textContent = `رابط ${fa(UI_BUILD)} · بک‌اند ${b} · نسخهٔ ${esc((h && h.version) || "؟")}`;
+      if (h && h.build && h.build < UI_BUILD * 100)
+        el.innerHTML += ` — <b style="color:#f59e0b">بک‌اند نصب‌شده قدیمی است؛ Setup/پرتابل جدید را نصب کنید.</b>`;
+    }).catch(() => {});
+  }
 }
 function showApp() {
   $("#login-view").classList.add("hidden");
@@ -168,7 +180,11 @@ $("#login-form").addEventListener("submit", async (e) => {
     const form = new URLSearchParams({ username, password });
     const res = await fetch(API + "/auth/login", { method: "POST", body: form });
     const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || "ورود ناموفق");
+    if (!res.ok) {
+      const d = body && body.detail;
+      const msg = typeof d === "object" ? (d.message || d.code || JSON.stringify(d)) : (d || "ورود ناموفق");
+      throw new Error(msg);
+    }
     state.token = body.access_token;
     localStorage.setItem("token", state.token);
     await initAuthenticatedSession(true);
@@ -329,10 +345,10 @@ const ICONS = {
   star: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8-6.1-3.4-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>',
 };
 
-/* ui-build-496 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
+/* ui-build-520 — نشان ساخت رابط کاربری؛ سازندهٔ ویندوز همین رشته را در فایل اجرایی
    راستی‌آزمایی می‌کند تا هرگز نسخهٔ قدیمی UI بسته‌بندی نشود (باگ مالک: «نصبی قدیمی است»).
    واحد این عدد «صدم بیلد» است و از mobile-android/BUILD مشتق می‌شود (تست v48). */
-const UI_BUILD = 496;
+const UI_BUILD = 525;
 
 const icon = (name, size = 18) =>
   `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none"
@@ -1534,7 +1550,7 @@ RENDER.dashboard = async () => {
             <div class="sg"><div class="sg-ring" style="--p:${Math.min(100, gaugePct)};--c:#4f8cff"><span>${fa(gaugePct)}٪</span></div><b>فروش امروز</b></div>
             <div class="sg"><div class="sg-ring" style="--p:${d.inventory.product_count ? Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100) : 100};--c:#f59e0b"><span>${d.inventory.product_count ? fa(Math.round(((d.inventory.product_count - zeroCount) / d.inventory.product_count) * 100)) + "٪" : "—"}</span></div><b>موجودی کالا</b></div>
           </div>
-          <div class="og-status-foot"><span class="muted">نسخهٔ ۱٫۰٫۴۹۶ · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
+          <div class="og-status-foot"><span class="muted">نسخهٔ ${esc(state.version || "1.0.510")} · بیلد ${fa(UI_BUILD)}</span><span class="muted">${esc((state.store && state.store.name) || "فروشگاه")}</span></div>
         </section>` : ""}
         ${can("audit.view") ? `<section class="dcard og-acts">
           <div class="dcard-head">
@@ -1605,7 +1621,8 @@ RENDER.dashboard = async () => {
       <span>با هوش مصنوعی، هوش خود را هوشمندتر مدیریت کنید</span>
       <button class="btn btn-sm btn-primary" onclick="go('insights')">گفت‌وگو</button>
     </div>` : ""}
-    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.496")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
+    ${state.build && state.build < UI_BUILD * 100 ? `<div class="alert alert-warn" style="margin:0 0 12px;border:1px solid #f59e0b55;background:#f59e0b18;border-radius:10px;padding:10px 14px">⚠️ رابط شما نسخهٔ ${fa(UI_BUILD)} است اما <b>بک‌اند نصب‌شده قدیمی‌تر</b> است (بیلد ${fa(String(state.build))}). امکان‌های تازه (پرفروش‌ها، جشنواره‌ها، …) تا نصب Setup جدید کار نمی‌کنند — از پوشهٔ <code>installer/windows</code> گزینهٔ <b>BUILD-SETUP.bat</b> را اجرا و نصب کنید و یک‌بار صفحه را با Ctrl+F5 تازه کنید.</div>` : ""}
+    <div class="dash-foot">Rasa System v${esc(state.version || "1.0.510")} · رابط ${fa(UI_BUILD)} · Made with ❤️ for better business</div>
     ${canView("insights") ? `<button class="ai-fab" onclick="go('insights')" title="هوش فروشگاه — پیشنهاد، اجرا و سنجش" aria-label="هوش فروشگاه">
       <span class="ai-spark"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg></span>
       <span>هوش فروشگاه</span>
@@ -2138,6 +2155,7 @@ RENDER.pos = async () => {
         <div class="pos-clock" id="pos-clock"></div>
         <button class="btn btn-sm" id="pos-kiosk-btn">${state.kiosk ? "خروج از قفل" : "قفل صندوق (میان‌بر)"}</button>
       </div>
+      <div class="pos-fast hidden" id="pos-fast"></div>
       <div class="pos-main">
         <div class="pos-cart">
           <div class="pos-cart-head"><h3 id="pos-cart-title">سبد خرید فعلی</h3><span class="muted" id="pos-cart-count"></span></div>
@@ -2168,6 +2186,7 @@ RENDER.pos = async () => {
     </div>`;
   $("#pos-hold-btn").addEventListener("click", () => posHold());
   renderHeldDock();
+  loadFastMovers();   // build-508 — نوار پرفروش‌ها با تصویر، برای افزودن با یک کلیک
   $("#pos-scan").addEventListener("keydown", async (e) => {
     if (e.key === "ArrowDown") {
       const first = document.querySelector(".pos-suggest .sug");
@@ -2206,6 +2225,42 @@ RENDER.pos = async () => {
   renderPosCart();
   $("#pos-scan").focus();
 };
+
+/* build-508 — نوار «پرفروش‌ها» صندوق (درخواست مالک): پرفروش‌ترین کالاهای روزهای
+ * اخیر با تصویر واقعی، به‌شکل نواری افقی بالای صندوق؛ کلیک روی هر کاشی همان مسیر
+ * افزودن جست‌وجو را می‌رود (posAddResolved → انتخاب بچ/تعداد خودکار). اگر فروشی
+ * نباشد یا سرور در دسترس نباشد، نوار اصلاً نشان داده نمی‌شود و صندوق مثل قبل است. */
+async function loadFastMovers() {
+  const box = $("#pos-fast");
+  if (!box) return;
+  try {
+    const r = await api("/pos/fast-movers?days=30&limit=16");
+    const items = (r && r.items) || [];
+    if (!items.length) {   // build-510 — بخش همیشه دیده شود؛ نه اینکه بی‌صدا حذف شود
+      box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>
+        <span class="muted" style="align-self:center">پس از ثبت چند فاکتور، پرفروش‌ترین کالاها با یک کلیک اینجا می‌آیند.</span>`;
+      box.classList.remove("hidden"); return;
+    }
+    box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>` + items.map((i) => `
+      <button class="pos-fast-item" data-id="${i.product_id}" title="${esc(i.name)} — موجودی ${qty(i.available_qty)}">
+        ${i.image_url ? `<img src="${esc(i.image_url)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'pos-fast-noimg',textContent:'…'}))" />`
+                      : `<span class="pos-fast-noimg">${icon("box", 20)}</span>`}
+        <span class="pos-fast-name">${esc(i.name)}</span>
+        <span class="pos-fast-sub">${fa(Number(i.sold_qty || 0).toLocaleString("en-US"))} فروش</span>
+      </button>`).join("");
+    box.classList.remove("hidden");
+    box.querySelectorAll(".pos-fast-item").forEach((node) => node.addEventListener("click", async () => {
+      const item = items.find((x) => String(x.product_id) === node.dataset.id);
+      if (item) await posAddResolved(item);
+    }));
+  } catch (e) {
+    /* build-511 — پایان حذف بی‌صدا: اگر سرور پاسخ نداد (مثلاً بک‌اند قدیمی)،
+     * نوار با دلیل واقعی دیده می‌شود تا کاربر بداند چرا خالی است. */
+    box.innerHTML = `<span class="pos-fast-title">${icon("trend", 15)} پرفروش‌ها</span>
+      <span class="muted" style="align-self:center">نمایش پرفروش‌ها به بک‌اند جدید نیاز دارد (${esc(e.message || "خطا")}) — Setup/پرتابل جدید را نصب کنید.</span>`;
+    box.classList.remove("hidden");
+  }
+}
 
 function hideSuggest() {
   const box = $("#pos-suggest");
@@ -2404,7 +2459,7 @@ window.posClearCampaign = () => { posState.campaign = null; posState.campaignInf
 async function posCampaignModal() {
   if (!posState.cart.length) { toast("سبد خالی است؛ ابتدا کالا اضافه کنید", "err"); return; }
   const gross = posState.cart.reduce((a, it) => a + posGross(it) - (it.discount || 0), 0);
-  let rows = [];
+  let rows = [], issueNow = [];
   try {
     const r = await api("/pos/campaigns/eligible", { method: "POST", body: JSON.stringify({
       amount: gross,
@@ -2412,7 +2467,10 @@ async function posCampaignModal() {
       customer_id: posState.customer ? posState.customer.id : null,
       include_auto_apply: true }) });
     rows = r.campaigns || [];
-  } catch (e) { toast(e.message, "err"); return; }
+    issueNow = r.issue_on_checkout || [];   // build-509 — کدام جشنواره‌ها با همین فاکتور کوپن می‌دهند
+  } catch (e) {
+    toast("بخش جشنواره در دسترس نیست: " + (e.message || "خطای نامشخص"), "err"); return;
+  }
   const list = rows.map((c) => `
     <label class="row" style="gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--shell-border, #333)">
       <input type="radio" name="camp-pick" value="${c.campaign_id}" ${posState.campaign === c.campaign_id ? "checked" : ""} />
@@ -2426,6 +2484,7 @@ async function posCampaignModal() {
   openModal(`<h3>جشنواره‌های قابل اعمال</h3>
     <p class="muted">فقط جشنواره‌هایی که شرایطشان برای همین سبد برقرار است نمایش داده می‌شوند؛
       سرور هنگام ثبت فروش دوباره بررسی می‌کند.</p>
+    ${issueNow.length ? `<p class="muted" style="background:var(--bg2);border:1px dashed var(--border);border-radius:8px;padding:8px">🎁 ${issueNow.map((x) => `«${esc(x.name)}»: با ثبت همین فاکتور، کد تخفیف خرید بعدی (${x.discount_type === "PERCENT" ? fmt(x.discount_value) + "٪" : money(x.discount_value)}) به‌صورت خودکار صادر و روی رسید و پیامک فاکتور می‌آید`).join("<br/>")}</p>` : ""}
     <div id="camp-list">${list}</div>
     <button id="camp-apply" class="btn btn-primary btn-block" style="margin-top:14px">اعمال جشنواره</button>
     ${posState.campaign ? `<button id="camp-clear" class="btn btn-block" style="margin-top:8px">حذف جشنوارهٔ انتخابی</button>` : ""}`);
@@ -2599,10 +2658,13 @@ async function doCheckout(total) {
       toast(`جشنواره «${inv.campaign_name}» روی فاکتور اعمال شد — ${money(inv.benefit_amount)} تخفیف`);
     }
     if (inv.issued_coupon) {
-      openModal(`<h3>🎁 کوپن خرید بعدی</h3>
-        <p>برای این مشتری کوپن <code style="font-size:18px">${esc(inv.issued_coupon.code)}</code> صادر شد.</p>
-        <p class="muted">${inv.issued_coupon.valid_until ? "اعتبار تا " + esc(inv.issued_coupon.valid_until.slice(0, 10)) : ""}
-          — همراه پیامک فاکتور ارسال می‌شود.</p>
+      const ic = inv.issued_coupon;
+      const val = ic.discount_type === "PERCENT" ? fmt(ic.discount_value) + "٪" : money(ic.discount_value);
+      openModal(`<h3>🎁 کوپن خرید بعدی صادر شد</h3>
+        <p>کد تخفیف <code style="font-size:20px;font-weight:800">${esc(ic.code)}</code> به ارزش <b>${val}</b>
+          ${ic.campaign_name ? ` از «${esc(ic.campaign_name)}»` : ""} برای این مشتری صادر شد.</p>
+        <p class="muted">${ic.valid_until ? "اعتبار تا " + faDateTime(ic.valid_until, false) + " · " : ""}
+          روی رسید چاپ شد، در پیامک فاکتور می‌آید و در پروندهٔ مشتری هم ذخیره است.</p>
         <button class="btn btn-primary btn-block" onclick="closeModal()">باشه</button>`);
     }
     try {
@@ -4162,6 +4224,7 @@ const SET_CATEGORIES = [
   { id: "network",  label: "شبکه",            prefixes: ["network."] },
   { id: "security", label: "امنیت",           prefixes: ["security."] },
   { id: "backup",   label: "پشتیبان‌گیری",    prefixes: ["backup."], panel: "backup" },
+  { id: "factory",  label: "بازنشانی کارخانه", prefixes: [], panel: "factory" },
   { id: "catalog",  label: "بانک محصولات (اکسل + تصاویر)", prefixes: [], panel: "catalog" },
   { id: "theme",    label: "ظاهر (روشن/تیره)", prefixes: ["ui."], panel: "theme" },
   { id: "update",   label: "به‌روزرسانی",     prefixes: ["update."], panel: "update" },
@@ -4192,6 +4255,99 @@ RENDER.settings = async () => {
   renderSettingsPanel(SET_CATEGORIES[0], allRows);
 };
 
+
+/* ---------- build-497 — Factory Reset (بازنشانی به تنظیمات کارخانه، §۱۲) ----------
+ * سه‌مرحله‌ای و اجباری: پیش‌نمایش دقیق ← تأیید تایپی «RESET» + رمز مدیر ← اجرا با پشتیبان اجباری.
+ * هیچ حذفی بدون دیدن گزارش «چه حذف می‌شود / چه حفظ می‌شود» ممکن نیست.
+ * --------------------------------------------------------------------------- */
+async function renderFactoryResetPanel(body) {
+  const card = el("div", { class: "card", id: "factory-card" });
+  card.innerHTML = `<h3>بازنشانی به تنظیمات کارخانه (Factory Reset)</h3>
+    <p class="muted">برنامه را به وضعیت پایه برمی‌گرداند. این عملیات حساس است:
+    پیش از هر حذفی، <b>پشتیبان امن</b> ساخته می‌شود؛ کاربران، نقش‌ها، دسترسی‌ها،
+    لایسنس، جفت‌سازی گوشی‌ها و پشتیبان‌های روی دیسک <b>همیشه حفظ می‌شوند</b>.</p>
+    <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0">
+      <label>دامنهٔ بازنشانی:
+        <select id="fr-scope" style="min-width:280px">
+          <option value="transactions">داده‌های عملیاتی (فروش، موجودی، حسابداری…) — کالا و مشتری می‌مانند</option>
+          <option value="full">کامل — کاتالوگ و مشتریان هم پاک و تنظیمات کسب‌وکار به پیش‌فرض برمی‌گردد</option>
+        </select>
+      </label>
+      <button class="btn" id="fr-preview">۱) نمایش دقیق گزارش</button>
+    </div>
+    <div id="fr-report" class="muted">گزارشی نمایش داده نشده است.</div>
+    <div id="fr-confirm-box" style="display:none;margin-top:14px;border-top:1px dashed var(--line,#ccc);padding-top:12px">
+      <p><b>برای تأیید، عبارت <code>RESET</code> را دقیقاً تایپ کنید و رمز مدیر را وارد نمایید:</b></p>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="fr-confirm" placeholder="RESET" style="width:140px" autocomplete="off"/>
+        <input id="fr-password" type="password" placeholder="رمز مدیر" style="width:200px" autocomplete="off"/>
+        <button class="btn btn-danger" id="fr-run">۲) بازنشانی کن</button>
+      </div>
+      <p class="muted" style="margin-top:6px">پس از اجرا، گوشی‌های جفت‌شده در اولین همگام‌سازی تغییر را تشخیص می‌دهند و دادهٔ محلی را از نو همگام می‌کنند.</p>
+    </div>
+    <div id="fr-result" style="margin-top:12px"></div>`;
+  body.append(card);
+
+  const fmt = (n) => Number(n || 0).toLocaleString("fa-IR");
+  let previewData = null;
+
+  $("#fr-preview").onclick = async () => {
+    const scope = $("#fr-scope").value;
+    const rep = $("#fr-report");
+    rep.textContent = "در حال تهیهٔ گزارش…";
+    try {
+      previewData = await api(`/system/factory-reset/preview?scope=${encodeURIComponent(scope)}`);
+      const wipedRows = Object.entries(previewData.wiped_tables || {})
+        .sort((a, b) => (b[1] > 0 ? 1 : -1))
+        .map(([t, c]) => `<tr><td><code>${esc(t)}</code></td><td class="num">${c < 0 ? "خطا" : fmt(c)}</td></tr>`)
+        .join("");
+      const kept = (previewData.kept_tables || []).map((t) => `<code>${esc(t)}</code>`).join(" · ");
+      const resetKeys = (previewData.reset_setting_keys || []);
+      rep.innerHTML = `
+        <div class="card" style="border:1px solid #b91c1c33">
+          <b>دامنه: ${scope === "full" ? "کامل" : "داده‌های عملیاتی"}</b> —
+          مجموع ${fmt(previewData.wiped_total_rows)} ردیف حذف می‌شود · دورهٔ داده: ${fmt(previewData.epoch_current)} → ${fmt(previewData.epoch_after)}
+          <div class="grid grid-2" style="margin-top:10px;gap:14px">
+            <div><b>حذف می‌شوند (جدول: ردیف)</b>
+              <div style="max-height:240px;overflow:auto"><table><tbody>${wipedRows || "<tr><td>—</td></tr>"}</tbody></table></div>
+            </div>
+            <div><b>حفظ می‌شوند</b>
+              <p style="margin:6px 0">${kept}</p>
+              <b>تنظیمات حفظ‌شده (زیرساخت/لایسنس/جفت‌سازی):</b>
+              <p style="margin:6px 0;max-height:120px;overflow:auto;font-size:12px">${(previewData.kept_setting_keys || []).map((k) => `<code>${esc(k)}</code>`).join(" · ") || "—"}</p>
+              ${scope === "full" ? `<b>تنظیماتی که به پیش‌فرض برمی‌گردند (${resetKeys.length}):</b>
+              <p style="margin:6px 0;max-height:120px;overflow:auto;font-size:12px">${resetKeys.map((k) => `<code>${esc(k)}</code>`).join(" · ") || "—"}</p>` : ""}
+            </div>
+          </div>
+          <ul class="muted" style="margin:8px 0 0">${(previewData.notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
+        </div>`;
+      $("#fr-confirm-box").style.display = "block";
+    } catch (e) {
+      rep.textContent = "گزارش تهیه نشد: " + (e.message || e);
+    }
+  };
+
+  $("#fr-run").onclick = async () => {
+    const result = $("#fr-result");
+    if (!previewData) { toast("ابتدا گزارش را ببینید"); return; }
+    if ($("#fr-confirm").value !== previewData.confirm_phrase) { toast("برای تأیید باید RESET را دقیقاً تایپ کنید"); return; }
+    if (!window.confirm("آیا مطمئن هستید؟ این عملیات داده‌ها را حذف می‌کند (با پشتیبان اجباری).")) return;
+    result.textContent = "در حال پشتیبان‌گیری و بازنشانی…";
+    try {
+      const out = await api("/system/factory-reset", { method: "POST", body: JSON.stringify({
+        scope: $("#fr-scope").value, confirm: $("#fr-confirm").value, password: $("#fr-password").value }) });
+      result.innerHTML = `<div class="card" style="border:1px solid #16a34a55">
+        <b>✅ بازنشانی انجام شد</b> — دورهٔ دادهٔ جدید: ${fmt(out.epoch)}<br/>
+        <span class="muted">پشتیبان امن: <code>${esc(out.backup_path)}</code> (${fmt(Math.round((out.backup_size || 0) / 1024))} کیلوبایت) ·
+        ${fmt(out.wiped_total_rows)} ردیف پاک شد.</span></div>`;
+      $("#fr-confirm-box").style.display = "none";
+      previewData = null;
+      toast("بازنشانی کارخانه انجام شد");
+    } catch (e) {
+      result.textContent = "بازنشانی انجام نشد: " + (e.message || e);
+    }
+  };
+}
 
 /* ---------- v3.4 — «بانک محصولات» از پوشه: Excel + pic folders → products, images, catalog.pack ---------- */
 const CATALOG_HELP = `پوشهٔ بانک محصولات را باز کنید و کل پوشه‌های خود را (با همان ساختار) داخل آن کپی کنید:
@@ -4361,6 +4517,7 @@ async function renderSettingsPanel(cat, allRows) {
   }
 
   if (cat.panel === "backup") { await InsightsSettings.backup(body); return; }
+  if (cat.panel === "factory") { await renderFactoryResetPanel(body); return; }
   if (cat.panel === "catalog") { await renderCatalogFolderCard(body); return; }
   if (cat.panel === "ai") { await InsightsSettings.ai(body, allRows); return; }
   if (cat.panel === "dev") {
@@ -5079,7 +5236,7 @@ RENDER.marketing = async () => {
   const v = $("#view");
   if (!v) return;
   const canManage = can("marketing.manage");
-  v.innerHTML = `<div class="grid grid-4" id="mk-stats"></div>
+  v.innerHTML = `<div id="mk-campaign-chart"></div><div class="grid grid-4" id="mk-stats"></div>
     <div class="grid grid-2" style="margin-top:14px">
       <div class="card">
         <div class="card-head"><h3>کوپن‌ها</h3>
@@ -5122,6 +5279,34 @@ async function loadMarketingStats() {
       statCard("مصرف‌شده", fmt(by.USED || 0), ""),
       statCard("ارزش تخفیف داده‌شده", money(s ? s.redeemed_value : 0), ""),
     );
+    /* build-511 — تحلیل جشنواره‌ها: نمودار مصرف + روند ۳۰ روز + جزئیات برای جدول */
+    window._campaignStats = {};
+    const detail = (s && s.campaigns_detail) || [];
+    detail.forEach((d) => { window._campaignStats[d.id] = d; });
+    const chartEl = $("#mk-campaign-chart");
+    if (chartEl && chartEl.isConnected && detail.length) {
+      const top = detail.slice(0, 8);
+      const maxU = Math.max(1, ...top.map((c) => c.used_count || 0));
+      const bars = top.map((c) => {
+        const h = Math.round(((c.used_count || 0) / maxU) * 90) + 6;
+        return `<div class="mk-bar" title="${esc(c.name)} — ${fmt(c.used_count || 0)} بار استفاده · ${money(c.redeemed_value || 0)} تخفیف">
+          <span class="mk-bar-v">${fmt(c.used_count || 0)}</span>
+          <div class="mk-bar-f" style="height:${h}px;background:var(--primary,#4f8cff);border-radius:4px 4px 0 0;width:100%"></div>
+          <span class="mk-bar-l muted" style="font-size:11px">${esc(c.name.length > 14 ? c.name.slice(0, 13) + "…" : c.name)}</span></div>`;
+      }).join("");
+      const days = (s && s.redemptions_by_day) || [];
+      const maxD = Math.max(1, ...days.map((d) => d.n || 0));
+      const trend = days.map((d) => {
+        const h = Math.round(((d.n || 0) / maxD) * 34) + 3;
+        return `<div class="mk-day" title="${esc(d.day)} — ${fmt(d.n || 0)} استفاده" style="flex:1"><div style="height:${h}px;background:var(--accent,#22c55e);border-radius:2px 2px 0 0"></div></div>`;
+      }).join("");
+      chartEl.innerHTML = `<div class="card" style="margin:0 0 14px">
+        <h3 style="margin:0 0 8px">${icon("trend", 17)} مصرف جشنواره‌ها <span class="muted">بیشترین استفاده</span></h3>
+        <div style="display:flex;gap:12px;align-items:flex-end;overflow-x:auto;padding:4px 0">${bars}</div>
+        ${days.length ? `<h3 style="margin:12px 0 6px">${icon("clock", 15)} روند استفاده <span class="muted">۳۰ روز اخیر</span></h3>
+        <div style="display:flex;gap:2px;align-items:flex-end;height:40px">${trend}</div>` : ""}
+      </div>`;
+    }
   } catch (e) {
     const target = $("#mk-stats");
     if (target && target.isConnected) target.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p></div>`;
@@ -5169,6 +5354,7 @@ window._blockCoupon = async (id) => {
   } catch (e) { toast(e.message, "err"); }
 };
 
+const _campaignCache = {};
 async function loadCampaigns() {
   const tableEl = $("#mk-camps");
   if (!tableEl || !tableEl.isConnected) return;
@@ -5177,18 +5363,42 @@ async function loadCampaigns() {
     const target = $("#mk-camps");
     if (!target || !target.isConnected) return;
     const rows = Array.isArray(raw) ? raw : [];
+    rows.forEach((c) => { _campaignCache[c.id] = c; });
+    const canManage = can("marketing.manage");
+    const STATUS_FA = { ACTIVE: "فعال", PAUSED: "مکث", ENDED: "پایان‌یافته" };
     const body = rows.map((c) => `<tr>
-        <td>${esc(c.name)}${c.auto_issue_threshold ? `<div class="muted">صدور خودکار بالای ${money(c.auto_issue_threshold)}</div>` : ""}</td>
+        <td><b>${esc(c.name)}</b>${c.description ? `<div class="muted">${esc(c.description)}</div>` : ""}
+          ${c.auto_issue_threshold ? `<div class="muted">🎁 صدور خودکار بالای ${money(c.auto_issue_threshold)} — کوپن ${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}، اعتبار ${fa(c.auto_issue_validity_days)} روز${c.auto_issue_sms ? " + پیامک" : ""}</div>` : ""}
+          ${c.target_type === "PRODUCTS" ? `<div class="muted">فقط کالاهای: ${(c.target_ids || []).map(fa).join("، ")}</div>` : ""}
+          ${c.first_purchase_only ? `<div class="muted">فقط اولین خرید مشتری</div>` : ""}
+          ${(c.valid_from || c.valid_until) ? `<div class="muted">بازه: ${c.valid_from ? faDateTime(c.valid_from, false) : "—"} تا ${c.valid_until ? faDateTime(c.valid_until, false) : "—"}</div>` : ""}</td>
         <td>${c.discount_type === "PERCENT" ? fmt(c.discount_value) + "٪" : money(c.discount_value)}</td>
         <td>${c.min_purchase ? money(c.min_purchase) : "—"}</td>
-        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : "amber"}">${esc(c.status)}</span></td>
+        <td>${fa(c.used_count || 0)}${(() => { const d = window._campaignStats && window._campaignStats[c.id]; return `${d && d.issued_coupons ? `<div class="muted">کوپن صادره: ${fa(d.issued_coupons)}</div>` : ""}${d && d.last_used ? `<div class="muted">آخرین: ${faDateTime(d.last_used, false)}</div>` : ""}`; })()}</td>
+        <td>${(() => { const d = window._campaignStats && window._campaignStats[c.id]; return d ? money(d.redeemed_value || 0) : "—"; })()}</td>
+        <td><span class="badge badge-${c.status === "ACTIVE" ? "green" : c.status === "PAUSED" ? "amber" : ""}">${STATUS_FA[c.status] || esc(c.status)}</span></td>
+        <td>${canManage ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="campaignModal(_campaignCache[${c.id}])">ویرایش</button>
+            ${c.status === "ACTIVE" ? `<button class="btn btn-sm" onclick="campaignSetStatus(${c.id}, 'PAUSED')">توقف</button>` : c.status === "PAUSED" ? `<button class="btn btn-sm btn-primary" onclick="campaignSetStatus(${c.id}, 'ACTIVE')">ادامه</button>` : ""}
+            ${c.status !== "ENDED" ? `<button class="btn btn-sm btn-ghost" onclick="campaignSetStatus(${c.id}, 'ENDED')">پایان</button>` : ""}
+          </div>` : ""}</td>
       </tr>`).join("");
-    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>وضعیت</th></tr></thead>
-      <tbody>${body || `<tr><td colspan="4" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
+    target.innerHTML = `<thead><tr><th>نام</th><th>تخفیف</th><th>حداقل خرید</th><th>استفاده</th><th>تخفیف داده‌شده</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="7" class="muted empty">کمپینی ثبت نشده است</td></tr>`}</tbody>`;
   } catch (e) {
     const target = $("#mk-camps");
     if (target && target.isConnected) target.innerHTML = `<tbody><tr><td class="error">${esc(e.message)}</td></tr></tbody>`;
   }
+}
+
+async function campaignSetStatus(id, status) {
+  try {
+    const cur = (await api("/marketing/campaigns")).find((x) => x.id === id);
+    if (!cur) return;
+    await api(`/marketing/campaigns/${id}`, { method: "PATCH", body: JSON.stringify({ ...cur, status }) });
+    toast(status === "PAUSED" ? "کمپین متوقف شد" : status === "ENDED" ? "کمپین پایان یافت" : "کمپین فعال شد");
+    loadCampaigns(); loadMarketingStats();
+  } catch (e) { toast(e.message, "err"); }
 }
 
 function couponModal() {
@@ -5231,52 +5441,112 @@ function couponModal() {
   });
 }
 
-function campaignModal() {
-  openModal(`<h3>کمپین / جشنواره جدید</h3>
-    <label>نام</label><input id="cm-name" placeholder="جشنواره پاییز" />
+/* build-509 — فرم کامل کمپین/جشنواره: ساخت «انواع» جشنواره با همهٔ توانمندی‌های مدل
+ * (بازهٔ اعتبار جلالی، هدف‌گیری کالا، فقط اولین خرید، سقف هر مشتری، اولویت، پیامک
+ * کوپن، اعمال خودکار، ترکیب‌پذیری) — و ویرایش همان جشنواره با یک دیالوگ. */
+function campaignModal(camp) {
+  const c = camp || {};
+  const jdate = (iso) => {
+    if (!iso) return "";
+    try { const d = new Date(iso); const j = window.jalali ? jalali.toJalali(d.getFullYear(), d.getMonth() + 1, d.getDate()) : null;
+      return j ? `${j.jy}/${String(j.jm).padStart(2, "0")}/${String(j.jd).padStart(2, "0")}` : ""; } catch (e) { return ""; }
+  };
+  const gdate = (txt) => {
+    txt = (txt || "").trim(); if (!txt) return null;
+    const m = txt.match(/^(1[34]\d{2})\/(\d{1,2})\/(\d{1,2})$/);   // 1405/07/21
+    if (!m) return null;
+    try { const g = jalali.toGregorian(+m[1], +m[2], +m[3]);
+      return new Date(g.gy, g.gm - 1, g.gd, 12, 0, 0).toISOString(); } catch (e) { return null; }
+  };
+  const targets = (c.target_ids || []).join(", ");
+  openModal(`<h3>${camp ? "ویرایش کمپین / جشنواره" : "کمپین / جشنواره جدید"}</h3>
+    <label>نام</label><input id="cm-name" value="${esc(c.name || "")}" placeholder="جشنواره پاییز" />
+    <label>توضیح (اختیاری)</label><input id="cm-desc" value="${esc(c.description || "")}" placeholder="توضیح کوتاه برای گزارش‌ها" />
     <div class="form-row">
       <div><label>نوع تخفیف</label><select id="cm-type">
-        <option value="PERCENT">درصدی</option><option value="FIXED">مبلغ ثابت</option></select></div>
-      <div><label>مقدار</label><input id="cm-value" type="number" value="10" /></div>
+        <option value="PERCENT" ${c.discount_type !== "FIXED" ? "selected" : ""}>درصدی</option>
+        <option value="FIXED" ${c.discount_type === "FIXED" ? "selected" : ""}>مبلغ ثابت</option></select></div>
+      <div><label>مقدار</label><input id="cm-value" type="number" value="${c.discount_value != null ? c.discount_value : 10}" /></div>
     </div>
     <div class="form-row">
-      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="400000" /></div>
-      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" placeholder="بدون سقف" /></div>
+      <div><label>حداقل خرید</label><input id="cm-min" type="number" value="${c.min_purchase != null ? c.min_purchase : 0}" />
+      <div><label>تعداد خرید (بعد از N بار)</label><input id="cm-count" type="number" min="0" value="${c.min_purchase_count || 0}"></div></div>
+      <div><label>سقف خرید (اختیاری)</label><input id="cm-maxpurchase" type="number" value="${c.max_purchase || ""}" placeholder="بدون سقف" /></div>
     </div>
     <div class="form-row">
-      <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="1000000" /></div>
-      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" placeholder="نامحدود" /></div>
+      <div><label>سقف تخفیف</label><input id="cm-max" type="number" value="${c.max_discount || ""}" placeholder="بدون سقف" /></div>
+      <div><label>سقف استفاده (کل)</label><input id="cm-usage" type="number" value="${c.usage_limit || ""}" placeholder="نامحدود" /></div>
     </div>
     <div class="form-row">
-      <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="1000000" /></div>
-      <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="30" /></div>
+      <div><label>سقف هر مشتری</label><input id="cm-percust" type="number" value="${c.per_customer_limit || ""}" placeholder="نامحدود" /></div>
+      <div><label>اولویت (۱ = اول)</label><input id="cm-prio" type="number" min="1" max="5" value="${c.priority || 3}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>از تاریخ (جلالی ۱۴۰۵/۰۷/۰۱)</label><input id="cm-from" placeholder="اختیاری" value="${jdate(c.valid_from)}" /></div>
+      <div><label>تا تاریخ (جلالی)</label><input id="cm-until" placeholder="اختیاری" value="${jdate(c.valid_until)}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>هدف تخفیف</label><select id="cm-target">
+        <option value="ALL" ${c.target_type !== "PRODUCTS" ? "selected" : ""}>کل سبد</option>
+        <option value="PRODUCTS" ${c.target_type === "PRODUCTS" ? "selected" : ""}>فقط کالاهای مشخص</option></select></div>
+      <div><label>شناسهٔ کالاها (با کاما)</label><input id="cm-ids" placeholder="مثلاً ۱۲,۳۴" value="${esc(targets)}" /></div>
+    </div>
+    <div class="form-row">
+      <div><label>صدور خودکار برای خرید بالای</label><input id="cm-thr" type="number" value="${c.auto_issue_threshold != null ? c.auto_issue_threshold : ""}" placeholder="خاموش" /></div>
+      <div><label>اعتبار کوپن (روز)</label><input id="cm-days" type="number" value="${c.auto_issue_validity_days || 30}" /></div>
     </div>
     <div class="form-row">
       <div><label>نوع اعمال در صندوق</label><select id="cm-apply">
-        <option value="SELECT">انتخاب توسط صندوق‌دار (F10)</option>
-        <option value="AUTO">اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
+        <option value="SELECT" ${!c.auto_apply ? "selected" : ""}>انتخاب توسط صندوق‌دار (F10)</option>
+        <option value="AUTO" ${c.auto_apply ? "selected" : ""}>اعمال خودکار هنگام واجد شرایط بودن</option></select></div>
       <div><label>ترکیب با کوپن</label><select id="cm-stack">
-        <option value="0">خیر</option><option value="1">بله</option></select></div>
+        <option value="0" ${!c.stackable ? "selected" : ""}>خیر</option>
+        <option value="1" ${c.stackable ? "selected" : ""}>بله</option></select></div>
     </div>
-    <p class="muted">وقتی مبلغ فاکتور از آستانه عبور کند، یک کوپن خرید بعدی صادر و همراه پیامک فاکتور ارسال می‌شود.
-      جشنواره‌های «اعمال خودکار» هنگام ثبت فروش، به‌شرط برقراری شرایط، روی فاکتور اعمال و ثبت می‌شوند.</p>
-    <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">ثبت کمپین</button>`);
+    <div class="form-row">
+      <div><label>فقط اولین خرید مشتری</label><select id="cm-first">
+        <option value="0" ${!c.first_purchase_only ? "selected" : ""}>خیر</option>
+        <option value="1" ${c.first_purchase_only ? "selected" : ""}>بله</option></select></div>
+      <div><label>وضعیت</label><select id="cm-status">
+        <option value="ACTIVE" ${(c.status || "ACTIVE") === "ACTIVE" ? "selected" : ""}>فعال</option>
+        <option value="PAUSED" ${c.status === "PAUSED" ? "selected" : ""}>مکث</option>
+        <option value="ENDED" ${c.status === "ENDED" ? "selected" : ""}>پایان‌یافته</option></select></div>
+    </div>
+    <p class="muted">وقتی مبلغ فاکتور از «صدور خودکار» عبور کند، یک کد تخفیف برای خرید بعدی مشتری صادر می‌شود؛ روی رسید چاپ، در پیامک فاکتور ارسال و در پروندهٔ مشتری ذخیره می‌شود. تاریخ‌ها را جلالی وارد کنید (خالی = همیشه).</p>
+    <button id="cm-save" class="btn btn-primary btn-block" style="margin-top:14px">${camp ? "ذخیرهٔ تغییرات" : "ثبت کمپین"}</button>`);
   $("#cm-save").addEventListener("click", async () => {
+    const bad = [];
+    const from = gdate($("#cm-from").value), until = gdate($("#cm-until").value);
+    if ($("#cm-from").value.trim() && !from) bad.push("«از تاریخ» جلالی نامعتبر است");
+    if ($("#cm-until").value.trim() && !until) bad.push("«تا تاریخ» جلالی نامعتبر است");
+    if (bad.length) { toast(bad.join(" · "), "err"); return; }
     try {
-      await api("/marketing/campaigns", { method: "POST", body: JSON.stringify({
+      const body = {
         name: $("#cm-name").value.trim() || "کمپین",
+        description: $("#cm-desc").value.trim() || null,
         discount_type: $("#cm-type").value,
         discount_value: Number($("#cm-value").value || 0),
         min_purchase: Number($("#cm-min").value || 0),
+        min_purchase_count: Number($("#cm-count").value || 0),
+        reward_next_only: false,
         max_discount: Number($("#cm-max").value || 0) || null,
         max_purchase: Number($("#cm-maxpurchase").value || 0) || null,
         usage_limit: Number($("#cm-usage").value || 0) || null,
-        auto_apply: $("#cm-apply") ? $("#cm-apply").value === "AUTO" : false,
-        stackable: $("#cm-stack") ? $("#cm-stack").value === "1" : false,
+        per_customer_limit: Number($("#cm-percust").value || 0) || null,
+        priority: Math.min(5, Math.max(1, Number($("#cm-prio").value || 3))),
+        valid_from: from, valid_until: until,
+        target_type: $("#cm-target").value,
+        target_ids: ($("#cm-ids").value || "").split(/[،,\s]+/).map((x) => parseInt(x, 10)).filter((x) => x > 0),
+        first_purchase_only: $("#cm-first").value === "1",
+        auto_apply: $("#cm-apply").value === "AUTO",
+        stackable: $("#cm-stack").value === "1",
         auto_issue_threshold: Number($("#cm-thr").value || 0) || null,
         auto_issue_validity_days: Number($("#cm-days").value || 30),
-      }) });
-      closeModal(); toast("کمپین ثبت شد"); loadCampaigns(); loadMarketingStats();
+        status: $("#cm-status").value,
+      };
+      if (camp) await api(`/marketing/campaigns/${camp.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/marketing/campaigns", { method: "POST", body: JSON.stringify(body) });
+      closeModal(); toast(camp ? "تغییرات ذخیره شد" : "کمپین ثبت شد"); loadCampaigns(); loadMarketingStats();
     } catch (e) { toast(e.message, "err"); }
   });
 }
@@ -5696,6 +5966,10 @@ window.smsDebtReminder = async (id) => {
 
 /* ---------- boot ---------- */
 async function boot() {
+  /* build-510 — ضدتلهٔ «آپدیت دیدنی نیست»: نسخهٔ واقعی بک‌اند از همان ابتدا خوانده
+   * می‌شود تا (الف) پانویس داشبورد نسخهٔ درست را نشان دهد و (ب) اگر رابط تازه ولی
+   * بک‌اندِ نصب‌شده قدیمی باشد (Setup نصب‌نشده)، هشدار صریح بالا صفحه بیاید. */
+  try { const h = await api("/system/health"); state.version = h.version || state.version; state.build = h.build || 0; } catch (_) {}
   if (window.Onboarding) await Onboarding.gate();   // v1.5: first-run wizard / licence
   if (!state.token) { showLogin(); return; }
   try {

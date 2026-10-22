@@ -76,6 +76,21 @@ public final class Sync {
                     Api.online = false; lastRun = System.currentTimeMillis(); return;
                 }
                 JSONObject res = (JSONObject) r;
+                // build-497 — تشخیص «بازنشانی کارخانه» روی رایانه: اگر epoch داده
+                // عوض شده باشد، دادهٔ دورهٔ قبل روی گوشی معتبر نیست؛ پاک و از نو همگام می‌شود.
+                String epoch = res.optString("data_epoch", "");
+                if (!epoch.isEmpty()) {
+                    String epochKey = "data_epoch_user_" + ownerUserId;
+                    String epochBefore = Db.kv(epochKey);
+                    if (epochBefore != null && !epochBefore.isEmpty() && !epochBefore.equals(epoch)) {
+                        final int dropped = Db.wipeOperational();
+                        Db.kv(cursorKey, null);
+                        Api.ui(() -> Ui.toast(dropped > 0
+                                ? "رایانه بازنشانی شد؛ " + Ui.num(dropped) + " فروش همگام‌نشدهٔ دورهٔ قبل حذف شد"
+                                : "رایانه بازنشانی شد؛ همگام‌سازی از نو انجام می‌شود"));
+                    }
+                    Db.kv(epochKey, epoch);
+                }
                 JSONArray ap = res.optJSONArray("applied");
                 for (int i = 0; ap != null && i < ap.length(); i++) {
                     JSONObject a = ap.getJSONObject(i); String id = a.optString("id"); String st = a.optString("status");
@@ -102,6 +117,12 @@ public final class Sync {
                                 } else if (opType.startsWith("PAYROLL_")) {
                                     localId = original.optLong("local_payroll_id"); remoteId = result.optLong("payroll_id", result.optLong("id"));
                                     if (localId != 0 && remoteId > 0) Db.markPayrollSynced(localId, remoteId);
+                                    // build-500 — اتصال کارکنان↔حسابداری: با تأیید/پرداخت روی
+                                    // رایانه، وضعیت «حقوق» در بخش کارکنان همان لحظه درست شود.
+                                    if ("PAYROLL_APPROVE".equals(opType))
+                                        Db.markPayrollStatus(remoteId != 0 ? remoteId : localId, result.optString("status", "APPROVED"), null);
+                                    else if ("PAYROLL_PAY".equals(opType))
+                                        Db.markPayrollStatus(remoteId != 0 ? remoteId : localId, result.optString("status", "PAID"), result.optString("payment_ref", ""));
                                 }
                             }
                             if (result.has("invoice_number") && !src.isNull("local_no")) Db.markInvoiceSynced(src.optString("local_no"), result.optString("invoice_number"));

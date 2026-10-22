@@ -34,7 +34,18 @@ public final class Prefs {
     private static String read(SharedPreferences prefs, String key, String def) {
         String value = prefs.getString(key, def);
         if (value == null || !secret(key)) return value;
-        if (value.startsWith(SEALED)) return unseal(key, value);
+        if (value.startsWith(SEALED)) {
+            try { return unseal(key, value); }
+            catch (Exception e) {
+                android.util.Log.w("Prefs", "corrupt/lost credential " + key + ", clearing for re-pair: " + e);
+                // Keystore key lost (OS reset / signing-key change) — the ciphertext can
+                // never be decrypted again. Delete it so the app can re-pair/re-login
+                // instead of crashing on every launch. Non-secret prefs (setup_done,
+                // store_name, database) are untouched → data stays.
+                try { prefs.edit().remove(key).apply(); } catch (Exception ignore) {}
+                return def;
+            }
+        }
         // One-time migration of prior plaintext preferences. Do not return a credential from
         // a partially-written/corrupt ciphertext; authentication must fail closed instead.
         write(prefs, key, value);

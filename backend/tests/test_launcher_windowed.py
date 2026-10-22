@@ -28,12 +28,13 @@ def test_launcher_becomes_healthy_without_console(tmp_path):
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
     env.pop("DATABASE_URL", None)
     code = (
-        # This is a headless logging/readiness test, NOT a real WebView2 test.
-        # The required native shell is stubbed instead of restoring a browser fallback.
+        # This is a headless logging/readiness test, NOT a real UI test.
+        # The required NATIVE desktop UI is stubbed; there is no browser fallback.
         "import sys, runpy, types, time; "
-        "sys.modules['webview'] = types.SimpleNamespace("
-        "create_window=lambda *a, **k: types.SimpleNamespace(events=types.SimpleNamespace()), "
-        "start=lambda **k: time.sleep(60)); "
+        "desktop = types.ModuleType('desktop'); desktop_main = types.ModuleType('desktop.main'); "
+        "desktop_main.run_desktop_app = lambda **k: time.sleep(60); "
+        "desktop.main = desktop_main; "
+        "sys.modules['desktop'] = desktop; sys.modules['desktop.main'] = desktop_main; "
         "sys.stdout = None; sys.stderr = None; "
         f"sys.argv = ['run_supermarket']; runpy.run_path({str(LAUNCHER)!r}, run_name='__main__')"
     )
