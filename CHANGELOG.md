@@ -44,9 +44,11 @@
 
 **باقی‌مانده (اصلاح نشد)**
 
-* بستهٔ ویندوز و APK نسخهٔ ۱٫۰٫۵۲۶ در این محیط ساخته نشد (نه Windows/Inno Setup، نه Android SDK)؛
-  آخرین بستهٔ ویندوز ۱٫۰٫۵۲۰ و آخرین APK ۱٫۰٫۵۲۵ است. برای انتشار باید `BUILD-SETUP.bat` و
-  `scripts/android/build-apk.sh` روی ماشین سازنده اجرا شوند.
+* `Setup.exe` ویندوز در این محیط ساخته نشد (نه Windows، نه Inno Setup)؛ آخرین نصب‌کننده در
+  `releases/windows/` مربوط به ۱٫۰٫۵۲۰ است. برای ساخت: `installer/windows/BUILD-SETUP.bat` روی ویندوز.
+* باینری‌های ساخته‌شدهٔ همین نسخه: `releases/android/RasaSystemMobile-1.0.526.apk` (امضاشده با همان
+  keystore، versionCode 52600) و `releases/windows/RasaSystemDesktopUI-1.0.526.zip` (روکش رابط ویندوز
+  با لوگوی جدید).
 * مرجوعی، سهم تخفیف **سطح فاکتور/کوپن** را نسبت نمی‌دهد (تصمیم کسب‌وکار).
 * اندروید سود را با مرجوعی خالص نمی‌کند (`status!='VOID'`).
 

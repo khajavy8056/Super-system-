@@ -2,10 +2,12 @@
 
 ## نسخهٔ جاری: 1.0.526 (بیلد 52600)
 
-- کد این نسخه در `mobile-android/BUILD` = **52600** و `versionName` = 1.0.526 است؛ **APK نسخهٔ ۱٫۰٫۵۲۶ در محیط توسعه ساخته نشد** (Android SDK نصب نبود). آخرین APK امضاشده `releases/android/RasaSystemMobile-1.0.525.apk` است. برای انتشار، `scripts/android/build-apk.sh` را روی ماشین دارای SDK اجرا کنید و با همان `mobile-android/keystore/supery-release.jks` امضا کنید (تغییر کلید = INSTALL_FAILED_UPDATE_INCOMPATIBLE روی گوشی مشتری).
+- APK امضاشده: `releases/android/RasaSystemMobile-1.0.526.apk`، **1,566,592 بایت**؛ SHA-256 `62d5a9e584b1d8cda18383d0001897e1e4750f04c9099d5b8a38299792858176` (فایل کناری `.sha256` هم هست). versionCode 52600، versionName 1.0.526، minSdk 24، target 34.
+- زنجیرهٔ ساخت بدون SDK (`scripts/android/fetch-tools.sh` + `build-apk.sh`): JRE از jdk4py، ecj برای javac، aapt2 از npm، d8/apksigner از چرخ MobSF، android.jar از آینهٔ عمومی — همه از PyPI/npm/GitHub. امضا با همان `mobile-android/keystore/supery-release.jks` (SHA-256 گواهی `18b4ab18…`) انجام شد تا به‌روزرسانی روی نسخهٔ ۱٫۰٫۵۲۵ درجا نصب شود.
+- `scripts/android/verify-apk.py` پیش از انتشار PASS داد: ۲۵ entry، بدون ABI نیتیو، ساختار نصب سالم؛ `aapt2 dump badging` هم versionCode/versionName را تأیید کرد. **این هنوز تست runtime روی گوشی نیست.**
 - نسخهٔ ۱٫۰٫۵۲۶ نشان برنامه را عوض کرد: آیکون لانچر در ۵ چگالی از `docs/brand/logo-master.png` ساخته می‌شود و اعلان‌ها دیگر آیکون سیستمی «!» ندارند — `drawable-*/ic_stat_rasa` (شبح سفید آلفا-محور) به‌عنوان `setSmallIcon` و `drawable/rasa_logo.png` به‌عنوان `setLargeIcon`. تست نگهبان: `backend/tests/test_v526_brand_and_notifications.py`.
 - زنجیرهٔ ساخت SDK-less (ECJ/D8/aapt2/apksigner) و `scripts/android/verify-apk.py` install-preflight پیش‌تر موفق بوده‌اند؛ این **تست runtime روی گوشی نیست**.
-- Backend کامل در این نسخه: **۹۰۸ قبول / ۰ شکست / ۶ رد** (پس از رفع سه آزمون کهنهٔ نسخه). 
+- Backend کامل در این نسخه: **۹۱۳ قبول / ۰ شکست / ۴ رد** (پس از ساخت APK و روکش رابط ویندوز، آزمون‌های بستهٔ انتشار دیگر skip نمی‌شوند).
 - در محیط حاضر Android device/emulator و Windows واقعی نداریم؛ login/offline/sync روی دستگاه، لمس‌پذیری واقعی و Setup.exe ویندوز **تأیید نشده‌اند**.
 
 ### نگاشت پنل‌های نقش‌محور: Windows → Android بومی
